@@ -1,0 +1,294 @@
+//! Register defaults and layer user overrides onto GPUI's keybinding registry.
+
+use std::collections::HashMap;
+
+use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Keystroke};
+
+use super::defaults::{DEFAULTS, MACOS_ONLY_DEFAULTS};
+use super::registry::{action_from_name, canonical_action_name, context_for_action};
+
+/// Normalize a user-friendly keystroke string to GPUI format.
+///
+/// Users may write `"ctrl+shift+d"` (plus separators) in `splitlane.json`,
+/// but GPUI expects `"ctrl-shift-d"` (dash separators).
+pub(super) fn normalize_keystroke(keystrokes: &str) -> String {
+    keystrokes.replace('+', "-")
+}
+
+/// Canonical form of a keystroke string for *physical chord* comparison.
+///
+/// Parsing through GPUI resolves `+`/`-` separators, modifier order,
+/// and the `secondary` platform shorthand (→ `cmd` on macOS, `ctrl`
+/// elsewhere) into the same `Keystroke` value, so `"ctrl+shift+d"`,
+/// `"shift-ctrl-d"`, and `"secondary-shift-d"` all compare equal on Linux.
+/// Returns `None` for unparseable input (which then only matches by raw
+/// equality at the call site).
+pub(super) fn canonical_keystroke(keystrokes: &str) -> Option<Keystroke> {
+    Keystroke::parse(&normalize_keystroke(keystrokes)).ok()
+}
+
+/// True if two keystroke strings denote the same physical chord, normalization
+/// applied (see [`canonical`]). Unparseable strings only match by exact
+/// equality. Used by the settings writer to collapse a rebind onto a key that
+/// is already taken instead of leaving two live entries (GPUI would resolve
+/// the conflict order-dependently).
+pub fn keystrokes_conflict(a: &str, b: &str) -> bool {
+    match (canonical_keystroke(a), canonical_keystroke(b)) {
+        (Some(ka), Some(kb)) => ka == kb,
+        _ => a == b,
+    }
+}
+
+/// Build a `KeyBinding` from a boxed action, using `KeyBinding::load` to avoid
+/// the `A: Action` bound on `KeyBinding::new`. Returns `None` on invalid keystroke.
+pub(super) fn make_binding(
+    keystrokes: &str,
+    action: Box<dyn Action>,
+    context: Option<&str>,
+) -> Option<KeyBinding> {
+    let normalized = normalize_keystroke(keystrokes);
+    let predicate = match context {
+        Some(ctx) => match KeyBindingContextPredicate::parse(ctx) {
+            Ok(p) => Some(p.into()),
+            Err(e) => {
+                log::warn!("shortcuts: invalid context predicate '{ctx}': {e}");
+                return None;
+            }
+        },
+        None => None,
+    };
+    match KeyBinding::load(
+        &normalized,
+        action,
+        predicate,
+        false,
+        None,
+        &DummyKeyboardMapper,
+    ) {
+        Ok(binding) => Some(binding),
+        Err(e) => {
+            log::warn!("shortcuts: invalid keystroke '{keystrokes}': {e}");
+            None
+        }
+    }
+}
+
+/// Apply keybindings: clear all, register defaults, then layer user overrides.
+///
+/// User shortcuts map keystroke strings to action names. Special values:
+/// - `"none"` - unbinds the key (no action registered for it)
+/// - Any valid action name - overrides or adds a binding for that key
+pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>) {
+    cx.clear_key_bindings();
+
+    // Keys the user explicitly unbound via "none". Canonicalized so
+    // that an unbind written as "ctrl+shift+d" or "secondary-shift-d" actually
+    // suppresses the matching default (whose key string uses the `secondary`
+    // shorthand), instead of failing the raw `==` comparison and leaving the
+    // default live.
+    let unbound_canonical: std::collections::HashSet<Keystroke> = user_shortcuts
+        .iter()
+        .filter(|(_, v)| v.as_str() == "none")
+        .filter_map(|(k, _)| canonical_keystroke(k))
+        .collect();
+
+    // Actions the user remapped to a different key (drop their default key).
+    let remapped_actions: std::collections::HashSet<&str> = user_shortcuts
+        .iter()
+        .filter(|(_, v)| v.as_str() != "none")
+        .filter_map(|(_, action_name)| {
+            // The canonical name, because this set is compared against
+            // `DEFAULTS[..].action_name` below: an override written under a
+            // renamed action bound its key *and* left the default in place,
+            // so one action answered two chords.
+            let action_name = canonical_action_name(action_name);
+            action_from_name(action_name)
+                .is_some()
+                .then_some(action_name)
+        })
+        .collect();
+
+    // Keys the user bound to some real action. A default that shares
+    // one of these keys (for a *different* action) would otherwise stay active
+    // alongside the override → GPUI-ambiguous double binding (the root cause at
+    // the old `apply.rs:86`, e.g. a default `ctrl-shift-f → toggle_search`
+    // surviving next to a user `ctrl-shift-f → close_pane`). Drop it: a chord
+    // belongs to exactly one action, last writer wins.
+    let user_bound_canonical: std::collections::HashSet<Keystroke> = user_shortcuts
+        .iter()
+        .filter(|(_, v)| v.as_str() != "none")
+        .filter(|(_, action_name)| action_from_name(action_name).is_some())
+        .filter_map(|(k, _)| canonical_keystroke(k))
+        .collect();
+
+    let is_unbound =
+        |key: &str| canonical_keystroke(key).is_some_and(|k| unbound_canonical.contains(&k));
+    let is_user_claimed =
+        |key: &str| canonical_keystroke(key).is_some_and(|k| user_bound_canonical.contains(&k));
+
+    // Register defaults, skipping unbound keys, remapped actions, and keys the
+    // user reassigned to another action.
+    // Chain macOS-only defaults (cmd-c/cmd-v in Terminal context).
+    let default_bindings: Vec<KeyBinding> = DEFAULTS
+        .iter()
+        .chain(MACOS_ONLY_DEFAULTS.iter())
+        .filter(|d| !is_unbound(d.key))
+        .filter(|d| !remapped_actions.contains(d.action_name))
+        .filter(|d| !is_user_claimed(d.key))
+        .filter_map(|d| {
+            let action = action_from_name(d.action_name)?;
+            make_binding(d.key, action, d.context)
+        })
+        .collect();
+    cx.bind_keys(default_bindings);
+
+    // Wire copy actions for the markdown widget (Zed crate): selecting
+    // text inside a rendered chat message + pressing the platform copy
+    // shortcut now writes it to the clipboard. Mirrors Zed's default
+    // bindings at `zed/assets/keymaps/default-{macos,linux,windows}.json`.
+    // `secondary` resolves to Cmd on macOS and Ctrl elsewhere.
+    // (experiment) Zed's markdown actions removed - nothing handles them.
+
+    // Layer user overrides
+    for (key, action_name) in user_shortcuts {
+        if action_name == "none" {
+            continue;
+        }
+        let Some(action) = action_from_name(action_name) else {
+            log::warn!("shortcuts: unknown action '{action_name}' for key '{key}', skipping");
+            continue;
+        };
+        let context = context_for_action(action_name);
+        if let Some(binding) = make_binding(key, action, context) {
+            cx.bind_keys([binding]);
+        }
+    }
+
+    // `cx.clear_key_bindings()` at the top wiped EVERY binding, including the
+    // global `TextInput` / `TextArea` widget bindings (caret movement, Home/End,
+    // selection, Backspace/Delete, clipboard) that are registered once at
+    // startup. Re-register them on every apply so text fields keep working after
+    // a shortcut rebind, config reload, settings navigation, or IPC-driven
+    // re-apply - otherwise a re-apply silently degrades every input to IME-only
+    // typing (the field accepts characters but ignores arrows, selection, and
+    // clipboard).
+    crate::widgets::text_input::register_keybindings(cx);
+    crate::widgets::text_area::register_keybindings(cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SplitHorizontally;
+
+    #[test]
+    fn normalize_keystroke_converts_plus_to_dash() {
+        assert_eq!(normalize_keystroke("ctrl+shift+d"), "ctrl-shift-d");
+        assert_eq!(normalize_keystroke("alt+left"), "alt-left");
+    }
+
+    #[test]
+    fn normalize_keystroke_already_dashed_unchanged() {
+        assert_eq!(normalize_keystroke("ctrl-shift-d"), "ctrl-shift-d");
+    }
+
+    #[test]
+    fn keystrokes_conflict_ignores_separator_and_order() {
+        // `+`/`-` separators and modifier order are normalized away.
+        assert!(keystrokes_conflict("ctrl+shift+f", "ctrl-shift-f"));
+        assert!(keystrokes_conflict("shift-ctrl-f", "ctrl-shift-f"));
+        assert!(!keystrokes_conflict("ctrl-shift-f", "ctrl-shift-g"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn keystrokes_conflict_resolves_secondary_on_linux() {
+        // `secondary` resolves to ctrl on Linux, so a default written with the
+        // shorthand collides with a concrete ctrl chord.
+        assert!(keystrokes_conflict("secondary-shift-d", "ctrl-shift-d"));
+        assert!(!keystrokes_conflict("secondary-shift-d", "alt-shift-d"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keystrokes_conflict_resolves_secondary_on_macos() {
+        // `secondary` resolves to cmd (platform) on macOS.
+        assert!(keystrokes_conflict("secondary-shift-d", "cmd-shift-d"));
+        assert!(!keystrokes_conflict("secondary-shift-d", "ctrl-shift-d"));
+    }
+
+    #[test]
+    fn secondary_binding_parses_successfully() {
+        // make_binding accepts the `secondary` prefix on both
+        // platforms. GPUI's Keystroke::parse resolves it internally.
+        let binding = make_binding("secondary-shift-d", Box::new(SplitHorizontally), None);
+        assert!(
+            binding.is_some(),
+            "secondary-shift-d must parse into a valid KeyBinding"
+        );
+    }
+
+    /// Every default row must actually become a binding.
+    ///
+    /// `make_binding` answers a bad keystroke or an unparseable context
+    /// predicate with a `warn!` and a `None`, which is the right behaviour for
+    /// a user's own `shortcuts` map and exactly the wrong failure for the
+    /// table shipped in the build: the chord is simply absent, nothing errors,
+    /// and the only sign is a log line nobody reads. A row whose
+    /// context is a *predicate* rather than a bare word
+    /// (`Markdown && !MarkdownSearch`) is precisely the kind of string that
+    /// can be silently wrong.
+    #[test]
+    fn every_default_row_becomes_a_binding() {
+        for d in DEFAULTS.iter().chain(MACOS_ONLY_DEFAULTS.iter()) {
+            let action = action_from_name(d.action_name)
+                .unwrap_or_else(|| panic!("`{}` is not a registered action", d.action_name));
+            assert!(
+                make_binding(d.key, action, d.context).is_some(),
+                "default binding `{}` -> `{}` (context {:?}) did not parse",
+                d.key,
+                d.action_name,
+                d.context
+            );
+        }
+    }
+
+    /// And the registry's own context strings have to parse too: a user
+    /// override is bound with `context_for_action`, so a predicate that is
+    /// valid in `DEFAULTS` and mistyped in the registry would unbind the
+    /// action for exactly the people who took the trouble to rebind it.
+    #[test]
+    fn every_registry_context_parses() {
+        for meta in super::super::registry::ACTIONS {
+            if meta.context.is_empty() {
+                continue;
+            }
+            assert!(
+                KeyBindingContextPredicate::parse(meta.context).is_ok(),
+                "registry context {:?} for `{}` does not parse",
+                meta.context,
+                meta.name
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_override_parses_on_any_platform() {
+        // A user writing `"split_horizontally": "cmd-shift-d"` in
+        // splitlane.json must produce a valid binding on Linux as well as
+        // macOS (GPUI accepts `cmd` as a synonym for the platform modifier).
+        let binding = make_binding("cmd-shift-d", Box::new(SplitHorizontally), None);
+        assert!(
+            binding.is_some(),
+            "cmd-shift-d override must parse on any platform"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cmd_c_parses_as_binding() {
+        use crate::TerminalCopy;
+        let binding = make_binding("cmd-c", Box::new(TerminalCopy), Some("Terminal"));
+        assert!(binding.is_some(), "cmd-c must parse as a valid KeyBinding");
+    }
+}

@@ -1,0 +1,21 @@
+[package]
+name = "splitlane-ai-hook"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "splitlane-ai-hook"
+path = "src/main.rs"
+
+[dependencies]
+interprocess.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

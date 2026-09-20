@@ -1,0 +1,21 @@
+//! Centralized keybinding management: defaults, user overrides, hot-reload.
+//!
+//! Uses Zed's clear → defaults → user-overrides pattern via GPUI's
+//! `clear_key_bindings()` + `bind_keys()`.
+//!
+//! Module layout:
+//! - [`registry`] - `ActionMeta` + `ACTIONS` table (one source of truth)
+//! - [`defaults`] - `DEFAULTS` and `MACOS_ONLY_DEFAULTS` binding tables
+//! - [`apply`] - registers bindings on the GPUI `App`
+//! - [`display`] - formats keystrokes and builds the settings shortcut list
+
+mod apply;
+mod defaults;
+mod display;
+mod registry;
+
+pub use apply::{apply_keybindings, keystrokes_conflict};
+pub use display::{
+    ShortcutEntry, effective_shortcuts, format_keystroke, group_shortcuts, is_bare_modifier,
+};
+pub use registry::action_from_name;

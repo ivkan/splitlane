@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Check the commit message itself: it is published with the commit, and a
+# message is the one place nothing else lints.
+# Enable with: git config core.hooksPath scripts/hooks
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check-public-hygiene.sh" --message "$1"

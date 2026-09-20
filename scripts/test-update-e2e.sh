@@ -1,0 +1,415 @@
+#!/usr/bin/env bash
+# End-to-end auto-update test harness.
+#
+# Simulates a real user upgrading from `OLD_VERSION` (default 0.2.10) to
+# `NEW_VERSION` (default = workspace package version) by:
+#
+#   1. Building the OLD splitlane at its tag in a git worktree
+#   2. Building the NEW splitlane from the current tree
+#   3. Bundling NEW into a tar.gz with cargo-bundle layout
+#   4. Generating a fixture `latest.json` matching the GitHub Releases API
+#   5. Serving the fixture + tarball from localhost via `python3 -m http.server`
+#   6. Running OLD splitlane with `--update-and-exit` and
+#      `SPLITLANE_UPDATE_FEED_URL` pointing at localhost
+#   7. Asserting the binary at the install path now reports NEW_VERSION
+#
+# Three scenarios are exercised:
+#   (a) tar.gz happy path  - exit 0, version bumps
+#   (b) tampered artifact  - exit 4 (UpdateError::IntegrityMismatch via minisign verify)
+#   (c) feed unreachable   - exit 3 (HTTP server killed before invocation)
+#
+# The AppImage swap scenario is deferred: appimageupdatetool isn't part of the
+# default CI image, has no in-process SHA verify, and would test the same
+# atomic-swap regression surface as tar.gz with extra ceremony. The
+# `--update-and-exit` Rust handler keeps the wiring in place for a
+# follow-up that opts in by installing the tool.
+#
+# Exit code: 0 = all scenarios pass, 1 = any scenario failed.
+
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# Configuration - env-overridable so the same script works in CI and locally.
+# -----------------------------------------------------------------------------
+OLD_VERSION="${OLD_VERSION:-0.2.10}"
+OLD_TAG="${OLD_TAG:-v${OLD_VERSION}}"
+WORK_DIR="${WORK_DIR:-/tmp/splitlane-e2e}"
+HTTP_PORT="${HTTP_PORT:-0}"      # 0 = pick an ephemeral port
+SCENARIO="${SCENARIO:-all}"      # all|happy|hash_mismatch|feed_unreachable
+
+# Optional fast-path inputs (CI). When set, the harness skips the
+# `cargo build` in phases 1+2 and uses the provided prebuilt tarballs
+# directly. Each must be the bundle-tarball.sh layout
+# (splitlane.app/bin/splitlane). Used in release.yml (artifact reuse from
+# the matrix `build` job for NEW; gh release download of the previous
+# stable tag for OLD). When unset, the harness falls back to the
+# from-source build for local dev.
+E2E_NEW_TARBALL="${E2E_NEW_TARBALL:-}"
+E2E_OLD_TARBALL="${E2E_OLD_TARBALL:-}"
+# Optional: detached minisign signature of the NEW tarball. Defaults to
+# the `.minisig` sibling of E2E_NEW_TARBALL when present. Required in
+# practice when the OLD client is ≥ v0.3.9 (fail-closed verification);
+# absent → the harness no-ops with a notice instead of false-failing.
+E2E_NEW_MINISIG="${E2E_NEW_MINISIG:-}"
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' "$REPO_ROOT/Cargo.toml")"
+
+# -----------------------------------------------------------------------------
+# Logging helpers - keep CI logs greppable.
+# -----------------------------------------------------------------------------
+log()  { printf '[e2e] %s\n' "$*" >&2; }
+fail() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit 1; }
+ok()   { printf '[e2e] PASS: %s\n' "$*" >&2; }
+
+# -----------------------------------------------------------------------------
+# Cleanup - always run, even on early exit.
+# -----------------------------------------------------------------------------
+HTTP_PID=""
+HTTP_LOG=""
+WORKTREE_PATH=""
+cleanup() {
+    local rc=$?
+    if [ -n "${HTTP_PID}" ] && kill -0 "${HTTP_PID}" 2>/dev/null; then
+        kill "${HTTP_PID}" 2>/dev/null || true
+        wait "${HTTP_PID}" 2>/dev/null || true
+    fi
+    if [ -n "${WORKTREE_PATH}" ] && [ -d "${WORKTREE_PATH}" ]; then
+        git -C "${REPO_ROOT}" worktree remove --force "${WORKTREE_PATH}" 2>/dev/null || true
+    fi
+    if [ "${rc}" -ne 0 ] && [ -n "${HTTP_LOG}" ] && [ -f "${HTTP_LOG}" ]; then
+        log "http.server log:"
+        sed 's/^/[http] /' "${HTTP_LOG}" >&2 || true
+    fi
+    return "${rc}"
+}
+trap cleanup EXIT INT TERM
+
+# -----------------------------------------------------------------------------
+# Phase 0 - workspace prep.
+# -----------------------------------------------------------------------------
+log "OLD_VERSION=${OLD_VERSION}  NEW_VERSION=${NEW_VERSION}  WORK_DIR=${WORK_DIR}"
+rm -rf "${WORK_DIR}"
+mkdir -p "${WORK_DIR}"/{home,fixture,install-bin}
+
+# Pin a fake $HOME so install_method::detect() classifies the OLD binary
+# as `TarGz { app_dir: $HOME/.local/splitlane.app }`. Anything else and
+# `--update-and-exit` exits 5.
+export HOME="${WORK_DIR}/home"
+mkdir -p "${HOME}/.local"
+
+# -----------------------------------------------------------------------------
+# Phase 1 - stage NEW tar.gz into the fixture dir.
+#
+# Fast path (CI): E2E_NEW_TARBALL points at a prebuilt tarball (produced
+# by release.yml's matrix `build` job or downloaded from a GitHub
+# release in the nightly workflow). The script just copies it.
+#
+# Source-build fallback (local dev): cargo build + bundle-tarball.sh.
+# -----------------------------------------------------------------------------
+NEW_TARBALL_DEST="${WORK_DIR}/fixture/splitlane-${NEW_VERSION}-x86_64.tar.gz"
+if [ -n "${E2E_NEW_TARBALL}" ]; then
+    log "phase 1: using prebuilt NEW tarball from ${E2E_NEW_TARBALL}"
+    [ -s "${E2E_NEW_TARBALL}" ] || fail "E2E_NEW_TARBALL points at missing/empty file: ${E2E_NEW_TARBALL}"
+    cp "${E2E_NEW_TARBALL}" "${NEW_TARBALL_DEST}"
+else
+    log "phase 1: building NEW splitlane at v${NEW_VERSION}"
+    ( cd "${REPO_ROOT}" && cargo build --release -p splitlane-app --quiet )
+    log "phase 1: bundling tar.gz with bundle-tarball.sh"
+    ( cd "${REPO_ROOT}" && ARCH=x86_64 bash scripts/bundle-tarball.sh "${NEW_VERSION}" >/dev/null )
+    cp "${REPO_ROOT}/target/bundle/splitlane-${NEW_VERSION}-x86_64.tar.gz" "${NEW_TARBALL_DEST}"
+fi
+[ -s "${NEW_TARBALL_DEST}" ] || fail "NEW tarball not staged at ${NEW_TARBALL_DEST}"
+NEW_TARBALL="${NEW_TARBALL_DEST}"
+
+# Emit the .sha256 sidecar `download_with_verification` fetches before
+# downloading the tarball body.
+( cd "${WORK_DIR}/fixture" && sha256sum "splitlane-${NEW_VERSION}-x86_64.tar.gz" \
+      > "splitlane-${NEW_VERSION}-x86_64.tar.gz.sha256" )
+
+# Stage the .minisig sidecar when one sits next to the source tarball
+# (E2E_NEW_MINISIG overrides the location). OLD clients ≥ v0.3.9 verify
+# fail-closed: they fetch <tarball-url>.minisig and abort the install
+# when it's missing, so without this file the happy path can never pass
+# against a verifying OLD. release.yml's e2e leg polls the published
+# release for the real signature (the artifact tarball and the published
+# tarball are byte-identical, so the signature transfers).
+NEW_MINISIG_SRC="${E2E_NEW_MINISIG:-}"
+if [ -z "${NEW_MINISIG_SRC}" ] && [ -n "${E2E_NEW_TARBALL}" ]; then
+    NEW_MINISIG_SRC="${E2E_NEW_TARBALL}.minisig"
+fi
+if [ -n "${NEW_MINISIG_SRC}" ] && [ -s "${NEW_MINISIG_SRC}" ]; then
+    cp "${NEW_MINISIG_SRC}" "${NEW_TARBALL_DEST}.minisig"
+    log "phase 1: staged NEW tarball signature from ${NEW_MINISIG_SRC}"
+elif [ "$(printf '%s\n' "0.3.9" "${OLD_VERSION}" | sort -V | head -n1)" = "0.3.9" ]; then
+    # No signature available and the OLD client verifies fail-closed
+    # (≥ 0.3.9). Refusing the unsigned install is the binary BEHAVING
+    # CORRECTLY, not a regression - there is nothing meaningful to
+    # test, so no-op instead of reporting a false failure. This is the
+    # dry-run / local source-build path, where the artifact is never
+    # signed (the signing key is rightly unreachable from here).
+    log "phase 1: no .minisig for the NEW tarball and OLD v${OLD_VERSION} verifies fail-closed - harness no-op"
+    exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# Phase 2 - stage OLD splitlane binary.
+#
+# Fast path (CI): E2E_OLD_TARBALL points at a previously published
+# tar.gz (downloaded by the workflow via `gh release download
+# v${OLD_VERSION}`). The harness extracts it and uses the binary inside
+# the bundle. This is also strictly more faithful than rebuilding: we
+# test the exact byte sequence real users have on disk, not a
+# byte-different build of the same source.
+#
+# Source-build fallback (local dev): git worktree + cargo build. Slow
+# (~10 min cold cache) but works without network.
+# -----------------------------------------------------------------------------
+WORKTREE_PATH=""
+if [ -n "${E2E_OLD_TARBALL}" ]; then
+    log "phase 2: using prebuilt OLD tarball from ${E2E_OLD_TARBALL}"
+    [ -s "${E2E_OLD_TARBALL}" ] || fail "E2E_OLD_TARBALL points at missing/empty file: ${E2E_OLD_TARBALL}"
+    OLD_EXTRACT_DIR="${WORK_DIR}/old-extract"
+    mkdir -p "${OLD_EXTRACT_DIR}"
+    tar xzf "${E2E_OLD_TARBALL}" -C "${OLD_EXTRACT_DIR}"
+    OLD_BIN_SRC="${OLD_EXTRACT_DIR}/splitlane.app/bin/splitlane"
+    [ -x "${OLD_BIN_SRC}" ] \
+        || fail "OLD binary not found at expected layout ${OLD_BIN_SRC} (bundle-tarball.sh layout is splitlane.app/bin/splitlane)"
+else
+    WORKTREE_PATH="${WORK_DIR}/old-src"
+    log "phase 2: checking out ${OLD_TAG} into ${WORKTREE_PATH}"
+    git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE_PATH}" "${OLD_TAG}"
+    # `rust-toolchain.toml` was introduced in commit 1884237 (post-v0.2.11),
+    # so the OLD worktree at v0.2.10 / v0.2.11 has no toolchain pin. In CI
+    # the dtolnay/rust-toolchain action installs the pinned toolchain but does
+    # NOT set a rustup default - running plain `cargo` in a directory without a
+    # toolchain file fails with "rustup could not choose a version of cargo
+    # to run, because one wasn't specified explicitly".
+    #
+    # Read the channel from main's toolchain file and pass it as
+    # RUSTUP_TOOLCHAIN to the OLD build. This is more idiomatic than
+    # copying the file (rust-lang.github.io/rustup/overrides.html lists
+    # RUSTUP_TOOLCHAIN env above directory-file overrides), avoids
+    # polluting the OLD worktree's git state, and surfaces the chosen
+    # toolchain in CI logs. Future-proof: when main bumps the pin, the
+    # e2e auto-follows without a script edit.
+    OLD_BUILD_TOOLCHAIN=""
+    if [ -f "${REPO_ROOT}/rust-toolchain.toml" ]; then
+        OLD_BUILD_TOOLCHAIN="$(awk -F'"' '/^channel/ { print $2; exit }' "${REPO_ROOT}/rust-toolchain.toml")"
+    fi
+    log "phase 2: building OLD splitlane at v${OLD_VERSION} (toolchain=${OLD_BUILD_TOOLCHAIN:-system default}, slow step)"
+    (
+        cd "${WORKTREE_PATH}"
+        if [ -n "${OLD_BUILD_TOOLCHAIN}" ]; then
+            RUSTUP_TOOLCHAIN="${OLD_BUILD_TOOLCHAIN}" cargo build --release -p splitlane-app --quiet
+        else
+            cargo build --release -p splitlane-app --quiet
+        fi
+    )
+    OLD_BIN_SRC="${WORKTREE_PATH}/target/release/splitlane"
+    [ -x "${OLD_BIN_SRC}" ] || fail "OLD binary not built at ${OLD_BIN_SRC}"
+fi
+
+# Stage OLD into the canonical TarGz install layout
+# ($HOME/.local/splitlane.app/bin/splitlane).
+INSTALL_DIR="${HOME}/.local/splitlane.app"
+mkdir -p "${INSTALL_DIR}/bin"
+cp "${OLD_BIN_SRC}" "${INSTALL_DIR}/bin/splitlane"
+INSTALL_BIN="${INSTALL_DIR}/bin/splitlane"
+
+# Sanity-check the OLD binary actually reports OLD_VERSION.
+actual_old="$("${INSTALL_BIN}" --version)"
+[ "${actual_old}" = "splitlane ${OLD_VERSION}" ] \
+    || fail "staged OLD binary reported '${actual_old}', expected 'splitlane ${OLD_VERSION}'"
+log "phase 2: OLD binary staged at ${INSTALL_BIN}"
+
+# Self-bootstrap guard: the `--update-and-exit` CLI flag was added in
+# the same commit cycle as this harness (commit 0e733e3, post-v0.2.11),
+# so any tag <= v0.2.11 lacks the flag. Without it, invoking the OLD
+# binary would try to open a GPUI window - which fails on a headless
+# CI runner with `neither DISPLAY nor WAYLAND_DISPLAY is set` and
+# bombs the whole e2e job on a problem the test was never designed to
+# catch.
+#
+# Probe via `strings` (binutils) on the binary's .rodata - the literal
+# `"--update-and-exit"` argument string only appears in binaries that
+# include the flag's match arm. Cannot probe via `--help` output: the
+# flag is intentionally undocumented in the help text. Cannot probe via
+# `--update-and-exit` exit code either: it would actually invoke the
+# update flow on a healthy binary (race-y, side-effecty).
+#
+# The harness re-engages automatically once OLD becomes a tag that
+# shipped --update-and-exit (v0.2.12+).
+if ! strings "${INSTALL_BIN}" 2>/dev/null | grep -q -- "--update-and-exit"; then
+    log "phase 2: OLD binary v${OLD_VERSION} predates --update-and-exit (added in commit 0e733e3, first shipped in v0.2.12)"
+    log "phase 2: skipping update scenarios - re-engages automatically once OLD_VERSION advances to 0.2.12+"
+    ok "self-bootstrap: harness no-op until next release cycle"
+    exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# Phase 3 - start localhost HTTP server.
+# -----------------------------------------------------------------------------
+HTTP_LOG="${WORK_DIR}/http-server.log"
+log "phase 3: starting python3 -m http.server in ${WORK_DIR}/fixture (port=${HTTP_PORT})"
+# `-u` forces unbuffered stdout/stderr. Without it, Python block-buffers
+# stdout when it's redirected to a regular file (NOT a terminal) - the
+# `Serving HTTP on 127.0.0.1 port N (...) ...` announce line stays in
+# the buffer indefinitely because it's far smaller than the buffer
+# size, so the wait loop below never sees the regex match within 5 s
+# and `fail`s with an empty `http-server.log`. `PYTHONUNBUFFERED=1`
+# would have the same effect; `-u` is the inline-visible form.
+( cd "${WORK_DIR}/fixture" && exec python3 -u -m http.server "${HTTP_PORT}" --bind 127.0.0.1 ) \
+    >"${HTTP_LOG}" 2>&1 &
+HTTP_PID=$!
+
+# Wait for the server to bind and discover the actual port (when HTTP_PORT=0).
+for _ in $(seq 1 50); do
+    if grep -E 'Serving HTTP on 127\.0\.0\.1 port [0-9]+' "${HTTP_LOG}" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.1
+done
+HTTP_PORT_ACTUAL="$(grep -oE 'port [0-9]+' "${HTTP_LOG}" | head -n1 | awk '{print $2}')"
+[ -n "${HTTP_PORT_ACTUAL}" ] || fail "http.server did not announce a port within 5s"
+FEED_BASE="http://127.0.0.1:${HTTP_PORT_ACTUAL}"
+log "phase 3: server up at ${FEED_BASE}"
+
+# -----------------------------------------------------------------------------
+# Phase 4 - write the fixture latest.json (mirrors GitHub Releases API).
+# -----------------------------------------------------------------------------
+LATEST_JSON="${WORK_DIR}/fixture/latest"
+cat > "${LATEST_JSON}" <<EOF
+{
+  "tag_name": "v${NEW_VERSION}",
+  "html_url": "${FEED_BASE}/release-page-stub",
+  "assets": [
+    {
+      "name": "splitlane-${NEW_VERSION}-x86_64.tar.gz",
+      "browser_download_url": "${FEED_BASE}/splitlane-${NEW_VERSION}-x86_64.tar.gz"
+    }
+  ]
+}
+EOF
+
+# -----------------------------------------------------------------------------
+# Helper: reset install dir to OLD between scenarios.
+# -----------------------------------------------------------------------------
+reset_install() {
+    rm -rf "${INSTALL_DIR}" "${HOME}/.cache/splitlane"
+    mkdir -p "${INSTALL_DIR}/bin"
+    cp "${OLD_BIN_SRC}" "${INSTALL_BIN}"
+}
+
+# -----------------------------------------------------------------------------
+# Scenario A - tar.gz happy path.
+# -----------------------------------------------------------------------------
+run_happy() {
+    log "scenario: tar.gz happy path"
+    reset_install
+
+    set +e
+    SPLITLANE_UPDATE_FEED_URL="${FEED_BASE}/latest" \
+    RUST_LOG=info \
+        "${INSTALL_BIN}" --update-and-exit \
+        > "${WORK_DIR}/happy.stdout" 2> "${WORK_DIR}/happy.stderr"
+    rc=$?
+    set -e
+
+    [ "${rc}" -eq 0 ] || {
+        log "happy: stderr:"; cat "${WORK_DIR}/happy.stderr" >&2
+        fail "happy: --update-and-exit returned ${rc}, expected 0"
+    }
+    actual_new="$("${INSTALL_BIN}" --version)"
+    [ "${actual_new}" = "splitlane ${NEW_VERSION}" ] \
+        || fail "happy: post-swap version is '${actual_new}', expected 'splitlane ${NEW_VERSION}'"
+    ok "tar.gz happy path: v${OLD_VERSION} → v${NEW_VERSION}"
+}
+
+# -----------------------------------------------------------------------------
+# Scenario B - hash mismatch.
+# -----------------------------------------------------------------------------
+run_hash_mismatch() {
+    log "scenario: tampered artifact (integrity mismatch)"
+    reset_install
+
+    # Clients ≥ v0.4.0 verify a detached minisign signature over the
+    # downloaded artifact bytes (update/signature.rs); the `.sha256`
+    # sidecar is no longer fetched at all - the v0.4.2 release run
+    # proved it: corrupting the sidecar (this scenario's original
+    # tamper) no longer fails the install, the harness saw exit 0.
+    # Tamper the tarball BODY instead, leaving the genuine `.minisig`
+    # in place: verification fails over the mutated bytes and
+    # `--update-and-exit` maps the resulting `IntegrityMismatch` to
+    # exit 4 - the modern equivalent of the original sha256-mismatch
+    # assertion (and still the right gate if a future client re-adds a
+    # sidecar pre-check: both paths classify as IntegrityMismatch).
+    tarball_path="${WORK_DIR}/fixture/splitlane-${NEW_VERSION}-x86_64.tar.gz"
+    tarball_backup="${tarball_path}.real"
+    cp "${tarball_path}" "${tarball_backup}"
+    printf 'tampered-by-e2e-harness' >> "${tarball_path}"
+
+    set +e
+    SPLITLANE_UPDATE_FEED_URL="${FEED_BASE}/latest" \
+    RUST_LOG=info \
+        "${INSTALL_BIN}" --update-and-exit \
+        > "${WORK_DIR}/mismatch.stdout" 2> "${WORK_DIR}/mismatch.stderr"
+    rc=$?
+    set -e
+
+    # Restore so subsequent scenarios re-use the genuine tarball.
+    mv "${tarball_backup}" "${tarball_path}"
+
+    [ "${rc}" -eq 4 ] || {
+        log "mismatch: stderr:"; cat "${WORK_DIR}/mismatch.stderr" >&2
+        fail "mismatch: --update-and-exit returned ${rc}, expected 4"
+    }
+    actual_unchanged="$("${INSTALL_BIN}" --version)"
+    [ "${actual_unchanged}" = "splitlane ${OLD_VERSION}" ] \
+        || fail "mismatch: post-fail version is '${actual_unchanged}', expected unchanged 'splitlane ${OLD_VERSION}'"
+    ok "tampered artifact: rejected, install path unchanged"
+}
+
+# -----------------------------------------------------------------------------
+# Scenario C - feed unreachable.
+# -----------------------------------------------------------------------------
+run_feed_unreachable() {
+    log "scenario: feed unreachable"
+    reset_install
+
+    # Kill the HTTP server and pick a port no one is listening on.
+    kill "${HTTP_PID}" 2>/dev/null || true
+    wait "${HTTP_PID}" 2>/dev/null || true
+    HTTP_PID=""
+
+    set +e
+    SPLITLANE_UPDATE_FEED_URL="http://127.0.0.1:1/latest" \
+    RUST_LOG=info \
+        "${INSTALL_BIN}" --update-and-exit \
+        > "${WORK_DIR}/unreach.stdout" 2> "${WORK_DIR}/unreach.stderr"
+    rc=$?
+    set -e
+
+    [ "${rc}" -eq 3 ] || {
+        log "unreach: stderr:"; cat "${WORK_DIR}/unreach.stderr" >&2
+        fail "unreach: --update-and-exit returned ${rc}, expected 3 (feed unreachable)"
+    }
+    grep -F "feed unreachable" "${WORK_DIR}/unreach.stderr" >/dev/null \
+        || fail "unreach: stderr missing explicit 'feed unreachable' substring"
+    ok "feed unreachable: explicit error surfaced"
+}
+
+# -----------------------------------------------------------------------------
+# Driver.
+# -----------------------------------------------------------------------------
+case "${SCENARIO}" in
+    all|happy)             run_happy ;;
+esac
+case "${SCENARIO}" in
+    all|hash_mismatch)     run_hash_mismatch ;;
+esac
+case "${SCENARIO}" in
+    all|feed_unreachable)  run_feed_unreachable ;;
+esac
+
+log "all scenarios passed"

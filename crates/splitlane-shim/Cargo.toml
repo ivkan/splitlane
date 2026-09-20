@@ -1,0 +1,35 @@
+[package]
+name = "splitlane-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "splitlane-shim"
+path = "src/main.rs"
+
+[dependencies]
+# Idempotent merge of `.claude/settings.local.json` + atomic rename.
+serde_json = { workspace = true }
+tempfile.workspace = true
+# Cross-platform file identity for the hardlink loop guard.
+same-file = "1"
+
+# Signal disposition control - required to make Ctrl+C / SIGHUP / SIGTERM
+# only reach the child claude/codex process (so the AI sees the
+# interrupt) while the shim survives long enough to send `ai.session_end`
+# to Splitlane's IPC server. Same pattern time(1) / tee(1) / sudo(8) use.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# Windows: a console-control handler emits `ai.stop` when the user Ctrl+C's an
+# agent that interrupts its turn WITHOUT exiting (claude/codex fire no Stop hook
+# then), mirroring the Unix `sigwait` watcher so the sidebar loader never sticks.
+# `ctrlc` is already this workspace's cross-platform Ctrl+C
+# crate (used by splitlane-app), wrapping `SetConsoleCtrlHandler` safely.
+[target.'cfg(windows)'.dependencies]
+ctrlc.workspace = true
+
+[lints]
+workspace = true

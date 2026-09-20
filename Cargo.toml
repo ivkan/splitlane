@@ -1,0 +1,109 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/splitlane-acp",
+    "crates/splitlane-ai-hook",
+    "crates/splitlane-config",
+    "crates/splitlane-ipc-client",
+    "crates/splitlane-ghostty-smoke",
+    "crates/splitlane-libghostty-sys",
+    "crates/splitlane-mcp",
+    "crates/splitlane-mcp-install",
+    "crates/splitlane-process",
+    "crates/splitlane-shim",
+    "crates/splitlane-telemetry",
+    "crates/splitlane-terminal-ghostty",
+    "src-app",
+]
+# Scope bare `cargo run` / `cargo build` / `cargo test` to the desktop app.
+# The AI-hook callback and shim binaries are helpers built on demand (via
+# `-p` or the release-min profile); including them here would make `cargo
+# run` ambiguous across three binaries.
+default-members = ["src-app"]
+
+[workspace.package]
+version = "0.8.2"
+edition = "2021"
+rust-version = "1.96.1"
+license = "GPL-3.0-or-later"
+authors = ["Arthur Jean", "Ivan Kalashnik"]
+description = "Native Rust terminal workspace for running coding agents in parallel"
+repository = "https://github.com/ivkan/splitlane"
+homepage = "https://github.com/ivkan/splitlane"
+keywords = ["terminal", "coding-agents", "ai-agents", "gpui", "rust"]
+categories = ["command-line-utilities"]
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Shared runtime utilities
+ctrlc = "3.4"
+dirs = "6"
+interprocess = "2.4"
+libc = "0.2"
+log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
+notify = "7"
+tempfile = "3"
+tracing = "0.1"
+ureq = { version = "3", features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+which = "8"
+widestring = "1"
+
+# Markdown parsing. `default-features = false` keeps the dependency cheap -
+# no HTML writer, no simd. The in-tree markdown viewer is what reads it.
+pulldown-cmark = { version = "0.10", default-features = false }
+
+# Internal crates
+splitlane-acp = { path = "crates/splitlane-acp" }
+splitlane-config = { path = "crates/splitlane-config" }
+splitlane-ipc-client = { path = "crates/splitlane-ipc-client" }
+splitlane-process = { path = "crates/splitlane-process" }
+splitlane-telemetry = { path = "crates/splitlane-telemetry" }
+
+# Workspace-wide clippy lint policy. `warn` is preferred over `deny`
+# for the unwrap/expect family per documented community practice and the
+# `allow-unwrap-in-tests` / `allow-expect-in-tests` escape hatches in
+# `clippy.toml`. Each member crate declares `[lints] workspace = true`
+# (or overrides specific lints locally where justified).
+[workspace.lints.clippy]
+panic = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+unwrap_in_result = "warn"
+
+# Required by GPUI - these forks must stay in sync with the pinned Zed rev
+# in src-app/Cargo.toml. When bumping GPUI rev, verify these still resolve.
+[patch.crates-io]
+async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "eb6b4fd17b9af5ecc226546bdd04185391b3e265" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Size-optimized profile for the embedded AI-hook callback and shim binaries.
+# The hook callback runs ~6 times per AI turn, so
+# it's a hot path; smaller binaries also reduce the rust-embed footprint per
+# Splitlane build. `panic = "abort"` and `lto = "fat"` are not available via
+# per-package profile overrides, hence the dedicated profile.
+#
+# Build: `cargo build -p splitlane-ai-hook --profile release-min`
+[profile.release-min]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

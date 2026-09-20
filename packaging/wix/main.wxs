@@ -1,0 +1,240 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!--
+  Splitlane Windows installer.
+  Seeded from `cargo wix init` on the splitlane-app crate (cargo-wix 0.3.9),
+  then customized:
+    - Install dir: %ProgramFiles%\Splitlane\
+    - splitlane.exe at the install root (no `bin` subdirectory - matches
+      the `%ProgramFiles%\Splitlane\splitlane.exe` detection rule
+      used by `InstallMethod::WindowsMsi`).
+    - Start Menu shortcut under "Splitlane", using the target exe icon so
+      taskbar pins keep a stable icon path across major upgrades.
+    - ARP (Add or Remove Programs) entry with publisher "Ivan Kalashnik" and
+      the multi-resolution icon at `packaging/wix/splitlane.ico`.
+    - GPL license and libghostty provenance/compliance files beside the
+      executable, with no runtime Ghostty DLL.
+    - User config at %APPDATA%\splitlane\ is preserved on uninstall
+      (AC-6); WiX only removes the files it installed.
+
+  GUIDs baked in here MUST match `[package.metadata.wix]` in
+  src-app/Cargo.toml:
+    * UpgradeCode           = upgrade-guid (breaking this breaks
+                              in-place upgrades for existing users).
+    * Component Id='Path'   = path-guid    (breaks the PATH entry for
+                              existing users if changed).
+    * Component Id='ApplicationShortcut' = Start Menu shortcut GUID
+                              (AC-2b). Stable for the lifetime of the
+                              installer product line.
+    * Component Id='GhosttyCompliance' = fixed compliance inventory GUID.
+                              Keep it stable across upgrades.
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Splitlane'
+        UpgradeCode='177D8F43-1642-4212-9CB0-FD14B299058D'
+        Manufacturer='Ivan Kalashnik'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Splitlane - native terminal workspace for running coding agents in parallel.'
+            Manufacturer='Ivan Kalashnik'
+            InstallerVersion='500'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='Splitlane Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <!-- Install root: %ProgramFiles%\Splitlane\ -->
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Splitlane'>
+
+                    <!-- Full GPL license sidecar. License.rtf is only the short
+                         notice displayed by the installer UI. -->
+                    <Component Id='License' Guid='*'>
+                        <File Id='LicenseFile'
+                            Name='LICENSE.txt'
+                            DiskId='1'
+                            Source='LICENSE'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <!-- Static libghostty compliance inventory. These are
+                         provenance and license records, not runtime DLLs. -->
+                    <Component Id='GhosttyCompliance' Guid='67E44FE2-1DB5-4353-8BA0-3C7C58E1A471'>
+                        <File Id='GhosttyThirdPartyNotices'
+                            Name='THIRD_PARTY_NOTICES.md'
+                            DiskId='1'
+                            Source='native/libghostty/THIRD_PARTY_NOTICES.md'
+                            KeyPath='yes'/>
+                        <File Id='GhosttySbom'
+                            Name='libghostty-sbom.cdx.json'
+                            DiskId='1'
+                            Source='native/libghostty/sbom.cdx.json'/>
+                        <File Id='GhosttyManifest'
+                            Name='libghostty-manifest.toml'
+                            DiskId='1'
+                            Source='native/libghostty/manifest.toml'/>
+                        <File Id='GhosttyBuildInfo'
+                            Name='libghostty-build-info.txt'
+                            DiskId='1'
+                            Source='native/libghostty/prebuilt/x86_64-pc-windows-msvc/build-info.txt'/>
+                    </Component>
+
+                    <!-- splitlane.exe lives directly under %ProgramFiles%\Splitlane\
+                         (no `bin\` subdir), matching the canonical MSI layout
+                         assumed by `InstallMethod::WindowsMsi`. -->
+                    <Component Id='binary0' Guid='*'>
+                        <File
+                            Id='exe0'
+                            Name='splitlane.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\splitlane.exe'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <!-- Signed helper shims live under Program Files so Windows
+                         Application Control / AppLocker policies that block
+                         user-writable AppData executables do not prevent
+                         `claude`, `codex`, etc. from launching in Splitlane. -->
+                    <Directory Id='HelperBinFolder' Name='bin'>
+                        <Component Id='HelperBinaries' Guid='4DCEBD33-BD8D-4875-BA94-EFF72C6C8717'>
+                            <File Id='HelperClaude' Name='claude.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\claude.exe' KeyPath='yes'/>
+                            <File Id='HelperCodex' Name='codex.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\codex.exe'/>
+                            <File Id='HelperOpencode' Name='opencode.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\opencode.exe'/>
+                            <File Id='HelperPi' Name='pi.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\pi.exe'/>
+                            <File Id='HelperHermes' Name='hermes.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\hermes.exe'/>
+                            <File Id='HelperGrok' Name='grok.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\grok.exe'/>
+                            <File Id='HelperAmp' Name='amp.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\amp.exe'/>
+                            <File Id='HelperCursorAgent' Name='cursor-agent.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\cursor-agent.exe'/>
+                            <File Id='HelperGemini' Name='gemini.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\gemini.exe'/>
+                            <File Id='HelperKiroCli' Name='kiro-cli.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\kiro-cli.exe'/>
+                            <File Id='HelperAgy' Name='agy.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\agy.exe'/>
+                            <File Id='HelperCopilot' Name='copilot.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\copilot.exe'/>
+                            <File Id='HelperCodebuddy' Name='codebuddy.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\codebuddy.exe'/>
+                            <File Id='HelperDroid' Name='droid.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\droid.exe'/>
+                            <File Id='HelperQodercli' Name='qodercli.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\qodercli.exe'/>
+                            <File Id='HelperOpenclaw' Name='openclaw.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\openclaw.exe'/>
+                            <File Id='HelperAiHook' Name='splitlane-ai-hook.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\splitlane-helpers\splitlane-ai-hook.exe'/>
+                        </Component>
+                    </Directory>
+
+                    <!-- PATH environment variable: add the install dir so
+                         `splitlane` is discoverable in cmd.exe, PowerShell,
+                         and Windows Terminal without the full path. -->
+                    <Component Id='Path' Guid='49700ADE-7E1B-466E-A25E-A138A2FC96F3' KeyPath='yes'>
+                        <Environment
+                            Id='PATH'
+                            Name='PATH'
+                            Value='[APPLICATIONFOLDER]'
+                            Permanent='no'
+                            Part='last'
+                            Action='set'
+                            System='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <!-- Start Menu → Splitlane\Splitlane shortcut (AC-2b). -->
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='Splitlane'>
+                    <Component Id='ApplicationShortcut' Guid='E369E12B-8CFA-4A4E-BDBF-5EA5BD50DA28'>
+                        <!-- Do not set Shortcut/@Icon here. WiX Icon table
+                             paths resolve through C:\Windows\Installer and
+                             include the ProductCode, so taskbar pins copied
+                             from this shortcut can keep a stale icon after a
+                             major upgrade. Let Explorer use splitlane.exe's
+                             embedded icon instead. -->
+                        <Shortcut Id='ApplicationStartMenuShortcut'
+                                  Name='Splitlane'
+                                  Description='Run coding agents in parallel'
+                                  Target='[APPLICATIONFOLDER]splitlane.exe'
+                                  WorkingDirectory='APPLICATIONFOLDER'>
+                            <ShortcutProperty Key='System.AppUserModel.ID' Value='Ivkan.Splitlane'/>
+                        </Shortcut>
+                        <!-- RemoveFolder keeps the uninstall clean; the
+                             ApplicationProgramsFolder is dropped when
+                             the component is removed. -->
+                        <RemoveFolder Id='CleanUpShortCut'
+                                      Directory='ApplicationProgramsFolder'
+                                      On='uninstall'/>
+                        <!-- WiX ICE38/ICE43 require HKCU as the KeyPath
+                             for non-advertised Start Menu shortcuts. The
+                             binaries and PATH component stay machine-wide. -->
+                        <RegistryValue Root='HKCU'
+                                       Key='Software\Splitlane'
+                                       Name='installed'
+                                       Type='integer'
+                                       Value='1'
+                                       KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Splitlane'
+            Description='Installs Splitlane, its GPL license, libghostty compliance records, Start Menu shortcut, and an entry on PATH.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='License'/>
+            <ComponentRef Id='GhosttyCompliance'/>
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='HelperBinaries'/>
+            <ComponentRef Id='ApplicationShortcut'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Adds the install location of the [ProductName] executable to the PATH system environment variable so `splitlane` can be called from any shell.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <!-- ARP icon + publisher. ARPPRODUCTICON is referenced
+             from "Apps & features" and the legacy "Programs and Features"
+             control panel. Multi-resolution (16/32/48/128/256) built
+             from packaging/wix/splitlane.ico. -->
+        <Icon Id='SplitlaneICO' SourceFile='packaging/wix/splitlane.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='SplitlaneICO'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/ivkan/splitlane'/>
+        <Property Id='ARPURLINFOABOUT' Value='https://github.com/ivkan/splitlane'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='packaging/wix/License.rtf'/>
+
+    </Product>
+
+</Wix>

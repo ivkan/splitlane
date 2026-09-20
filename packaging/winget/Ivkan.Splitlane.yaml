@@ -1,0 +1,10 @@
+# Splitlane winget version manifest (template).
+#
+# Root manifest that ties the installer + locale manifests to a specific
+# version entry under manifests/i/Ivkan/Splitlane/<version>/. See the
+# installer template for the manual rendering workflow.
+PackageIdentifier: Ivkan.Splitlane
+PackageVersion: __VERSION__
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.12.0

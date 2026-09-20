@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Check what is about to be committed for references a public reader cannot
+# follow. Enable with: git config core.hooksPath scripts/hooks
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check-public-hygiene.sh" --staged

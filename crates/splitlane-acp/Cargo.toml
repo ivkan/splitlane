@@ -1,0 +1,12 @@
+[package]
+name = "splitlane-acp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Agent identity enum + the CLAUDECODE env scrub for Splitlane's terminal-only Agents view."
+
+[dependencies]
+
+[lints]
+workspace = true

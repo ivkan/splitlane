@@ -1,0 +1,214 @@
+name: update_cask
+
+# Chained off the `release` workflow's completion (via
+# workflow_run): grabs the freshly-attached .dmg assets, computes their
+# SHA-256, renders Casks/splitlane.rb from the canonical template at
+# packaging/homebrew/splitlane.rb, and pushes the result into the external
+# tap repo https://github.com/ivkan/homebrew-splitlane.
+#
+# Prereqs (one-time, manual):
+#   - ivkan/homebrew-splitlane exists (empty Casks/ dir).
+#   - Repo secret HOMEBREW_TAP_DEPLOY_KEY holds the PRIVATE half of an
+#     ed25519 SSH deploy key whose PUBLIC half is registered as a
+#     write-enabled deploy key on the tap repo. A deploy key is
+#     repo-scoped and non-expiring (unlike a PAT, which lapses in ≤1y
+#     and silently breaks this job); the default GITHUB_TOKEN cannot
+#     push to an external repo. Provisioned 2026-05-29.
+#
+# Why `workflow_run` and not `release: published`:
+#   - A release published by the default GITHUB_TOKEN (softprops/
+#     action-gh-release in release.yml) does NOT emit a `release` event
+#     other workflows can observe -- GitHub suppresses events triggered
+#     by GITHUB_TOKEN to prevent recursion. A `release: published`
+#     trigger here would therefore NEVER fire (confirmed: 0 historical
+#     runs on this workflow before 2026-05-28).
+#   - `workflow_run` bypasses that: it fires whenever release.yml
+#     completes, by which point the .dmg assets are already uploaded.
+
+on:
+  workflow_run:
+    # MUST match the parent workflow's `name:` exactly (GitHub matches
+    # workflow_run events by declared name, not filename).
+    workflows: ["release"]
+    types: [completed]
+  # Allow manual re-runs so operator can recover from a transient network
+  # hiccup without cutting a new release tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to mirror (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+
+# Serialize cask updates. Two concurrent runs would race-write
+# `Casks/splitlane.rb` in the homebrew tap and one would lose. We never
+# want to interrupt a half-written formula either - `cancel-in-progress:
+# false`. Group by workflow (not tag) so back-to-back tag publishes
+# queue rather than overlap.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# -euxo pipefail on every bash step. See release.yml comment.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
+jobs:
+  update-cask:
+    runs-on: ubuntu-22.04
+    # Run on: (a) manual workflow_dispatch (always); (b) workflow_run
+    # chained from release.yml, require event == 'push' (the tag-push that
+    # cut the release; a dry-run release.yml is 'workflow_dispatch' and is
+    # filtered out), and skip prerelease tags (rc/alpha/beta) which are not
+    # distributed via Homebrew.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (
+        github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && !contains(github.event.workflow_run.head_branch, 'rc')
+        && !contains(github.event.workflow_run.head_branch, 'alpha')
+        && !contains(github.event.workflow_run.head_branch, 'beta')
+      )
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # For a tag-push-triggered release.yml run, workflow_run.head_branch
+          # is the tag short-name (e.g. "v0.3.4"). The strict regex below
+          # rejects anything that is not vMAJOR.MINOR.PATCH, so a non-tag
+          # head_branch (e.g. "main") fails fast rather than rendering a
+          # bogus cask. Both inputs go through env -- never inline in run.
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            tag="$RUN_TAG"
+          else
+            tag="$DISPATCH_TAG"
+          fi
+          if [ -z "$tag" ]; then
+            echo "::error::could not resolve tag from event payload"
+            exit 1
+          fi
+          # The tag comes from an attacker-controllable input in the
+          # workflow_dispatch branch, and is later interpolated into
+          # `sed` substitution patterns (lines below that render
+          # Casks/splitlane.rb). Validate strictly before use: leading
+          # `v`, then semver major.minor.patch, optional `-prerelease`
+          # where prerelease is dot-separated alphanumerics. Anything
+          # else rejects the run - no sed injection via crafted tag.
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::tag '$tag' does not match expected format vMAJOR.MINOR.PATCH[-PRERELEASE]"
+            exit 1
+          fi
+          # Cask DSL `version` is tag-minus-leading-v (matches cargo's SemVer).
+          version="${tag#v}"
+          echo "tag=$tag"      | tee -a "$GITHUB_OUTPUT"
+          echo "version=$version" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+
+      - name: Download .dmg assets from the release
+        # `gh release download --pattern` globs by filename; our naming
+        # convention is splitlane-<version>-aarch64-apple-darwin.dmg
+        # while Homebrew is ARM-only. Download to a scratch dir so we don't
+        # pollute cwd.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dmg-staging
+          cd dmg-staging
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'splitlane-*-aarch64-apple-darwin.dmg'
+          ls -la
+
+      - name: Compute SHA-256
+        id: sha
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          arm_dmg="dmg-staging/splitlane-${VERSION}-aarch64-apple-darwin.dmg"
+          if [ ! -f "$arm_dmg" ]; then
+            echo "::error::missing aarch64 .dmg - Apple Silicon is a P0 artifact and must be present for a cask update"
+            ls -la dmg-staging/ >&2
+            exit 1
+          fi
+          arm_sha="$(shasum -a 256 "$arm_dmg" | awk '{print $1}')"
+          echo "arm=$arm_sha"   | tee -a "$GITHUB_OUTPUT"
+
+      - name: Render updated Casks/splitlane.rb
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          ARM_SHA: ${{ steps.sha.outputs.arm }}
+        run: |
+          set -euo pipefail
+          # sed is deliberately pinned to the three version/sha lines
+          # - any other change to splitlane.rb flows through unmodified,
+          # so non-version edits (zap paths, depends_on bumps) make it
+          # into the tap on the next release.
+          #
+          # Using `|` as the sed delimiter to avoid clashes with the
+          # URL's `/` characters; the version/sha values we substitute
+          # never contain `|`.
+          sed \
+            -e "s|^  version \".*\"|  version \"${VERSION}\"|" \
+            -e "s|^  sha256 \".*\"|  sha256 \"${ARM_SHA}\"|" \
+            packaging/homebrew/splitlane.rb > /tmp/splitlane.rb
+          echo "--- rendered Casks/splitlane.rb ---"
+          cat /tmp/splitlane.rb
+
+      - name: Push to tap repo
+        env:
+          # SSH deploy key for ivkan/homebrew-splitlane (write). A
+          # deploy key is repo-scoped and NON-EXPIRING - unlike a PAT it
+          # never silently lapses, and it carries no personal-account
+          # coupling. This is the durable auth for cross-repo push from CI.
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The job shell runs with `-x` (see `defaults.run.shell`), which
+          # would echo the private key when we write it. Disable xtrace for
+          # this whole step so no key material reaches the run log.
+          set +x
+          if [ -z "${DEPLOY_KEY:-}" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY secret is not set - cannot push to tap repo. See packaging/homebrew/splitlane.rb header for setup steps."
+            exit 1
+          fi
+          # Materialize the deploy key to a 0600 temp file and point git at
+          # it via GIT_SSH_COMMAND. Only the file PATH (never the key bytes)
+          # appears in argv / the trace; the file is removed on step exit.
+          # `IdentitiesOnly=yes` forces this key only (ignores agent/~/.ssh).
+          keyfile="$(mktemp)"
+          chmod 600 "$keyfile"
+          printf '%s\n' "$DEPLOY_KEY" > "$keyfile"
+          trap 'rm -f "$keyfile"' EXIT
+          export GIT_SSH_COMMAND="ssh -i $keyfile -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
+
+          tmp="$(mktemp -d)"
+          git clone --depth=1 git@github.com:ivkan/homebrew-splitlane.git "$tmp"
+          mkdir -p "$tmp/Casks"
+          cp /tmp/splitlane.rb "$tmp/Casks/splitlane.rb"
+          cd "$tmp"
+          # Identity is the "github-actions[bot]" synthetic user; GitHub
+          # renders these commits with the automation badge.
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/splitlane.rb
+          if git diff --cached --quiet; then
+            echo "Cask already up-to-date for v${VERSION} - nothing to commit."
+            exit 0
+          fi
+          git commit -m "splitlane ${VERSION}" -m "Automated update from ivkan/splitlane release v${VERSION}."
+          git push origin HEAD

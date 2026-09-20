@@ -1,0 +1,15 @@
+{
+  "name": "list_panes",
+  "description": "List Splitlane surfaces (terminal panes/tabs) with their human-readable name, title, cwd, foreground command, and surface_id. Use this first to discover which surface to read.",
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true
+  },
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  }
+}

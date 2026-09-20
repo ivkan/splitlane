@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ivkan.splitlane</id>
+  <name>Splitlane</name>
+  <summary>Terminal for coding agents</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <!-- Legacy pre-AppStream-1.0 form. The newer <developer id=..> block
+       is rejected by the appstream package on ubuntu-22.04 (release.yml
+       build base). -->
+  <developer_name>Ivan Kalashnik</developer_name>
+
+  <description>
+    <p>
+      Splitlane is a native terminal workspace for running coding agents in
+      parallel. Launch Claude Code, Codex, opencode, Pi, or any CLI agent in
+      real panes, keep each session visible, and react when one needs input.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>One-click coding-agent launchers with per-session status tracking</li>
+      <li>Horizontal and vertical split panes with drag-to-resize, up to 32 panes</li>
+      <li>Branch-aware workspaces with rename, quick-switch, and session restore</li>
+      <li>In-app Git diff viewer and branch review prompts for agents</li>
+      <li>MCP bridge so capable agents can read other panes without copy/paste</li>
+      <li>JSON-RPC 2.0 IPC for local automation and integrations</li>
+      <li>Native Rust/GPUI rendering with Wayland and X11 support on Linux</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">splitlane.desktop</launchable>
+
+  <url type="homepage">https://github.com/ivkan/splitlane</url>
+  <url type="bugtracker">https://github.com/ivkan/splitlane/issues</url>
+  <!-- vcs-browser URL type is flagged url-invalid-type by the
+       appstream package on ubuntu-22.04; homepage already points at
+       the repo so no information is lost. -->
+
+
+  <categories>
+    <category>System</category>
+    <category>TerminalEmulator</category>
+  </categories>
+
+  <keywords>
+    <keyword>terminal</keyword>
+    <keyword>coding agents</keyword>
+    <keyword>ai agents</keyword>
+    <keyword>claude code</keyword>
+    <keyword>codex</keyword>
+    <keyword>opencode</keyword>
+    <keyword>gpui</keyword>
+    <keyword>rust</keyword>
+  </keywords>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.8.2" date="2026-09-15">
+      <description>
+        <p>First Splitlane release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

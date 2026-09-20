@@ -1,0 +1,47 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+
+# Packaging output: scripts/bundle-{macos,tarball,appimage}.sh write here.
+# Generated artifacts, not source.
+/dist/
+# Occasional rustc `--emit=link` leftovers at the repo root (name chosen by
+# the compiler when stdout is piped to a file). Ignored because they can be
+# multi-MB binaries with no reason to exist in the tree.
+/rust_out
+
+# Python bytecode (helper scripts under scripts/)
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+LOG_*.text
+
+# Local development artifacts
+.codex
+
+# Local agent state
+**/.claude/
+.vercel
+
+# Windows debug symbols emitted next to release builds (multi-MB .pdb tree).
+# Build artifact, not source.
+/pf-symbols/

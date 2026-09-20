@@ -1,0 +1,298 @@
+name: libghostty Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/libghostty-windows.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/run_tests.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/splitlane-ghostty-smoke/**"
+      - "crates/splitlane-libghostty-sys/**"
+      - "crates/splitlane-terminal-ghostty/**"
+      - "native/libghostty/**"
+      - "packaging/wix/**"
+      - "scripts/*libghostty*"
+      - "src-app/Cargo.toml"
+      - "src-app/src/**"
+      - "src-app/tests/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/libghostty-windows.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/run_tests.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/splitlane-ghostty-smoke/**"
+      - "crates/splitlane-libghostty-sys/**"
+      - "crates/splitlane-terminal-ghostty/**"
+      - "native/libghostty/**"
+      - "packaging/wix/**"
+      - "scripts/*libghostty*"
+      - "src-app/Cargo.toml"
+      - "src-app/src/**"
+      - "src-app/tests/**"
+  # The nightly `schedule:` trigger was removed on 6 September 2026, the day
+  # this repository ran CI for the first time and used its entire 2 000-minute
+  # monthly allowance in one afternoon. Three workflows carried a daily cron,
+  # and scheduled runs fire only from the DEFAULT branch - so they had never
+  # run while Actions were disabled and would have started the night these
+  # workflows reached `main`, three times a night for the rest of the cycle,
+  # with nobody asking for any of them.
+  #
+  # Nothing is lost: the `push` and `pull_request` triggers above already fire
+  # on exactly the paths this workflow is about, which is when the answer can
+  # actually have changed. Restore the cron when there is a reason a nightly
+  # answer differs from a per-change one - a dependency advisory feed, a
+  # rolling base image - and put that reason here.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  GHOSTTY_SHA: ae52f97dcac558735cfa916ea3965f247e5c6e9e
+  ZIG_VERSION: 0.15.2
+  TARGET: x86_64-pc-windows-msvc
+  NATIVE_PROFILE: ReleaseFast-simd-fixedbase-seed0-j1
+
+jobs:
+  native-rebuild:
+    name: Rebuild pinned native archive
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Checkout pinned Ghostty source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: ghostty-org/ghostty
+          ref: ${{ env.GHOSTTY_SHA }}
+          path: .ghostty-source
+          fetch-depth: 1
+
+      - name: Install manifest-pinned Zig distribution
+        run: |
+          function Get-ManifestString([string]$Key) {
+            $pattern = '^' + [regex]::Escape($Key) + ' = "(.*)"$'
+            $match = Get-Content -LiteralPath 'native\libghostty\manifest.toml' |
+              Select-String -Pattern $pattern |
+              Select-Object -First 1
+            if ($null -eq $match) {
+              throw "libghostty manifest is missing '$Key'"
+            }
+            return $match.Matches[0].Groups[1].Value
+          }
+
+          $archiveUrl = Get-ManifestString 'windows_zig_archive_url'
+          $expectedArchiveSha = Get-ManifestString 'windows_zig_archive_sha256'
+          $toolRoot = Join-Path $env:RUNNER_TEMP "splitlane-zig-$env:ZIG_VERSION"
+          $archive = "$toolRoot.zip"
+          if ((Test-Path -LiteralPath $toolRoot) -or (Test-Path -LiteralPath $archive)) {
+            throw "refusing to replace an existing Zig tool path: $toolRoot"
+          }
+          Invoke-WebRequest -Uri $archiveUrl -OutFile $archive
+          $actualArchiveSha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualArchiveSha -ne $expectedArchiveSha) {
+            throw "Zig distribution checksum mismatch: expected $expectedArchiveSha, got $actualArchiveSha"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $toolRoot
+          $zig = Join-Path $toolRoot "zig-x86_64-windows-$env:ZIG_VERSION\zig.exe"
+          if (-not (Test-Path -LiteralPath $zig -PathType Leaf)) {
+            throw "Zig distribution did not contain the expected executable: $zig"
+          }
+          "SPLITLANE_ZIG=$zig" | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install manifest-pinned MSVC toolset and Windows SDK
+        env:
+          MSVC_COMPONENT: Microsoft.VisualStudio.Component.VC.14.38.17.8.x86.x64
+          WINDOWS_SDK_COMPONENT: Microsoft.VisualStudio.Component.Windows11SDK.26100
+        run: |
+          $installerRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+          $vswhere = Join-Path $installerRoot 'vswhere.exe'
+          $setup = Join-Path $installerRoot 'setup.exe'
+          $installationPath = (& $vswhere -latest -products * -property installationPath | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($installationPath)) {
+            throw 'Visual Studio 2022 is not installed on the runner.'
+          }
+
+          $requiredComponents = @($env:MSVC_COMPONENT, $env:WINDOWS_SDK_COMPONENT)
+          $missingComponents = @(
+            foreach ($component in $requiredComponents) {
+              $installedAt = (& $vswhere -latest -products * -requires $component -property installationPath | Select-Object -First 1)
+              if ([string]::IsNullOrWhiteSpace($installedAt)) {
+                $component
+              }
+            }
+          )
+
+          if ($missingComponents.Count -gt 0) {
+            if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
+              throw "Visual Studio Installer was not found at $setup."
+            }
+
+            $arguments = @(
+              'modify',
+              '--installPath', "`"$installationPath`"",
+              '--quiet',
+              '--norestart'
+            )
+            foreach ($component in $missingComponents) {
+              $arguments += @('--add', $component)
+            }
+
+            Write-Host "Installing Visual Studio components: $($missingComponents -join ', ')"
+            $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+            if ($process.ExitCode -notin @(0, 3010)) {
+              throw "Visual Studio Installer exited with code $($process.ExitCode)."
+            }
+          }
+
+          $msvcPath = Join-Path $installationPath 'VC\Tools\MSVC\14.38.33130'
+          $sdkPath = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Lib\10.0.26100.0'
+          if (-not (Test-Path -LiteralPath $msvcPath -PathType Container)) {
+            throw "The manifest-pinned MSVC toolset was not found at $msvcPath."
+          }
+          if (-not (Test-Path -LiteralPath $sdkPath -PathType Container)) {
+            throw "The manifest-pinned Windows SDK was not found at $sdkPath."
+          }
+
+      # The rebuild deliberately has no native object cache. The canonical
+      # source/cache paths are part of the reproducibility contract, and the
+      # script performs two independent clean builds before publication.
+      - name: Rebuild and compare canonical archive
+        env:
+          SPLITLANE_GHOSTTY_SOURCE_DIR: ${{ github.workspace }}\.ghostty-source
+          EVIDENCE_DIR: ${{ runner.temp }}\libghostty-native-evidence
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:EVIDENCE_DIR | Out-Null
+          $log = Join-Path $env:EVIDENCE_DIR 'native-rebuild.log'
+          & ./scripts/build-libghostty-windows.ps1 `
+            -SourceDir $env:SPLITLANE_GHOSTTY_SOURCE_DIR `
+            -Zig $env:SPLITLANE_ZIG `
+            -OutputDir "target\libghostty\$env:TARGET" `
+            -VerifyReproducible *>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify repository consumer inputs and publish provenance
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}\libghostty-native-evidence
+        run: |
+          $prepared = "target\libghostty\$env:TARGET"
+          $report = Join-Path $env:EVIDENCE_DIR 'repository-provenance.json'
+          & ./scripts/verify-libghostty-windows.ps1 -ReportPath $report
+          $repositoryProvenance = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+
+          Copy-Item -LiteralPath 'native\libghostty\manifest.toml' -Destination $env:EVIDENCE_DIR
+          Copy-Item -LiteralPath 'native\libghostty\THIRD_PARTY_NOTICES.md' -Destination $env:EVIDENCE_DIR
+          Copy-Item -LiteralPath 'native\libghostty\sbom.cdx.json' -Destination $env:EVIDENCE_DIR
+          Copy-Item -LiteralPath '.ghostty-source\build.zig.zon' -Destination $env:EVIDENCE_DIR
+
+          $native = [ordered]@{
+            schema_version = 1
+            commit = $env:GITHUB_SHA
+            source_sha = $env:GHOSTTY_SHA
+            zig_version = $env:ZIG_VERSION
+            zig_codegen = $repositoryProvenance.zig_codegen
+            target = $env:TARGET
+            profile = $env:NATIVE_PROFILE
+            archive_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$prepared\lib\ghostty-vt-static.lib").Hash.ToLowerInvariant()
+            build_info_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$prepared\build-info.txt").Hash.ToLowerInvariant()
+            symbols_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$prepared\symbols.txt").Hash.ToLowerInvariant()
+            headers_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$prepared\headers.sha256").Hash.ToLowerInvariant()
+            source_manifest_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath '.ghostty-source\build.zig.zon').Hash.ToLowerInvariant()
+          }
+          $native | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $env:EVIDENCE_DIR 'native-provenance.json') -Encoding utf8
+
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: libghostty-windows-native-${{ github.sha }}
+          path: |
+            target/libghostty/x86_64-pc-windows-msvc
+            ${{ runner.temp }}/libghostty-native-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  consumer-qualification:
+    name: Repository consumer and release budgets
+    # Windows Server 2022 build 20348 carries microsoft/terminal#8706:
+    # ClosePseudoConsole leaks its internal OpenConsole process handle once per
+    # session. Run resource gates on the build-26100 ConPTY line so they measure
+    # Splitlane ownership; supported Windows 10/11 remain in the manual matrix.
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          prefix-key: v1-libghostty-windows-consumer
+          key: ${{ env.TARGET }}-${{ env.GHOSTTY_SHA }}-${{ env.ZIG_VERSION }}-${{ env.NATIVE_PROFILE }}-${{ hashFiles('Cargo.lock', 'native/libghostty/manifest.toml') }}
+
+      - name: Check workspace formatting
+        run: cargo fmt --all --check
+
+      - name: Lint all Windows targets against the repository artifact
+        run: cargo clippy --workspace --all-targets --locked --features splitlane-app/libghostty-windows --target $env:TARGET -- -D warnings
+
+      - name: Test the Windows workspace against the repository artifact
+        run: cargo test --workspace --locked --features splitlane-app/libghostty-windows --target $env:TARGET
+
+      - name: Qualify repository artifact on the controlled runner
+        env:
+          QUALIFICATION_DIR: ${{ runner.temp }}\libghostty-windows-qualification
+        run: |
+          Remove-Item Env:SPLITLANE_LIBGHOSTTY_DIR -ErrorAction SilentlyContinue
+          & ./scripts/qualify-libghostty-windows.ps1 -OutputDir $env:QUALIFICATION_DIR
+
+      - name: Upload commit-scoped qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: libghostty-windows-qualification-${{ github.sha }}
+          path: ${{ runner.temp }}/libghostty-windows-qualification
+          if-no-files-found: error
+          retention-days: 30
+
+  validation-summary:
+    name: libghostty Windows validation
+    if: always()
+    needs: [native-rebuild, consumer-qualification]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require native and consumer lanes
+        env:
+          NATIVE: ${{ needs.native-rebuild.result }}
+          CONSUMER: ${{ needs.consumer-qualification.result }}
+        run: |
+          test "$NATIVE" = success
+          test "$CONSUMER" = success
+          echo "All automated libghostty Windows checks passed."

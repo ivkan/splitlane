@@ -1,0 +1,70 @@
+# review-pipeline.flow.toml
+#
+# A two-agent review loop driven entirely over Splitlane's public CLI, no shell
+# glue.
+#
+#   impl   - an implementer agent works the task, then prints a `DONE:` summary.
+#   review - once `impl` is done, a second-vendor agent reviews it, seeded with
+#            the captured summary.
+#
+# This file is runnable from the repository root as-is. The task lives next to
+# this file at `examples/TASK.md`, and each pane runs with `cwd = "examples"`.
+#
+# Validate it without touching any pane (the dry run checks the same gate as a
+# real run - see below):
+#
+#   splitlane flow run --dry-run examples/review-pipeline.flow.toml
+#
+# The `review` step auto-submits its prompt, so running it for real needs
+# SPLITLANE_IPC_SCRIPTING=1 in the environment of the running Splitlane app -
+# not of the shell that runs the CLI. Free access in Settings does not open a
+# submitting flow. Without the variable the flow is refused up front, dry run
+# included, with a clear message; it never silently downgrades to a
+# non-submitted send. Quit Splitlane, start it again from a shell that has the
+# variable exported, then:
+#
+#   splitlane flow run examples/review-pipeline.flow.toml
+
+name = "review-pipeline"
+
+[defaults]
+timeout_secs = 600
+on_failure = "fail_fast"
+
+# 1. Implementer: do the work, then announce completion on a line we can match.
+[[step]]
+id = "impl"
+
+[step.pane]
+cwd = "examples"
+agent = "claude"
+prompt = """
+Implement the task described in TASK.md. When you are finished, print a single \
+line that starts with DONE: followed by a one-sentence summary of what changed.\
+"""
+
+[step.ready]
+pattern = "^DONE:"
+timeout_secs = 540
+
+[step.capture]
+var = "summary"
+lines = 40
+
+# 2. Reviewer: a different vendor reviews the implementer's work, seeded with the
+#    captured summary. Auto-submitted, so it exercises the scripting gate.
+[[step]]
+id = "review"
+needs = ["impl"]
+# `submit` is a top-level step field on a spawn step (it is `[step.send].submit`
+# for send steps). It auto-submits the prompt, so it needs the scripting gate.
+submit = true
+
+[step.pane]
+cwd = "examples"
+agent = "codex"
+prompt = """
+Review the implementation just completed in this repository. The implementer \
+reported: ${summary}. Call out correctness bugs, missing edge cases, and any \
+tests that should be added.\
+"""

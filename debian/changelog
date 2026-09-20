@@ -1,0 +1,6 @@
+splitlane (0.8.2-1) stable; urgency=medium
+
+  * First Splitlane package. Release notes are published with each GitHub
+    release.
+
+ -- Ivan Kalashnik <ivkan@users.noreply.github.com>  Tue, 15 Sep 2026 22:30:00 +0300

@@ -1,0 +1,41 @@
+# Splitlane winget default-locale manifest (template).
+#
+# See Ivkan.Splitlane.installer.yaml for the manual rendering
+# workflow. Only __VERSION__ is substituted in this file; all
+# other fields (Publisher, PackageName, License, ShortDescription, etc.)
+# are static and edited here when they need to change.
+#
+# Schema: ManifestVersion 1.12.0. `License` (not `LicenseUrl`) is the
+# REQUIRED field per the default-locale JSON schema; `LicenseUrl` is
+# optional-but-recommended and included for winget UI discoverability.
+#
+# LicenseUrl points at the canonical GPL-3.0-or-later license file in
+# the repository root; keep this in sync with Cargo.toml.
+PackageIdentifier: Ivkan.Splitlane
+PackageVersion: __VERSION__
+PackageLocale: en-US
+Publisher: Ivan Kalashnik
+PublisherUrl: https://github.com/ivkan
+PublisherSupportUrl: https://github.com/ivkan/splitlane/issues
+PackageName: Splitlane
+PackageUrl: https://github.com/ivkan/splitlane
+License: GPL-3.0-or-later
+LicenseUrl: https://github.com/ivkan/splitlane/blob/main/LICENSE
+ShortDescription: Native Rust terminal workspace for parallel coding agents.
+Description: |-
+  Splitlane is a native terminal workspace for running coding agents in
+  parallel. Launch Claude Code, Codex, opencode, Pi, and other CLI agents in
+  real panes; keep sessions visible; review branch diffs in-app; and let
+  MCP-capable agents read pane output without copy/paste.
+Tags:
+  - terminal
+  - coding-agents
+  - ai-agents
+  - claude-code
+  - codex
+  - opencode
+  - rust
+  - gpui
+  - developer-tools
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

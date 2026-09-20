@@ -1,0 +1,1429 @@
+name: run_tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Match Zed's pattern (run_tests.yml): on PR branches, collapse runs on the
+# same ref so a new push cancels any in-flight CI for that branch. On main,
+# every commit gets its own group (keyed by SHA) so we never cancel a real
+# post-merge run. Without this, fast successive pushes on a feature branch
+# pile up 30-min-cancelled runs in the history.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
+  cancel-in-progress: true
+
+# Least-privilege default for GITHUB_TOKEN. Every job in this workflow
+# only reads the repo (checkout + cargo + cache). If a future job ever
+# needs write (push a tag, post a PR comment), it must elevate
+# explicitly via `permissions: contents: write` at the job level -
+# making the escalation visible in code review rather than implicit.
+permissions:
+  contents: read
+  # `dorny/paths-filter` resolves the changed set from the PULL REQUEST API on
+  # a `pull_request` event (`listFiles(pull_number: N)`), not from git - only
+  # the `push` path is git-only. Without this scope that call fails with
+  # `Resource not accessible by integration`, the orchestrate job dies in nine
+  # seconds, and every job that needs it is skipped: a pull request that looks
+  # comprehensively broken while nothing has been compiled.
+  #
+  # Read-only, and it is the narrowest scope that lets the call through - it
+  # grants no ability to comment on or modify the pull request.
+  #
+  # This was latent from the day the filter was added. The repository had
+  # GitHub Actions disabled at the account level, so no run of any kind had
+  # ever happened here and no pull request had ever reached this job.
+  pull-requests: read
+
+# Match Zed's run_tests.yml: -e fail-on-error, -u error-on-unset, -x
+# trace each command (CI logs stay greppable), -o pipefail propagate
+# pipe failures. Per-step `shell: pwsh` overrides this default - the
+# Windows steps below already declare pwsh explicitly.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # Mirrors Zed's `orchestrate` job pattern (run_tests.yml in
+  # zed-industries/zed): a cheap ubuntu-latest filter that gates every
+  # expensive downstream leg on what the PR actually touched.
+  #
+  # Outputs:
+  #   - rust:             any Rust source or manifest changed
+  #   - rendering:        the GPUI paint / font / theme paths the visual
+  #                       smoke jobs are designed to protect
+  #   - changed_packages: space-separated cargo workspace member names
+  #                       whose source tree changed. Empty string means
+  #                       "workspace-wide change OR cannot compute" -
+  #                       downstream consumers must treat empty as
+  #                       "everything changed" (fail-safe). Computed
+  #                       dynamically via `cargo metadata --no-deps`
+  #                       so adding new workspace members requires no
+  #                       workflow update.
+  #
+  # Gating posture: the macos-14 / windows-2022
+  # runners are 14× / 2× pricier than ubuntu-latest and contribute
+  # most of CI wall-clock. The path filter short-circuits them on
+  # docs-only / non-workflow .github/** PRs.
+  #
+  # Filter scope: CI, release, security, and packaging files get their
+  # own signals so workflow-gate changes cannot self-skip into a false
+  # green. Rust jobs still skip for docs-only changes.
+  orchestrate:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      rendering: ${{ steps.filter.outputs.rendering }}
+      ci: ${{ steps.filter.outputs.ci }}
+      security: ${{ steps.filter.outputs.security }}
+      release_packaging: ${{ steps.filter.outputs.release_packaging }}
+      changed_packages: ${{ steps.detect_packages.outputs.changed_packages }}
+    steps:
+      # fetch-depth tuned for the `detect_packages` git diff below: on a
+      # PR we need enough history to reach the merge-base with the base
+      # branch (~350 commits matches Zed's pattern, comfortably covers
+      # long-running feature branches); on a push to main HEAD~1 is
+      # enough.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 350 || 2 }}
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src-app/**/*.rs'
+              - 'crates/**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
+            ci:
+              - '.github/workflows/**'
+              - 'scripts/**'
+            security:
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
+              - '.github/workflows/audit.yml'
+              - '.github/workflows/run_tests.yml'
+            release_packaging:
+              - '.github/workflows/release.yml'
+              - '.github/workflows/repo_publish.yml'
+              - '.github/workflows/update_cask.yml'
+              - 'packaging/**'
+              - 'assets/**'
+              - 'scripts/**'
+            rendering:
+              # GPUI Element + paint pipeline (where c3e2331 lived)
+              - 'src-app/src/terminal/element/**'
+              - 'src-app/src/terminal/view.rs'
+              # Font resolution + embedded fallback wiring
+              - 'src-app/src/fonts.rs'
+              - 'src-app/src/terminal/element/font.rs'
+              # Theme model + active_theme() (affects glyph colors,
+              # contrast, and the resolved family chain on macOS Core
+              # Text + Windows DirectWrite).
+              - 'src-app/src/theme/**'
+              # Window chrome / CSD - affects content rect + DPR on both
+              # macOS (NSWindow) and Windows (HWND).
+              - 'src-app/src/window_chrome/**'
+              # Pane / layout - emits the GPUI flex tree that hosts the
+              # terminal element; a regression here can produce 0-sized
+              # frames that no-op the paint pass without crashing.
+              - 'src-app/src/pane.rs'
+              - 'src-app/src/layout/render.rs'
+              - 'src-app/tests/flex_nchild.rs'
+
+      # Per-package detector. Adapted from Zed's orchestrate step. The
+      # output isn't consumed yet (`cargo test --workspace` still runs
+      # cheaply enough), but exposing it now lets
+      # future jobs gate per-crate (e.g. when crate count grows or
+      # nextest is adopted). Empty `changed_packages` means "treat as
+      # full rebuild" - fail-safe default.
+      #
+      # cargo + jq are preinstalled on ubuntu-latest. cargo metadata's
+      # output is JSON; jq extracts the member-name × directory map.
+      - id: detect_packages
+        name: Detect changed Cargo packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITHUB_BASE_REF:-}" ]; then
+            echo "Push event - comparing against HEAD~1"
+            COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || true)"
+          else
+            echo "PR event - comparing against merge-base with ${GITHUB_BASE_REF}"
+            git fetch origin "$GITHUB_BASE_REF" --depth=350 || true
+            COMPARE_REV="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD 2>/dev/null || true)"
+          fi
+
+          if [ -z "$COMPARE_REV" ]; then
+            echo "Cannot determine compare base - treating as full rebuild"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED_FILES="$(git diff --name-only "$COMPARE_REV" "$GITHUB_SHA" || true)"
+          echo "$CHANGED_FILES" | head -20
+
+          # Workspace-wide change → bypass per-package detection. Matches
+          # Zed's pattern: any edit to the toolchain pin, cargo config,
+          # root manifest/lockfile, or workflow files forces a full
+          # rebuild because the change can affect every crate.
+          if echo "$CHANGED_FILES" | grep -qE '^(rust-toolchain\.toml|\.cargo/|Cargo\.lock$|Cargo\.toml$|\.github/workflows/)'; then
+            echo "Workspace-wide change detected - emitting empty changed_packages (treat as full rebuild)"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Build dir→pkg map dynamically from cargo metadata so new
+          # workspace members are auto-detected. manifest_path looks
+          # like `/.../src-app/Cargo.toml` or
+          # `/.../crates/splitlane-config/Cargo.toml`; capture the leaf
+          # directory.
+          DIR_TO_PKG="$(cargo metadata --format-version=1 --no-deps 2>/dev/null \
+            | jq -r '
+                .packages[]
+                | select(.manifest_path | test("/(src-app|crates/[^/]+)/Cargo\\.toml$"))
+                | (.manifest_path | capture("/(?<dir>src-app|crates/[^/]+)/Cargo\\.toml$") | .dir)
+                  + "=" + .name
+              ' || true)"
+          echo "Workspace member map:"
+          echo "$DIR_TO_PKG"
+
+          if [ -z "$DIR_TO_PKG" ]; then
+            echo "cargo metadata returned no members - treating as full rebuild"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For each member dir, check whether any file under it changed.
+          CHANGED_PKGS=""
+          while IFS='=' read -r dir pkg; do
+            [ -n "$dir" ] || continue
+            if echo "$CHANGED_FILES" | grep -qE "^${dir}/"; then
+              CHANGED_PKGS="${CHANGED_PKGS}${pkg} "
+            fi
+          done <<< "$DIR_TO_PKG"
+
+          # Empty CHANGED_PKGS means the diff touched files outside every
+          # workspace member dir (e.g. root-level deny.toml, docs/).
+          # Treat as a no-op for per-package gating - downstream consumers
+          # interpret empty changed_packages as "full rebuild" (fail-safe).
+          # The early-return avoids piping empty input into `grep -v '^$'`,
+          # which exits 1 on no-match and trips `set -euo pipefail` because
+          # bash propagates command-substitution exit status under `set -e`.
+          if [ -z "${CHANGED_PKGS// /}" ]; then
+            echo "No workspace member touched - emitting empty changed_packages"
+            echo "changed_packages=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED_PKGS="$(echo "$CHANGED_PKGS" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          echo "Changed packages: '${CHANGED_PKGS}'"
+          echo "changed_packages=${CHANGED_PKGS}" >> "$GITHUB_OUTPUT"
+
+  # Linux quality gates are split into 3 parallel jobs so the wall-clock
+  # time of the CI run is max(jobs) instead of sum(steps). Previously a
+  # single `check` job ran fmt → clippy → test → release-build → size
+  # budget in series on one runner (~22 min). Splitting into 3 jobs
+  # parallels the work over 3 runners (~max 10-12 min wall-clock on
+  # cold cache). The downside is a marginal cost increase in runner
+  # minutes (each job re-restores the cargo cache); the upside is
+  # faster PR feedback, which is the right tradeoff here.
+  #
+  # Each job pins ubuntu-22.04 (matches release.yml matrix legs, same
+  # glibc 2.35 + system library set). Do NOT revert to ubuntu-latest;
+  # GitHub began rolling that label to 24.04 in early 2025 and the
+  # drift would silently diverge CI from release.
+  #
+  # rust-cache keys per job so they don't fight over the same cache
+  # slot. Cold cache → all three populate independently; warm cache
+  # → they read in parallel.
+
+  check_style:
+    name: Style (fmt + clippy)
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: check_style
+
+      - name: Format check
+        run: cargo fmt --check
+
+      # Comments, docs and commit messages are published the moment they are
+      # pushed, so a reference only the author can follow is a defect like any
+      # other. Cheap enough to run before the compiler does anything.
+      - name: Public hygiene
+        run: scripts/check-public-hygiene.sh
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  run_tests_linux:
+    name: Tests (Linux x86_64)
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: run_tests_linux
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+  release_build_linux:
+    name: Release build + binary-size budget (Linux x86_64)
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: release_build_linux
+
+      # The 6-triple matrix
+      # requires each job to run `cargo build --workspace --release`.
+      # On Linux x86_64 this also triggers `src-app/build.rs` to stage
+      # the embedded `splitlane-shim` + `splitlane-ai-hook` + `splitlane-mcp`
+      # binaries into
+      # `target/embed-build/<triple>/release-min/`, which the size-budget
+      # step below measures. Without this step, the nested binaries
+      # would never be built on CI (build.rs only fires for splitlane-app
+      # builds) and the size-cap assertion would point at a missing file.
+      - name: Release build (workspace)
+        run: cargo build --workspace --release --locked
+
+      # Enforce the helper size caps below and the aggregate embed cap
+      # from src-app/build.rs, measured on the `release-min` profile (workspace Cargo.toml) which applies
+      # `opt-level = "z"`, `lto = "fat"`, `strip = "symbols"`,
+      # `panic = "abort"`.
+      #
+      # Two-tier check:
+      #   * HARD cap → fails the build. Set to "current-measured-size +
+      #     small slack" so a future dep bump that bloats either binary
+      #     is caught immediately. Ratchet these caps DOWN as the
+      #     shrinking follow-up lands (do NOT relax them without explicit
+      #     sign-off; growing-only caps are a one-way door to rot).
+      #   * SOFT cap → launch target. Warns in job
+      #     output when exceeded so the gap stays visible. Once the
+      #     soft cap is met in code, collapse both tiers into the soft
+      #     cap and delete this two-tier block.
+      #
+      # Soft caps: shim ≤ 600 KB, ai-hook ≤ 300 KB.
+      # As measured on 2026-04-23:
+      #   splitlane-shim     = 432 888 B   (meets soft 600 KB cap)
+      #   splitlane-ai-hook  = 359 168 B   (50 KB over soft 300 KB cap)
+      # Hard caps below reflect the as-measured reality plus ~6 %
+      # regression headroom. splitlane-ai-hook MUST be shrunk to the
+      # 300 KB soft cap before v0.3.0 ships - tracked as a
+      # follow-up.
+      #
+      # Caps are gated at x86_64 Linux only (the size
+      # measurement target). Other targets may drift slightly due to
+      # PE/Mach-O overhead and are not gated here.
+      - name: Binary-size budget
+        run: |
+          set -euo pipefail
+          TARGET_DIR="target/embed-build/x86_64-unknown-linux-gnu/release-min"
+          SHIM_BIN="$TARGET_DIR/splitlane-shim"
+          HOOK_BIN="$TARGET_DIR/splitlane-ai-hook"
+          MCP_BIN="$TARGET_DIR/splitlane-mcp"
+          if [ ! -f "$SHIM_BIN" ] || [ ! -f "$HOOK_BIN" ] || [ ! -f "$MCP_BIN" ]; then
+            echo "::error::expected nested binaries under $TARGET_DIR - did src-app/build.rs run?"
+            ls -la "$TARGET_DIR" 2>&1 || true
+            exit 1
+          fi
+          SHIM_SIZE=$(stat -c%s "$SHIM_BIN")
+          HOOK_SIZE=$(stat -c%s "$HOOK_BIN")
+          MCP_SIZE=$(stat -c%s "$MCP_BIN")
+          TOTAL_SIZE=$((SHIM_SIZE + HOOK_SIZE + MCP_SIZE))
+          # Hard caps (regression gate). Tighten as binaries shrink.
+          # Re-baselined 2026-06-23: GitHub's ubuntu-22.04 image/toolchain
+          # now measures the shim at 493,712 B on main (ae0d9f2), tripping the
+          # old 480 KiB cap without any shim code change. Keep the same
+          # "measured + small slack" regression gate under the 600 KB soft cap.
+          SHIM_HARD=524288   # 512 KiB  (measured 482 KiB + ~6 % slack)
+          HOOK_HARD=384000   # ~375 KB  (measured 351 KB + 6 % slack)
+          MCP_HARD=524288    # 512 KiB
+          TOTAL_HARD=1835008 # Keep in sync with src-app/build.rs
+          # Soft caps (launch targets). Warn-only until met.
+          SHIM_SOFT=614400   # 600 KB
+          HOOK_SOFT=307200   # 300 KB
+
+          echo "splitlane-shim     = ${SHIM_SIZE} B  (hard ${SHIM_HARD} / soft ${SHIM_SOFT})"
+          echo "splitlane-ai-hook  = ${HOOK_SIZE} B  (hard ${HOOK_HARD} / soft ${HOOK_SOFT})"
+          echo "splitlane-mcp      = ${MCP_SIZE} B  (hard ${MCP_HARD})"
+          echo "embedded helpers  = ${TOTAL_SIZE} B  (hard ${TOTAL_HARD})"
+
+          fail=0
+          if [ "$SHIM_SIZE" -gt "$SHIM_HARD" ]; then
+            echo "::error::splitlane-shim size ${SHIM_SIZE} exceeds HARD cap ${SHIM_HARD}. Shrink via smaller deps or tighter release-min profile."
+            fail=1
+          elif [ "$SHIM_SIZE" -gt "$SHIM_SOFT" ]; then
+            echo "::warning::splitlane-shim ${SHIM_SIZE} B is over the soft cap ${SHIM_SOFT} B (600 KB). Non-blocking."
+          fi
+          if [ "$HOOK_SIZE" -gt "$HOOK_HARD" ]; then
+            echo "::error::splitlane-ai-hook size ${HOOK_SIZE} exceeds HARD cap ${HOOK_HARD}. Shrink via smaller deps or tighter release-min profile."
+            fail=1
+          elif [ "$HOOK_SIZE" -gt "$HOOK_SOFT" ]; then
+            echo "::warning::splitlane-ai-hook ${HOOK_SIZE} B is over the soft cap ${HOOK_SOFT} B (300 KB). Non-blocking."
+          fi
+          if [ "$MCP_SIZE" -gt "$MCP_HARD" ]; then
+            echo "::error::splitlane-mcp size ${MCP_SIZE} exceeds HARD cap ${MCP_HARD}. Shrink via smaller deps or tighter release-min profile."
+            fail=1
+          fi
+          if [ "$TOTAL_SIZE" -gt "$TOTAL_HARD" ]; then
+            echo "::error::embedded helper total ${TOTAL_SIZE} exceeds HARD cap ${TOTAL_HARD}. Keep this in sync with src-app/build.rs."
+            fail=1
+          fi
+          exit $fail
+
+  # cargo-deny gate. BLOCKING since 2026-05-27 - promoted from
+  # warn-only after the lockfile reached audit-clean (Marvin Attack
+  # ignored with documented rationale, GPL-3 transitive deps from
+  # GPUI accepted globally, bitstream-io 4.10 dropped yanked core2).
+  #
+  # The graduated severity belongs to deny.toml, not to a CI flag:
+  #   * advisories.vulnerabilities → hard error (deny, cargo-deny default)
+  #   * advisories.unmaintained → workspace-scoped warn
+  #   * advisories.yanked → warn
+  #   * advisories.ignore = [...] → explicit list with re-evaluation
+  #     triggers (per-advisory rationale documented inline)
+  #   * licenses → allow-list including GPL-3 + GPL-3-or-later
+  #   * sources → unknown-registry / unknown-git = deny
+  # `unused-ignored-advisory = "warn"` in deny.toml surfaces stale
+  # ignores as the dep graph evolves, so the list doesn't rot.
+  #
+  # The previous `continue-on-error: true` posture was an anti-pattern
+  # (shnatsel's cargo-audit retirement post explicitly names it):
+  # the job appeared green in the UI, branch protection became
+  # decorative, and a real CVE could ship while looking the same as
+  # a noisy false positive. Following Bevy's reference pattern
+  # (bevyengine/bevy/.github/workflows/dependencies.yml).
+  #
+  # Gate on dependency/security inputs plus CI changes, so deny.toml and
+  # audit workflow edits cannot land with the audit job skipped.
+  security_audit:
+    name: Security Audit (cargo-deny)
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.security == 'true' ||
+      needs.orchestrate.outputs.ci == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+
+      # Reuse the same cache prefix as `check` so the advisory job
+      # shares target/ with the main Linux build (no extra minutes
+      # spent re-compiling for cargo-deny's own resolve).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: security-audit
+
+      - name: Install cargo-deny (pinned 0.19.x)
+        # `--locked` pins cargo-deny's own dep graph for reproducibility.
+        # `--version '^0.19'` accepts any 0.19.x patch but not 0.20+
+        # (verified against deny.toml semantics: 0.16+ introduces the
+        # `unmaintained = "workspace"` scope and `[[licenses.exceptions]]`
+        # syntax we rely on; 0.19 is the current stable upstream and
+        # the version validated locally before bumping).
+        run: cargo install cargo-deny --locked --version '^0.19'
+
+      - name: cargo deny check advisories licenses sources
+        # Retry once with 30s backoff on a DB-fetch failure (GitHub's
+        # RustSec mirror occasionally rate-limits). A second failure
+        # surfaces `cargo deny check advisories --help` for debugging
+        # alongside the RustSec advisory site URL in the job output.
+        # An advisory DB unreachable must not silently pass.
+        run: |
+          set -euo pipefail
+          if ! cargo deny check advisories licenses sources; then
+            echo "→ cargo-deny failed on first attempt - sleeping 30s and retrying once (probable RustSec DB rate-limit)" >&2
+            sleep 30
+            if ! cargo deny check advisories licenses sources; then
+              echo "::error::cargo-deny check failed after retry. See https://embarkstudios.github.io/cargo-deny/ and the --help output below."
+              cargo deny check advisories --help || true
+              exit 1
+            fi
+          fi
+
+  # Smoke build on Apple Silicon so the Splitlane
+  # dependency closure at the pinned GPUI rev (0b984b5) is proven to compile
+  # on aarch64-apple-darwin before the macOS port work lands. The job runs
+  # on every PR so a regression in platform-gated code is caught at the PR
+  # gate rather than at release cut.
+  #
+  # Runner: macos-14 (Apple Silicon M1, 3 vCPU / 7 GB, Xcode + CLT preinstalled).
+  # Fallback: if a PR consistently exceeds 20 min wall time on macos-14,
+  # swap to `macos-14-xlarge` (6 vCPU, paid tier) and note the rationale
+  # in the PR description.
+  macos_check:
+    name: macOS aarch64 smoke build
+    # Only run when Rust-relevant files change. `needs: orchestrate`
+    # waits for the cheap filter job (runs on ubuntu-latest, ~seconds) and
+    # short-circuits the 14× pricier macos-14 runner on docs-only /
+    # non-workflow .github/** PRs.
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      # Fail fast if the runner image drifts away from a full Xcode
+      # install. The macos-14 hosted image ships Xcode 15+ with the Metal
+      # toolchain preinstalled, so under normal conditions every check here
+      # succeeds silently; the value is turning an otherwise cryptic mid-compile
+      # "Metal.h: no such file" error into a clearly labelled preflight failure
+      # that points at the runner configuration rather than the Rust source.
+      #
+      # The same step is expected to be ported to release.yml's macos-14 matrix
+      # leg - keep this block in sync across workflows.
+      - name: Verify Xcode CLT + Metal toolchain
+        run: |
+          set -euo pipefail
+
+          CLT_PATH="$(xcode-select -p 2>/dev/null || true)"
+          if [ -z "$CLT_PATH" ] || [ ! -d "$CLT_PATH" ]; then
+            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH'). GitHub macos-14 runners should ship Xcode preinstalled - this indicates a runner image drift or a misconfigured self-hosted runner."
+            exit 1
+          fi
+          echo "Xcode CLT path: $CLT_PATH"
+
+          SDK_PATH="$(xcrun --show-sdk-path 2>/dev/null || true)"
+          if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
+            echo "::error::macOS SDK not found (xcrun --show-sdk-path returned '$SDK_PATH')."
+            exit 1
+          fi
+          echo "macOS SDK path: $SDK_PATH"
+
+          if ! xcrun --find metal >/dev/null 2>&1; then
+            echo "::error::Metal compiler (xcrun --find metal) not available - the Metal Developer Tools component is missing from this Xcode install. gpui_macos compiles .metal shaders and will fail without it."
+            exit 1
+          fi
+          echo "Metal compiler: $(xcrun --find metal)"
+
+          METAL_HEADERS="$SDK_PATH/System/Library/Frameworks/Metal.framework/Headers"
+          if [ ! -d "$METAL_HEADERS" ]; then
+            echo "::error::Metal framework headers not found at $METAL_HEADERS. gpui_macos Objective-C bridging will fail with header-not-found errors."
+            exit 1
+          fi
+          echo "Metal framework headers: $METAL_HEADERS"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+          targets: aarch64-apple-darwin
+          # The cargo fmt + cargo clippy steps below - those
+          # need the rustfmt + clippy components, which dtolnay's action
+          # does NOT install by default even when `targets:` is set.
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: aarch64-apple-darwin
+
+      # Formatting + lint on macOS. fmt is platform-agnostic
+      # but runs here too so formatter version drift between local Linux
+      # dev machines and the macOS runner never sneaks past the gate.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      # clippy is scoped to the aarch64-apple-darwin target so it
+      # type-checks platform-gated modules (runtime_paths.rs macOS arm,
+      # install_method::AppBundle, update_checker::AssetFormat::Dmg,
+      # etc.) that the ubuntu `check` job would otherwise miss.
+      - name: cargo clippy (aarch64-apple-darwin)
+        run: cargo clippy --workspace --locked --target aarch64-apple-darwin -- -D warnings
+
+      # cargo test on the config crate (39 tests) + app crate (testable
+      # modules like keybindings / update_checker with 150+ tests).
+      # `--target` pins compilation to aarch64-apple-darwin so test
+      # binaries are native Mach-O and the test run exercises the real
+      # macOS codepath, not a Linux-host proxy.
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked --target aarch64-apple-darwin
+
+      # cargo check must exit 0 with no linker errors.
+      - name: cargo check (aarch64-apple-darwin)
+        run: cargo check --workspace --locked --target aarch64-apple-darwin
+
+      # Release build produces the expected binary path.
+      - name: cargo build --release (aarch64-apple-darwin)
+        run: cargo build --release -p splitlane-app --locked --target aarch64-apple-darwin
+
+      # Verify the produced binary is a Mach-O arm64 executable.
+      - name: Verify Mach-O arm64 binary
+        run: |
+          BIN=target/aarch64-apple-darwin/release/splitlane
+          test -f "$BIN"
+          file "$BIN"
+          file "$BIN" | grep -q 'Mach-O 64-bit executable arm64'
+
+      # On failure the job logs already capture the failing crate and
+      # error; uploading the binary on success gives reviewers an artifact
+      # they can `file`/`otool` locally if something downstream misbehaves.
+      - name: Upload aarch64 binary artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: splitlane-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release/splitlane
+          if-no-files-found: error
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Visual rendering smoke test - macOS aarch64.
+  #
+  # Catches the exact class of regression fixed in commit c3e2331
+  # ("fix(font): macOS empty-text rendering across sidebar, tabs, and
+  # terminal"): a Splitlane build that compiles, links, and notarizes
+  # cleanly but renders zero glyphs because Core Text inside a `.app`
+  # bundle silently fails to surface the configured monospace family
+  # and no embedded font fallback is wired. The release pipeline never
+  # noticed because no leg ever launched the `.app` - every gate was
+  # compile/sign/notarize, none was visual. This job closes that hole at
+  # the PR gate so the regression cannot reach `main`.
+  #
+  # Pipeline: download the binary built by `macos_check` → wrap it in
+  # the same `.app` skeleton `release.yml` ships → launch the binary
+  # inside the bundle (so Core Text sees the bundle context, exactly
+  # like an end-user install) → screencapture → soft OCR sanity check.
+  # The screenshot is always uploaded so reviewers can eyeball the
+  # PR's macOS rendering even when the OCR gate is happy.
+  #
+  # Gates:
+  #   * HARD - `font: resolved family=...` line MUST appear in the app
+  #     log (proves the renderer reached `cached_font_config()`, i.e.
+  #     the app didn't crash before first frame).
+  #   * SOFT - OCR finds ≥10 alphanumeric chars (the macOS menubar
+  #     alone passes this trivially when rendering works; failure
+  #     means we're staring at a black screen or empty cells).
+  #
+  # Runner: macos-14 hosts a real macOS user session with WindowServer
+  # access - GUI apps launch and render normally, exactly the pattern
+  # used by Electron / Flutter / native-Cocoa CI setups.
+  # ───────────────────────────────────────────────────────────────────────
+  macos_render_smoke:
+    name: macOS aarch64 render smoke (visual)
+    needs: [orchestrate, macos_check]
+    # Gate on the `rendering` sub-filter (not the broad `rust` filter):
+    # the c3e2331-class regression this job exists to catch can only
+    # ride in on edits to the rendering paths declared by the `changes`
+    # job. A pure config-file or non-render Rust PR cannot regress
+    # macOS Core Text empty-text rendering, so spending 10-15 min on a
+    # macos-14 runner on every such PR is wasted spend.
+    if: >-
+      needs.orchestrate.outputs.rendering == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download splitlane binary
+        uses: actions/download-artifact@v4
+        with:
+          name: splitlane-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release/
+
+      - name: Restore executable bit
+        # actions/upload-artifact strips the executable bit on macOS/
+        # Linux outputs (https://github.com/actions/upload-artifact/issues/38).
+        # Without this, `bundle-macos.sh`'s `install -m 0755` would copy
+        # a non-executable file and `open` would fail with EACCES.
+        run: chmod +x target/aarch64-apple-darwin/release/splitlane
+
+      - name: Bundle .app
+        # Reuse the production bundling script so the smoke test exercises
+        # the SAME `.app` skeleton end-users get - Info.plist, .icns,
+        # MacOS/splitlane layout. Unsigned: signing is not what the bug
+        # was about (the original c3e2331 root cause reproduced equally
+        # in unsigned bundles per Core Text's bundle-context behavior),
+        # and skipping codesign keeps this gate free of Apple secrets.
+        run: |
+          set -euo pipefail
+          bash scripts/bundle-macos.sh --version "0.0.0-ci" --arch aarch64
+
+      - name: Launch .app and capture screenshot
+        run: |
+          set -euo pipefail
+          APP="dist/Splitlane.app"
+
+          # Launch the binary INSIDE the bundle directly (rather than
+          # `open -a`) so stdout/stderr can be redirected - `open` does
+          # not tee child output and the `font: resolved family=` log
+          # line is our hard gate. The bundle path is preserved, so
+          # Info.plist + Resources/ load correctly and Core Text sees
+          # the same bundle context as a real install.
+          RUST_LOG=info "$APP/Contents/MacOS/splitlane" \
+            >splitlane.log 2>&1 &
+          APP_PID=$!
+
+          # Cold-launch on macos-14 (M1, 3 vCPU): GPUI window creation
+          # + Vulkan-equivalent Metal init + first paint typically lands
+          # under 5s. 10s gives generous slack for runner contention.
+          sleep 10
+
+          # `-x` skips the camera-shutter sound; captures every display.
+          screencapture -x screenshot.png
+
+          # Clean shutdown so the runner doesn't carry a live splitlane
+          # process into the next step. SIGTERM lets GPUI's Drop chain
+          # (PTY shutdown, IPC socket cleanup) run; SIGKILL is the belt
+          # in case the main thread is blocked.
+          kill "$APP_PID" 2>/dev/null || true
+          sleep 2
+          kill -9 "$APP_PID" 2>/dev/null || true
+          wait "$APP_PID" 2>/dev/null || true
+
+          # HARD GATE: the resolved-font log line must be present.
+          # Absence means the app crashed before reaching
+          # cached_font_config() - i.e. before the renderer ever asked
+          # for a font, which is upstream of every rendering-correctness
+          # property this job exists to verify.
+          echo "── Resolved font ──"
+          if grep "font: resolved family=" splitlane.log; then
+            if grep -q "font: resolved family='JetBrains Mono'" splitlane.log; then
+              echo "::warning::Embedded JetBrains Mono fallback was selected - Core Text did not surface a system mono family (Menlo / Monaco / Courier). The fallback is the safety net working as designed, but persistent selection on macos-14 indicates a Core Text drift worth investigating."
+            fi
+          else
+            echo "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render - splitlane.log + screenshot.png artifacts will pin down the exact failure."
+            exit 1
+          fi
+
+      - name: OCR sanity check (text rendered?)
+        # Soft gate: tesseract output is fuzzy and we don't want flaky
+        # OCR to block PRs. The signal still surfaces in the CI log
+        # (alphanumeric char count) and the screenshot artifact is
+        # available for human review on every run.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          brew install --quiet tesseract
+          text="$(tesseract screenshot.png - 2>/dev/null || true)"
+          echo "── OCR output (first 50 lines) ──"
+          echo "$text" | head -50
+          char_count="$(echo "$text" | tr -cd '[:alnum:]' | wc -c | tr -d ' ')"
+          echo "OCR alphanumeric chars: $char_count"
+          # Threshold rationale: the macOS menubar (Apple logo,
+          # "Finder", clock, date) alone OCRs to ~30+ chars on a healthy
+          # session. <10 chars almost always means rendering is broken
+          # - either the screen is black or every glyph rendered as a
+          # blank cell, which is the c3e2331 failure mode.
+          if [ "$char_count" -lt 10 ]; then
+            echo "::warning::OCR found <10 alphanumeric chars. Visual rendering may be broken - inspect screenshot.png artifact."
+          fi
+
+      - name: Upload visual smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos_render_smoke
+          path: |
+            screenshot.png
+            splitlane.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  # windows-2022 PR gate. Runs the
+  # full Rust quality suite (fmt + clippy + test + check) against the
+  # x86_64-pc-windows-msvc target, plus toolchain/WiX verification. The job
+  # started as runner + WiX scaffolding and was promoted from
+  # "smoke cargo check with continue-on-error" to a required quality gate
+  # now that the Windows port has cfg-guarded the
+  # POSIX-locked code that previously broke the cross-compile.
+  #
+  # Runner: windows-2022 hosted image ships VS 2022 Build Tools + the
+  # Windows SDK preinstalled but does NOT expose cl/link/signtool on the
+  # default shell PATH. ilammy/msvc-dev-cmd loads the VS dev env (cl,
+  # link, lib) and an inline PowerShell step prepends the latest SDK
+  # bin dir (for signtool.exe) to $GITHUB_PATH.
+  #
+  # Time budget: <5 min cached. Swatinem/rust-cache handles
+  # cargo's share (keyed on `x86_64-pc-windows-msvc` so Linux/macOS cache
+  # slots don't collide); actions/cache covers WiX's ~10 MB global tool
+  # install. `timeout-minutes: 30` is a runaway guard, not the SLA.
+  windows_check:
+    name: Windows x86_64 libghostty check
+    # Runs for Rust, CI, and release-packaging changes so Windows MSVC
+    # regressions are caught before a tag cut.
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    runs-on: windows-2022
+    # cargo steps must run under pwsh, NOT the workflow-default bash: Git
+    # Bash prepends C:\Program Files\Git\usr\bin to PATH, whose coreutils
+    # `link.exe` shadows the MSVC linker and breaks every build-script link
+    # ("/usr/bin/link: extra operand"). pwsh keeps the msvc-dev-cmd PATH so
+    # the real link.exe wins. (The pwsh-explicit steps above are unchanged.)
+    defaults:
+      run:
+        shell: pwsh
+    timeout-minutes: 50
+    env:
+      # v0.2.1: `ilammy/msvc-dev-cmd@v1` (latest v1.13.0 as of
+      # 2026-04-21) still declares `runs: using: node20` in its
+      # action.yml. Upstream issue #99 + PR #101 are open but not
+      # merged. GitHub Actions force-migrates to Node 24 on 2026-06-02
+      # and removes Node 20 on 2026-09-16. This env shim instructs the
+      # runner to execute the action on the node24 binary regardless
+      # of its declared runtime - documented in
+      # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+      # Remove this env once `ilammy/msvc-dev-cmd` publishes a tag
+      # that declares `using: node24` natively, and pin to that tag.
+      # Scoped to this job so other jobs don't silently accept
+      # stragglers elsewhere.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Load VS 2022 Build Tools env: cl.exe, link.exe, lib.exe on PATH,
+      # INCLUDE/LIB/LIBPATH set. Required by the `where cl.exe link.exe` check.
+      # x64 arch targets the same toolchain the rustc msvc triple uses.
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # signtool.exe ships in the Windows 10 SDK bin dir but is not on the
+      # VS Dev Cmd PATH. Resolve the highest-versioned SDK bin subdir and
+      # append it to $GITHUB_PATH so later steps (and the signing
+      # script work) see it. Explicit `throw` on not-found turns a silent
+      # drift of the runner image into a labelled preflight failure.
+      - name: Add Windows SDK bin to PATH (for signtool)
+        shell: pwsh
+        run: |
+          $sdkRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
+          $sdkBin = Get-ChildItem $sdkRoot -Directory |
+            Where-Object { $_.Name -match '^10\.' } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $sdkBin) {
+            throw "Windows 10 SDK bin directory not found under $sdkRoot - runner image drift?"
+          }
+          $signtoolDir = Join-Path $sdkBin.FullName 'x64'
+          Write-Output "Using SDK bin: $signtoolDir"
+          Add-Content -Path $env:GITHUB_PATH -Value $signtoolDir
+
+      # Toolchain binaries all on PATH.
+      - name: Verify signtool.exe / cl.exe / link.exe on PATH
+        shell: pwsh
+        run: |
+          where.exe signtool.exe
+          where.exe cl.exe
+          where.exe link.exe
+
+      # Rust toolchain with rustfmt + clippy
+      # components (required by the fmt/clippy steps below) and the MSVC
+      # cross-compile target.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: x86_64-pc-windows-msvc
+
+      # Enabling the app feature makes every relevant Cargo command compile
+      # the Windows Ghostty host and link the reviewed static archive from
+      # native/libghostty/prebuilt. The sys build script validates that native
+      # inventory, including the absence of a ghostty-vt DLL, before linking.
+
+      # Note: WiX toolset is NOT installed in this PR gate. The MSI build
+      # lives in release.yml only, which uses WiX v3 (candle.exe +
+      # light.exe) via the windows-2022 preinstalled toolset paired with
+      # cargo-wix 0.3.9 (cargo-wix has no WiX v4/v5 backend - see
+      # volks73/cargo-wix#202). Installing `dotnet tool install --global wix`
+      # here would surface WiX v5 - incompatible with the release pipeline
+      # and unused by the fmt/clippy/test/check gate below, so it's omitted
+      # to keep the CI check accurate to what it verifies.
+
+      # ─── Quality-gate steps in mandated order ─────────────────────────────
+      # fmt → clippy → test → check. Each step fails the job fast (`-D
+      # warnings` on clippy, `set -e` semantics from GitHub Actions on
+      # every step) so a Windows-specific regression surfaces at the PR
+      # gate with the exact file:line from rustc/clippy output rather
+      # than slipping into release.yml's best-effort Windows leg.
+
+      # Step 1/4: formatting. `--all` forces every workspace member;
+      # `--check` is the non-destructive mode that fails on unformatted
+      # code. Runs first because a format failure is cheap and the 3
+      # later steps then operate on consistently-formatted source.
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+      # Step 2/4: clippy. `--target x86_64-pc-windows-msvc` selects
+      # the Windows codepaths - cfg-gated modules (terminal::TerminateProcess,
+      # install_method::WindowsMsi, ipc's interprocess branch, etc.) are
+      # only type-checked when this target is chosen. `-D warnings`
+      # promotes every clippy lint + unused-import warning to an error,
+      # matching the Linux `check` job pattern (line 74) and the release
+      # pipeline's clippy gate.
+      - name: cargo clippy --target x86_64-pc-windows-msvc (libghostty-windows)
+        run: cargo clippy --workspace --locked --features splitlane-app/libghostty-windows --target x86_64-pc-windows-msvc -- -D warnings
+
+      # Step 3/4: tests. The app feature includes the native Windows
+      # Ghostty harness, so the workspace run executes the Windows differential
+      # backend corpus instead of exercising only the Alacritty baseline.
+      - name: cargo test --workspace --target x86_64-pc-windows-msvc (libghostty-windows corpus)
+        # PTY/process/IO tests (PowerShell cold start, embedded-binary
+        # extraction, etc.) are timing-sensitive and flake intermittently on a
+        # loaded Windows runner - a different single test each run
+        # (output_generation, ai_hooks::ensure_binaries_extracted, ...).
+        # Deflaking each one won't converge, so retry the whole suite up to 3x:
+        # a flaky single failure clears on re-run; a real failure fails all
+        # three. Runs under the job's pwsh default shell.
+        run: |
+          $ok = $false
+          foreach ($attempt in 1..3) {
+            cargo test --workspace --locked --features splitlane-app/libghostty-windows --target x86_64-pc-windows-msvc
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Warning "cargo test attempt $attempt failed (likely a flaky PTY/IO test on a loaded runner); retrying"
+          }
+          if (-not $ok) { exit 1 }
+
+      # Step 4/4: final check. Redundant with clippy in practice
+      # (clippy is a superset), but kept as a belt-and-braces signal and
+      # because a bare `cargo check`
+      # failure is a clearer error surface than clippy's noisier output
+      # when the problem is a pure compile error (missing API, linker
+      # symbol, etc.) rather than a lint. No `continue-on-error` anymore
+      # (the Windows port's cfg-guards made it unnecessary).
+      - name: cargo check --workspace --target x86_64-pc-windows-msvc (libghostty-windows)
+        run: cargo check --workspace --locked --features splitlane-app/libghostty-windows --target x86_64-pc-windows-msvc
+
+      # The matrix requires
+      # `cargo build --workspace --release` on every leg. On Windows this
+      # also triggers the `src-app/build.rs` nested build of
+      # `splitlane-shim` + `splitlane-ai-hook`, ensuring their PE binaries
+      # embed cleanly via rust-embed and the AI-hook pipeline compiles
+      # end-to-end on MSVC.
+      - name: cargo build --workspace --release (libghostty-windows)
+        # LTO ("thin") + codegen-units=1 from [profile.release] are runtime-perf
+        # knobs, irrelevant to a CI compile gate, and roughly double the link
+        # time. From a cold cache the release build blew past the 30-min timeout
+        # - and the kill skips the rust-cache save step, so every run restarted
+        # cold (a vicious cycle). Override them here to keep the gate fast; the
+        # real LTO release build is still validated by release.yml on every tag.
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: cargo build --workspace --release --locked --features splitlane-app/libghostty-windows --target x86_64-pc-windows-msvc
+
+      # Mirror of the macos_check `Upload aarch64 binary artifact` step:
+      # exposes the just-built `splitlane.exe` as a workflow artifact so
+      # the downstream `windows_render_smoke` job can pull it without
+      # paying a second `cargo build` (the cache hit path on subsequent
+      # PRs is fast, but the from-scratch path on cold runs is ~5 min).
+      - name: Upload x86_64 binary artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: splitlane-x86_64-pc-windows-msvc
+          path: target/x86_64-pc-windows-msvc/release/splitlane.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Visual rendering smoke test - Windows x86_64.
+  #
+  # Mirrors `macos_render_smoke` for the Windows GPUI rendering stack
+  # (Direct2D / DirectWrite, DX11 backend GA Oct 2025). Catches the
+  # same class of regression: a build that compiles + signs cleanly
+  # but renders no glyphs because DirectWrite font enumeration silently
+  # fails to surface the configured monospace family. The embedded
+  # JetBrains Mono fallback wired by commit c3e2331 protects against
+  # this on Windows too - this job verifies the safety net actually
+  # holds end-to-end on a hosted runner.
+  #
+  # Gates:
+  #   * HARD - `font: resolved family=...` must appear in the app log.
+  #   * SOFT - visual artifact uploaded for human review (no OCR gate
+  #     because tesseract on Windows requires a heavier install path
+  #     and the screenshot+log signal is already enough to spot the
+  #     "boxes drawn, no glyphs" failure mode).
+  #
+  # Runner: windows-2022 hosts a real Windows desktop session - GUI
+  # apps launch and render normally, exactly the pattern used by
+  # WPF / WinUI / Electron CI setups.
+  # ───────────────────────────────────────────────────────────────────────
+  windows_render_smoke:
+    name: Windows x86_64 render smoke (visual)
+    needs: [orchestrate, windows_check]
+    # Depends on windows_check because the smoke job loads the artifact
+    # produced by that job.
+    if: >-
+      needs.orchestrate.outputs.rendering == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download splitlane.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: splitlane-x86_64-pc-windows-msvc
+          path: target/x86_64-pc-windows-msvc/release/
+
+      - name: Launch splitlane.exe and capture screenshot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "target\x86_64-pc-windows-msvc\release\splitlane.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Expected $exe to exist after download-artifact step."
+          }
+
+          # Launch detached so we can sleep + capture, with stdout +
+          # stderr teed to a log file. RUST_LOG=info is required to
+          # surface the `font: resolved family=` line emitted by
+          # terminal/element/font.rs:215 - the hard gate below greps
+          # for it.
+          $env:RUST_LOG = 'info'
+          $proc = Start-Process -FilePath $exe `
+                                -PassThru `
+                                -RedirectStandardOutput 'splitlane.log' `
+                                -RedirectStandardError  'splitlane.err.log'
+
+          # Cold launch on windows-2022 (4 vCPU, 16 GB RAM) typically
+          # hits first paint in 4-6s. 10s gives generous slack for
+          # runner contention + DX11 swap-chain init.
+          Start-Sleep -Seconds 10
+
+          # Capture the primary display via System.Drawing - works on
+          # every windows-2022 runner without external tooling. The
+          # bounds-then-CopyFromScreen pattern is the canonical .NET
+          # screenshot recipe used by every Windows GUI CI setup.
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+          $g   = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bmp.Save("$pwd\screenshot.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $g.Dispose()
+          $bmp.Dispose()
+
+          # Clean shutdown. Stop-Process is SIGTERM-equivalent; -Force
+          # is the SIGKILL belt for a wedged main thread. Tolerate a
+          # process that already exited.
+          if (-not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          # Merge stderr into the main log so the grep below picks up
+          # log::info! lines (env_logger writes to stderr by default).
+          if (Test-Path 'splitlane.err.log') {
+            Get-Content 'splitlane.err.log' | Add-Content 'splitlane.log'
+          }
+
+          Write-Output "── Resolved font ──"
+          $fontLine = Select-String -Path 'splitlane.log' -Pattern 'font: resolved family=' -SimpleMatch
+          if (-not $fontLine) {
+            Write-Output "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render - splitlane.log + screenshot.png artifacts will pin down the exact failure."
+            exit 1
+          }
+          $fontLine | ForEach-Object { Write-Output $_.Line }
+          if ($fontLine.Line -match "family='JetBrains Mono'") {
+            Write-Output "::warning::Embedded JetBrains Mono fallback was selected - DirectWrite did not surface a system mono family (Cascadia Mono / Cascadia Code / Consolas). The fallback is the safety net working as designed, but persistent selection on windows-2022 indicates a DirectWrite drift worth investigating."
+          }
+
+      - name: Upload visual smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows_render_smoke
+          path: |
+            screenshot.png
+            splitlane.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Matrix completion.
+  # Existing jobs cover:
+  #   * check         - x86_64-unknown-linux-gnu   (Linux x64 full gate)
+  #   * macos_check   - aarch64-apple-darwin       (Apple Silicon full gate)
+  #   * windows_check - x86_64-pc-windows-msvc     (Windows x64 full gate)
+  # The three jobs below close the remaining triples:
+  #   * linux_aarch64_check   - aarch64-unknown-linux-gnu
+  #   * macos_x86_64_check    - x86_64-apple-darwin
+  #   * windows_aarch64_check - aarch64-pc-windows-msvc (check-only; no
+  #                              native Windows-arm64 hosted runner as of
+  #                              2026-04. Deferred.)
+  # The active legs are gated on Rust, CI, and release-packaging paths so
+  # docs-only PRs don't burn minutes on the extended matrix.
+  # ───────────────────────────────────────────────────────────────────────
+
+  linux_aarch64_check:
+    name: Linux aarch64 (aarch64-unknown-linux-gnu)
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    # Native ARM runner (GitHub public preview since late 2024, used
+    # by release.yml on the same pattern - see the comment at
+    # release.yml:34-37). Same image basis as ubuntu-22.04 so the
+    # system-deps list mirrors the x86_64 `check` job above without
+    # drift.
+    #
+    # Fallback posture: if the
+    # `ubuntu-22.04-arm` label is ever withdrawn or starts queuing
+    # >30 min, fall back to `cross = "0.2.5"` emulated build
+    # instead. `cross`'s Vulkan + X11 sysroot for
+    # aarch64-unknown-linux-gnu needs manual header staging; that
+    # complexity is why this job prefers the native runner.
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: aarch64-unknown-linux-gnu
+
+      # fmt runs here too so formatter-version drift between dev boxes
+      # (x86_64) and the arm runner is caught at the PR gate.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy (aarch64-unknown-linux-gnu)
+        run: cargo clippy --workspace --locked --target aarch64-unknown-linux-gnu -- -D warnings
+
+      - name: cargo test --workspace (aarch64-unknown-linux-gnu)
+        run: cargo test --workspace --locked --target aarch64-unknown-linux-gnu
+
+      - name: cargo build --workspace --release (aarch64-unknown-linux-gnu)
+        run: cargo build --workspace --release --locked --target aarch64-unknown-linux-gnu
+
+  macos_x86_64_check:
+    name: macOS x86_64 (x86_64-apple-darwin)
+    needs: orchestrate
+    # DISABLED until v0.3.0 - `release.yml` already marks this leg CLOSED
+    # (queue-time volatility + Apple Dev secrets not provisioned). Even
+    # with `continue-on-error: true` the queued job kept the overall run
+    # in `in_progress` for 30-60 min waiting for a `macos-13` runner,
+    # masking the actual completion of every other green leg in the
+    # matrix. macOS aarch64 (Apple Silicon) covers the day-to-day macOS
+    # cross-compile signal; Intel-mac correctness will be re-validated
+    # on the release pipeline once Apple Dev secrets and signing are
+    # provisioned. Re-enable by flipping the `if:` condition below.
+    if: false
+    runs-on: macos-13
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: x86_64-apple-darwin
+
+      # fmt runs here too so a formatter-version drift between dev
+      # boxes (usually aarch64 Apple Silicon now) and the Intel-mac
+      # runner is caught at the PR gate, matching every other leg in
+      # this workflow.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy (x86_64-apple-darwin)
+        run: cargo clippy --workspace --locked --target x86_64-apple-darwin -- -D warnings
+
+      - name: cargo test --workspace (x86_64-apple-darwin)
+        run: cargo test --workspace --locked --target x86_64-apple-darwin
+
+      - name: cargo build --workspace --release (x86_64-apple-darwin)
+        run: cargo build --workspace --release --locked --target x86_64-apple-darwin
+
+  windows_aarch64_check:
+    name: Windows aarch64 (aarch64-pc-windows-msvc, check-only)
+    needs: orchestrate
+    # Runs for Rust, CI, and release-packaging changes. This remains
+    # check-only until native Windows-arm64 hosted runners are available.
+    if: >-
+      needs.orchestrate.outputs.rust == 'true' ||
+      needs.orchestrate.outputs.ci == 'true' ||
+      needs.orchestrate.outputs.release_packaging == 'true'
+    # This leg deliberately defers integration tests on Windows aarch64
+    # because no native Windows-arm64 hosted runner is available on
+    # GitHub-hosted Actions as of 2026-04. This leg cross-compiles from
+    # an x86_64 MSVC host and runs `cargo check` only - enough to catch
+    # type-level regressions in cfg(windows) + target_arch = "aarch64"
+    # code paths without requiring QEMU or a self-hosted arm64 Windows
+    # box. Promote to full test coverage once GitHub ships a native
+    # runner image (watch
+    # https://github.com/actions/runner-images/issues/10820).
+    runs-on: windows-2022
+    # cargo steps must run under pwsh, NOT the workflow-default bash: Git
+    # Bash prepends C:\Program Files\Git\usr\bin to PATH, whose coreutils
+    # `link.exe` shadows the MSVC linker and breaks every build-script link
+    # ("/usr/bin/link: extra operand"). pwsh keeps the msvc-dev-cmd PATH so
+    # the real link.exe wins. (The pwsh-explicit steps above are unchanged.)
+    defaults:
+      run:
+        shell: pwsh
+    timeout-minutes: 50
+    env:
+      # Same Node 24 forcing as windows_check above - ilammy/msvc-dev-cmd
+      # hasn't shipped a node24-native tag yet.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Load the amd64-hosted arm64 MSVC env - `amd64_arm64` populates
+      # INCLUDE/LIB/LIBPATH with the aarch64 Windows SDK paths plus the
+      # x64 host tools, so any future C/C++ `build.rs` in the dep
+      # closure that targets aarch64 Windows can resolve headers /
+      # libs without a runner-image drift breaking the job. Bare
+      # `arch: x64` would leave aarch64 SDK vars unset, which is fine
+      # for `cargo check` / `cargo clippy` on pure Rust (no link step)
+      # but silently fails the moment a transitive crate grows a
+      # `cc`/`bindgen` build.rs. Preempt that class of latent breakage.
+      - name: Setup MSVC developer environment (amd64 host, arm64 target)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+          components: clippy
+          targets: aarch64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: aarch64-pc-windows-msvc
+
+      - name: cargo clippy --target aarch64-pc-windows-msvc
+        # Windows ARM64 is intentionally outside the x64-only libghostty
+        # artifact scope. Disable the Linux default feature so this lane keeps
+        # proving the portable application path instead of requesting a fake
+        # native ARM64 archive.
+        run: cargo clippy --workspace --locked --no-default-features --target aarch64-pc-windows-msvc -- -D warnings
+
+      - name: cargo check --target aarch64-pc-windows-msvc
+        run: cargo check --workspace --locked --no-default-features --target aarch64-pc-windows-msvc
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Single aggregator job - mirrors Zed's run_tests.yml `tests_pass`
+  # pattern. Every upstream job is listed here; the step body iterates
+  # over each result and fails the aggregator if any non-skipped job
+  # came back as anything other than "success".
+  #
+  # Why this exists (vs. listing every job individually in branch
+  # protection): when CI grows or shrinks, only this `needs:` list and
+  # the `check_result` block below need editing. The required-status
+  # check in branch protection stays pointed at `tests_pass` forever,
+  # so PRs don't get stuck on stale required-check names after a
+  # workflow refactor. `if: always()` ensures the aggregator still
+  # reports even when upstream jobs fail, so the merge gate can see
+  # the red.
+  #
+  # `security_audit` is INCLUDED in the gate (since 2026-05-27). Its
+  # warn-vs-deny graduation lives in deny.toml, not in CI flags, so
+  # a green job means "no unignored advisories, all licenses
+  # allow-listed, all sources accepted" - which is exactly what we
+  # want to enforce.
+  tests_pass:
+    name: tests_pass
+    needs:
+      - orchestrate
+      - check_style
+      - run_tests_linux
+      - release_build_linux
+      - security_audit
+      - macos_check
+      - macos_render_smoke
+      - windows_check
+      - windows_render_smoke
+      - linux_aarch64_check
+      - macos_x86_64_check
+      - windows_aarch64_check
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Aggregate upstream results
+        env:
+          RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
+          RESULT_CHECK_STYLE: ${{ needs.check_style.result }}
+          RESULT_RUN_TESTS_LINUX: ${{ needs.run_tests_linux.result }}
+          RESULT_RELEASE_BUILD_LINUX: ${{ needs.release_build_linux.result }}
+          RESULT_SECURITY_AUDIT: ${{ needs.security_audit.result }}
+          RESULT_MACOS_CHECK: ${{ needs.macos_check.result }}
+          RESULT_MACOS_RENDER_SMOKE: ${{ needs.macos_render_smoke.result }}
+          RESULT_WINDOWS_CHECK: ${{ needs.windows_check.result }}
+          RESULT_WINDOWS_RENDER_SMOKE: ${{ needs.windows_render_smoke.result }}
+          RESULT_LINUX_AARCH64_CHECK: ${{ needs.linux_aarch64_check.result }}
+          RESULT_MACOS_X86_64_CHECK: ${{ needs.macos_x86_64_check.result }}
+          RESULT_WINDOWS_AARCH64_CHECK: ${{ needs.windows_aarch64_check.result }}
+        run: |
+          set +x
+          EXIT_CODE=0
+
+          check_result() {
+            echo "* $1: $2"
+            if [[ "$2" != "skipped" && "$2" != "success" ]]; then
+              EXIT_CODE=1
+            fi
+          }
+
+          check_result "orchestrate"          "$RESULT_ORCHESTRATE"
+          check_result "check_style"          "$RESULT_CHECK_STYLE"
+          check_result "run_tests_linux"      "$RESULT_RUN_TESTS_LINUX"
+          check_result "release_build_linux"  "$RESULT_RELEASE_BUILD_LINUX"
+          check_result "security_audit"       "$RESULT_SECURITY_AUDIT"
+          check_result "macos_check"          "$RESULT_MACOS_CHECK"
+          check_result "macos_render_smoke"   "$RESULT_MACOS_RENDER_SMOKE"
+          check_result "windows_check"        "$RESULT_WINDOWS_CHECK"
+          check_result "windows_render_smoke" "$RESULT_WINDOWS_RENDER_SMOKE"
+          check_result "linux_aarch64_check"  "$RESULT_LINUX_AARCH64_CHECK"
+          check_result "macos_x86_64_check"   "$RESULT_MACOS_X86_64_CHECK"
+          check_result "windows_aarch64_check" "$RESULT_WINDOWS_AARCH64_CHECK"
+
+          exit $EXIT_CODE

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Splitlane
+Comment=Native terminal workspace for coding agents
+Exec=splitlane
+Icon=splitlane
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;coding-agents;ai-agents;claude-code;codex;opencode;rust;gpui;
+StartupWMClass=splitlane

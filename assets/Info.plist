@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Splitlane macOS .app Info.plist template.
+
+    scripts/bundle-macos.sh replaces @VERSION@ with the value of its
+    version flag at bundle-assembly time (e.g. "0.2.0"), populating both
+    CFBundleVersion (build number) and CFBundleShortVersionString
+    (user-visible release). This keeps the two fields in lock-step: we
+    ship one version number per release and never increment a separate
+    build counter.
+
+    CFBundleIconFile=Splitlane matches the filename Splitlane.icns that
+    the bundle script drops into Contents/Resources/ (macOS resolves the
+    filename without the .icns extension).
+
+    LSMinimumSystemVersion=13.0 (Ventura) is the floor because GPUI's
+    macOS backend targets that era. Bumping this up would break older
+    machines that otherwise support Apple Silicon.
+
+    Note: XML 1.0 Section 2.5 forbids the double-hyphen sequence inside
+    comments, which is why flags like the version CLI flag are spelled
+    without the literal prefix in this note.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>splitlane</string>
+    <key>CFBundleIconFile</key>
+    <string>Splitlane</string>
+    <!--
+        The identifier macOS keys everything to: window state, notification
+        settings, and the TCC grants for screen recording and accessibility.
+        Changing it makes this a different application to the OS, and every
+        grant a person made is asked for again.
+
+        `ivkan` is the handle the update feed names (`update/checker.rs`),
+        and the last part is the product name. scripts/bundle-macos.sh signs
+        with this same identifier, so the two cannot drift.
+    -->
+    <key>CFBundleIdentifier</key>
+    <string>io.github.ivkan.splitlane</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Splitlane</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!--
+        macOS gates the Desktop, Documents and Downloads folders behind TCC,
+        and it attributes what a child process reads to the application that
+        spawned it. Every pane here is a PTY, so a shell command or a coding
+        agent reaching into one of those folders makes the OS ask on this
+        application's behalf. That is correct: the app itself never enumerates
+        them (its own reads are the project directory, the agent CLIs' session
+        stores and its own config), and suppressing the question is neither
+        possible nor wanted.
+
+        What these keys change is that the dialog can say why. Without them
+        macOS shows the bare request with no explanation, which reads as an
+        application helping itself to a folder rather than as the command the
+        person just ran. Keep them one sentence: the dialog truncates.
+    -->
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Coding agents and shell commands running in Splitlane's panes read and write the files you point them at.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Coding agents and shell commands running in Splitlane's panes read and write the files you point them at.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Coding agents and shell commands running in Splitlane's panes read and write the files you point them at.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>Coding agents and shell commands running in Splitlane's panes read and write the files you point them at.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>Coding agents and shell commands running in Splitlane's panes read and write the files you point them at.</string>
+    <!--
+        The microphone is the same attribution and a much harsher failure. A
+        folder key that is missing only costs the dialog its explanation; a
+        missing NSMicrophoneUsageDescription means TCC cannot ask at all, so it
+        kills the requesting process outright - SIGABRT from
+        __TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__, before that process has
+        written a line. Measured on macOS 26.6.2: `ffmpeg -f avfoundation`
+        recording a call in a pane died in 0.7 s with an empty log and a crash
+        report naming this bundle as the coalition. Nothing in the pane can
+        diagnose that, because the process never ran.
+    -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Recording and transcription commands you run in Splitlane's panes capture audio through this application.</string>
+    <!--
+        Photos and Music are the folder attribution reached a different way:
+        not by a command pointed at them, but by one searching a folder they
+        sit under. An agent started in the home folder indexes its working
+        directory, walks into the Photos library and ~/Music, and the OS asks
+        on this application's behalf, once for each. Reported from a first
+        launch on a second machine (10 September), when the app still opened
+        the home folder as a project on its own; that is fixed, and these stay
+        for the agent a person starts there on purpose. Not measured: whether
+        the file-access path shows these two strings the way it shows the
+        folder keys above.
+    -->
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Coding agents and shell commands running in Splitlane's panes reach your Photos library when they search a folder that contains it.</string>
+    <key>NSAppleMusicUsageDescription</key>
+    <string>Coding agents and shell commands running in Splitlane's panes reach your Music library when they search a folder that contains it.</string>
+</dict>
+</plist>

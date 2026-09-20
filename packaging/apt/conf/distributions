@@ -1,0 +1,28 @@
+# reprepro distribution config for Splitlane's APT repo.
+#
+# Consumed by: `reprepro -b <repo-root> includedeb stable <file.deb>`
+# Emits:       dists/stable/{Release,Release.gpg,InRelease} + pool entries
+#
+# The `SignWith:` line uses a placeholder `REPLACE_WITH_GPG_KEY_ID` that
+# the repo_publish.yml workflow sed-substitutes at runtime with the
+# 40-character fingerprint from the `GPG_KEY_ID` secret. We do
+# NOT commit the real fingerprint to git - it would be mildly sensitive
+# cross-reference to the signing key, and keeping the placeholder forces
+# anyone hand-running `reprepro` locally to substitute it explicitly
+# (no silent drift to an un-signed repo).
+#
+# `Codename` and `Suite` are both `stable` - clients write `deb … stable
+# main` in their sources.list and apt matches either field.
+#
+# `Architectures: amd64 arm64` - cargo-deb emits `amd64` for x86_64 and
+# `arm64` for aarch64. Listing an architecture with no package yet is a
+# no-op - reprepro only populates what you give it.
+
+Origin: Splitlane
+Label: Splitlane
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: Splitlane APT repository
+SignWith: REPLACE_WITH_GPG_KEY_ID
