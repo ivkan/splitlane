@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/42481287-e16a-42b6-b825-31a5a133f470
+
 <div align="center">
   <img src="assets/icons/splitlane-128.png" alt="Splitlane logo" width="96" height="96" />
   <h1>Splitlane</h1>
@@ -17,7 +21,7 @@
 </picture>
 <p align="center"><sub>Three agents in one project. One is working, one has finished, and one is asking to run <code>npm test</code> - the rail, its pane header and the title bar all say so.</sub></p>
 
-https://github.com/user-attachments/assets/2bec9393-2fdd-453e-a94c-4d4fd92da115
+https://github.com/user-attachments/assets/42481287-e16a-42b6-b825-31a5a133f470
 
 Splitlane is a native desktop app for supervising several CLI coding agents at
 once. Every agent runs in a real terminal pane, exactly as it would in your own
