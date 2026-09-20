@@ -1,7 +1,3 @@
-
-
-https://github.com/user-attachments/assets/42481287-e16a-42b6-b825-31a5a133f470
-
 <div align="center">
   <img src="assets/icons/splitlane-128.png" alt="Splitlane logo" width="96" height="96" />
   <h1>Splitlane</h1>

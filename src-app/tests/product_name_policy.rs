@@ -62,6 +62,11 @@ const OLD_NAME: &str = "paneflow";
 const ALLOWED_PATHS: &[&str] = &[
     "debian/changelog",
     "src-app/tests/product_name_policy.rs",
+    // The hygiene check and the publish script both state every name they
+    // look for, this one included. A lint that may not name what it hunts
+    // cannot hunt it.
+    "scripts/check-public-hygiene.sh",
+    "scripts/publish-public.sh",
     // The libghostty vendoring records. Four files here are CHECKSUM-PINNED in
     // `native/libghostty/manifest.toml` and verified by
     // `crates/splitlane-libghostty-sys/build.rs` before it will link anything:
