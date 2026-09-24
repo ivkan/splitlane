@@ -2064,22 +2064,35 @@ impl Render for SplitlaneApp {
                 // (absolute + size_full, no effect on flex layout) writes the
                 // number every frame, the way a split container already
                 // captures its main axis for drag-to-resize.
+                //
+                // The canvas sits **inside** the padding. An absolute child
+                // is sized against its parent's padding box, so hung on the
+                // padded div it read 2 x LG more than the panes are given, and
+                // the width refusal let through panes up to that much under
+                // its own threshold.
                 let area = self.panes_area.clone();
                 div()
                     .size_full()
-                    .relative()
                     .p(tok::space::LG)
                     .child(
-                        gpui::canvas(
-                            move |bounds, _window, _cx| {
-                                area.set((bounds.size.width.into(), bounds.size.height.into()));
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full(),
+                        div()
+                            .size_full()
+                            .relative()
+                            .child(
+                                gpui::canvas(
+                                    move |bounds, _window, _cx| {
+                                        area.set((
+                                            bounds.size.width.into(),
+                                            bounds.size.height.into(),
+                                        ));
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                            .child(panes),
                     )
-                    .child(panes)
                     .into_any_element()
             } else {
                 div()

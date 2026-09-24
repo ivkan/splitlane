@@ -81,6 +81,13 @@ narrowest pane is under the threshold it just checked. The grid is not
 touched: it is four cells, which is the ceiling, so nothing is ever inserted
 into it, and its two shared ratios stay the person's.
 
+**The refusal and the result measure the same width.** `panes_area` is read
+by a canvas laid **inside** the panes area's padding. Hung on the padded
+element it measured the padding box, `2 x LG` more than the panes are given,
+so even with equal shares a window up to 20px too narrow was allowed a pane
+that came out a few pixels under 320. The larger error hid it: with 50/25/25
+the result was off by a quarter of the row, not by a few pixels.
+
 **A refusal may name the form that would fit** - `No room for 3 side by side -
 Grid fits four` - and it is still a refusal, because it does not change the
 arrangement, it says which control does. Only the *width* refusal gets it (a
