@@ -106,6 +106,11 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
+              # The pinned native archives the libghostty builds link. The
+              # Windows qualification workflow is manual-only, so a change here
+              # has to reach windows_check through this filter or it gets no
+              # Windows build at all.
+              - 'native/libghostty/**'
             ci:
               - '.github/workflows/**'
               - 'scripts/**'
@@ -776,7 +781,9 @@ jobs:
           done
           printf 'name = "render-smoke"\n\n[[panes]]\nname = "shell"\ncwd = "%s"\nfocus = true\n' \
             "$PWD" > render-smoke.toml
-          "$APP/Contents/MacOS/splitlane" up render-smoke.toml || true
+          # Reported, not fatal here: the font gate below is the verdict.
+          "$APP/Contents/MacOS/splitlane" up render-smoke.toml \
+            || echo "::warning::splitlane up exited $?"
           for _ in $(seq 1 20); do
             grep -q "font: resolved family=" splitlane.log && break
             sleep 1
