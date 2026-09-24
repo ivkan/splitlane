@@ -65,6 +65,15 @@ Debug builds keep their config, session and IPC socket under `splitlane-dev`
 instead of `splitlane`, so a `cargo run` build never shares state with an
 installed release. A from-source build starting with no projects is expected.
 
+That separation does not hold inside a Splitlane pane. Every pane exports
+`SPLITLANE_SOCKET_PATH`, pointing at the instance that owns it, and both the
+app and the CLI honour it. So `cargo run` from a pane refuses to start
+("another Splitlane instance is already running"), and `splitlane ...` from
+a debug build talks to the running release instead of your build. Clear the
+variable for both: `env -u SPLITLANE_SOCKET_PATH cargo run`, and the same
+for the CLI. Do not reach for `SPLITLANE_ALLOW_MULTIPLE=1` here: with the
+variable still set, the second instance binds the first one's socket.
+
 ## Cross-platform rules
 
 Every change must build and behave on Linux, macOS and Windows.
