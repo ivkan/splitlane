@@ -146,15 +146,102 @@ struct FirstLineEnvelope {
 /// Bounded so a multi-megabyte transcript costs the same as a short one.
 const MODEL_TAIL_BYTES: u64 = 512 * 1024;
 
-/// How much of a transcript's tail the answer probe reads.
+/// How much of a transcript's tail the answer probe reads first.
 ///
 /// Four times [`MODEL_TAIL_BYTES`], and for a different reason than that
 /// constant's: the model probe runs every 15 seconds for every visible surface
 /// and wants to be cheap, while this one runs when a user asks for their last
-/// answer and wants to *find* it. A turn that ended in a long run of tool calls
-/// can push the text that preceded it a long way back, and a window that misses
-/// it reports "no answer" about a session that plainly has one.
+/// answer and wants to *find* it. Most answers sit well inside it; the ones
+/// that do not are what [`ANSWER_TAIL_CEILING`] is for.
 const ANSWER_TAIL_BYTES: u64 = 2 * 1024 * 1024;
+
+/// How far back the answer probe widens before it gives up.
+///
+/// A turn that ends in a long run of tool calls - files read whole, images
+/// carried as base64 - can push the text before it past any first window, and
+/// a window that misses it reports "no answer" about a session that plainly
+/// has one. So a window with no answer in it is widened, four times each step,
+/// up to this. The cost is paid only on a click, on a background thread, and
+/// only by the sessions that need it.
+const ANSWER_TAIL_CEILING: u64 = 32 * 1024 * 1024;
+
+/// What a look for a session's last answer found.
+///
+/// Four outcomes rather than an `Option`, because the person who asked can
+/// tell them apart and act differently: a session that has not answered yet
+/// wants waiting for, a transcript that is not on disk means the session has
+/// not written anything (or is not where any lookup can see it), and an
+/// unreadable one is a problem with the machine rather than the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LastAnswer {
+    Found(String),
+    /// The transcript is there and holds no answer as far back as the probe
+    /// reads.
+    NotYet,
+    /// No transcript for the session, where it was composed or anywhere else.
+    NoTranscript,
+    /// The transcript exists and could not be read. The reason is logged.
+    Unreadable,
+}
+
+/// The last answer in the transcript of `session_id`, a session started in
+/// `cwd`.
+///
+/// The transcript is looked for where [`project_dir_for_cwd`] says, and when it
+/// is not there, by its id across every project directory. The composed path is
+/// only right when `cwd` is spelled the way the CLI spelled it, and the CLI
+/// resolves symlinks before it slugs its directory: a surface anchored at
+/// `/tmp/x` on macOS finds its session under `-private-tmp-x`, and a lookup by
+/// the surface's own spelling finds nothing, for ever. A session id is a uuid
+/// the CLI never reuses across projects, so the file named by it is this
+/// session's wherever it lives.
+///
+/// Blocking I/O - call from inside `smol::unblock`.
+pub fn read_last_answer(cwd: &str, session_id: &str) -> LastAnswer {
+    if !crate::agent_sessions::is_valid_session_id(session_id) {
+        return LastAnswer::NoTranscript;
+    }
+    let composed = project_dir_for_cwd(cwd).map(|dir| dir.join(format!("{session_id}.jsonl")));
+    if let Some(path) = composed.as_deref()
+        && path.is_file()
+    {
+        return read_last_answer_from_tail(path);
+    }
+    let found = crate::claude_pid_state::claude_config_dir()
+        .and_then(|root| find_transcript_in(&root.join("projects"), session_id));
+    match found {
+        Some(path) => {
+            log::debug!(
+                "last answer: no transcript at {composed:?}; found {} by session id",
+                path.display()
+            );
+            read_last_answer_from_tail(&path)
+        }
+        None => {
+            // The ordinary case for a session that has not been sent anything
+            // yet: the CLI writes no file until the first message.
+            log::debug!(
+                "last answer: no transcript for session {session_id} at {composed:?} \
+                 or in any other project"
+            );
+            LastAnswer::NoTranscript
+        }
+    }
+}
+
+/// `<projects>/<any project>/<session_id>.jsonl`, the newest if more than one.
+fn find_transcript_in(projects: &Path, session_id: &str) -> Option<PathBuf> {
+    if !crate::agent_sessions::is_valid_session_id(session_id) {
+        return None;
+    }
+    let name = format!("{session_id}.jsonl");
+    fs::read_dir(projects)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path().join(&name))
+        .filter(|path| path.is_file())
+        .max_by_key(|path| fs::metadata(path).and_then(|meta| meta.modified()).ok())
+}
 
 /// The last answer the agent gave in this transcript, as the markdown it was
 /// written in.
@@ -179,60 +266,117 @@ const ANSWER_TAIL_BYTES: u64 = 2 * 1024 * 1024;
 /// returned: an agent that ends on a tool call has not finished answering.
 ///
 /// Blocking I/O - call from inside `smol::unblock`.
-pub fn read_last_answer_from_tail(path: &Path) -> Option<String> {
-    // `None` means two different things to the caller - "no answer yet" and
-    // "could not read" - and it shows the user the first. That is the right
-    // message (they can act on neither), but the second must not vanish
-    // entirely, or a permissions problem looks like an empty session forever.
-    let file = match fs::File::open(path) {
+fn read_last_answer_from_tail(path: &Path) -> LastAnswer {
+    let mut file = match fs::File::open(path) {
         Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::debug!("last answer: no transcript at {}", path.display());
+            return LastAnswer::NoTranscript;
+        }
         Err(e) => {
             log::warn!("last answer: cannot open {}: {e}", path.display());
-            return None;
+            return LastAnswer::Unreadable;
         }
     };
     let len = match file.metadata() {
         Ok(meta) => meta.len(),
         Err(e) => {
             log::warn!("last answer: cannot stat {}: {e}", path.display());
-            return None;
+            return LastAnswer::Unreadable;
         }
     };
-    let start = len.saturating_sub(ANSWER_TAIL_BYTES);
-    let mut reader = BufReader::new(file);
-    if start > 0 {
-        use std::io::Seek;
-        reader.seek(std::io::SeekFrom::Start(start)).ok()?;
-        // The window opened mid-line; that fragment is not JSON. Dropped here
-        // rather than skipped below, and capped for the reason every read in
-        // this file is capped: an agent writes these files.
-        let mut partial = String::new();
-        reader
-            .by_ref()
-            .take(MAX_LINE_BYTES)
-            .read_line(&mut partial)
-            .ok()?;
-    }
-    let mut newest: Option<String> = None;
-    let mut buf = String::new();
+    let mut window = ANSWER_TAIL_BYTES;
     loop {
-        buf.clear();
-        let read = reader
-            .by_ref()
-            .take(MAX_LINE_BYTES)
-            .read_line(&mut buf)
-            .ok()?;
-        if read == 0 {
+        let scan = match scan_tail_for_answer(&mut file, len, window) {
+            Ok(scan) => scan,
+            Err(e) => {
+                log::warn!("last answer: cannot read {}: {e}", path.display());
+                return LastAnswer::Unreadable;
+            }
+        };
+        log::debug!(
+            "last answer: {} is {len} bytes; read the last {}, {} records, {} from the \
+             assistant, answer {}",
+            path.display(),
+            scan.bytes,
+            scan.records,
+            scan.assistant_records,
+            if scan.answer.is_some() {
+                "found"
+            } else {
+                "not found"
+            },
+        );
+        if let Some(answer) = scan.answer {
+            return LastAnswer::Found(answer);
+        }
+        if scan.bytes >= len || window >= ANSWER_TAIL_CEILING {
+            return LastAnswer::NotYet;
+        }
+        window = (window * 4).min(ANSWER_TAIL_CEILING);
+    }
+}
+
+/// One window's worth of [`read_last_answer_from_tail`], with what it saw.
+struct AnswerScan {
+    answer: Option<String>,
+    bytes: u64,
+    records: usize,
+    assistant_records: usize,
+}
+
+/// Read the last `window` bytes of a `len`-byte transcript for the newest
+/// answer.
+///
+/// **Bytes, not `String`s, and no per-line cap.** Both used to be here, and
+/// together they made this return nothing for a session that had answered.
+/// A window opened at a byte offset lands mid-codepoint whenever the text there
+/// is not ASCII, and a line longer than a cap is cut into pieces at arbitrary
+/// offsets too; a `read_line` over either fails as `InvalidData`, and that
+/// failure ended the whole read. Measured over one machine's transcripts,
+/// written mostly in Cyrillic: a few percent of attempts on average, and most
+/// attempts for a session with a long non-ASCII tool result in its tail, until
+/// that result scrolled out of the window. Reading raw lines makes the dropped fragment inert, and
+/// the window itself is the bound a line cap used to provide: nothing here can
+/// allocate more than `window` for a line, however an agent wrote the file.
+fn scan_tail_for_answer(file: &mut fs::File, len: u64, window: u64) -> std::io::Result<AnswerScan> {
+    use std::io::{Seek, SeekFrom};
+    let start = len.saturating_sub(window);
+    // Opened one byte early, so that the fragment dropped below is exactly the
+    // partial line: when `start` is itself a line start, what goes is the
+    // newline before it and not a whole record.
+    let open_at = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(open_at))?;
+    // Bounded by the length taken above: a line the CLI is appending while this
+    // reads is not waited for, and fails the parse like any partial line.
+    let mut reader = BufReader::new(Read::take(&mut *file, len - open_at));
+    let mut line = Vec::new();
+    if start > 0 {
+        reader.read_until(b'\n', &mut line)?;
+    }
+    let mut scan = AnswerScan {
+        answer: None,
+        bytes: len - start,
+        records: 0,
+        assistant_records: 0,
+    };
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
             break;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(buf.trim()) else {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line.trim_ascii()) else {
             continue;
         };
+        scan.records += 1;
+        if value.get("type").and_then(|v| v.as_str()) == Some("assistant") {
+            scan.assistant_records += 1;
+        }
         if let Some(answer) = answer_text_of(&value) {
-            newest = Some(answer);
+            scan.answer = Some(answer);
         }
     }
-    newest
+    Ok(scan)
 }
 
 /// How much of a transcript's tail the state probe reads.
@@ -1647,15 +1791,15 @@ mod answer_tests {
         std::fs::write(&path, body).expect("write");
 
         assert_eq!(
-            read_last_answer_from_tail(&path).as_deref(),
-            Some("newer answer")
+            read_last_answer_from_tail(&path),
+            LastAnswer::Found("newer answer".into())
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_transcript_with_no_answer_yet_reports_none() {
+    fn a_transcript_with_no_answer_yet_reports_not_yet() {
         let dir =
             std::env::temp_dir().join(format!("splitlane-answer-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
@@ -1665,8 +1809,213 @@ mod answer_tests {
             "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
         )
         .expect("write");
-        assert_eq!(read_last_answer_from_tail(&path), None);
+        assert_eq!(read_last_answer_from_tail(&path), LastAnswer::NotYet);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("splitlane-answer-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn user(text: &str) -> serde_json::Value {
+        json!({"type": "user", "message": {"content": text}})
+    }
+
+    fn lines(records: &[serde_json::Value]) -> String {
+        records.iter().map(|r| format!("{r}\n")).collect()
+    }
+
+    /// A UTF-8 continuation byte: the middle of a multi-byte character.
+    fn mid_codepoint(byte: u8) -> bool {
+        byte & 0xC0 == 0x80
+    }
+
+    /// The window opens at a byte offset, and in a transcript written in
+    /// Cyrillic that offset is often inside a character. The fragment it
+    /// opens on is thrown away, so how it decodes must not matter - it used
+    /// to end the read, and the session reported "no answer yet" until the
+    /// tail moved on.
+    #[test]
+    fn a_window_opening_mid_character_still_finds_the_answer() {
+        let dir = scratch("mid-char");
+        let path = dir.join("t.jsonl");
+        let answer = lines(&[assistant(&["the answer"])]);
+        let mut pad = 0;
+        let body = loop {
+            // Long enough that the window opens inside it.
+            let long = user(&format!(
+                "{}{}",
+                "x".repeat(pad),
+                "\u{436}".repeat(1_200_000)
+            ));
+            let body = format!("{}{answer}", lines(&[long]));
+            let start = body.len() - ANSWER_TAIL_BYTES as usize;
+            if mid_codepoint(body.as_bytes()[start]) {
+                break body;
+            }
+            pad += 1;
+        };
+        std::fs::write(&path, body).expect("write");
+
+        assert_eq!(
+            read_last_answer_from_tail(&path),
+            LastAnswer::Found("the answer".into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tool result far longer than a line cap, in Cyrillic, sitting in the
+    /// window. Cut into pieces at a fixed size, one of the cuts fell inside a
+    /// character and the read gave up; read whole, it is just a record that is
+    /// not an answer.
+    #[test]
+    fn a_long_non_ascii_line_in_the_window_does_not_end_the_read() {
+        let dir = scratch("long-line");
+        let path = dir.join("t.jsonl");
+        let mut pad = 0;
+        let long = loop {
+            let long = format!(
+                "{}\n",
+                user(&format!("{}{}", "x".repeat(pad), "\u{436}".repeat(60_000)))
+            );
+            if mid_codepoint(long.as_bytes()[MAX_LINE_BYTES as usize]) {
+                break long;
+            }
+            pad += 1;
+        };
+        let body = format!(
+            "{}{long}",
+            lines(&[user("question"), assistant(&["the answer"])])
+        );
+        std::fs::write(&path, body).expect("write");
+
+        assert_eq!(
+            read_last_answer_from_tail(&path),
+            LastAnswer::Found("the answer".into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An answer is not truncated to a line cap, nor skipped for exceeding one.
+    #[test]
+    fn a_long_answer_is_copied_whole() {
+        let dir = scratch("long-answer");
+        let path = dir.join("t.jsonl");
+        let text = "word ".repeat(40_000);
+        std::fs::write(&path, lines(&[assistant(&[&text])])).expect("write");
+
+        assert_eq!(
+            read_last_answer_from_tail(&path),
+            LastAnswer::Found(text.trim_end().to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A turn that ends in a run of big tool results pushes its text out of
+    /// the first window. The probe widens rather than report "no answer" about
+    /// a session that has one.
+    #[test]
+    fn an_answer_beyond_the_first_window_is_still_found() {
+        let dir = scratch("deep");
+        let path = dir.join("t.jsonl");
+        let result = user(&"r".repeat(512 * 1024));
+        let mut records = vec![assistant(&["before the tool calls"])];
+        records.extend(std::iter::repeat_n(result, 6));
+        let body = lines(&records);
+        assert!(body.len() as u64 > ANSWER_TAIL_BYTES * 3 / 2);
+        std::fs::write(&path, body).expect("write");
+
+        assert_eq!(
+            read_last_answer_from_tail(&path),
+            LastAnswer::Found("before the tool calls".into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_transcript_is_not_a_session_without_an_answer() {
+        let dir = scratch("missing");
+        assert_eq!(
+            read_last_answer_from_tail(&dir.join("absent.jsonl")),
+            LastAnswer::NoTranscript
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The CLI slugs the directory it resolved, not the one the surface names,
+    /// so a transcript can live under a project the surface's cwd does not
+    /// compose. It is found by its id.
+    #[test]
+    fn a_transcript_is_found_by_its_id_in_another_project() {
+        let root = scratch("by-id");
+        let id = "0d91e248-3d9a-4fae-abc5-8af398263a96";
+        std::fs::create_dir_all(root.join("-tmp-x")).expect("dir");
+        std::fs::create_dir_all(root.join("-private-tmp-x")).expect("dir");
+        let real = root.join("-private-tmp-x").join(format!("{id}.jsonl"));
+        std::fs::write(&real, lines(&[assistant(&["hi"])])).expect("write");
+
+        assert_eq!(find_transcript_in(&root, id), Some(real));
+        assert_eq!(
+            find_transcript_in(&root, "11111111-1111-4111-8111-111111111111"),
+            None
+        );
+        // The id becomes a filename: one that is not an id is never looked up.
+        assert_eq!(find_transcript_in(&root, "../-private-tmp-x/x"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every transcript on this machine that has an answer anywhere in it
+    /// yields one. Ignored by default: it reads `~/.claude/projects`, which CI
+    /// does not have. Run it after touching the reader or after a CLI upgrade:
+    /// `cargo test -p splitlane-app every_local_transcript -- --ignored`.
+    #[test]
+    #[ignore]
+    fn every_local_transcript_with_an_answer_yields_one() {
+        let Some(root) = crate::claude_pid_state::claude_config_dir() else {
+            return;
+        };
+        let mut checked = 0;
+        let mut missed = Vec::new();
+        for project in std::fs::read_dir(root.join("projects"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            for entry in std::fs::read_dir(project.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let path = entry.path();
+                if !is_jsonl_file(&path) {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                let whole = bytes
+                    .split(|b| *b == b'\n')
+                    .filter_map(|l| serde_json::from_slice::<serde_json::Value>(l).ok())
+                    .filter_map(|v| answer_text_of(&v))
+                    .next_back();
+                let Some(whole) = whole else {
+                    continue;
+                };
+                checked += 1;
+                if read_last_answer_from_tail(&path) != LastAnswer::Found(whole) {
+                    missed.push(path);
+                }
+            }
+        }
+        eprintln!("checked {checked} transcripts with an answer");
+        assert!(
+            missed.is_empty(),
+            "no answer, or a different one, for {missed:#?}"
+        );
     }
 }
 

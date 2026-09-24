@@ -549,22 +549,31 @@ impl SplitlaneApp {
         let cwd_str = cwd.to_string_lossy().into_owned();
         cx.spawn(async move |this, cx| {
             let answer = smol::unblock(move || {
-                let dir = crate::claude_sessions::project_dir_for_cwd(&cwd_str)?;
-                let path = dir.join(format!("{session_id}.jsonl"));
-                crate::claude_sessions::read_last_answer_from_tail(&path)
+                crate::claude_sessions::read_last_answer(&cwd_str, &session_id)
             })
             .await;
             let _ = this.update(cx, |app, cx| match answer {
-                Some(answer) => {
+                crate::claude_sessions::LastAnswer::Found(answer) => {
                     let chars = answer.chars().count();
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(answer));
                     app.show_toast(format!("Copied the last answer ({chars} characters)"), cx);
                 }
-                // Two different nothings, one message: the session has not
-                // answered yet, or its transcript is not where we looked. The
-                // user can act on neither, and naming the path would say more
-                // about our layout than about their session.
-                None => app.show_toast("No answer to copy yet", cx),
+                // Three different nothings, three messages. They used to be
+                // one, on the theory that the user could act on none of them,
+                // and that is what made the one that was our fault look exactly
+                // like a session with nothing to say. "Not yet" wants waiting
+                // for; "no transcript" is a session that has not been sent
+                // anything, or one the lookup cannot see; "could not read" is
+                // the machine. The path stays in the log rather than the toast.
+                crate::claude_sessions::LastAnswer::NotYet => {
+                    app.show_toast("No answer to copy yet", cx);
+                }
+                crate::claude_sessions::LastAnswer::NoTranscript => {
+                    app.show_toast("No transcript for this session on disk yet", cx);
+                }
+                crate::claude_sessions::LastAnswer::Unreadable => {
+                    app.show_toast("Could not read this session's transcript", cx);
+                }
             });
         })
         .detach();
