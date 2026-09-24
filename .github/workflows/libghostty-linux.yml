@@ -377,8 +377,13 @@ jobs:
           - distro: fedora
             image: registry.fedoraproject.org/fedora:44@sha256:e70db1fd517c7d6990715fb200b1aae95ef6a1ef1492dc12c8ca25cc129a5094
             format: rpm
+          # Docker Hub rather than registry.opensuse.org: Tumbleweed rolls,
+          # and the openSUSE registry deletes a superseded digest within
+          # days ("manifest unknown"), so a pin there breaks on its own.
+          # Docker Hub keeps the manifest a digest names. release.yml uses
+          # the same repository.
           - distro: opensuse
-            image: registry.opensuse.org/opensuse/tumbleweed:latest@sha256:362c1e2f5a2313e3d1e8713d28e06d13ee7f5a68399f8f86ffa1aa8a2a320c43
+            image: opensuse/tumbleweed@sha256:8314fab3a6d06043c01f70c380bb7e852ad588cfaed626756efd25d8d9b5b3ef
             format: rpm
           - distro: arch
             image: archlinux:base@sha256:fe6972d4dc1f660c0c10f4c41b2de8986bab89e7e2955378f8beadb8ebcd7433
