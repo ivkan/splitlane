@@ -65,6 +65,9 @@ impl LayoutTree {
                 let Some(idx) = idx else {
                     return false;
                 };
+                // Never a grid: a grid is four cells, which is the cap, and its
+                // children are rows rather than leaves. So resetting every
+                // share here cannot reach the grid's own shared ratios.
                 insert_sibling(children, idx, new_pane);
                 true
             }
@@ -186,9 +189,36 @@ mod tests {
         );
         let ratios = child_ratios(&tree);
         assert_eq!(ratios.len(), 3);
-        assert!((ratios[0] - 0.25).abs() < f32::EPSILON);
-        assert!((ratios[1] - 0.25).abs() < f32::EPSILON);
-        assert!((ratios[2] - 0.5).abs() < f32::EPSILON);
+        for ratio in ratios {
+            assert!((ratio - 1.0 / 3.0).abs() < f32::EPSILON);
+        }
+    }
+
+    /// Adding a pane is a new arrangement, so a divider the person dragged
+    /// before it does not survive: 70/30 plus one is thirds, not 70/15/15.
+    #[gpui::test]
+    fn adding_a_pane_evens_out_a_dragged_divider(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let a = test_pane(cx, 6);
+        let b = test_pane(cx, 6);
+        let c = test_pane(cx, 6);
+        let mut tree = LayoutTree::new_split(
+            SplitDirection::Vertical,
+            LayoutTree::Leaf(a.clone()),
+            LayoutTree::Leaf(b.clone()),
+        );
+        if let LayoutTree::Container { children, .. } = &tree {
+            children[0].ratio.set(0.7);
+            children[1].ratio.set(0.3);
+        }
+
+        assert!(tree.split_at_pane(&b, SplitDirection::Vertical, c));
+
+        let ratios = child_ratios(&tree);
+        assert_eq!(ratios.len(), 3);
+        for ratio in ratios {
+            assert!((ratio - 1.0 / 3.0).abs() < f32::EPSILON);
+        }
     }
 
     #[gpui::test]

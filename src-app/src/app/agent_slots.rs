@@ -170,15 +170,6 @@ impl SplitlaneApp {
         if !inserted {
             return false;
         }
-        // "re-splits evenly": a third pane that took half of the second one
-        // would leave the row lopsided, and nobody aimed at a ratio.
-        if let Some(root) = self
-            .workspaces
-            .get(ws_idx)
-            .and_then(|container| container.root.as_ref())
-        {
-            root.equalize_ratios();
-        }
         self.active_idx = ws_idx;
         pane.read(cx).focus_handle(cx).focus(window, cx);
         self.save_session(cx);

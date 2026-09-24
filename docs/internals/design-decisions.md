@@ -27,10 +27,10 @@ the PTY, so every fullscreen TUI would repaint on `⌘F` and repaint again on
 ## Panes, the launcher, and what Add pane does
 
 **A pane holding nothing shows the launcher, and that is what Add pane opens.**
-`⌥\` and the Add pane button put another pane on screen at 50/50 holding it,
-and the choice happens *inside* the pane rather than in front of it - no
-popover, no guessed session, and focus on the new half, because the new half is
-the question. The launcher is **one filtered list in three parts**
+`⌥\` and the Add pane button put another pane on screen, at an equal share,
+holding it, and the choice happens *inside* the pane rather than in front of
+it - no popover, no guessed session, and focus on the new pane, because the
+new pane is the question. The launcher is **one filtered list in three parts**
 (`app/launcher.rs`): every agent on PATH, then this container's surfaces that
 are in no pane, then its sessions on disk. `↑` `↓` `enter` work as they do in
 `⌘K`; `Esc` closes the pane, which is the whole of undoing a pane you just
@@ -59,6 +59,27 @@ the only thing that could explain it. There are **five** refusals and five
 sentences (`targeting::PaneRefusal`), written there rather than at the call
 sites so that the dimmed button and the chord's toast cannot come to disagree
 about what the limit is.
+
+**Adding a pane evens the row out: every pane gets `1/N`.** The insert used
+to hand the new pane half of the one it was added beside, which is right for
+the second pane by accident - the only pane's share is 1, and half of it is
+0.5 - and wrong from the third on: 50/50 became 50/25/25, and a person
+straightened all three by hand after every add. The rule lives in
+`layout::tree::insert_sibling`, the one insert every door goes through (the
+chords, the button, the launcher, the drop strip, IPC `surface.split`,
+moving an agent surface in), so no caller re-splits evenly on its own.
+
+A divider the person dragged **does not survive an add**, and that is
+accepted on purpose. Adding a pane is a new arrangement, and a ratio set for
+two panes says nothing about three: keeping it means inventing the newcomer's
+width out of somebody's share, which is the rule that made the third pane
+narrow. It is also the only rule the width refusal can **predict**:
+`refuse_another_pane` sees the panes area and a count, and `(w - gaps) / n`
+is exactly what each pane gets. Kept proportions would make the answer depend
+on which divider had been dragged, and the button would allow a split whose
+narrowest pane is under the threshold it just checked. The grid is not
+touched: it is four cells, which is the ceiling, so nothing is ever inserted
+into it, and its two shared ratios stay the person's.
 
 **A refusal may name the form that would fit** - `No room for 3 side by side -
 Grid fits four` - and it is still a refusal, because it does not change the

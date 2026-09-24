@@ -434,6 +434,45 @@ mod tests {
         );
     }
 
+    /// The width refusal and the split it allows must agree on the width.
+    /// At exactly the widest a window may be and still be refused a third
+    /// pane plus one pixel, the refusal says yes - and the narrowest pane the
+    /// split then draws is that threshold, not half of it. The row starts from
+    /// a dragged 70/30, which is where "half of the target" was worst.
+    #[gpui::test]
+    fn the_width_refusal_measures_the_pane_the_split_draws(cx: &mut TestAppContext) {
+        use crate::app::targeting::{MIN_PANE_FOR_SPLIT, refuse_another_pane};
+
+        let container_w = MIN_PANE_FOR_SPLIT * 3.0 + DIVIDER_PX * 2.0;
+        let container_h = 600.0_f32;
+        assert!(refuse_another_pane(container_w, 2).is_none());
+        assert!(refuse_another_pane(container_w - 1.0, 2).is_some());
+
+        let (_view, cx) = cx.add_window_view(move |_, cx| {
+            let a = test_pane(cx, 7);
+            let b = test_pane(cx, 7);
+            let c = test_pane(cx, 7);
+            let mut tree = LayoutTree::new_split(
+                SplitDirection::Vertical,
+                LayoutTree::Leaf(a),
+                LayoutTree::Leaf(b.clone()),
+            );
+            if let LayoutTree::Container { children, .. } = &tree {
+                children[0].ratio.set(0.7);
+                children[1].ratio.set(0.3);
+            }
+            assert!(tree.split_at_pane(&b, SplitDirection::Vertical, c));
+            RenderHarness { tree }
+        });
+        cx.simulate_resize(size(px(container_w), px(container_h)));
+        cx.run_until_parked();
+
+        for selector in ["layout-child-0", "layout-child-1", "layout-child-2"] {
+            let bounds = cx.debug_bounds(selector).expect("child not painted");
+            assert_px_eq(bounds.size.width, MIN_PANE_FOR_SPLIT, selector);
+        }
+    }
+
     #[gpui::test]
     #[ignore = "performance gate: eight-pane GPUI input-to-paint P95"]
     #[allow(

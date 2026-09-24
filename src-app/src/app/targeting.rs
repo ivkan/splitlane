@@ -589,13 +589,6 @@ impl SplitlaneApp {
         if !inserted {
             return None;
         }
-        if let Some(root) = self
-            .workspaces
-            .get(ws_idx)
-            .and_then(|container| container.root.as_ref())
-        {
-            root.equalize_ratios();
-        }
         Some(pane)
     }
 
@@ -634,13 +627,6 @@ impl SplitlaneApp {
             .is_some_and(|root| root.split_at_pane(&anchor, direction, pane.clone()));
         if !inserted {
             return None;
-        }
-        if let Some(root) = self
-            .workspaces
-            .get(ws_idx)
-            .and_then(|container| container.root.as_ref())
-        {
-            root.equalize_ratios();
         }
         Some(pane)
     }

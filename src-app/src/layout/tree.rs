@@ -131,37 +131,34 @@ pub(super) fn resize_adjacent_ratios(
     Some((new_before, pair_sum - new_before))
 }
 
-/// Insert a new pane as a sibling after `children[idx]`.
-/// The new child steals half of the target child's ratio.
+/// Insert a new pane as a sibling after `children[idx]`, and give every
+/// child of the container an equal share.
+///
+/// Equal and not "half of the target": halving turned 50/50 into 50/25/25, so
+/// the third pane was born at half the width of the first. It is also the
+/// only result the width refusal can predict from the panes area alone -
+/// `targeting::refuse_another_pane` measures `(w - gaps) / n`, and that is
+/// what a pane gets here and nowhere else.
 ///
 /// # Panics
 /// Panics in debug builds if `idx >= children.len()`.
 pub(super) fn insert_sibling(children: &mut Vec<LayoutChild>, idx: usize, new_pane: Entity<Pane>) {
     debug_assert!(idx < children.len(), "insert_sibling: idx out of bounds");
-    // Fail-safe on a stale index - `.get()` instead of `children[idx]`,
-    // which would panic in release. Halve the target's ratio inside a scoped
-    // borrow so the borrow drops before the `children.insert` below.
-    let half = {
-        let Some(target) = children.get(idx) else {
-            return;
-        };
-        let old_ratio = target.ratio.get();
-        debug_assert!(old_ratio.is_finite(), "insert_sibling: ratio is NaN/inf");
-        let half = if old_ratio.is_finite() {
-            old_ratio / 2.0
-        } else {
-            0.5
-        };
-        target.ratio.set(half);
-        half
-    };
+    // Fail-safe on a stale index: `insert` past the end would panic in release.
+    if idx >= children.len() {
+        return;
+    }
     children.insert(
         idx + 1,
         LayoutChild {
             node: LayoutTree::Leaf(new_pane),
-            ratio: Rc::new(Cell::new(half)),
+            ratio: Rc::new(Cell::new(0.0)),
         },
     );
+    let share = 1.0 / children.len() as f32;
+    for child in children.iter() {
+        child.ratio.set(share);
+    }
 }
 
 impl LayoutTree {
