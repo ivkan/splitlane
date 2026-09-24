@@ -764,10 +764,25 @@ jobs:
             >splitlane.log 2>&1 &
           APP_PID=$!
 
-          # Cold-launch on macos-14 (M1, 3 vCPU): GPUI window creation
-          # + Vulkan-equivalent Metal init + first paint typically lands
-          # under 5s. 10s gives generous slack for runner contention.
-          sleep 10
+          # A fresh install opens on the welcome screen, which has no
+          # terminal and so never asks for the terminal font. Open one
+          # project with one plain shell through the app's own CLI, the
+          # way a user would script it; a shell pane needs no IPC gate.
+          # Wait for the IPC server first - the CLI has nothing to talk to
+          # before it.
+          for _ in $(seq 1 30); do
+            grep -q "IPC server listening" splitlane.log && break
+            sleep 1
+          done
+          printf 'name = "render-smoke"\n\n[[panes]]\nname = "shell"\ncwd = "%s"\nfocus = true\n' \
+            "$PWD" > render-smoke.toml
+          "$APP/Contents/MacOS/splitlane" up render-smoke.toml || true
+          for _ in $(seq 1 20); do
+            grep -q "font: resolved family=" splitlane.log && break
+            sleep 1
+          done
+          # Let the first frames settle before the screenshot.
+          sleep 3
 
           # `-x` skips the camera-shutter sound; captures every display.
           screencapture -x screenshot.png
@@ -1097,10 +1112,41 @@ jobs:
                                 -RedirectStandardOutput 'splitlane.log' `
                                 -RedirectStandardError  'splitlane.err.log'
 
-          # Cold launch on windows-2022 (4 vCPU, 16 GB RAM) typically
-          # hits first paint in 4-6s. 10s gives generous slack for
-          # runner contention + DX11 swap-chain init.
-          Start-Sleep -Seconds 10
+          # A fresh install opens on the welcome screen, which has no
+          # terminal and so never asks for the terminal font. Open one
+          # project with one plain shell through the app's own CLI; a
+          # shell pane needs no IPC gate. env_logger writes to stderr, so
+          # readiness is read from the stderr log. The cwd is a TOML
+          # literal string so the backslashes stay as they are.
+          function Wait-LogLine([string]$pattern, [int]$seconds) {
+            for ($i = 0; $i -lt $seconds; $i++) {
+              if ((Test-Path 'splitlane.err.log') -and
+                  (Select-String -Path 'splitlane.err.log' -Pattern $pattern -SimpleMatch -Quiet)) {
+                return
+              }
+              Start-Sleep -Seconds 1
+            }
+          }
+          Wait-LogLine 'IPC server listening' 30
+          @"
+          name = "render-smoke"
+
+          [[panes]]
+          name = "shell"
+          cwd = '$pwd'
+          focus = true
+          "@ | Set-Content -Path 'render-smoke.toml' -Encoding utf8NoBOM
+          & $exe up render-smoke.toml
+          # Reported, not fatal here: the font gate below is the verdict,
+          # and a stale LASTEXITCODE would otherwise become the step's exit
+          # code on its own.
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::warning::splitlane up exited $LASTEXITCODE"
+          }
+          $global:LASTEXITCODE = 0
+          Wait-LogLine 'font: resolved family=' 20
+          # Let the first frames settle before the screenshot.
+          Start-Sleep -Seconds 3
 
           # Capture the primary display via System.Drawing - works on
           # every windows-2022 runner without external tooling. The
