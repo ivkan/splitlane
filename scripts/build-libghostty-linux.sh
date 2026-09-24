@@ -136,6 +136,27 @@ normalize_archive() {
   rm -rf "$normalize_dir"
 }
 
+# Name the archive members that differ between two builds. A bare `cmp` says
+# only "byte N differs", which cannot tell a nondeterministic object file from
+# a member-order or symbol-index difference, and so leaves nothing to act on.
+report_archive_difference() {
+  local first="$1" second="$2" scratch
+  scratch="$(mktemp -d)"
+  mkdir -p "$scratch/a" "$scratch/b"
+  (cd "$scratch/a" && ar x "$first") || true
+  (cd "$scratch/b" && ar x "$second") || true
+  echo "archive members, first build: $(ar t "$first" | tr '\n' ' ')" >&2
+  echo "archive members, second build: $(ar t "$second" | tr '\n' ' ')" >&2
+  local member
+  for member in $(ar t "$first"); do
+    if ! cmp -s "$scratch/a/$member" "$scratch/b/$member"; then
+      echo "differs: $member ($(stat -c %s "$scratch/a/$member" 2>/dev/null) vs $(stat -c %s "$scratch/b/$member" 2>/dev/null) bytes)" >&2
+      cmp -l "$scratch/a/$member" "$scratch/b/$member" 2>/dev/null | head -5 >&2 || true
+    fi
+  done
+  rm -rf "$scratch"
+}
+
 build_one() {
   local rust_target="$1"
   local output="$2"
@@ -190,7 +211,10 @@ for rust_target in "${TARGETS[@]}"; do
     second_cache="$(mktemp -d)"
     trap 'rm -rf "$second_output" "$second_cache"' EXIT
     build_one "$rust_target" "$second_output" "$second_cache"
-    cmp "$output/lib/libghostty-vt.a" "$second_output/lib/libghostty-vt.a"
+    cmp "$output/lib/libghostty-vt.a" "$second_output/lib/libghostty-vt.a" || {
+      report_archive_difference "$output/lib/libghostty-vt.a" "$second_output/lib/libghostty-vt.a"
+      exit 1
+    }
     cmp "$output/$HEADER_PATH" "$second_output/$HEADER_PATH"
     cmp "$output/bindings.rs" "$second_output/bindings.rs"
     cmp "$output/build-info.txt" "$second_output/build-info.txt"
