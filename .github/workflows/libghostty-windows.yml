@@ -1,53 +1,22 @@
 name: libghostty Windows
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/libghostty-windows.yml"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/run_tests.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/splitlane-ghostty-smoke/**"
-      - "crates/splitlane-libghostty-sys/**"
-      - "crates/splitlane-terminal-ghostty/**"
-      - "native/libghostty/**"
-      - "packaging/wix/**"
-      - "scripts/*libghostty*"
-      - "src-app/Cargo.toml"
-      - "src-app/src/**"
-      - "src-app/tests/**"
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/libghostty-windows.yml"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/run_tests.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/splitlane-ghostty-smoke/**"
-      - "crates/splitlane-libghostty-sys/**"
-      - "crates/splitlane-terminal-ghostty/**"
-      - "native/libghostty/**"
-      - "packaging/wix/**"
-      - "scripts/*libghostty*"
-      - "src-app/Cargo.toml"
-      - "src-app/src/**"
-      - "src-app/tests/**"
-  # The nightly `schedule:` trigger was removed on 6 September 2026, the day
-  # this repository ran CI for the first time and used its entire 2 000-minute
-  # monthly allowance in one afternoon. Three workflows carried a daily cron,
-  # and scheduled runs fire only from the DEFAULT branch - so they had never
-  # run while Actions were disabled and would have started the night these
-  # workflows reached `main`, three times a night for the rest of the cycle,
-  # with nobody asking for any of them.
+  # Manual only. This is the heavy qualification lane - it rebuilds the
+  # native archive and runs the ConPTY stress and performance gates, 40+
+  # minutes of Windows time (billed at twice the Linux rate) - and on every
+  # push that touched `src-app/src/**` it ran for that long and then failed
+  # its `stress-cycles` gate without printing why, so the repository's
+  # latest commit carried a red mark for a lane nobody could act on.
+  # Everyday Windows coverage of the libghostty build is not lost: the
+  # `windows_check` job in run_tests.yml runs clippy, the test suite and the
+  # release build with `libghostty-windows` on every Rust change. Run this
+  # one by hand when the native archive or the Windows terminal backend
+  # changes, and put the push/pull_request triggers back once the stress
+  # gate reports its failures.
   #
-  # Nothing is lost: the `push` and `pull_request` triggers above already fire
-  # on exactly the paths this workflow is about, which is when the answer can
-  # actually have changed. Restore the cron when there is a reason a nightly
-  # answer differs from a per-change one - a dependency advisory feed, a
-  # rolling base image - and put that reason here.
+  # There is no nightly `schedule:` either: it was removed on 6 September
+  # 2026, the day this repository first ran CI and three daily crons spent the
+  # whole 2 000-minute monthly allowance in one afternoon.
   workflow_dispatch: {}
 
 permissions:
