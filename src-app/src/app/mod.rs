@@ -33,6 +33,7 @@ pub mod preset_launch;
 pub mod project_ops;
 pub mod rail_resize;
 pub mod self_update_flow;
+pub mod send_answer;
 pub mod session;
 pub mod sessions_sidebar;
 pub mod settings;

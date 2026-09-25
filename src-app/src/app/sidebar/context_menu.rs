@@ -661,17 +661,24 @@ impl SplitlaneApp {
         // Codex surface, where it can only build a Claude-shaped path that does
         // not exist and report "no answer to copy yet", which is a claim about
         // that session rather than about the limits of this build.
-        let answer_source = active_terminal
+        let answer_thread = active_terminal
             .as_ref()
             .and_then(|t| t.read(cx).agent_thread_id)
             .and_then(|thread_id| self.thread_by_id(thread_id))
-            .filter(|thread| crate::claude_sessions::transcript_path(thread).is_some())
-            .and_then(|thread| {
-                Some((
-                    thread.session_id.clone()?,
-                    std::path::PathBuf::from(&thread.cwd),
-                ))
-            });
+            .filter(|thread| crate::claude_sessions::transcript_path(thread).is_some());
+        let answer_source = answer_thread.and_then(|thread| {
+            Some((
+                thread.session_id.clone()?,
+                std::path::PathBuf::from(&thread.cwd),
+            ))
+        });
+        // The same answer, sent to another agent on screen instead of the
+        // clipboard. Offered wherever the copy is, so the two menus of one
+        // surface say the same things.
+        let send_answer: Option<(u64, Vec<crate::app::send_answer::AnswerDestination>)> =
+            answer_thread
+                .filter(|_| answer_source.is_some())
+                .map(|thread| (thread.id, self.answer_destinations(thread.id, cx)));
         // The surface this pane is showing, when it has a rail row at all. A
         // markdown document and the diff have no record to delete - closing
         // them loses nothing, which is exactly what "Close pane" already does.
@@ -718,6 +725,9 @@ impl SplitlaneApp {
             + usize::from(surface_ref_id.is_some())
             + usize::from(show_sessions_entry)
             + usize::from(answer_source.is_some())
+            + send_answer
+                .as_ref()
+                .map_or(0, |(_, destinations)| destinations.len())
             + usize::from(delete_thread_id.is_some())
             + custom_buttons.len();
         // Whether this pane's container has anything to collapse. Asked of the
@@ -884,6 +894,24 @@ impl SplitlaneApp {
                     cx.stop_propagation();
                 }),
             ));
+        }
+
+        if let Some((source_thread_id, destinations)) = send_answer {
+            for (idx, destination) in destinations.into_iter().enumerate() {
+                let hint =
+                    (!destination.slot.is_empty()).then(|| SharedString::from(destination.slot));
+                context_menu = context_menu.child(self.render_select_menu_item(
+                    SharedString::from(format!("tab-context-send-answer-{idx}")),
+                    &format!("Send the Last Answer to {}", destination.label),
+                    hint,
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.tab_menu_open = None;
+                        this.send_last_answer(source_thread_id, destination.clone(), window, cx);
+                        cx.stop_propagation();
+                    }),
+                ));
+            }
         }
 
         if show_sessions_entry {

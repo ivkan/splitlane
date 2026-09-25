@@ -565,14 +565,10 @@ impl SplitlaneApp {
                 // for; "no transcript" is a session that has not been sent
                 // anything, or one the lookup cannot see; "could not read" is
                 // the machine. The path stays in the log rather than the toast.
-                crate::claude_sessions::LastAnswer::NotYet => {
-                    app.show_toast("No answer to copy yet", cx);
-                }
-                crate::claude_sessions::LastAnswer::NoTranscript => {
-                    app.show_toast("No transcript for this session on disk yet", cx);
-                }
-                crate::claude_sessions::LastAnswer::Unreadable => {
-                    app.show_toast("Could not read this session's transcript", cx);
+                failure => {
+                    if let Some(message) = crate::app::send_answer::failure_message(&failure) {
+                        app.show_toast(message, cx);
+                    }
                 }
             });
         })

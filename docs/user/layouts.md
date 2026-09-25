@@ -121,6 +121,24 @@ Panes themselves are not dragged. To put a session in a particular pane:
   **Show in a new pane** when there is room. In a grid the menu names the cell:
   top left, top right, bottom left, bottom right.
 
+## Passing an answer to another session
+
+A Claude Code session's `⋯` menu (and its tab's right-click menu) has **Copy the
+last answer** (`⌘⌥C` / `Ctrl+Alt+C`), which puts the agent's last answer on the
+clipboard as the Markdown it wrote. Below it, **Send last answer to ‹what that
+pane holds›** appears for each other pane of the project that shows an agent
+session.
+
+Sending puts the answer on that agent's input line and focuses its pane. It is
+never submitted: read it, add what you want done with it, and press Enter
+yourself. An answer longer than 16 KiB, or one going to a terminal that does not
+accept a multi-line paste, is sent as a one-line reference to a file holding it,
+in Splitlane's cache directory under `sent-answers/`. Those files are removed
+after a week.
+
+The answer is read from the session's transcript on disk, so it can be sent
+after the agent in that session has exited.
+
 ## Zoom
 
 `⌘⇧Z` / `Ctrl+Shift+Z` (`toggle_zoom`) makes the focused pane fill the content

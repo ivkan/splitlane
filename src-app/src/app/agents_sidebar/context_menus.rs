@@ -45,10 +45,20 @@ impl SplitlaneApp {
             && self
                 .thread_for_target(target)
                 .is_some_and(|thread| crate::claude_sessions::transcript_path(thread).is_some());
+        // Where that answer can be sent: the other agents on screen beside it.
+        // Only where it can be copied, because it is the same answer.
+        let send_to: Vec<crate::app::send_answer::AnswerDestination> = if can_copy {
+            self.thread_for_target(target)
+                .map(|thread| self.answer_destinations(thread.id, cx))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let source_thread_id = self.thread_for_target(target).map(|thread| thread.id);
         // 6 items (Pin, Rename, Duplicate, Restart, Reveal, Delete) +
         // 1 separator + 8px padding => ~225px; one more when the answer can be
-        // copied out.
-        let menu_height = px(if can_copy { 256. } else { 228. });
+        // copied out, and one per pane it can be sent to.
+        let menu_height = px(if can_copy { 256. } else { 228. } + send_to.len() as f32 * 28.);
         let menu_pos = clamped_context_menu_position(position, px(220.), menu_height, window);
         let rename_label = "Rename session";
         // The Pin entry's label flips with the target's current
@@ -245,6 +255,23 @@ impl SplitlaneApp {
                     }),
                 ),
             );
+        }
+        if let Some(source_thread_id) = source_thread_id {
+            for (idx, destination) in send_to.into_iter().enumerate() {
+                let hint =
+                    (!destination.slot.is_empty()).then(|| SharedString::from(destination.slot));
+                menu = menu.child(self.render_select_menu_item(
+                    SharedString::from(format!("agents-thread-send-answer-{idx}")),
+                    &format!("Send last answer to {}", destination.label),
+                    hint,
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, w, cx| {
+                        this.close_agents_menu(cx);
+                        this.send_last_answer(source_thread_id, destination.clone(), w, cx);
+                        cx.stop_propagation();
+                    }),
+                ));
+            }
         }
 
         menu = menu.child(
