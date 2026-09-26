@@ -309,7 +309,9 @@ pub(crate) fn fit_label_row(
     let min = f32::from(crate::ui_tokens::group::LABEL_MIN);
     let max = f32::from(crate::ui_tokens::group::LABEL_MAX);
     let room = available - gap - others;
-    fit.label_width = label_natural.min(max).min(room).max(min);
+    // The floor limits how far a long name is squeezed; it never widens a
+    // short one, or `ACME` sits in a pill with air on its right.
+    fit.label_width = label_natural.min(max).min(room).max(min.min(label_natural));
     fit
 }
 
@@ -552,6 +554,9 @@ mod tests {
         assert!(fit.label_width < 130.0 && fit.label_width >= 48.0);
         let fit = fit_label_row(&words, false, 400.0, 10.0, CHAR, GAP);
         assert_eq!(fit.label_width, 48.0);
+        // A short name keeps its own width: the floor is for squeezing.
+        let fit = fit_label_row(&[], false, 39.0, 345.0, CHAR, GAP);
+        assert_eq!(fit.label_width, 39.0);
     }
 
     #[test]

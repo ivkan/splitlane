@@ -180,7 +180,7 @@ impl SplitlaneApp {
         ui: crate::theme::UiColors,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Vec<AnyElement> {
         let idx = menu.idx;
         let can_close = !self.workspaces.is_empty();
         let project_preset = self.preset_for_project(idx);
@@ -600,14 +600,15 @@ impl SplitlaneApp {
                 })
         });
 
-        let context_menu = deferred(context_menu).priority(3).into_any_element();
-        match submenu {
-            Some(bounds) => div()
-                .child(context_menu)
-                .child(self.render_group_submenu(idx, bounds, ui, cx))
-                .into_any_element(),
-            None => context_menu,
+        // Two siblings, never one wrapper: absolute positions resolve against
+        // the direct parent, so a wrapping div moved both menus to wherever
+        // the wrapper landed in the flow - off screen, which looked like the
+        // menu closing the moment the submenu opened.
+        let mut menus = vec![deferred(context_menu).priority(3).into_any_element()];
+        if let Some(bounds) = submenu {
+            menus.push(self.render_group_submenu(idx, bounds, ui, cx));
         }
+        menus
     }
 
     /// Where `Add to group ▸`'s submenu goes: level with its row, to the

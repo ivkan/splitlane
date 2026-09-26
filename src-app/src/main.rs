@@ -2882,7 +2882,7 @@ impl Render for SplitlaneApp {
             && menu.idx < self.workspaces.len()
         {
             app_content =
-                app_content.child(self.render_workspace_context_menu(menu, ui, window, cx));
+                app_content.children(self.render_workspace_context_menu(menu, ui, window, cx));
         }
 
         // "Move to pane…" tab context menu.
