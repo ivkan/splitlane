@@ -211,6 +211,16 @@ impl SplitlaneApp {
         for (position, &ws_idx) in sections.ungrouped.iter().enumerate() {
             list = self.project_block(list, ws_idx, position > 0, &shared, cx);
         }
+        // With every project in a group, `PROJECTS` has no rows to drop
+        // between, so for as long as a project is in flight a row-high band
+        // under it stands in for the section.
+        if sections.ungrouped.is_empty()
+            && !sections.groups.is_empty()
+            && cx.has_active_drag()
+            && self.rail_drag_kind.get() == Some(crate::app::drag::RailDragKind::Project)
+        {
+            list = list.child(ungrouped_drop_band(ui, cx));
+        }
         list = self.render_group_sections(list, &sections, &shared, window, cx);
 
         let list = div()
@@ -1055,11 +1065,15 @@ impl SplitlaneApp {
                     title: drag_title.clone(),
                     branch: drag_branch.clone(),
                 },
-                |drag, _offset, _window, cx| {
-                    cx.new(|_| crate::WorkspaceDragPreview {
-                        title: drag.title.clone(),
-                        branch: drag.branch.clone(),
-                    })
+                {
+                    let drag_kind = self.rail_drag_kind.clone();
+                    move |drag, _offset, _window, cx| {
+                        drag_kind.set(Some(crate::app::drag::RailDragKind::Project));
+                        cx.new(|_| crate::WorkspaceDragPreview {
+                            title: drag.title.clone(),
+                            branch: drag.branch.clone(),
+                        })
+                    }
                 },
             )
             .cursor_pointer()
@@ -1213,7 +1227,10 @@ impl SplitlaneApp {
             })
             .on_drop(cx.listener(
                 move |this, drag: &crate::app::drag::WorkspaceDrag, _window, cx| {
-                    this.reorder_workspace(drag.id, ws_idx, cx);
+                    // Into the target's section too: between two members is
+                    // into their group, among the projects without one is out
+                    // of any. Dropping on a project never *makes* a group.
+                    this.drop_project_beside(drag.id, ws_idx, cx);
                 },
             ))
             .child(row)
@@ -2176,6 +2193,32 @@ fn section_eyebrow(
 /// Compact inline hint shown under the PROJECTS eyebrow when no
 /// project exists yet. The eyebrow's `+` is the create affordance; this is
 /// just guidance copy.
+/// The drop band for the projects-without-a-group section, drawn only while a
+/// project is dragged and the section is empty. Its insertion line is the
+/// rail's own, in the same role.
+fn ungrouped_drop_band(
+    ui: crate::theme::UiColors,
+    cx: &mut Context<SplitlaneApp>,
+) -> gpui::AnyElement {
+    div()
+        .id("rail-ungrouped-drop-band")
+        .flex_none()
+        .h(tok::row::PROJECT)
+        .rounded(tok::radius::SMALL)
+        .drag_over::<crate::app::drag::WorkspaceDrag>(move |style, _, _, _| {
+            style
+                .border_t_1()
+                .border_color(ui.text.opacity(0.4))
+                .bg(crate::app::constants::sidebar_tab_active_background().opacity(0.24))
+        })
+        .on_drop(cx.listener(
+            |this, drag: &crate::app::drag::WorkspaceDrag, _window, cx| {
+                this.drop_project_out_of_groups(drag.id, cx);
+            },
+        ))
+        .into_any_element()
+}
+
 fn projects_empty_hint(ui: crate::theme::UiColors) -> impl IntoElement {
     div()
         .px(tok::space::MD)

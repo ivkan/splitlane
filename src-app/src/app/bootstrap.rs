@@ -1279,6 +1279,7 @@ impl SplitlaneApp {
             project_groups: restored_groups,
             pending_new_group: None,
             group_field_blur: None,
+            rail_drag_kind: Default::default(),
         };
 
         for cwd in app

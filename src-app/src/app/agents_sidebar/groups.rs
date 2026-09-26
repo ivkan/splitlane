@@ -172,6 +172,72 @@ impl SplitlaneApp {
         cx.notify();
     }
 
+    /// A project dropped on another project's row: the existing reorder,
+    /// and the dragged project joins the target's section - the target's
+    /// group, or none. The drop edge is the list's, so the insertion line the
+    /// rail drew is where it lands.
+    pub(crate) fn drop_project_beside(
+        &mut self,
+        dragged_id: u64,
+        target_idx: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target_group) = self.workspaces.get(target_idx).map(|ws| ws.group) else {
+            return;
+        };
+        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == dragged_id) {
+            ws.group = target_group;
+        }
+        self.reorder_workspace(dragged_id, target_idx, cx);
+        self.reconcile_project_groups();
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    /// A project dropped on a group's label: the end of that group. A folded
+    /// group stays folded and its summary takes the project in.
+    pub(crate) fn drop_project_on_group(
+        &mut self,
+        dragged_id: u64,
+        group_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ws_idx) = self.workspaces.iter().position(|ws| ws.id == dragged_id) {
+            self.add_project_to_group(ws_idx, group_id, cx);
+        }
+    }
+
+    /// A project dropped on the band that stands in for an empty `PROJECTS`
+    /// section: out of its group.
+    pub(crate) fn drop_project_out_of_groups(&mut self, dragged_id: u64, cx: &mut Context<Self>) {
+        if let Some(ws_idx) = self.workspaces.iter().position(|ws| ws.id == dragged_id) {
+            self.remove_project_from_group(ws_idx, cx);
+        }
+    }
+
+    /// A group dropped on another group's label: before or after it, by
+    /// which way it travelled - the same rule a project's drop edge follows.
+    pub(crate) fn reorder_group(
+        &mut self,
+        dragged_id: u64,
+        target_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(from), Some(to)) = (
+            self.group_position(dragged_id),
+            self.group_position(target_id),
+        ) else {
+            return;
+        };
+        if from == to {
+            return;
+        }
+        let group = self.project_groups.remove(from);
+        self.project_groups.insert(to, group);
+        self.save_session(cx);
+        cx.notify();
+    }
+
     /// `Remove from group`: the project goes to the end of the projects
     /// without a group.
     pub(crate) fn remove_project_from_group(&mut self, ws_idx: usize, cx: &mut Context<Self>) {
@@ -446,7 +512,14 @@ impl SplitlaneApp {
                         .flat_map(|ws| ws.threads.iter()),
                     true,
                 );
-                list = list.child(self.group_label_row(&group, members.len(), tally, ui, cx));
+                list = list.child(self.group_label_row(
+                    &group,
+                    *position,
+                    members.len(),
+                    tally,
+                    ui,
+                    cx,
+                ));
             }
             // Folding is visual only, and a folded group has no rule: the
             // rule is what says "these belong to the label above", and there
@@ -461,7 +534,15 @@ impl SplitlaneApp {
                 .ml(tok::group::RULE_INSET)
                 .pl(tok::group::RULE_GAP)
                 .pb(tok::group::RULE_GAP)
-                .border_color(ui.group_rule);
+                .border_color(ui.group_rule)
+                // While a project is over this group - its insertion line
+                // between two of these members - the rule lightens, so the
+                // group it will land in is plain even with the line on the
+                // border between two groups. No rule lightens outside a group,
+                // and that is the signal for "no group".
+                .drag_over::<crate::app::drag::WorkspaceDrag>(move |style, _, _, _| {
+                    style.border_color(ui.dim)
+                });
             body.style().border_widths.left = Some(tok::group::RULE.into());
             for (index, &ws_idx) in members.iter().enumerate() {
                 // The first member sits right under the label; the label's
@@ -478,6 +559,7 @@ impl SplitlaneApp {
     fn group_label_row(
         &self,
         group: &ProjectGroup,
+        position: usize,
         project_count: usize,
         tally: FoldedTally,
         ui: crate::theme::UiColors,
@@ -506,13 +588,28 @@ impl SplitlaneApp {
         );
         let full_name: SharedString = group.name.clone().into();
         let tooltips_ok = !rail_overlay_open(self);
+        let hit_group = SharedString::from(format!("rail-group-hit-{group_id}"));
+        let drag = crate::app::drag::GroupDrag {
+            id: group_id,
+            source_position: position,
+            label: group.name.to_uppercase().into(),
+            summary: groups::TallyWord::Projects(project_count).text().into(),
+        };
+        let drag_kind = self.rail_drag_kind.clone();
 
         let label = div()
             .id(SharedString::from(format!("rail-group-label-{group_id}")))
             .flex_none()
             .w(px(fit.label_width))
-            .px(tok::group::LABEL_PAD_X)
-            .py(tok::group::LABEL_PAD_Y)
+            // The drop target's 1px frame is always there, transparent, and
+            // comes out of the padding, so lighting it moves nothing.
+            .px(tok::group::LABEL_PAD_X - px(1.))
+            .py(tok::group::LABEL_PAD_Y - px(1.))
+            .border_1()
+            .border_color(ui.tag_fill)
+            .group_drag_over::<crate::app::drag::WorkspaceDrag>(hit_group.clone(), move |style| {
+                style.border_color(ui.dim)
+            })
             .rounded(tok::radius::BADGE)
             .bg(ui.tag_fill)
             .text_color(ui.text)
@@ -545,6 +642,41 @@ impl SplitlaneApp {
             .gap(GROUP_ROW_GAP)
             .font_family(tok::font::MONO)
             .cursor_pointer()
+            .group(hit_group)
+            // A project dropped on the label goes to the end of the group.
+            // A folded group is not opened for it, on hover or after: opening
+            // would move everything below the pointer while it is on its way
+            // somewhere else. For an exact place, open the group first.
+            .on_drop(cx.listener(
+                move |this, drag: &crate::app::drag::WorkspaceDrag, _window, cx| {
+                    this.drop_project_on_group(drag.id, group_id, cx);
+                },
+            ))
+            // The whole group travels by its label, and lands only between
+            // groups: never inside one (no nesting), never above the projects
+            // without a group (they always come first).
+            .on_drag(drag, move |drag, _offset, _window, cx| {
+                drag_kind.set(Some(crate::app::drag::RailDragKind::Group));
+                cx.new(|_| crate::app::drag::GroupDragPreview {
+                    label: drag.label.clone(),
+                    summary: drag.summary.clone(),
+                })
+            })
+            .drag_over::<crate::app::drag::GroupDrag>(move |style, drag, _, _| {
+                let indicator = ui.text.opacity(0.4);
+                if drag.id == group_id {
+                    style
+                } else if drag.source_position < position {
+                    style.border_b_1().border_color(indicator)
+                } else {
+                    style.border_t_1().border_color(indicator)
+                }
+            })
+            .on_drop(cx.listener(
+                move |this, drag: &crate::app::drag::GroupDrag, _window, cx| {
+                    this.reorder_group(drag.id, group_id, cx);
+                },
+            ))
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 this.close_agents_menu(cx);
                 let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);

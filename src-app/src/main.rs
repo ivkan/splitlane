@@ -1524,6 +1524,9 @@ struct SplitlaneApp {
     /// Held while a group's naming field is open: ends the field when focus
     /// leaves it.
     pub(crate) group_field_blur: Option<gpui::Subscription>,
+    /// What the rail is dragging, set when a drag starts. See
+    /// `app::drag::RailDragKind`.
+    pub(crate) rail_drag_kind: std::rc::Rc<std::cell::Cell<Option<crate::app::drag::RailDragKind>>>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
