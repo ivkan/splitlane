@@ -58,7 +58,7 @@ const UP_LAUNCH_POLL: Duration = Duration::from_millis(100);
 
 struct TranscriptTurnEndNotification {
     agent: TerminalAgent,
-    title: String,
+    subject: desktop_notifications::NotificationSubject,
     config: SplitlaneConfig,
     /// Answered on the main thread, at the moment the turn ended, and carried
     /// rather than re-asked: the transcript read that follows takes long enough
@@ -268,14 +268,14 @@ pub(crate) fn build_up_layout(
 
 pub(crate) fn fire_turn_end_notification(
     agent: TerminalAgent,
-    workspace_title: &str,
+    subject: desktop_notifications::NotificationSubject,
     session_summary: Option<&str>,
     config: &splitlane_config::schema::SplitlaneConfig,
     surface_is_seen: bool,
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::turn_finished(agent, workspace_title, session_summary),
+        DesktopNotification::turn_finished(agent, &subject, session_summary),
         config,
         surface_is_seen,
         executor,
@@ -284,14 +284,14 @@ pub(crate) fn fire_turn_end_notification(
 
 fn fire_attention_notification(
     agent: TerminalAgent,
-    workspace_title: &str,
+    subject: desktop_notifications::NotificationSubject,
     message: Option<&str>,
     config: &splitlane_config::schema::SplitlaneConfig,
     surface_is_seen: bool,
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::needs_input(agent, workspace_title, message),
+        DesktopNotification::needs_input(agent, &subject, message),
         config,
         surface_is_seen,
         executor,
@@ -612,14 +612,14 @@ pub(crate) fn stage_planned_pane_env(
 
 fn fire_agent_exit_notification(
     agent: TerminalAgent,
-    workspace_title: &str,
+    subject: desktop_notifications::NotificationSubject,
     exit_code: i32,
     config: &splitlane_config::schema::SplitlaneConfig,
     surface_is_seen: bool,
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::agent_exited(agent, workspace_title, exit_code),
+        DesktopNotification::agent_exited(agent, &subject, exit_code),
         config,
         surface_is_seen,
         executor,
@@ -633,14 +633,14 @@ fn fire_agent_exit_notification(
 /// re-trigger until a hook event revives it first).
 pub(crate) fn fire_stalled_notification(
     agent: TerminalAgent,
-    workspace_title: &str,
+    subject: desktop_notifications::NotificationSubject,
     silent_secs: u64,
     config: &splitlane_config::schema::SplitlaneConfig,
     surface_is_seen: bool,
     executor: gpui::BackgroundExecutor,
 ) {
     desktop_notifications::fire_desktop_notification(
-        DesktopNotification::stalled(agent, workspace_title, silent_secs),
+        DesktopNotification::stalled(agent, &subject, silent_secs),
         config,
         surface_is_seen,
         executor,
@@ -2227,7 +2227,7 @@ impl SplitlaneApp {
                     desktop_notifications::fire_desktop_notification(
                         DesktopNotification::turn_finished(
                             notification.agent,
-                            &notification.title,
+                            &notification.subject,
                             extracted.as_deref(),
                         ),
                         &notification.config,
@@ -3441,7 +3441,7 @@ impl SplitlaneApp {
                     let subject = self.surface_name(surface_id, cx).unwrap_or(ws_title);
                     fire_attention_notification(
                         tool,
-                        &subject,
+                        self.notification_subject(workspace_id, subject, cx),
                         message.as_deref(),
                         &notify_config,
                         seen,
@@ -3475,7 +3475,7 @@ impl SplitlaneApp {
                     let seen = self.thread_is_seen(thread_id, cx);
                     fire_attention_notification(
                         tool,
-                        &title,
+                        self.notification_subject(workspace_id, title, cx),
                         message.as_deref(),
                         &notify_config,
                         seen,
@@ -3578,7 +3578,11 @@ impl SplitlaneApp {
                                 path,
                                 Some(TranscriptTurnEndNotification {
                                     agent: tool,
-                                    title: subject,
+                                    subject: self.notification_subject(
+                                        workspace_id,
+                                        subject.clone(),
+                                        cx,
+                                    ),
                                     config: notify_config.clone(),
                                     surface_is_seen: seen,
                                     executor: cx.background_executor().clone(),
@@ -3588,7 +3592,7 @@ impl SplitlaneApp {
                         } else {
                             fire_turn_end_notification(
                                 tool,
-                                &subject,
+                                self.notification_subject(workspace_id, subject, cx),
                                 session_summary.as_deref(),
                                 &notify_config,
                                 seen,
@@ -3700,7 +3704,11 @@ impl SplitlaneApp {
                                 path,
                                 Some(TranscriptTurnEndNotification {
                                     agent: tool,
-                                    title: title.clone(),
+                                    subject: self.notification_subject(
+                                        workspace_id,
+                                        title.clone(),
+                                        cx,
+                                    ),
                                     config: notify_config.clone(),
                                     surface_is_seen: seen,
                                     executor: cx.background_executor().clone(),
@@ -3710,7 +3718,7 @@ impl SplitlaneApp {
                         } else {
                             fire_turn_end_notification(
                                 tool,
-                                &title,
+                                self.notification_subject(workspace_id, title, cx),
                                 session_summary.as_deref(),
                                 &notify_config,
                                 seen,
@@ -3784,7 +3792,7 @@ impl SplitlaneApp {
                         let seen = self.surface_is_seen(surface_id, cx);
                         fire_agent_exit_notification(
                             tool,
-                            &ws_title,
+                            self.notification_subject(workspace_id, ws_title, cx),
                             exit_code,
                             &notify_config,
                             seen,
@@ -3834,7 +3842,7 @@ impl SplitlaneApp {
                         let seen = self.thread_is_seen(thread_id, cx);
                         fire_agent_exit_notification(
                             tool,
-                            &title,
+                            self.notification_subject(workspace_id, title, cx),
                             exit_code,
                             &notify_config,
                             seen,

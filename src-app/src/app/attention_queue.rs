@@ -95,6 +95,81 @@ pub(crate) struct QueueRow {
     /// instant. `None` draws nothing rather than "0s", which would be a number
     /// the app made up.
     pub(crate) waiting_secs: Option<u64>,
+    /// Set when this row stands for a private group rather than a session:
+    /// see [`fold_private_groups`].
+    pub(crate) private_group: Option<PrivateGroupRow>,
+}
+
+/// A private group's one row: which group, and how many of its sessions are
+/// on the row's rung.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrivateGroupRow {
+    pub(crate) group_id: u64,
+    pub(crate) sessions: usize,
+}
+
+/// **One row per private group.** Pure - unit-tested. Call it on a sorted,
+/// deduplicated list.
+///
+/// A group with `Keep names private` shows its names only where the person
+/// looked - the open group in the rail, a query they typed - and Activity is a
+/// list that comes to them. So the group's sessions fold into one row named by
+/// the group (as typed), standing where its highest session would stand: the
+/// first of its rows in triage order becomes the group's row, keeping that
+/// session's stop, so a click goes to the session at the top rung. It counts
+/// the sessions on that rung; the rest of the group's rows go.
+///
+/// The counts above the list are taken before this, so the chip and the
+/// section headings still count sessions, not rows.
+pub(crate) fn fold_private_groups(
+    rows: Vec<QueueRow>,
+    private_group_of: impl Fn(&QueueRow) -> Option<(u64, String)>,
+) -> Vec<QueueRow> {
+    let tagged: Vec<(QueueRow, Option<(u64, String)>)> = rows
+        .into_iter()
+        .map(|row| {
+            let group = private_group_of(&row);
+            (row, group)
+        })
+        .collect();
+    // Sorted, so a group's first row is on its highest rung.
+    let top_rung = |group_id: u64| {
+        tagged
+            .iter()
+            .find(|(_, group)| group.as_ref().is_some_and(|(id, _)| *id == group_id))
+            .map(|(row, _)| row.kind)
+    };
+    let on_top_rung = |group_id: u64| {
+        let top = top_rung(group_id);
+        tagged
+            .iter()
+            .filter(|(row, group)| {
+                group.as_ref().is_some_and(|(id, _)| *id == group_id) && Some(row.kind) == top
+            })
+            .count()
+    };
+    let sessions: Vec<Option<usize>> = tagged
+        .iter()
+        .map(|(_, group)| group.as_ref().map(|(id, _)| on_top_rung(*id)))
+        .collect();
+    let mut seen: Vec<u64> = Vec::new();
+    let mut folded = Vec::with_capacity(tagged.len());
+    for ((mut row, group), sessions) in tagged.into_iter().zip(sessions) {
+        let (Some((group_id, name)), Some(sessions)) = (group, sessions) else {
+            folded.push(row);
+            continue;
+        };
+        if seen.contains(&group_id) {
+            continue;
+        }
+        seen.push(group_id);
+        row.name = name;
+        row.meta = String::new();
+        row.waiting_secs = None;
+        row.private_group = Some(PrivateGroupRow { group_id, sessions });
+        folded.push(row);
+    }
+    folded
 }
 
 /// Triage first, then longest-standing first inside each section; rows the app
@@ -163,6 +238,17 @@ impl SplitlaneApp {
         sort_rows(&mut rows);
         one_row_per_session(&mut rows);
         rows
+    }
+
+    /// The rows as the popover draws them: [`Self::attention_queue_rows`]
+    /// with each private group folded into one row. Counts are taken from the
+    /// unfolded rows; only the drawing and the keys use these.
+    pub(crate) fn attention_queue_display_rows(&self, cx: &Context<Self>) -> Vec<QueueRow> {
+        fold_private_groups(self.attention_queue_rows(cx), |row| {
+            crate::app::waiting::stop_ws_idx(&row.stop)
+                .and_then(|ws_idx| self.private_group_of(ws_idx))
+                .map(|group| (group.id, group.name.clone()))
+        })
     }
 
     /// Everything Activity holds, in no order and before that rule.
@@ -280,6 +366,7 @@ impl SplitlaneApp {
             name,
             meta: queue_meta(&ws.title, &ws.git_branch),
             waiting_secs,
+            private_group: None,
         })
     }
 
@@ -353,9 +440,13 @@ impl SplitlaneApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A session in a folded group is shown with its group opened -
+        // private or not: the person asked to go there.
+        if let Some(ws_idx) = crate::app::waiting::stop_ws_idx(&stop) {
+            self.reveal_project_group(ws_idx, cx);
+        }
         // Keep the jump cycle coherent: a queue teleport counts as visiting
         // that stop, so the next press of the chord continues from here.
-        self.jump_cursor = self.stop_key(&stop, cx);
         self.go_to_stop(stop, window, cx);
         // And the mark goes **pointedly**, on the row that was clicked and not
         // on its neighbours - which is what makes the list a triage tool rather
@@ -373,7 +464,7 @@ impl SplitlaneApp {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let mut rows = self.attention_queue_rows(cx);
+        let mut rows = self.attention_queue_display_rows(cx);
         let len = rows.len();
         match key {
             "escape" => self.close_attention_queue_and_restore_focus(window, cx),
@@ -413,7 +504,9 @@ impl SplitlaneApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ui = crate::theme::ui_colors();
-        let rows = self.attention_queue_rows(cx);
+        let all_rows = self.attention_queue_rows(cx);
+        let counts = crate::app::waiting::ActivityCounts::from_rows(&all_rows);
+        let rows = self.attention_queue_display_rows(cx);
         let selected = self
             .attention_queue_selected
             .min(rows.len().saturating_sub(1));
@@ -421,9 +514,7 @@ impl SplitlaneApp {
         // subtitle sits directly above the section headings, and a subtitle
         // derived from a second source is the "two numbers six pixels apart"
         // failure with the two numbers put even closer together.
-        let summary = crate::app::waiting::activity_summary(
-            crate::app::waiting::ActivityCounts::from_rows(&rows),
-        );
+        let summary = crate::app::waiting::activity_summary(counts);
         let has_waiting = rows.iter().any(|row| row.kind == QueueKind::Waiting);
 
         let mut card = div()
@@ -537,7 +628,13 @@ impl SplitlaneApp {
                             .p(tok::space::SM);
                     }
                     drawn = Some(row.kind);
-                    let count = rows.iter().filter(|other| other.kind == row.kind).count();
+                    // Sessions, not rows: a private group's one row stands
+                    // for several.
+                    let count = match row.kind {
+                        QueueKind::Failed => counts.failed,
+                        QueueKind::Waiting => counts.waiting,
+                        QueueKind::Finished => counts.finished,
+                    };
                     let (heading, tone) = match row.kind {
                         QueueKind::Failed => (
                             crate::app::waiting::failed_section_label(count),
@@ -649,6 +746,9 @@ impl SplitlaneApp {
         } else {
             ui.text
         };
+        if let Some(private) = row.private_group {
+            return self.private_group_queue_row(row, private, row_id, resting_background, ui, cx);
+        }
         let meta: SharedString = row.meta.clone().into();
         div()
             .id(row_id)
@@ -721,6 +821,68 @@ impl SplitlaneApp {
     }
 }
 
+impl SplitlaneApp {
+    /// A private group's row: the rung's dot, the group's name as typed in
+    /// mono, and on the right how many sessions are on that rung. One line,
+    /// because a second line would be where names go.
+    fn private_group_queue_row(
+        &self,
+        row: &QueueRow,
+        private: PrivateGroupRow,
+        row_id: SharedString,
+        resting_background: gpui::Hsla,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let stop = row.stop.clone();
+        let thread_id = row.thread_id;
+        let (word, tone) = match row.kind {
+            QueueKind::Failed => ("failed", ui.agent_error),
+            QueueKind::Waiting => ("waiting", ui.accent),
+            QueueKind::Finished => ("finished", ui.faint),
+        };
+        div()
+            .id(row_id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tok::space::LG)
+            .px(tok::space::LG)
+            .py(tok::space::MD)
+            .rounded(tok::radius::CONTROL)
+            .bg(resting_background)
+            .child(div().flex_none().size(px(6.)).rounded_full().bg(tone))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(tok::font::MONO)
+                    .text_size(tok::text::ROW)
+                    .text_color(ui.text)
+                    .child(SharedString::from(row.name.clone())),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .font_family(tok::font::MONO)
+                    .text_size(tok::mono::HINT)
+                    .text_color(tone)
+                    .child(SharedString::from(format!("{} {word}", private.sessions))),
+            )
+            .cursor_pointer()
+            .animated_hover(move |style, delta| {
+                style.bg(lerp_color(resting_background, ui.subtle, delta));
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.attention_queue_activate(stop.clone(), thread_id, window, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,7 +901,40 @@ mod tests {
             name: name.to_string(),
             meta: String::new(),
             waiting_secs,
+            private_group: None,
         }
+    }
+
+    /// A private group is one row, where its highest session would stand,
+    /// named by the group and counting the sessions on that rung; nothing
+    /// under it keeps a name.
+    #[test]
+    fn a_private_group_is_one_row_at_its_highest_rung() {
+        let mut rows = vec![
+            row(QueueKind::Failed, "p:crash", Some(5)),
+            row(QueueKind::Waiting, "open", Some(9)),
+            row(QueueKind::Waiting, "p:ask one", Some(4)),
+            row(QueueKind::Failed, "p:crash two", Some(3)),
+            row(QueueKind::Finished, "p:done", Some(1)),
+        ];
+        sort_rows(&mut rows);
+        let folded = fold_private_groups(rows, |row| {
+            row.name
+                .starts_with("p:")
+                .then(|| (7, "Personal".to_string()))
+        });
+        let names: Vec<&str> = folded.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["Personal", "open"]);
+        assert_eq!(folded[0].kind, QueueKind::Failed);
+        assert_eq!(
+            folded[0].private_group,
+            Some(PrivateGroupRow {
+                group_id: 7,
+                sessions: 2
+            })
+        );
+        assert!(folded[0].meta.is_empty() && folded[0].waiting_secs.is_none());
+        assert_eq!(folded[1].private_group, None);
     }
 
     /// Triage outranks the wait: outside, the chip answers "is anything

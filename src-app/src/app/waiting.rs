@@ -34,6 +34,15 @@ pub(crate) enum WaitingStop {
     },
 }
 
+/// The container a stop is in.
+pub(crate) fn stop_ws_idx(stop: &WaitingStop) -> Option<usize> {
+    match stop {
+        WaitingStop::Surface(AgentsTarget::Thread { ws_idx, .. }) => Some(*ws_idx),
+        WaitingStop::Surface(_) => None,
+        WaitingStop::Pane { ws_idx, .. } => Some(*ws_idx),
+    }
+}
+
 impl SplitlaneApp {
     /// Everything waiting for the user, in the rail's own order: containers top
     /// to bottom, and inside a container its surfaces before its panes.

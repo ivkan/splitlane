@@ -480,6 +480,65 @@ impl SplitlaneApp {
     }
 
     // ------------------------------------------------------------------
+    // Keep names private
+    // ------------------------------------------------------------------
+
+    /// Open the group project `ws_idx` is in, if it is folded. Called when the
+    /// project is being gone to - from the palette, a notification, Activity -
+    /// and for a private group too: the person asked to go there.
+    pub(crate) fn reveal_project_group(&mut self, ws_idx: usize, cx: &mut Context<Self>) {
+        if let Some(group_id) = self
+            .group_of_project(ws_idx)
+            .filter(|group| group.collapsed)
+            .map(|group| group.id)
+        {
+            self.set_group_collapsed(group_id, false, cx);
+        }
+    }
+
+    /// The private group project `ws_idx` is in, if it is in one.
+    pub(crate) fn private_group_of(&self, ws_idx: usize) -> Option<&ProjectGroup> {
+        self.group_of_project(ws_idx).filter(|group| group.private)
+    }
+
+    /// Who a notification about container `ws_id` names: `name`, unless the
+    /// container is in a private group, when it is only the group.
+    pub(crate) fn notification_subject(
+        &self,
+        ws_id: u64,
+        name: impl Into<String>,
+        cx: &Context<Self>,
+    ) -> crate::agents::notifications::NotificationSubject {
+        use crate::agents::notifications::NotificationSubject;
+        let group = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == ws_id)
+            .and_then(|ws_idx| self.private_group_of(ws_idx));
+        match group {
+            Some(group) => NotificationSubject::PrivateGroup {
+                group: group.name.clone(),
+                waiting: self.waiting_in_group(group.id, cx),
+            },
+            None => NotificationSubject::Named(name.into()),
+        }
+    }
+
+    /// How many sessions of a group are waiting now - off the same stops the
+    /// chip and Activity count, so the three cannot disagree.
+    fn waiting_in_group(&self, group_id: u64, cx: &Context<Self>) -> usize {
+        self.waiting_stops(cx)
+            .iter()
+            .filter_map(crate::app::waiting::stop_ws_idx)
+            .filter(|&ws_idx| {
+                self.workspaces
+                    .get(ws_idx)
+                    .is_some_and(|ws| ws.group == Some(group_id))
+            })
+            .count()
+    }
+
+    // ------------------------------------------------------------------
     // Drawing
     // ------------------------------------------------------------------
 

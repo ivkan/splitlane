@@ -1109,6 +1109,7 @@ impl SplitlaneApp {
         // window focus.
         let mut stalled_notifs: Vec<(
             crate::agent_launcher::TerminalAgent,
+            u64,
             String,
             u64,
             Option<u64>,
@@ -1151,6 +1152,7 @@ impl SplitlaneApp {
                         session.waiting_since = None;
                         stalled_notifs.push((
                             session.tool,
+                            ws.id,
                             ws.title.clone(),
                             session.last_activity.elapsed().as_secs(),
                             session.surface_id,
@@ -1193,11 +1195,11 @@ impl SplitlaneApp {
         // Fire AFTER the state writes so the notification and
         // the UI agree. One entry per Thinking→Stalled transition == one
         // notification per stall episode (the dedup contract).
-        for (agent, title, silent_secs, surface_id) in stalled_notifs {
+        for (agent, ws_id, title, silent_secs, surface_id) in stalled_notifs {
             let seen = self.surface_is_seen(surface_id, cx);
             super::ipc_handler::fire_stalled_notification(
                 agent,
-                &title,
+                self.notification_subject(ws_id, title, cx),
                 silent_secs,
                 &self.cached_config,
                 seen,

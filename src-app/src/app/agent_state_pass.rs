@@ -570,9 +570,14 @@ impl SplitlaneApp {
         if !crate::agents::notifications::turn_was_long_enough(Some(run.ran_for)) {
             return;
         }
+        let ws_id = self
+            .workspaces
+            .iter()
+            .find(|ws| ws.threads.iter().any(|thread| thread.id == run.thread_id))
+            .map_or(0, |ws| ws.id);
         crate::app::ipc_handler::fire_turn_end_notification(
             agent,
-            &title,
+            self.notification_subject(ws_id, title, cx),
             None,
             &self.cached_config,
             seen,

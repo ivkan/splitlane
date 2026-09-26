@@ -74,6 +74,47 @@ pub(crate) enum NotificationClass {
     Finished,
 }
 
+/// Who a notification is about.
+///
+/// A project in a group with `Keep names private` is named by its group and
+/// nothing else: no project, no session, no agent, and none of what the
+/// session said. The rule is that such names appear only where the person
+/// looked for them - the open group in the rail, or a query they typed - and a
+/// notification is the opposite of looking. The group's name is fine to show:
+/// its label is always on screen in the rail anyway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NotificationSubject {
+    /// The surface's or project's name, as notifications have always said it.
+    Named(String),
+    /// A private group, with how many of its sessions are waiting now.
+    PrivateGroup { group: String, waiting: usize },
+}
+
+impl NotificationSubject {
+    fn private_group(&self) -> Option<&str> {
+        match self {
+            NotificationSubject::PrivateGroup { group, .. } => Some(group),
+            NotificationSubject::Named(_) => None,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            NotificationSubject::Named(name) => name,
+            NotificationSubject::PrivateGroup { group, .. } => group,
+        }
+    }
+}
+
+/// The product's name, where the private texts send the reader.
+const APP_NAME: &str = "Splitlane";
+
+/// `Open Splitlane to see it.` / `… them.`
+fn private_body(count: usize) -> String {
+    let pronoun = if count == 1 { "it" } else { "them" };
+    format!("Open {APP_NAME} to see {pronoun}.")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DesktopNotification {
     summary: String,
@@ -85,30 +126,69 @@ pub(crate) struct DesktopNotification {
 impl DesktopNotification {
     pub(crate) fn turn_finished(
         agent: TerminalAgent,
-        subject: &str,
+        subject: &NotificationSubject,
         session_summary: Option<&str>,
     ) -> Self {
+        let (summary, body) = match subject.private_group() {
+            Some(group) => (format!("A session finished in {group}"), private_body(1)),
+            None => (
+                format!("{} finished", agent.display_name()),
+                notification_context_body(subject.name(), session_summary),
+            ),
+        };
         Self {
-            summary: format!("{} finished", agent.display_name()),
-            body: notification_context_body(subject, session_summary),
+            summary,
+            body,
             urgency: DesktopNotificationUrgency::Normal,
             class: NotificationClass::Finished,
         }
     }
 
-    pub(crate) fn needs_input(agent: TerminalAgent, subject: &str, message: Option<&str>) -> Self {
+    pub(crate) fn needs_input(
+        agent: TerminalAgent,
+        subject: &NotificationSubject,
+        message: Option<&str>,
+    ) -> Self {
+        let (summary, body) = match subject {
+            NotificationSubject::PrivateGroup { group, waiting } => {
+                // At least this one: the count is read as the notification is
+                // made, and it is about a session that is waiting.
+                let waiting = (*waiting).max(1);
+                let summary = if waiting == 1 {
+                    format!("A session is waiting in {group}")
+                } else {
+                    format!("{waiting} sessions are waiting in {group}")
+                };
+                (summary, private_body(waiting))
+            }
+            NotificationSubject::Named(name) => (
+                format!("{} needs input", agent.display_name()),
+                attention_notification_body(name, message),
+            ),
+        };
         Self {
-            summary: format!("{} needs input", agent.display_name()),
-            body: attention_notification_body(subject, message),
+            summary,
+            body,
             urgency: DesktopNotificationUrgency::Critical,
             class: NotificationClass::Waiting,
         }
     }
 
-    pub(crate) fn agent_exited(agent: TerminalAgent, subject: &str, exit_code: i32) -> Self {
+    pub(crate) fn agent_exited(
+        agent: TerminalAgent,
+        subject: &NotificationSubject,
+        exit_code: i32,
+    ) -> Self {
+        let (summary, body) = match subject.private_group() {
+            Some(group) => (format!("A session failed in {group}"), private_body(1)),
+            None => (
+                format!("{} exited unexpectedly", agent.display_name()),
+                agent_exit_notification_body(subject.name(), exit_code),
+            ),
+        };
         Self {
-            summary: format!("{} exited unexpectedly", agent.display_name()),
-            body: agent_exit_notification_body(subject, exit_code),
+            summary,
+            body,
             urgency: DesktopNotificationUrgency::Critical,
             class: NotificationClass::Broke,
         }
@@ -136,10 +216,24 @@ impl DesktopNotification {
         }
     }
 
-    pub(crate) fn stalled(agent: TerminalAgent, subject: &str, silent_secs: u64) -> Self {
+    pub(crate) fn stalled(
+        agent: TerminalAgent,
+        subject: &NotificationSubject,
+        silent_secs: u64,
+    ) -> Self {
+        let (summary, body) = match subject.private_group() {
+            Some(group) => (
+                format!("A session may be stuck in {group}"),
+                private_body(1),
+            ),
+            None => (
+                format!("{} may be stuck", agent.display_name()),
+                stalled_notification_body(subject.name(), silent_secs),
+            ),
+        };
         Self {
-            summary: format!("{} may be stuck", agent.display_name()),
-            body: stalled_notification_body(subject, silent_secs),
+            summary,
+            body,
             urgency: DesktopNotificationUrgency::Critical,
             class: NotificationClass::Broke,
         }
@@ -576,12 +670,12 @@ mod tests {
     fn two_sessions_of_one_agent_do_not_send_the_same_notification() {
         let auth = DesktopNotification::needs_input(
             TerminalAgent::ClaudeCode,
-            "auth refactor",
+            &named("auth refactor"),
             Some("Approve edit?"),
         );
         let parser = DesktopNotification::needs_input(
             TerminalAgent::ClaudeCode,
-            "parser",
+            &named("parser"),
             Some("Approve edit?"),
         );
 
@@ -605,22 +699,77 @@ mod tests {
         );
     }
 
+    fn named(name: &str) -> NotificationSubject {
+        NotificationSubject::Named(name.to_string())
+    }
+
+    /// A private group's notifications say the group and nothing else - these
+    /// exact words - and no field carries a project's, a session's or an
+    /// agent's name, nor what the session said. The summary and the body are
+    /// the only fields any of the three platforms is handed that vary per
+    /// notification (the app name, icon and app id are constants), so checking
+    /// both is checking everything that leaves.
+    #[test]
+    fn a_private_group_is_named_and_nothing_in_it_is() {
+        let private = |waiting| NotificationSubject::PrivateGroup {
+            group: "Personal".to_string(),
+            waiting,
+        };
+        let failed = DesktopNotification::agent_exited(TerminalAgent::ClaudeCode, &private(0), 1);
+        assert_eq!(failed.summary, "A session failed in Personal");
+        assert_eq!(failed.body, "Open Splitlane to see it.");
+
+        let waiting = DesktopNotification::needs_input(
+            TerminalAgent::ClaudeCode,
+            &private(2),
+            Some("Allow `rm -rf secret-project`?"),
+        );
+        assert_eq!(waiting.summary, "2 sessions are waiting in Personal");
+        assert_eq!(waiting.body, "Open Splitlane to see them.");
+
+        let one = DesktopNotification::needs_input(TerminalAgent::Codex, &private(1), None);
+        assert_eq!(one.summary, "A session is waiting in Personal");
+        assert_eq!(one.body, "Open Splitlane to see it.");
+
+        let every = [
+            failed,
+            waiting,
+            one,
+            DesktopNotification::turn_finished(
+                TerminalAgent::ClaudeCode,
+                &private(0),
+                Some("Merged secret-project"),
+            ),
+            DesktopNotification::stalled(TerminalAgent::Codex, &private(0), 600),
+        ];
+        for notification in every {
+            for field in [&notification.summary, &notification.body] {
+                for leak in ["secret-project", "Claude", "Codex", "rm -rf", "Merged"] {
+                    assert!(!field.contains(leak), "{leak:?} leaked into {field:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn desktop_notification_constructors_set_title_body_and_urgency() {
-        let finished =
-            DesktopNotification::turn_finished(TerminalAgent::Codex, "backend", Some("Tests pass"));
+        let finished = DesktopNotification::turn_finished(
+            TerminalAgent::Codex,
+            &named("backend"),
+            Some("Tests pass"),
+        );
         assert_eq!(finished.summary, "Codex finished");
         assert_eq!(finished.body, "backend: Tests pass");
         assert_eq!(finished.urgency, DesktopNotificationUrgency::Normal);
 
         let finished_without_summary =
-            DesktopNotification::turn_finished(TerminalAgent::Codex, "backend", None);
+            DesktopNotification::turn_finished(TerminalAgent::Codex, &named("backend"), None);
         assert_eq!(finished_without_summary.summary, "Codex finished");
         assert_eq!(finished_without_summary.body, "backend");
 
         let attention = DesktopNotification::needs_input(
             TerminalAgent::ClaudeCode,
-            "backend",
+            &named("backend"),
             Some("Approve edit?"),
         );
         assert_eq!(attention.summary, "Claude Code needs input");
