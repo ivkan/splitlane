@@ -224,6 +224,10 @@ impl SplitlaneApp {
         };
         let project_id = ws.id;
         let previous_group = ws.group;
+        let previous_neighbour = ws_idx
+            .checked_sub(1)
+            .and_then(|above| self.workspaces.get(above))
+            .map(|ws| ws.id);
         let group_id = groups::next_group_id(
             &self.project_groups,
             self.pending_new_group.map_or(1, |p| p.group_id + 1),
@@ -240,6 +244,7 @@ impl SplitlaneApp {
         self.pending_new_group = Some(PendingNewGroup {
             group_id,
             project_id,
+            previous_neighbour,
             previous_index: ws_idx,
             previous_group,
         });
@@ -267,7 +272,16 @@ impl SplitlaneApp {
             .position(|ws| ws.id == pending.project_id)
         {
             self.workspaces[ws_idx].group = pending.previous_group;
-            self.move_project_to(ws_idx, pending.previous_index);
+            let to = match pending.previous_neighbour {
+                None => 0,
+                Some(neighbour) => self
+                    .workspaces
+                    .iter()
+                    .filter(|ws| ws.id != pending.project_id)
+                    .position(|ws| ws.id == neighbour)
+                    .map_or(pending.previous_index, |above| above + 1),
+            };
+            self.move_project_to(ws_idx, to);
         }
         self.project_groups.retain(|group| group.id != group_id);
         self.reconcile_project_groups();

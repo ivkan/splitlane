@@ -378,6 +378,11 @@ fn fit_label_row_parts(
 pub(crate) struct PendingNewGroup {
     pub(crate) group_id: u64,
     pub(crate) project_id: u64,
+    /// The project just above it in the list before it moved, by id - a
+    /// neighbour rather than an index, so a project closed meanwhile does not
+    /// shift where it goes back to. `None` when it was first.
+    pub(crate) previous_neighbour: Option<u64>,
+    /// Its index then, for when that neighbour has gone too.
     pub(crate) previous_index: usize,
     pub(crate) previous_group: Option<u64>,
 }
