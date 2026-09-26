@@ -239,6 +239,8 @@ pub(crate) enum GeneralDropdown {
 pub(crate) struct WorkspaceContextMenu {
     pub(crate) idx: usize,
     pub(crate) position: Point<Pixels>,
+    /// `Add to group ▸` is open beside the menu.
+    pub(crate) group_submenu: bool,
 }
 
 /// Open "Move to pane…" tab context menu. Identifies the tab
@@ -1513,6 +1515,15 @@ struct SplitlaneApp {
     /// so the old per-frame `HashMap` + `Vec` rebuild was pure waste. Interior
     /// mutability because the render fn borrows `&self`.
     pub(crate) sidebar_order_cache: std::cell::RefCell<crate::app::sidebar::SidebarOrderCache>,
+    /// The rail's project groups, in rail order. Membership is on each
+    /// project (`Workspace::group`). See `app::project_groups`.
+    pub(crate) project_groups: Vec<crate::app::project_groups::ProjectGroup>,
+    /// A group made by `New group…` that has not been named yet, with where
+    /// its project came from, so abandoning the name puts everything back.
+    pub(crate) pending_new_group: Option<crate::app::project_groups::PendingNewGroup>,
+    /// Held while a group's naming field is open: ends the field when focus
+    /// leaves it.
+    pub(crate) group_field_blur: Option<gpui::Subscription>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.

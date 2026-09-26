@@ -546,6 +546,19 @@ pub struct UiColors {
     pub border_dialog: Hsla,
     /// A control's border under the pointer.
     pub border_hover: Hsla,
+    /// The fill of a project group's label in the rail.
+    ///
+    /// Its own role because no existing fill does the job. It has to sit a
+    /// step above `subtle` (hover) and the active row's fill, or a project row
+    /// under the pointer reads as another label; and it must not be a
+    /// control's fill, because the label is a heading, not a button. Harbor
+    /// Dark's value is also its `border_strong`, but that role is a border
+    /// and this one is a fill.
+    pub tag_fill: Hsla,
+    /// The rule down a project group's members, 2px at the rail's left.
+    /// Harbor's value in both themes is `border_hover`'s: the design picked
+    /// the dark one to match it and asked for the light one to follow.
+    pub group_rule: Hsla,
     /// The border around the slot that takes input. The one border in the app
     /// that means "your keystrokes land here", which is why it is a role of
     /// its own rather than the accent: focus is a state, not an accent.
@@ -758,6 +771,8 @@ impl UiColors {
             border_strong: mix(border, text, 0.08),
             border_dialog: mix(border, text, 0.16),
             border_hover: mix(border, text, 0.24),
+            tag_fill: mix(subtle, text, 0.06),
+            group_rule: mix(border, text, 0.24),
             // Far enough into the accent to be read as "here", far enough from
             // it to stay a border rather than a highlight - and measured
             // rather than guessed at a fixed ratio, see the function.

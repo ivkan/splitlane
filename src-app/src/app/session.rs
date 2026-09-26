@@ -105,6 +105,15 @@ impl SplitlaneApp {
     /// tab-bar buttons, no files-tree expansion and no managed worktrees, so
     /// none of them can outlive it on disk.
     fn build_session_state(&self, cx: &App) -> splitlane_config::schema::SessionState {
+        let saved_groups: Vec<splitlane_config::schema::ProjectGroupSession> = self
+            .project_groups
+            .iter()
+            .filter(|group| {
+                !group.name.is_empty()
+                    && self.workspaces.iter().any(|ws| ws.group == Some(group.id))
+            })
+            .map(crate::app::project_groups::ProjectGroup::to_session)
+            .collect();
         let projects: Vec<splitlane_config::schema::ProjectSession> = self
             .workspaces
             .iter()
@@ -151,6 +160,12 @@ impl SplitlaneApp {
                     .collect(),
                 preferred_agent: ws.preferred_agent.map(|pref| pref.tag().to_string()),
                 worktree_setup: ws.worktree_setup.clone(),
+                // Only a group that is also written: one still waiting for its
+                // name is not a group yet, and a crash while naming it leaves
+                // the project where it now is, without one.
+                group: ws
+                    .group
+                    .filter(|id| saved_groups.iter().any(|g| g.id == *id)),
             })
             .collect();
 
@@ -173,6 +188,7 @@ impl SplitlaneApp {
             diff_scope: Some(self.diff_mode.diff_scope.as_persisted().to_string()),
             rail_width: Some(self.rail_width),
             files_width: Some(self.files_width),
+            groups: saved_groups,
             // The newest reading, so the next launch has something to subtract
             // from instead of spending its first half hour unable to project.
             // Only a successful one is worth keeping; a failure has no numbers.
@@ -574,6 +590,7 @@ impl SplitlaneApp {
                 .filter_map(|rel| rehydrate_expanded_path(&workspace.cwd, rel))
                 .collect();
             workspace.is_expanded = ws_session.is_expanded;
+            workspace.group = ws_session.group;
             // A tag this build cannot read - an agent dropped by an upgrade,
             // a hand-edited file - reads as **ask**, not as "never asked".
             // The two differ: "never asked" inherits the app-level answer and

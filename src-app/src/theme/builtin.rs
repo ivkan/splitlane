@@ -105,6 +105,8 @@ fn harbor_dark_ui() -> UiColors {
         border_strong: h(0x2f3339),
         border_dialog: h(0x34383f),
         border_hover: h(0x3a3f47),
+        tag_fill: h(0x2f3339),
+        group_rule: h(0x3a3f47),
         // "border 1px when focused, transparent otherwise", and the two header
         // fills that go with it.
         //
@@ -284,6 +286,12 @@ fn harbor_light_ui() -> UiColors {
         border_strong: h(0xc6c7c1),
         border_dialog: h(0xbcbdb7),
         border_hover: h(0xa9aaa3),
+        tag_fill: h(0xe2e3de),
+        // The design's own value was `#cfd0cb`, offered only in case the map
+        // had no hover border; it has one, and the designer asked for it.
+        // That also answers the one thing the design could not check:
+        // `#cfd0cb` measures about 1.3 : 1 against a hovered row.
+        group_rule: h(0xa9aaa3),
         // Was `0x9fd0bd`, which measured **1.27 : 1** against the
         // panes area and 1.70 : 1 against a pane's own fill - less than half
         // the 3 : 1 a non-text control needs, and the reason "which pane is

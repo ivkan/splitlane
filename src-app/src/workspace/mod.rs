@@ -241,6 +241,9 @@ pub struct Workspace {
     /// Nothing writes this but a choice made to write it. See
     /// [`crate::agent_launcher::PreferredAgent`].
     pub preferred_agent: Option<crate::agent_launcher::PreferredAgent>,
+    /// The rail group this project is in, by `ProjectGroup::id`. `None` is no
+    /// group, and so is an id no group carries. See `app::project_groups`.
+    pub group: Option<u64>,
 }
 
 impl Workspace {
@@ -291,6 +294,7 @@ impl Workspace {
             diff_surface: None,
             is_expanded: true,
             preferred_agent: None,
+            group: None,
         }
     }
 

@@ -888,6 +888,8 @@ impl SplitlaneApp {
         let open_containers = self.container_paths_outliving(idx);
         Self::spawn_worktree_teardown(worktrees, open_containers, cx);
         let removed = self.workspaces.remove(idx);
+        // Its group goes with it if it was the last one in it.
+        self.reconcile_project_groups();
         // Cascade the warm-resume cache: a closed container's agent surfaces
         // must not keep their PTY entity alive until the next restart.
         for thread in &removed.threads {

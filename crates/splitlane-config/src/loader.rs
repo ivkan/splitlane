@@ -1419,6 +1419,7 @@ mod tests {
             managed_worktrees: Vec::new(),
             preferred_agent: None,
             worktree_setup: None,
+            group: None,
         }
     }
 
@@ -1470,6 +1471,59 @@ mod tests {
         assert_eq!(back.limits_reading, None);
     }
 
+    #[test]
+    fn groups_survive_a_save_and_a_file_without_them_reads_as_no_groups() {
+        let mut grouped = cli_container(1, "atlas", "/a/atlas", None);
+        grouped.group = Some(7);
+        let mut state = session_with(vec![cli_container(2, "site", "/a/site", None), grouped]);
+        state.groups = vec![ProjectGroupSession {
+            id: 7,
+            name: "Acme".to_string(),
+            collapsed: true,
+            private: false,
+        }];
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: SessionState = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back, state);
+
+        // A session written before groups existed has neither key.
+        let older = r#"{
+            "version": 2,
+            "active_workspace": 0,
+            "projects": [{ "id": 1, "title": "atlas", "cwd": "/a/atlas" }]
+        }"#;
+        let back: SessionState = serde_json::from_str(older).expect("parse");
+        assert!(back.groups.is_empty());
+        assert_eq!(back.projects[0].group, None);
+
+        // No group means no key at all, so a session without groups is written
+        // byte for byte as it was before groups existed.
+        let plain = serde_json::to_string(&session_with(vec![cli_container(
+            1, "atlas", "/a/atlas", None,
+        )]))
+        .expect("serialize");
+        assert!(!plain.contains("group"), "{plain}");
+    }
+
+    /// The other direction: an earlier build reading a session this one wrote.
+    /// Neither struct denies unknown fields, so keys a later build adds - at
+    /// the top level or on a project - are read past instead of failing the
+    /// whole parse, which the loader would treat as a corrupt session.
+    #[test]
+    fn keys_a_later_build_adds_are_read_past() {
+        let later = r#"{
+            "version": 2,
+            "active_workspace": 0,
+            "a_later_list": [{ "id": 7, "name": "Acme" }],
+            "projects": [
+                { "id": 1, "title": "atlas", "cwd": "/a/atlas", "a_later_ref": 7 }
+            ]
+        }"#;
+        let back: SessionState = serde_json::from_str(later).expect("unknown keys are read past");
+        assert_eq!(back.projects.len(), 1);
+        assert_eq!(back.projects[0].title, "atlas");
+    }
+
     fn session_with(projects: Vec<ProjectSession>) -> SessionState {
         SessionState {
             limits_reading: None,
@@ -1481,6 +1535,7 @@ mod tests {
             diff_scope: None,
             rail_width: None,
             files_width: None,
+            groups: Vec::new(),
         }
     }
 

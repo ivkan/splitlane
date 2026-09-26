@@ -1508,6 +1508,35 @@ pub struct SessionState {
     /// is discarded exactly as one that arrived and then went cold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits_reading: Option<LimitsReadingSession>,
+    /// The rail's project groups, in rail order. Membership is not here: each
+    /// project names its group in [`ProjectSession::group`], so a project
+    /// cannot be in two groups and the order inside a group is the order of
+    /// [`Self::projects`].
+    ///
+    /// Additive on purpose, with the schema version left alone. The loader
+    /// refuses a version it does not know, so a bump would make every earlier
+    /// build treat a session with groups as corrupt. Unknown keys are read
+    /// past instead, so an earlier build opens this file with its projects
+    /// intact and simply without groups.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<ProjectGroupSession>,
+}
+
+/// One named, ordered set of projects in the rail.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectGroupSession {
+    /// Stable within the file; [`ProjectSession::group`] refers to it.
+    pub id: u64,
+    /// The name as the user typed it. The rail's label shows it in capitals,
+    /// which is a style, not the data.
+    pub name: String,
+    /// Folded in the rail. Only visual: nothing else reads it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
+    /// `Keep names private`: project and session names of this group stay out
+    /// of Activity and notifications.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
 }
 
 /// One reading of the plan's usage limits, as the session file keeps it.
@@ -1582,6 +1611,10 @@ pub struct ProjectSession {
     /// thing a preset pane carries as `setup`. Absent means "run nothing".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_setup: Option<String>,
+    /// The [`ProjectGroupSession::id`] this project belongs to. Absent means
+    /// no group; an id no group carries is read as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u64>,
 }
 
 /// Compare two container directories. A trailing separator is not a different
@@ -2043,6 +2076,7 @@ pub mod legacy_v1 {
                     // honest reading of a file that never recorded a choice.
                     preferred_agent: None,
                     worktree_setup: None,
+                    group: None,
                 }
             })
             .collect();
@@ -2063,6 +2097,7 @@ pub mod legacy_v1 {
                 managed_worktrees: Vec::new(),
                 preferred_agent: None,
                 worktree_setup: None,
+                group: None,
             })
             .collect();
 
@@ -2077,6 +2112,7 @@ pub mod legacy_v1 {
             rail_width: None,
             limits_reading: None,
             files_width: None,
+            groups: Vec::new(),
             diff_scope: v1.diff_scope,
         }
     }

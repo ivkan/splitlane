@@ -401,6 +401,11 @@ pub(crate) fn render_open_agents_menu(
         AgentsContextMenu::NewAgent { ws_idx, position } if ws_idx < app.workspaces.len() => {
             Some(app.render_new_agent_menu(ws_idx, position, ui, window, cx))
         }
+        AgentsContextMenu::Group { group_id, position }
+            if app.project_group(group_id).is_some() =>
+        {
+            Some(app.render_group_menu(group_id, position, ui, window, cx))
+        }
         _ => None,
     }
 }

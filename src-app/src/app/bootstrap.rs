@@ -266,7 +266,7 @@ impl SplitlaneApp {
         // from being a silent rearrangement of the user's screen.
         let mut parked_over_cap = 0usize;
         let mut parked_extra_tabs = 0usize;
-        let (workspaces, active_idx) = match saved_session.as_ref() {
+        let (mut workspaces, active_idx) = match saved_session.as_ref() {
             Some(session) => {
                 log::info!(
                     "restoring session: {} container(s), {} chat(s)",
@@ -308,6 +308,18 @@ impl SplitlaneApp {
             }
             None => Self::first_containers(cx),
         };
+
+        // Groups come back only with a project in them: a project capped out
+        // of the restore does not keep its group alive, and a hand-edited
+        // reference to a group the file does not carry is no group.
+        let mut restored_groups = saved_session
+            .as_ref()
+            .map(|s| crate::app::project_groups::groups_from_session(&s.groups))
+            .unwrap_or_default();
+        crate::app::project_groups::reconcile_groups(
+            &mut restored_groups,
+            workspaces.iter_mut().map(|ws| &mut ws.group),
+        );
 
         // Chats draw from the same budget, and deliberately AFTER the
         // containers: they used to get the remainder, and restoring them first
@@ -1264,6 +1276,9 @@ impl SplitlaneApp {
             // captures Backspace/Escape/Down without conflicting with
             // the global app key chain.
             sidebar_order_cache: std::cell::RefCell::new(Default::default()),
+            project_groups: restored_groups,
+            pending_new_group: None,
+            group_field_blur: None,
         };
 
         for cwd in app

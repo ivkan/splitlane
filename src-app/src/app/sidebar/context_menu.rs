@@ -229,7 +229,7 @@ impl SplitlaneApp {
         // path, custom buttons, close project, and the branch/service header
         // - and it was written as eight.
         let menu_rows = EDITOR_CONTEXT_MENU_ITEMS.len()
-            + 9
+            + 10
             + preset_rows
             + branch_rows
             + service_rows
@@ -238,14 +238,23 @@ impl SplitlaneApp {
             + 1;
         let menu_height = px(8. + menu_rows as f32 * 28. + separator_rows as f32 * 9.);
         let menu_pos = clamped_context_menu_position(menu.position, px(248.), menu_height, window);
-
+        // `Add to group ▸` sits under the three creation rows, a divider and
+        // `Rename`; its submenu opens level with it. Arithmetic, like the
+        // height above, because both are needed before layout.
+        let submenu = menu
+            .group_submenu
+            .then(|| self.group_submenu_bounds(idx, menu_pos, window));
         let mut context_menu = select_menu("workspace-context-menu", ui)
             .occlude()
             .absolute()
             .left(menu_pos.x)
             .top(menu_pos.y)
             .w(px(248.))
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            .on_mouse_down_out(cx.listener(move |this, e: &gpui::MouseDownEvent, _, cx| {
+                // The submenu is outside this menu's bounds but part of it.
+                if submenu.is_some_and(|bounds| bounds.contains(&e.position)) {
+                    return;
+                }
                 this.workspace_menu_open = None;
                 cx.notify();
             }))
@@ -302,6 +311,42 @@ impl SplitlaneApp {
                 cx.notify();
             }),
         ));
+
+        // `Add to group ▸`, always a submenu, even with no groups yet and one
+        // entry in it: an item has one place, or the hand looks for it in two.
+        context_menu = context_menu.child(
+            select_item("workspace-context-add-to-group", menu.group_submenu, ui)
+                .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                    if *hovered && let Some(open) = this.workspace_menu_open.as_mut() {
+                        open.group_submenu = true;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    if let Some(open) = this.workspace_menu_open.as_mut() {
+                        open.group_submenu = !open.group_submenu;
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_x_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(ui.text)
+                        .child("Add to group"),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(tok::text::CAPTION)
+                        .text_color(ui.muted)
+                        .child("\u{25b8}"),
+                ),
+        );
 
         // Switch branch. The branch is a property of the checkout, so its
         // picker hangs off the container's own menu. It used to be reachable
@@ -555,7 +600,142 @@ impl SplitlaneApp {
                 })
         });
 
-        deferred(context_menu).priority(3).into_any_element()
+        let context_menu = deferred(context_menu).priority(3).into_any_element();
+        match submenu {
+            Some(bounds) => div()
+                .child(context_menu)
+                .child(self.render_group_submenu(idx, bounds, ui, cx))
+                .into_any_element(),
+            None => context_menu,
+        }
+    }
+
+    /// Where `Add to group ▸`'s submenu goes: level with its row, to the
+    /// right of the menu, or to its left where the window ends.
+    fn group_submenu_bounds(
+        &self,
+        idx: usize,
+        menu_pos: gpui::Point<Pixels>,
+        window: &Window,
+    ) -> gpui::Bounds<Pixels> {
+        const MENU_W: f32 = 248.;
+        const SUB_W: f32 = 196.;
+        // Rows are 28 with a 1px gap; a divider is 9 with the same gap.
+        let row = 29.;
+        let row_top = 4. + 3. * row + 10. + row;
+        let rows = self.live_project_groups().len() as f32
+            + 1.
+            + f32::from(u8::from(self.group_of_project(idx).is_some()));
+        let dividers = if self.live_project_groups().is_empty() {
+            0.
+        } else {
+            10.
+        };
+        let height = 8. + rows * row + dividers;
+        let win = window.window_bounds().get_bounds().size;
+        let right = menu_pos.x + px(MENU_W - 4.);
+        let x = if right + px(SUB_W) > win.width {
+            (menu_pos.x - px(SUB_W - 4.)).max(px(0.))
+        } else {
+            right
+        };
+        let y = (menu_pos.y + px(row_top - 4.)).min((win.height - px(height)).max(px(0.)));
+        gpui::Bounds::new(point(x, y), gpui::size(px(SUB_W), px(height)))
+    }
+
+    /// `Add to group ▸`: the groups in rail order with the project's own
+    /// ticked, then `New group…`, then `Remove from group` for a project that
+    /// is in one. Names as typed - the capitals are the rail label's style.
+    fn render_group_submenu(
+        &self,
+        idx: usize,
+        bounds: gpui::Bounds<Pixels>,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let current = self.group_of_project(idx).map(|group| group.id);
+        let groups: Vec<(u64, String)> = self
+            .live_project_groups()
+            .into_iter()
+            .map(|group| (group.id, group.name.clone()))
+            .collect();
+        let tick_column = |ticked: bool| {
+            div()
+                .flex_none()
+                .w(tok::space::LG)
+                .font_family(tok::font::MONO)
+                .text_size(tok::mono::ROW)
+                .text_color(ui.text)
+                .when(ticked, |d| d.child("\u{2713}"))
+        };
+        let mut sub = select_menu("workspace-context-group-submenu", ui)
+            .occlude()
+            .absolute()
+            .left(bounds.origin.x)
+            .top(bounds.origin.y)
+            .w(bounds.size.width)
+            .min_w(bounds.size.width)
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
+        let has_groups = !groups.is_empty();
+        for (group_id, name) in groups {
+            let ticked = current == Some(group_id);
+            sub = sub.child(
+                select_item(
+                    SharedString::from(format!("workspace-context-group-{group_id}")),
+                    false,
+                    ui,
+                )
+                .gap(tok::space::MD)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.workspace_menu_open = None;
+                    // The ticked one is where the project already is.
+                    this.add_project_to_group(idx, group_id, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .child(tick_column(ticked))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(tok::font::MONO)
+                        .text_size(tok::mono::ROW)
+                        .text_color(ui.text)
+                        .child(name),
+                ),
+            );
+        }
+        if has_groups {
+            sub = sub.child(context_menu_divider(ui));
+        }
+        sub = sub.child(
+            select_item("workspace-context-new-group", false, ui)
+                .gap(tok::space::MD)
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.workspace_menu_open = None;
+                    this.start_new_group_with(idx, window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .child(tick_column(false))
+                .child(div().text_color(ui.text).child("New group\u{2026}")),
+        );
+        if current.is_some() {
+            sub = sub.child(
+                select_item("workspace-context-remove-from-group", false, ui)
+                    .gap(tok::space::MD)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.workspace_menu_open = None;
+                        this.remove_project_from_group(idx, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .child(tick_column(false))
+                    .child(div().text_color(ui.text).child("Remove from group")),
+            );
+        }
+        deferred(sub).priority(4).into_any_element()
     }
 
     /// The menu the slot header's overflow button opens: what can be done to

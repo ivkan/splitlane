@@ -40,6 +40,7 @@ impl SplitlaneApp {
         self.workspace_menu_open = Some(crate::WorkspaceContextMenu {
             idx: ws_idx,
             position,
+            group_submenu: false,
         });
         cx.notify();
     }
@@ -117,10 +118,20 @@ impl SplitlaneApp {
                 .and_then(|p| p.threads.get(thread_idx))
                 .map(|t| t.title.clone())
                 .unwrap_or_default(),
+            AgentsRenameTarget::Group { group_id } => self
+                .project_groups
+                .iter()
+                .find(|group| group.id == group_id)
+                .map(|group| group.name.clone())
+                .unwrap_or_default(),
         };
+        let is_group = matches!(target, AgentsRenameTarget::Group { .. });
         let app_weak = cx.weak_entity();
         let textarea = cx.new(|cx| {
-            let mut ta = TextArea::new("New name", cx);
+            let mut ta = TextArea::new(if is_group { "group name" } else { "New name" }, cx);
+            if is_group {
+                ta.set_max_chars(Some(crate::app::project_groups::GROUP_NAME_MAX_CHARS));
+            }
             ta.set_value(current, cx);
             // Pre-select the whole text so the user can just start typing
             // to replace the existing name - saves a manual Ctrl+A and
@@ -148,6 +159,15 @@ impl SplitlaneApp {
         });
         let focus = textarea.read(cx).focus_handle.clone();
         window.focus(&focus, cx);
+        // A group's field ends when focus leaves it, which a project's does
+        // not: a new group is only half made until it has a name, and
+        // leaving it half made behind the user's back is the failure. See
+        // `settle_group_field_on_blur`.
+        self.group_field_blur = is_group.then(|| {
+            cx.on_focus_out(&focus, window, |this, _event, _window, cx| {
+                this.settle_group_field_on_blur(cx);
+            })
+        });
         self.agents_view.agents_renaming = Some(target);
         self.agents_view.agents_rename_input = Some(textarea);
         // `agents_rename_text` is kept only as a legacy bridge for
@@ -201,9 +221,18 @@ impl SplitlaneApp {
     /// the next event-loop tick via `cx.defer` so we never re-enter
     /// the in-flight update.
     pub(crate) fn apply_agents_rename(&mut self, text: String, cx: &mut Context<Self>) {
+        // A group's name is settled first, because one answer there leaves the
+        // field open: renaming onto another group's name does nothing.
+        if let Some(AgentsRenameTarget::Group { group_id }) = self.agents_view.agents_renaming
+            && !self.apply_group_name(group_id, &text, cx)
+        {
+            cx.notify();
+            return;
+        }
         let Some(target) = self.agents_view.agents_renaming.take() else {
             return;
         };
+        self.group_field_blur = None;
         // Drop the TextArea entity on the next tick to avoid any
         // re-entrancy when this is invoked from on_submit (where we
         // are still inside the entity's update).
@@ -221,6 +250,8 @@ impl SplitlaneApp {
             return;
         }
         match target {
+            // Already applied above, before the field was let go.
+            AgentsRenameTarget::Group { .. } => {}
             AgentsRenameTarget::Project { ws_idx } => {
                 if let Some(project) = self.workspaces.get_mut(ws_idx) {
                     project.title = text;
@@ -265,6 +296,12 @@ impl SplitlaneApp {
     /// TextArea's `on_escape` callback never re-enters the in-flight
     /// entity update.
     pub(crate) fn cancel_agents_rename(&mut self, cx: &mut Context<Self>) {
+        self.group_field_blur = None;
+        if let Some(AgentsRenameTarget::Group { group_id }) = self.agents_view.agents_renaming {
+            // A group still waiting for its name goes, and its project goes
+            // back to where it was.
+            self.abandon_pending_group(group_id, cx);
+        }
         if self.agents_view.agents_renaming.take().is_some() {
             let weak = cx.weak_entity();
             cx.defer(move |cx| {
@@ -288,6 +325,17 @@ impl SplitlaneApp {
     /// most recently created project is selected so the threads list
     /// opens onto it.
     pub(crate) fn create_agents_project_with_picker(&mut self, cx: &mut Context<Self>) {
+        self.create_agents_project_with_picker_into(None, cx);
+    }
+
+    /// The same, with every project it makes put into `group` - the group
+    /// menu's `New project in group`. A group gone by the time the picker
+    /// answers is not recreated: the projects are made without one.
+    pub(crate) fn create_agents_project_with_picker_into(
+        &mut self,
+        group: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -295,7 +343,7 @@ impl SplitlaneApp {
             prompt: None,
         });
         cx.spawn(
-            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 if let Ok(Ok(Some(paths))) = receiver.await {
                     let _ = cx.update(|cx| {
                         this.update(cx, |app, cx| {
@@ -306,8 +354,19 @@ impl SplitlaneApp {
                                     .unwrap_or_else(|| "New project".to_string());
                                 // `create_container` selects what it made, so
                                 // the rail opens onto the last folder picked.
-                                if app.create_container(title, path, cx).is_none() {
-                                    app.show_toast("Too many projects open", cx);
+                                match app.create_container(title, path, cx) {
+                                    None => app.show_toast("Too many projects open", cx),
+                                    Some(id) => {
+                                        // Made last in the list, so last in
+                                        // the group.
+                                        let group =
+                                            group.filter(|g| app.project_group(*g).is_some());
+                                        if let Some(ws) =
+                                            app.workspaces.iter_mut().find(|ws| ws.id == id)
+                                        {
+                                            ws.group = group;
+                                        }
+                                    }
                                 }
                             }
                             // And it stops there. This used to open the

@@ -30,6 +30,7 @@ pub mod notifications;
 pub mod pane_drop_strip;
 pub mod pane_header;
 pub mod preset_launch;
+pub mod project_groups;
 pub mod project_ops;
 pub mod rail_resize;
 pub mod self_update_flow;

@@ -1099,6 +1099,7 @@ mod tests {
             managed_worktrees: Vec::new(),
             preferred_agent: None,
             worktree_setup: None,
+            group: None,
         }
     }
 
@@ -1157,6 +1158,7 @@ mod tests {
             diff_scope: None,
             rail_width: None,
             files_width: None,
+            groups: Vec::new(),
         };
         assert_eq!(
             max_persisted_id(&state),
@@ -1332,6 +1334,7 @@ mod tests {
             diff_scope: None,
             rail_width: None,
             files_width: None,
+            groups: Vec::new(),
         };
         assert_eq!(max_persisted_id(&session), 9_000_000);
 

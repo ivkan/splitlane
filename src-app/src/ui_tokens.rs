@@ -224,6 +224,38 @@ pub mod row {
 
     /// A surface row in the rail - the densest row in the app.
     pub const SESSION: Pixels = px(25.);
+
+    /// A project group's label row in the rail. Lower than a project row:
+    /// the label is a heading over projects, not one of them.
+    pub const GROUP: Pixels = px(24.);
+}
+
+/// The rail's project group: a filled label, and a rule down its members.
+///
+/// The label's own padding is stated by the design as 2 / 7 and kept as
+/// stated: it is the inside of a tag, physical rather than rhythmic, and
+/// rounding 7 to the scale would change the tag's silhouette beside
+/// `PROJECTS`.
+pub mod group {
+    use super::*;
+
+    /// The label's vertical padding inside its fill.
+    pub const LABEL_PAD_Y: Pixels = px(2.);
+    /// The label's horizontal padding inside its fill.
+    pub const LABEL_PAD_X: Pixels = px(7.);
+    /// The widest a label is drawn; a longer name ends in an ellipsis.
+    pub const LABEL_MAX: Pixels = px(130.);
+    /// The narrowest a label is squeezed to before the summary gives way.
+    pub const LABEL_MIN: Pixels = px(48.);
+    /// The rule down a group's members. Thickness is what carries it on the
+    /// light theme, where its contrast against a hovered row is low.
+    pub const RULE: Pixels = px(2.);
+    /// The rule's distance from the rail's inner edge.
+    pub const RULE_INSET: Pixels = space::XL;
+    /// Between the rule and its members.
+    pub const RULE_GAP: Pixels = px(2.);
+    /// The naming field's height inside the label row.
+    pub const FIELD: Pixels = px(20.);
 }
 
 /// Elevation, as `(y offset, blur radius)` in points.

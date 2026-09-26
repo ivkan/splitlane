@@ -15,8 +15,18 @@ use gpui::{Pixels, Point};
 /// is best-effort, so the user gets the always-works escape hatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AgentsRenameTarget {
-    Project { ws_idx: usize },
-    Thread { ws_idx: usize, thread_idx: usize },
+    Project {
+        ws_idx: usize,
+    },
+    Thread {
+        ws_idx: usize,
+        thread_idx: usize,
+    },
+    /// A project group's label, by id. Also the field a new group is named
+    /// in, which is the same field: see `app::project_groups`.
+    Group {
+        group_id: u64,
+    },
 }
 
 /// Open right-click context menu, with the anchor position so the
@@ -35,6 +45,11 @@ pub(crate) enum AgentsContextMenu {
     /// the rail's head.
     NewAgent {
         ws_idx: usize,
+        position: Point<Pixels>,
+    },
+    /// A project group's label menu.
+    Group {
+        group_id: u64,
         position: Point<Pixels>,
     },
 }

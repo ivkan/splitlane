@@ -235,6 +235,10 @@ pub struct TextArea {
     /// `content` string still carries the literal bytes the
     /// decoration shadows.
     decorations: Vec<Decoration>,
+    /// The most characters the field takes. Input past it is refused -
+    /// typed, pasted or composed - rather than accepted and cut later, so the
+    /// field never shows text that will not be kept. `None` is unlimited.
+    max_chars: Option<usize>,
 }
 
 impl TextArea {
@@ -257,6 +261,29 @@ impl TextArea {
             last_bounds: None,
             submit_on_empty: false,
             decorations: Vec::new(),
+            max_chars: None,
+        }
+    }
+
+    /// Refuse input past `max` characters. See [`Self::max_chars`].
+    pub fn set_max_chars(&mut self, max: Option<usize>) {
+        self.max_chars = max;
+    }
+
+    /// `replacement` cut to what fits once `replaced` bytes are taken out.
+    fn fitting<'a>(&self, replaced: &Range<usize>, replacement: &'a str) -> &'a str {
+        let Some(max) = self.max_chars else {
+            return replacement;
+        };
+        let kept = self.content.chars().count()
+            - self
+                .content
+                .get(replaced.clone())
+                .map_or(0, |s| s.chars().count());
+        let room = max.saturating_sub(kept);
+        match replacement.char_indices().nth(room) {
+            Some((cut, _)) => &replacement[..cut],
+            None => replacement,
         }
     }
 
@@ -579,6 +606,7 @@ impl TextArea {
         let start = clamp_to_grapheme(&self.content, range.start);
         let end = clamp_to_grapheme(&self.content, range.end.max(start));
         let range = start..end;
+        let replacement = self.fitting(&range, replacement);
         self.invalidate_decorations_after_edit(&range, replacement.len());
         self.content.replace_range(range.clone(), replacement);
         let inserted = range.start..range.start + replacement.len();
@@ -620,6 +648,7 @@ impl TextArea {
 
     fn replace_selection(&mut self, replacement: &str, cx: &mut Context<Self>) {
         let range = self.selected_range.clone();
+        let replacement = self.fitting(&range, replacement);
         // Drop any decoration that overlaps the edit and
         // shift every decoration after the edit by the byte delta
         // so chips beyond the edit stay anchored to the same token.
@@ -2033,6 +2062,40 @@ impl<'a> LineSlice<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A capped field refuses what does not fit, typed or pasted, and takes
+    /// input again once something is deleted.
+    #[gpui::test]
+    fn a_capped_field_refuses_input_past_its_limit(cx: &mut gpui::TestAppContext) {
+        let cmd = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        cx.update(register_keybindings);
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut area = TextArea::new("group name", cx);
+            area.set_max_chars(Some(5));
+            area
+        });
+        cx.simulate_resize(gpui::size(px(300.), px(60.)));
+        let handle = cx.update(|_, cx| view.read(cx).focus_handle.clone());
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("éèêëē and more".to_string()));
+            window.focus(&handle, cx);
+            window.draw(cx).clear();
+        });
+
+        cx.simulate_input("abcdefg");
+        assert_eq!(view.read_with(cx, |area, _| area.value()), "abcde");
+        cx.simulate_keystrokes("backspace backspace");
+        cx.simulate_keystrokes(&format!("{cmd}-v"));
+        assert_eq!(view.read_with(cx, |area, _| area.value()), "abcéè");
+        // Over a selection, the selection's room counts.
+        cx.simulate_keystrokes(&format!("{cmd}-a"));
+        cx.simulate_input("xyz");
+        assert_eq!(view.read_with(cx, |area, _| area.value()), "xyz");
+    }
 
     /// The gestures a person actually makes in a rename field, pressed rather
     /// than called (this codebase's convention for testing a control).

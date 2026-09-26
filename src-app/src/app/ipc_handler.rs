@@ -2647,6 +2647,7 @@ impl SplitlaneApp {
                         let open_containers = self.container_paths_outliving(idx);
                         Self::spawn_worktree_teardown(worktrees, open_containers, cx);
                         self.workspaces.remove(idx);
+                        self.reconcile_project_groups();
                         if self.active_idx >= self.workspaces.len() {
                             self.active_idx = self.workspaces.len() - 1;
                         }

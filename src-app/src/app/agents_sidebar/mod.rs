@@ -21,6 +21,7 @@
 mod affordances;
 mod context_menus;
 mod create;
+mod groups;
 pub(crate) mod limits_footer;
 // Shared with the sessions sidebar (`app::sessions_sidebar`), which filters its
 // rows with the same matcher so both search fields behave identically.
@@ -200,157 +201,17 @@ impl SplitlaneApp {
             cache.signature = Some(signature);
         }
         let display_order = self.sidebar_order_cache.borrow().order.clone();
-        let mut first_project = true;
-        for ws_idx in display_order {
-            let project = &self.workspaces[ws_idx];
-            let project_id = project.id;
-            let is_expanded = project.is_expanded;
-            let title = project.title.clone();
-            let is_renaming_project =
-                matches!(renaming, Some(AgentsRenameTarget::Project { ws_idx: r }) if r == ws_idx);
-
-            list = list.child(
-                self.project_header_row(
-                    ProjectHeaderArgs {
-                        ws_idx,
-                        project_id,
-                        title,
-                        is_expanded,
-                        rename_input: if is_renaming_project {
-                            shared.rename_input.clone()
-                        } else {
-                            None
-                        },
-                        surface_count: self.container_surface_count(ws_idx, cx),
-                        // **A failed unread session's news word is `failed`,
-                        // so it is not also counted here**: one
-                        // session may never occupy two of the folded row's
-                        // three words, or the row would overstate the project
-                        // and repeat, one line up, the contradiction of a
-                        // chip and a row disagreeing about one run.
-                        unseen_finished: self
-                            .workspaces
-                            .get(ws_idx)
-                            .map(|container| {
-                                container
-                                    .threads
-                                    .iter()
-                                    .filter(|thread| {
-                                        thread.finished_unseen.is_some()
-                                            && thread.status != crate::project::ThreadStatus::Failed
-                                    })
-                                    .count()
-                            })
-                            .unwrap_or(0),
-                        // A **state** tally, unlike the news beside it: a
-                        // failed run is still failed after it has been read
-                        // about, so this word survives what `finished` does
-                        // not.
-                        failed: self
-                            .workspaces
-                            .get(ws_idx)
-                            .map(|container| {
-                                container
-                                    .threads
-                                    .iter()
-                                    .filter(|thread| {
-                                        thread.status == crate::project::ThreadStatus::Failed
-                                    })
-                                    .count()
-                            })
-                            .unwrap_or(0),
-                        // `Thinking` only, which is the state the rail draws as
-                        // `running`. `Starting` is deliberately not counted: it
-                        // claims nothing by design, and a tally is a claim.
-                        running: self
-                            .workspaces
-                            .get(ws_idx)
-                            .map(|container| {
-                                container
-                                    .threads
-                                    .iter()
-                                    .filter(|thread| {
-                                        thread.status == crate::project::ThreadStatus::Thinking
-                                    })
-                                    .count()
-                            })
-                            .unwrap_or(0),
-                        ui,
-                        // **Air, not a hairline**. The rail already
-                        // spends background on two things - the active project and
-                        // the selected surface - and a rule here would be a third
-                        // graphic language in a 250px column, competing with the
-                        // two that carry meaning. `divider` in this app means the
-                        // boundary of a *region* (rail from panes, header from
-                        // body); inside a region it would be a second meaning for
-                        // one mark.
-                        //
-                        // The reason that settles it is **collapse**. A folded
-                        // project is a single row, and a line above a single row
-                        // reads as a separator between two rows rather than between
-                        // two groups - there is nothing inside the group for it to
-                        // be the top of. Air is not a mark, so 8px reads the same
-                        // over a one-line group and a five-line one.
-                        lead_gap: !first_project,
-                    },
-                    cx,
-                ),
-            );
-            first_project = false;
-
-            if !is_expanded {
-                continue;
-            }
-
-            // The meta line the design puts under an expanded container:
-            // branch and diffstat, or the plain-directory notice.
-            list = list.child(self.container_meta_row(ws_idx, ui, cx));
-
-            // The design fixes the order inside a container: agent surfaces first,
-            // then views, then shells. The list was in insertion order before,
-            // and that - not what the list contains - is what read as a
-            // jumble: a rail that mixes kinds has to be sorted by kind, or
-            // every row looks like it landed where it did by accident.
-            //
-            // Indices stay tied to the underlying Vec position however the
-            // rows are grouped, so `select_thread` / `remove_thread` still
-            // resolve to the correct row.
-            let SurfaceRowOrder {
-                agents: agent_order,
-                shells: shell_order,
-            } = surface_row_order(&self.workspaces[ws_idx].threads);
-            let mut rows_in_project = agent_order.len() + shell_order.len();
-            for thread_idx in agent_order {
-                let thread = &self.workspaces[ws_idx].threads[thread_idx];
-                let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
-                list = list.child(self.agents_thread_row_for(target, thread, &shared, cx));
-            }
-
-            // Views: the container's diff, when it is open.
-            for row in self.container_view_rows(ws_idx, &shared, cx) {
-                list = list.child(row);
-                rows_in_project += 1;
-            }
-
-            // Shells: the parked ones, then every terminal in the slot tree.
-            for thread_idx in shell_order {
-                let thread = &self.workspaces[ws_idx].threads[thread_idx];
-                let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
-                list = list.child(self.agents_thread_row_for(target, thread, &shared, cx));
-            }
-            for row in self.container_pane_rows(ws_idx, &shared, cx) {
-                list = list.child(row);
-                rows_in_project += 1;
-            }
-
-            if rows_in_project == 0 {
-                list = list.child(empty_project_hint(ui));
-            }
-
-            // The two ways to start a session, at the foot of the container
-            // they start it in.
-            list = list.child(self.new_session_buttons(ws_idx, ui, cx));
+        // Projects without a group first, under `PROJECTS`, then each group.
+        // With no group anywhere this is the loop the rail always had.
+        let sections = crate::app::project_groups::rail_sections(
+            &display_order,
+            |index| self.workspaces.get(index).and_then(|ws| ws.group),
+            &self.project_groups,
+        );
+        for (position, &ws_idx) in sections.ungrouped.iter().enumerate() {
+            list = self.project_block(list, ws_idx, position > 0, &shared, cx);
         }
+        list = self.render_group_sections(list, &sections, &shared, window, cx);
 
         let list = div()
             .id("agents-sidebar-list")
@@ -418,6 +279,117 @@ impl SplitlaneApp {
                 .child(self.render_sidebar_settings_footer(self.rail_menu_items(), cx)),
         );
         sidebar.into_any_element()
+    }
+
+    /// One project block: the project's row and, when it is open, everything
+    /// under it. The same block is drawn under `PROJECTS` and inside a group.
+    fn project_block(
+        &self,
+        mut list: gpui::Div,
+        ws_idx: usize,
+        lead_gap: bool,
+        shared: &RowSharedState,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let renaming = shared.renaming;
+        let ui = shared.ui;
+        let project = &self.workspaces[ws_idx];
+        let project_id = project.id;
+        let is_expanded = project.is_expanded;
+        let title = project.title.clone();
+        let is_renaming_project =
+            matches!(renaming, Some(AgentsRenameTarget::Project { ws_idx: r }) if r == ws_idx);
+
+        list = list.child(self.project_header_row(
+            ProjectHeaderArgs {
+                ws_idx,
+                project_id,
+                title,
+                is_expanded,
+                rename_input: if is_renaming_project {
+                    shared.rename_input.clone()
+                } else {
+                    None
+                },
+                surface_count: self.container_surface_count(ws_idx, cx),
+                // One word per session, its highest - see
+                // `FoldedTally::of`. A folded project leaves `waiting`
+                // to the title bar's chip.
+                tally: FoldedTally::of(&self.workspaces[ws_idx].threads, false),
+                ui,
+                // **Air, not a hairline**. The rail already
+                // spends background on two things - the active project and
+                // the selected surface - and a rule here would be a third
+                // graphic language in a 250px column, competing with the
+                // two that carry meaning. `divider` in this app means the
+                // boundary of a *region* (rail from panes, header from
+                // body); inside a region it would be a second meaning for
+                // one mark.
+                //
+                // The reason that settles it is **collapse**. A folded
+                // project is a single row, and a line above a single row
+                // reads as a separator between two rows rather than between
+                // two groups - there is nothing inside the group for it to
+                // be the top of. Air is not a mark, so 8px reads the same
+                // over a one-line group and a five-line one.
+                lead_gap,
+            },
+            cx,
+        ));
+
+        if !is_expanded {
+            return list;
+        }
+
+        // The meta line the design puts under an expanded container:
+        // branch and diffstat, or the plain-directory notice.
+        list = list.child(self.container_meta_row(ws_idx, ui, cx));
+
+        // The design fixes the order inside a container: agent surfaces first,
+        // then views, then shells. The list was in insertion order before,
+        // and that - not what the list contains - is what read as a
+        // jumble: a rail that mixes kinds has to be sorted by kind, or
+        // every row looks like it landed where it did by accident.
+        //
+        // Indices stay tied to the underlying Vec position however the
+        // rows are grouped, so `select_thread` / `remove_thread` still
+        // resolve to the correct row.
+        let SurfaceRowOrder {
+            agents: agent_order,
+            shells: shell_order,
+        } = surface_row_order(&self.workspaces[ws_idx].threads);
+        let mut rows_in_project = agent_order.len() + shell_order.len();
+        for thread_idx in agent_order {
+            let thread = &self.workspaces[ws_idx].threads[thread_idx];
+            let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
+            list = list.child(self.agents_thread_row_for(target, thread, shared, cx));
+        }
+
+        // Views: the container's diff, when it is open.
+        for row in self.container_view_rows(ws_idx, shared, cx) {
+            list = list.child(row);
+            rows_in_project += 1;
+        }
+
+        // Shells: the parked ones, then every terminal in the slot tree.
+        for thread_idx in shell_order {
+            let thread = &self.workspaces[ws_idx].threads[thread_idx];
+            let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
+            list = list.child(self.agents_thread_row_for(target, thread, shared, cx));
+        }
+        for row in self.container_pane_rows(ws_idx, shared, cx) {
+            list = list.child(row);
+            rows_in_project += 1;
+        }
+
+        if rows_in_project == 0 {
+            list = list.child(empty_project_hint(ui));
+        }
+
+        // The two ways to start a session, at the foot of the container
+        // they start it in.
+        list = list.child(self.new_session_buttons(ws_idx, ui, cx));
+        list
     }
 
     /// Whether the agent surface `thread_id` is the *active* tab of the pane
@@ -993,9 +965,7 @@ impl SplitlaneApp {
             is_expanded,
             rename_input,
             surface_count,
-            unseen_finished,
-            failed,
-            running,
+            tally,
             ui,
             lead_gap,
         } = args;
@@ -1157,7 +1127,7 @@ impl SplitlaneApp {
             // happening in it and what the reader has not seen.
             .children(
                 (!is_expanded)
-                    .then(|| folded_project_tally(failed, running, unseen_finished, ui))
+                    .then(|| folded_project_tally(tally.failed, tally.running, tally.finished, ui))
                     .flatten(),
             )
             // The design's container row carries one trailing number and no
@@ -1461,24 +1431,16 @@ struct ProjectHeaderArgs {
     /// entity is rendered in place of the static title and owns its
     /// own keyboard / mouse handling (cursor, selection, IME, ...).
     rename_input: Option<gpui::Entity<crate::widgets::text_area::TextArea>>,
-    /// How many of this project's surfaces finished out of sight and have not
-    /// been looked at.
+    /// What the row says for its sessions while the caret is **closed**.
     ///
-    /// Only read while the group is **collapsed**, which is the half of the
-    /// problem a window-wide counter could never solve: a folded project draws
-    /// no session rows at all, so the marks on them have nowhere to appear.
-    /// Expanded, the rows say it themselves and a tally beside them would say
-    /// it twice.
-    unseen_finished: usize,
-    /// How many of this project's runs fell over, for the row to say first.
+    /// Only read while folded, which is the half of the problem a window-wide
+    /// counter could never solve: a folded project draws no session rows at
+    /// all, so the marks on them have nowhere to appear. Expanded, the rows
+    /// say it themselves and a tally beside them would say it twice.
     ///
-    /// A **state** tally rather than a news one, so unlike `unseen_finished` it
-    /// does not clear when the reader looks - and the two never count the same
-    /// session, because a failed unread session's news word *is* `failed`.
-    failed: usize,
-    /// How many of this project's agents are working, for the row to say while
-    /// the caret is closed.
-    running: usize,
+    /// `finished` is **news** and clears when the reader looks; `failed` and
+    /// `running` are **state** and do not. No session is counted twice.
+    tally: FoldedTally,
     /// How many rows the caret reveals - the badge's number.
     surface_count: usize,
     ui: crate::theme::UiColors,
@@ -1761,6 +1723,43 @@ fn surface_row_meta(meta: SharedString, ui: crate::theme::UiColors) -> gpui::Any
 /// never occupy two of the row's three words, or the folded row would overstate
 /// the project and repeat, one line up, the very contradiction of a chip and
 /// a row disagreeing about one run. So `finished` counts unread sessions that **did not fail**.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FoldedTally {
+    pub(crate) failed: usize,
+    pub(crate) waiting: usize,
+    pub(crate) running: usize,
+    pub(crate) finished: usize,
+}
+
+impl FoldedTally {
+    /// Count `threads` for a folded row. Each session lands on **one** word,
+    /// its highest: `failed`, then `waiting`, then `running`, then unread
+    /// `finished`. `Starting` is not counted - it claims nothing by design,
+    /// and a tally is a claim.
+    ///
+    /// `with_waiting` is the one difference between the two folded rows. A
+    /// folded project leaves waiting to the title bar's chip and counts such
+    /// a session under whatever else it is; a folded group answers for
+    /// several projects at once and says `waiting` itself.
+    pub(crate) fn of<'a>(
+        threads: impl IntoIterator<Item = &'a crate::project::Thread>,
+        with_waiting: bool,
+    ) -> Self {
+        use crate::project::ThreadStatus;
+        let mut tally = Self::default();
+        for thread in threads {
+            match thread.status {
+                ThreadStatus::Failed => tally.failed += 1,
+                ThreadStatus::WaitingForInput if with_waiting => tally.waiting += 1,
+                ThreadStatus::Thinking => tally.running += 1,
+                _ if thread.finished_unseen.is_some() => tally.finished += 1,
+                _ => {}
+            }
+        }
+        tally
+    }
+}
+
 pub(crate) fn folded_project_tally_words(
     failed: usize,
     running: usize,
