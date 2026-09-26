@@ -216,6 +216,103 @@ keeps the working set unscrolled; the launcher is a **transient** list at the
 centre of attention for a second, driven by arrows, where 30px is arrow-target
 size and a tight row is how the wrong session gets launched.
 
+## Project groups
+
+**The word.** *Group* means one thing: a named, ordered set of projects in the
+rail. A project together with its sessions is a **project block**; the section
+above says "group" in that older sense, and new text does not.
+
+**A group is optional and has no setting.** With no project in a group the rail
+is the rail without groups, row for row. A group appears when its first project
+is put into it and is gone when its last one leaves, so there is never an empty
+label to explain. A project is in at most one group and groups do not nest.
+
+**Shape, not hue.** A label is a neutral filled tag (`tag_fill`) with the
+caret on the **right**, and its members hang off a 2px rule (`group_rule`).
+Every distinguishable hue in this app already names a state, so a coloured
+group would be a second meaning for a colour; and the caret on the right is the
+third thing, after the fill and the rule, that tells a label from a project,
+whose caret is on the left. `tag_fill` is its own role because it has to sit
+above hover and the active row's fill - or a hovered project reads as a label -
+without being a control's fill: the label is a heading, not a button. The
+light theme's rule is the map's own hover border; the thickness, not the
+contrast, is what carries it, because a high-contrast line would argue with the
+project names beside it.
+
+**Membership lives on the project.** Each project names its group; the session
+keeps the groups in rail order. A list of project ids per group would need an
+invariant - no id in two lists - that the type can hold instead, and the order
+inside a group is simply the project list's order, which is already saved. The
+session schema version is **not** raised for this: the loader refuses a version
+it does not know, so a bump would make every earlier build treat a session with
+groups as corrupt, while additive keys are read past.
+
+**Folding is only visual.** Folding a group hides its rows and nothing else:
+Activity and notifications do not read it. If folding also hid names, a working
+group would have to be kept open just to keep its names in notifications, and
+folding would stop serving its first purpose - getting rows out of the way.
+Two purposes, two switches; hiding names is `Keep names private`.
+
+**`Keep names private`.** The names inside a private group are shown only where
+the person looked for them: the open group in the rail, and `⌘K` for a query
+they typed. Activity and notifications come to the person, so there only the
+group's name appears - a notification's summary and body are the only fields
+any of the three platforms is handed that vary per notification, and both are
+fixed words around the group's name. The label says `private`, because without
+it Activity would be hiding names for no visible reason. In Activity the
+group's sessions fold into **one row** where its highest session would stand;
+the chip and the section headings still count sessions, from the rows before
+folding, so the numbers above the list do not change with privacy.
+
+**A folded group says what is under it**, by the folded project's contract:
+`failed`, `waiting`, `running`, unread `finished`, one word per session, its
+highest; or `N projects` when nothing is happening. It adds `waiting`, which a
+folded project leaves to the title bar's chip, because one group answers for
+several projects at once. One counter serves both rows (`FoldedTally`).
+
+**At narrow widths the label gives way before the summary.** The label shrinks
+from 130 to 48px with an ellipsis and its full name in a tooltip; then
+`private` goes; then `running` and `finished`. `failed` and `waiting` never
+go. A folded group exists to say what is happening under it, and its name is
+one hover away; the summary is not anywhere else. The label's width is
+computed, not left to flex layout: a truncating text has no minimum width in
+the layout engine, so as a shrinkable flex item it went straight to 48px however
+wide the rail was.
+
+**A new group is named in the rail.** `New group…` makes the group at once, at
+the end of the groups, with the project already under its rule, and opens the
+label as the field - the same field a project's rename uses, so focus and the
+macOS Edit menu behave as they already do there. There is no dialog: the rail
+is where the group will live. An empty name, `esc`, or leaving the empty field
+undoes all of it and puts the project back under the project that was above it
+- a neighbour rather than an index, so closing another project meanwhile does
+not shift where it returns. Typing an existing group's name (without regard to
+case) says `Acme exists · ⏎ adds to it`, because that is almost certainly what
+was meant. A rename onto another group's name does nothing: merging two groups
+by renaming is not something anyone asked for.
+
+**Dragging.** The project reorder's insertion line stays as it was, in the same
+role; a drop also decides the section - between two members is into their
+group, among the projects without one is out of any. While the line is inside a
+group its rule lightens to `dim`, so the destination is plain even on the
+border between two groups; outside groups no rule lightens, and that absence is
+the signal. Three things are refused on purpose:
+
+- **Dropping a project on a project never makes a group.** Any "onto" zone on a
+  project row takes room from the insertion line, and a slightly missed reorder
+  would become a group nobody asked for.
+- **A folded group does not open under a drag**, on hover or after the drop.
+  Opening it would move everything below the pointer while the pointer is on
+  its way somewhere, and the target would slide away. A drop on its label puts
+  the project at the end; for an exact place, open the group first.
+- **A group lands only between groups** - never inside one, since groups do
+  not nest, and never above the projects without a group, which always come
+  first.
+
+**Going to a session opens its group.** From `⌘K`, Activity or `⌥⇥`, a session
+in a folded group is shown with the group opened, a private one included: the
+person asked to go there.
+
 ## Focus: which pane has the keyboard, and which pane the user is in
 
 **Two questions look like one: which pane has the keyboard, and which pane the

@@ -581,7 +581,10 @@ are deliberate:
 - **The tallies may not overlap.** A failed unread session's news word *is*
   `failed`, so `finished` counts only unread sessions that did not fail. One
   session may never occupy two of the three words, or the row would overstate
-  the project.
+  the project. `FoldedTally` holds this in general: each session lands on its
+  highest word - `failed`, then `running`, then unread `finished` - so an
+  unread session that is running again is `running` only. A folded project
+  group counts with the same function and adds `waiting` above `running`.
 
 **The popover has a quieter lower section under a rule**: `N finished while you
 were away` in `dim` mono, rows in `text_tertiary`, each with `finished 4m ago`

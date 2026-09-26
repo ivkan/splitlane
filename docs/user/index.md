@@ -24,6 +24,36 @@ There are no release builds yet. Build it from source as described in
   found on your `PATH`, this project's sessions that are not in a pane, and its
   past sessions on disk. You choose what goes into the pane from inside it.
 
+### Project groups
+
+Projects can be grouped under a named label in the rail. Groups are optional:
+without one the rail looks as it always has, and there is nothing to turn on.
+
+- **Make one** from a project's context menu: **Add to group ▸ → New group…**.
+  The group appears at once with the project in it, and you type its name in
+  the label itself (`⏎` creates, `esc` cancels). Typing the name of an existing
+  group adds the project to that group instead.
+- **Move projects** with the same submenu, or by dragging: onto a label (the
+  project goes to the end of the group), between the members of a group, or
+  among the projects without one. Drag a label to move the whole group.
+- **Fold a group** by clicking its label. A folded group shows what its
+  sessions are doing - `1 failed`, `2 waiting`, `1 running`, `3 finished` - or
+  how many projects it holds when nothing is happening. Folding only hides
+  rows; notifications and Activity are unchanged.
+- **Keep names private**, in the label's menu, keeps the names of the group's
+  projects and sessions out of Activity and desktop notifications. Both then
+  name only the group, for example *A session failed in Personal*. The names
+  still show in the rail when the group is open, and in `⌘K` when you search
+  for them.
+- **Ungroup**, in the label's menu, moves the group's projects back to the
+  projects without a group, in their order. A group disappears when its last
+  project leaves it.
+
+A clicked label takes the keyboard: `←` folds it, `→` opens it and `⏎` renames
+it. In `⌘K` a session's group is shown beside its project, and searching for a
+group's name lists its sessions. Going to a session in a folded group - from
+`⌘K`, Activity or `⌥⇥` - opens the group.
+
 When Splitlane is started from a terminal, the current directory opens as a
 project. Started from the desktop with nothing to restore, it shows a welcome
 screen with **Open a folder**.

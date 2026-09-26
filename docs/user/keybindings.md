@@ -52,6 +52,9 @@ while a particular kind of surface has keyboard focus.
 | `open_workspace_in_cursor` | Open in Cursor | `⌃⌥C` | `Ctrl+Alt+C` | anywhere |
 | `open_workspace_in_vscode` | Open in VS Code | `⌃⌥V` | `Ctrl+Alt+V` | anywhere |
 | `open_workspace_in_windsurf` | Open in Windsurf | `⌃⌥W` | `Ctrl+Alt+W` | anywhere |
+| `collapse_rail_group` | Fold a project group | `←` | `Left` | a group's label has focus |
+| `expand_rail_group` | Open a project group | `→` | `Right` | a group's label has focus |
+| `rename_rail_group` | Rename a project group | `⏎` | `Enter` | a group's label has focus |
 
 ## Agents and sessions
 
