@@ -61,7 +61,13 @@ download_verified_tool() {
 
     tmp="${dst}.tmp.$$"
     rm -f "$tmp"
-    curl --fail --location --silent --show-error -o "$tmp" "$url"
+    # GitHub release downloads occasionally answer 5xx for a moment; one such
+    # answer used to fail the whole packaging job. --retry alone skips HTTP
+    # errors under --fail, hence --retry-all-errors. The SHA-256 check below
+    # still rejects anything a retry brings back wrong.
+    curl --fail --location --silent --show-error \
+        --retry 5 --retry-delay 5 --retry-all-errors \
+        -o "$tmp" "$url"
     verify_sha256 "$tmp" "$expected"
     mv "$tmp" "$dst"
     chmod +x "$dst"
