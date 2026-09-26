@@ -658,8 +658,13 @@ impl SplitlaneApp {
                             .flex_1()
                             .min_w_0()
                             .h(tok::group::FIELD)
+                            // A column, so the field is stretched to the row's
+                            // width. In a row with centred items it got no width
+                            // of its own and wrapped after every letter.
                             .flex()
-                            .items_center()
+                            .flex_col()
+                            .justify_center()
+                            .overflow_hidden()
                             .px(tok::space::SM)
                             .rounded(tok::radius::BADGE)
                             .bg(ui.tag_fill)
