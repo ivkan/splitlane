@@ -58,7 +58,11 @@ const UP_LAUNCH_POLL: Duration = Duration::from_millis(100);
 
 struct TranscriptTurnEndNotification {
     agent: TerminalAgent,
-    subject: desktop_notifications::NotificationSubject,
+    /// The container and the name the notification would carry. Privacy is
+    /// decided when it is sent, not here: the transcript read in between
+    /// takes long enough for the project's group to have been made private.
+    ws_id: u64,
+    title: String,
     config: SplitlaneConfig,
     /// Answered on the main thread, at the moment the turn ended, and carried
     /// rather than re-asked: the transcript read that follows takes long enough
@@ -2224,10 +2228,24 @@ impl SplitlaneApp {
                 let extracted =
                     smol::unblock(move || extract_last_result_from_transcript(&path)).await;
                 if let Some(notification) = notification {
+                    let subject = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            app.notification_subject(
+                                notification.ws_id,
+                                notification.title.clone(),
+                                cx,
+                            )
+                        })
+                        .ok()
+                    });
+                    // The app is gone: nobody left to tell.
+                    let Some(subject) = subject else {
+                        return;
+                    };
                     desktop_notifications::fire_desktop_notification(
                         DesktopNotification::turn_finished(
                             notification.agent,
-                            &notification.subject,
+                            &subject,
                             extracted.as_deref(),
                         ),
                         &notification.config,
@@ -3578,11 +3596,8 @@ impl SplitlaneApp {
                                 path,
                                 Some(TranscriptTurnEndNotification {
                                     agent: tool,
-                                    subject: self.notification_subject(
-                                        workspace_id,
-                                        subject.clone(),
-                                        cx,
-                                    ),
+                                    ws_id: workspace_id,
+                                    title: subject.clone(),
                                     config: notify_config.clone(),
                                     surface_is_seen: seen,
                                     executor: cx.background_executor().clone(),
@@ -3704,11 +3719,8 @@ impl SplitlaneApp {
                                 path,
                                 Some(TranscriptTurnEndNotification {
                                     agent: tool,
-                                    subject: self.notification_subject(
-                                        workspace_id,
-                                        title.clone(),
-                                        cx,
-                                    ),
+                                    ws_id: workspace_id,
+                                    title: title.clone(),
                                     config: notify_config.clone(),
                                     surface_is_seen: seen,
                                     executor: cx.background_executor().clone(),

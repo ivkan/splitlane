@@ -570,11 +570,16 @@ impl SplitlaneApp {
         if !crate::agents::notifications::turn_was_long_enough(Some(run.ran_for)) {
             return;
         }
-        let ws_id = self
+        // No container, no notification: naming a run without knowing whose
+        // it is could name one a private group was keeping out.
+        let Some(ws_id) = self
             .workspaces
             .iter()
             .find(|ws| ws.threads.iter().any(|thread| thread.id == run.thread_id))
-            .map_or(0, |ws| ws.id);
+            .map(|ws| ws.id)
+        else {
+            return;
+        };
         crate::app::ipc_handler::fire_turn_end_notification(
             agent,
             self.notification_subject(ws_id, title, cx),

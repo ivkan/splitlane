@@ -442,6 +442,7 @@ impl SplitlaneApp {
     ) {
         // Keep the jump cycle coherent: a queue teleport counts as visiting
         // that stop, so the next press of the chord continues from here.
+        self.jump_cursor = self.stop_key(&stop, cx);
         self.go_to_stop(stop, window, cx);
         // And the mark goes **pointedly**, on the row that was clicked and not
         // on its neighbours - which is what makes the list a triage tool rather
