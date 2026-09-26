@@ -538,6 +538,23 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "copy_last_answer",
         context: None,
     },
+    // A project group's label, while it holds focus. Bare keys are safe here
+    // because the context is the label itself, never a terminal or a field.
+    DefaultBinding {
+        key: "left",
+        action_name: "collapse_rail_group",
+        context: Some("RailGroup"),
+    },
+    DefaultBinding {
+        key: "right",
+        action_name: "expand_rail_group",
+        context: Some("RailGroup"),
+    },
+    DefaultBinding {
+        key: "enter",
+        action_name: "rename_rail_group",
+        context: Some("RailGroup"),
+    },
 ];
 
 /// Platform-specific default bindings layered on top of [`DEFAULTS`].

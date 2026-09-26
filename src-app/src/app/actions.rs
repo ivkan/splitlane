@@ -205,6 +205,12 @@ actions!(
         // question from any of the four directional moves - a return, not a
         // step.
         FocusPreviousPane,
+        // A project group's label in the rail, while it holds focus: `←`
+        // folds the group, `→` opens it, `⏎` renames it - the same keys a
+        // project row answers to.
+        CollapseRailGroup,
+        ExpandRailGroup,
+        RenameRailGroup,
         // `AddPane` is the design's ⌥\: one more pane, up to the limit. The
         // `Add pane` button in the toolbar is the same gesture with a mouse.
         //

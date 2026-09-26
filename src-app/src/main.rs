@@ -1527,6 +1527,11 @@ struct SplitlaneApp {
     /// What the rail is dragging, set when a drag starts. See
     /// `app::drag::RailDragKind`.
     pub(crate) rail_drag_kind: std::rc::Rc<std::cell::Cell<Option<crate::app::drag::RailDragKind>>>,
+    /// The keyboard focus a project group's label takes when clicked. One
+    /// handle for every label; [`Self::focused_rail_group`] says whose.
+    pub(crate) rail_group_focus: FocusHandle,
+    /// The group whose label tracks [`Self::rail_group_focus`].
+    pub(crate) focused_rail_group: Option<u64>,
 }
 
 /// Global flag for swap mode, checked by TerminalView to intercept Escape.
@@ -1973,7 +1978,11 @@ impl Render for SplitlaneApp {
         // The list is the price of doing this once in the render pass instead
         // of at each of the two dozen places a surface closes.
         let (holder_on_screen, stale_holder_focus) = {
-            let holders: [(bool, Option<&FocusHandle>); 12] = [
+            let rail_group_label_shown = self.rail_group_focus.is_focused(window)
+                && self
+                    .focused_rail_group
+                    .is_some_and(|id| self.project_group(id).is_some());
+            let holders: [(bool, Option<&FocusHandle>); 13] = [
                 (settings_open, Some(&self.settings_focus)),
                 (
                     self.command_palette.is_some(),
@@ -2007,6 +2016,10 @@ impl Render for SplitlaneApp {
                     crate::app::agents_sidebar::rail_overlay_open(self),
                     None::<&FocusHandle>,
                 ),
+                // A group label that was clicked holds the keyboard for `←`,
+                // `→` and `⏎`; once its group is gone it is a stale holder and
+                // the keyboard goes back to the panes.
+                (rail_group_label_shown, Some(&self.rail_group_focus)),
             ];
             let on_screen = holders.iter().any(|(shown, _)| *shown);
             let stale = holders

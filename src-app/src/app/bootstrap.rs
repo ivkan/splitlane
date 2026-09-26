@@ -1280,6 +1280,8 @@ impl SplitlaneApp {
             pending_new_group: None,
             group_field_blur: None,
             rail_drag_kind: Default::default(),
+            rail_group_focus: cx.focus_handle(),
+            focused_rail_group: None,
         };
 
         for cwd in app

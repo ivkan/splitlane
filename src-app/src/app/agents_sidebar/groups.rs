@@ -549,7 +549,7 @@ impl SplitlaneApp {
         mut list: gpui::Div,
         sections: &RailSections,
         shared: &RowSharedState,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let ui = shared.ui;
@@ -564,21 +564,7 @@ impl SplitlaneApp {
             if naming && let Some(input) = shared.rename_input.clone() {
                 list = list.child(self.group_naming_rows(&group, input, ui, cx));
             } else {
-                let tally = FoldedTally::of(
-                    members
-                        .iter()
-                        .filter_map(|&ws_idx| self.workspaces.get(ws_idx))
-                        .flat_map(|ws| ws.threads.iter()),
-                    true,
-                );
-                list = list.child(self.group_label_row(
-                    &group,
-                    *position,
-                    members.len(),
-                    tally,
-                    ui,
-                    cx,
-                ));
+                list = list.child(self.group_label_row(&group, *position, members, ui, window, cx));
             }
             // Folding is visual only, and a folded group has no rule: the
             // rule is what says "these belong to the label above", and there
@@ -619,12 +605,22 @@ impl SplitlaneApp {
         &self,
         group: &ProjectGroup,
         position: usize,
-        project_count: usize,
-        tally: FoldedTally,
+        members: &[usize],
         ui: crate::theme::UiColors,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let group_id = group.id;
+        let project_count = members.len();
+        let tally = FoldedTally::of(
+            members
+                .iter()
+                .filter_map(|&ws_idx| self.workspaces.get(ws_idx))
+                .flat_map(|ws| ws.threads.iter()),
+            true,
+        );
+        let holds_focus = self.focused_rail_group == Some(group_id);
+        let focused = holds_focus && self.rail_group_focus.is_focused(window);
         let words = if group.collapsed {
             groups::folded_group_words(tally, project_count)
         } else {
@@ -665,7 +661,13 @@ impl SplitlaneApp {
             .px(tok::group::LABEL_PAD_X - px(1.))
             .py(tok::group::LABEL_PAD_Y - px(1.))
             .border_1()
-            .border_color(ui.tag_fill)
+            // The field's focus role marks the label holding the keyboard,
+            // which is where `←` `→` `⏎` will land.
+            .border_color(if focused {
+                ui.focus_border
+            } else {
+                ui.tag_fill
+            })
             .group_drag_over::<crate::app::drag::WorkspaceDrag>(hit_group.clone(), move |style| {
                 style.border_color(ui.dim)
             })
@@ -736,8 +738,28 @@ impl SplitlaneApp {
                     this.reorder_group(drag.id, group_id, cx);
                 },
             ))
+            .key_context("RailGroup")
+            .when(holds_focus, |row| row.track_focus(&self.rail_group_focus))
+            .on_action(
+                cx.listener(move |this, _: &crate::CollapseRailGroup, _w, cx| {
+                    this.set_group_collapsed(group_id, true, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(move |this, _: &crate::ExpandRailGroup, _w, cx| {
+                    this.set_group_collapsed(group_id, false, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(move |this, _: &crate::RenameRailGroup, window, cx| {
+                    this.begin_group_rename(group_id, window, cx);
+                }),
+            )
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 this.close_agents_menu(cx);
+                // The label takes the keyboard, so `←` `→` `⏎` act on it.
+                this.focused_rail_group = Some(group_id);
+                this.rail_group_focus.focus(window, cx);
                 let is_double = matches!(e, ClickEvent::Mouse(m) if m.down.click_count == 2);
                 if is_double {
                     // The first click of the pair already folded or opened

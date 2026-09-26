@@ -216,6 +216,10 @@ impl SplitlaneApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (label, detail, hint) = self.palette_row_text(item);
+        let group = match item {
+            PaletteItem::Surface { group, .. } => group.clone(),
+            _ => None,
+        };
         // `list_selection`, not `subtle`: `subtle` is what hover paints, so
         // the row the arrows are on and a row the pointer happens to rest over
         // used to be the same colour.
@@ -285,6 +289,18 @@ impl SplitlaneApp {
                     .text_color(ui.muted)
                     .child(SharedString::from(detail)),
             )
+            .when_some(group, |row, group| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .max_w(px(120.))
+                        .truncate()
+                        .font_family(tok::font::MONO)
+                        .text_size(tok::mono::LABEL)
+                        .text_color(ui.dim)
+                        .child(SharedString::from(group)),
+                )
+            })
             .child(
                 div()
                     .flex_none()

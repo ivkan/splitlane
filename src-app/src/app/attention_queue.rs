@@ -440,11 +440,6 @@ impl SplitlaneApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A session in a folded group is shown with its group opened -
-        // private or not: the person asked to go there.
-        if let Some(ws_idx) = crate::app::waiting::stop_ws_idx(&stop) {
-            self.reveal_project_group(ws_idx, cx);
-        }
         // Keep the jump cycle coherent: a queue teleport counts as visiting
         // that stop, so the next press of the chord continues from here.
         self.go_to_stop(stop, window, cx);

@@ -665,6 +665,25 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         context: "",
         description: "New shell in the active container",
     },
+    // A project group's label, while it holds focus.
+    ActionMeta {
+        name: "collapse_rail_group",
+        factory: || Box::new(crate::CollapseRailGroup),
+        context: "RailGroup",
+        description: "Fold group",
+    },
+    ActionMeta {
+        name: "expand_rail_group",
+        factory: || Box::new(crate::ExpandRailGroup),
+        context: "RailGroup",
+        description: "Open group",
+    },
+    ActionMeta {
+        name: "rename_rail_group",
+        factory: || Box::new(crate::RenameRailGroup),
+        context: "RailGroup",
+        description: "Rename group",
+    },
 ];
 
 /// Keys a user's `shortcuts` map may still carry from before an action was

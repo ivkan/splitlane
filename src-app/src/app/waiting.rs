@@ -185,6 +185,12 @@ impl SplitlaneApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A session in a folded group is shown with its group opened - a
+        // private one too: the person asked to go there. Activity and the
+        // chord both come through here.
+        if let Some(ws_idx) = stop_ws_idx(&stop) {
+            self.reveal_project_group(ws_idx, cx);
+        }
         match stop {
             WaitingStop::Surface(target) => {
                 let AgentsTarget::Thread { ws_idx, .. } = target else {

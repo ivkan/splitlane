@@ -81,6 +81,11 @@ pub(crate) enum PaletteItem {
         detail: String,
         /// The design's trailing hint: "agent · restorable" / "shell".
         hint: String,
+        /// The project's group, as typed, drawn dim right of the project.
+        /// Groups get no rows of their own: a query that names one lists its
+        /// projects' sessions. Private groups are no exception - the query
+        /// was typed by the person, which is looking.
+        group: Option<String>,
     },
     /// A session on disk, activated by resuming it into its project.
     History { index: usize },
@@ -244,12 +249,19 @@ impl SplitlaneApp {
                 (None, Some(cwd)) => format!("{} · {cwd}", scope_label(meta.scope)),
                 (None, None) => scope_label(meta.scope).to_string(),
             };
+            let group = meta
+                .workspace
+                .and_then(|idx| self.group_of_project(idx))
+                .map(|group| group.name.clone());
             // Surface names and titles are OSC-driven and therefore untrusted;
             // `collect_surface_meta` has already scrubbed and clamped them.
             let matches = needle.is_empty()
                 || meta.name.to_lowercase().contains(needle)
                 || meta.title.to_lowercase().contains(needle)
-                || detail.to_lowercase().contains(needle);
+                || detail.to_lowercase().contains(needle)
+                || group
+                    .as_deref()
+                    .is_some_and(|group| group.to_lowercase().contains(needle));
             if !matches {
                 continue;
             }
@@ -259,6 +271,7 @@ impl SplitlaneApp {
                 label: meta.name.clone(),
                 detail,
                 hint,
+                group,
             });
         }
 
@@ -358,7 +371,10 @@ impl SplitlaneApp {
                 // Focusing the surface supersedes the restore target, so drop
                 // the state without handing focus back to where we came from.
                 self.command_palette = None;
-                self.focus_surface_by_id(surface_id, window, cx);
+                if self.focus_surface_by_id(surface_id, window, cx) {
+                    // Its group opens if it was folded, private or not.
+                    self.reveal_project_group(self.active_idx, cx);
+                }
                 cx.notify();
             }
             Target::History(index) => self.resume_palette_history_row(index, cx),
