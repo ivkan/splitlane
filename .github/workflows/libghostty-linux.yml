@@ -175,13 +175,21 @@ jobs:
           cp "target/${{ matrix.target }}/release/splitlane" \
              "target/${{ matrix.target }}/release/splitlane-alacritty-baseline"
 
+      # The second, comparing build answers a question about the pinned Ghostty
+      # source and Zig toolchain, not about the commit being pushed, and on
+      # GitHub runners Zig 0.15.2 occasionally emits a zcu object that differs
+      # by a few bytes between two clean builds (seen on both architectures,
+      # not reproduced on a developer machine). On every push to main that
+      # failed unrelated commits at random. Pull requests, manual runs and the
+      # release workflow still build twice and compare.
       - name: Prepare reproducible libghostty archive
         env:
           SPLITLANE_GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/.ghostty-source
+          VERIFY_FLAG: ${{ github.event_name != 'push' && '--verify-reproducible' || '' }}
         run: |
           scripts/build-libghostty-linux.sh \
             --target "${{ matrix.target }}" \
-            --verify-reproducible
+            $VERIFY_FLAG
           cp .ghostty-source/build.zig.zon \
              "target/libghostty/${{ matrix.target }}/build.zig.zon"
           sha256sum "target/libghostty/${{ matrix.target }}/build.zig.zon" \
