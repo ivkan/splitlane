@@ -3059,6 +3059,9 @@ jobs:
           # newest entry by createdAt (gh's default sort). Skip the tag
           # currently being released (RELEASE_TAG) when this run is a
           # tag-push - otherwise we'd compare a tag against itself.
+          # `grep -v` exits 1 when nothing is left (no stable release yet),
+          # which pipefail would turn into a job failure before the
+          # no-op branch below could run - hence `|| true`.
           CURRENT_TAG="${RELEASE_TAG:-}"
           PREV_TAG="$(gh release list \
               --exclude-pre-releases \
@@ -3066,7 +3069,7 @@ jobs:
               --limit 5 \
               --json tagName,createdAt \
               --jq 'sort_by(.createdAt) | reverse | .[] | .tagName' \
-            | grep -v "^${CURRENT_TAG}$" \
+            | { grep -v "^${CURRENT_TAG}$" || true; } \
             | head -n1)"
           if [ -z "${PREV_TAG}" ]; then
             echo "No previous stable release found - harness will self-bootstrap to no-op"
