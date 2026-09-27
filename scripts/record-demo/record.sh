@@ -4,6 +4,7 @@
 #
 #   scripts/record-demo/record.sh              # you record the screen (Cmd-Shift-5)
 #   scripts/record-demo/record.sh --rehearse   # same run, no recording prompt
+#   scripts/record-demo/record.sh --capture    # records the screen itself (ffmpeg)
 #   DEMO_THEME=light scripts/record-demo/record.sh   # the light variant
 #
 # Then:
@@ -30,7 +31,9 @@
 #   The prompts are short; a run is a few turns of your plan's usage.
 # - No Screen Recording or Accessibility permission for this script: every step
 #   goes through the app's own IPC socket, and window bounds are readable
-#   without either. The screen recording itself is made by you.
+#   without either. The screen recording itself is made by you - or, with
+#   --capture, by ffmpeg, which then needs Screen Recording for the app the
+#   script runs from. It writes recording.mov into the run dir.
 #
 # Every state on screen is one the app reaches by itself. The "waiting for
 # you" in the hero is Claude Code's real permission prompt for `npm test`,
@@ -42,7 +45,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 BIN="$ROOT/target/debug/splitlane"
 REHEARSE=0
-[[ "${1:-}" == "--rehearse" ]] && REHEARSE=1
+CAPTURE=0
+case "${1:-}" in
+  --rehearse) REHEARSE=1 ;;
+  --capture) CAPTURE=1 ;;
+esac
 
 say() { printf '\033[1m>> %s\033[0m\n' "$*" >&2; }
 die() { printf 'record-demo: %s\n' "$*" >&2; exit 1; }
@@ -61,8 +68,22 @@ RUN_DIR="$ROOT/target/record-demo/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN_DIR"
 TIMELINE="$RUN_DIR/timeline.jsonl"
 APP_PID=""
+CAPTURE_PID=""
+CAPTURE_FIFO="$RUN_DIR/capture.ctl"
+
+# ffmpeg stops cleanly - finishing the file - on a `q` on its stdin; a signal
+# can leave the recording without its index.
+stop_capture() {
+  [[ -n "$CAPTURE_PID" ]] || return 0
+  printf 'q' >&7 2>/dev/null || true
+  exec 7>&- 2>/dev/null || true
+  wait "$CAPTURE_PID" 2>/dev/null || true
+  CAPTURE_PID=""
+  rm -f "$CAPTURE_FIFO"
+}
 
 cleanup() {
+  stop_capture
   [[ -n "$APP_PID" ]] && kill "$APP_PID" 2>/dev/null || true
   # The agents' own processes can still be writing into the stage for a moment
   # after the app is gone, and the stage holds credential copies.
@@ -160,7 +181,21 @@ sys.exit(1)
 PY
 }
 
-if [[ $REHEARSE -eq 0 ]]; then
+if [[ $CAPTURE -eq 1 ]]; then
+  command -v ffmpeg >/dev/null || die "--capture needs ffmpeg"
+  say "recording the main display into $RUN_DIR/recording.mov"
+  mkfifo "$CAPTURE_FIFO"
+  # The creation time is stamped when the file starts, to the microsecond;
+  # sync.py lines the timeline up against it.
+  ffmpeg -hide_banner -loglevel error -f avfoundation -capture_cursor 0 \
+    -framerate 30 -pixel_format nv12 -i "Capture screen 0:none" \
+    -c:v h264_videotoolbox -b:v 40M -metadata creation_time=now \
+    -y "$RUN_DIR/recording.mov" <"$CAPTURE_FIFO" >"$RUN_DIR/capture.log" 2>&1 &
+  CAPTURE_PID=$!
+  exec 7>"$CAPTURE_FIFO"
+  sleep 2
+  kill -0 "$CAPTURE_PID" 2>/dev/null || die "ffmpeg did not start recording (see $RUN_DIR/capture.log)"
+elif [[ $REHEARSE -eq 0 ]]; then
   cat >&2 <<'EOF'
 
   Start the screen recording now: Cmd-Shift-5, "Record Entire Screen", Record.
@@ -273,13 +308,19 @@ mark end
 sleep 2   # a tail for the cut, before the window closes
 
 git -C "$REPO" diff --stat >"$RUN_DIR/repo-diff.txt" 2>&1 || true
-say "done - run dir: $RUN_DIR"
-if [[ $REHEARSE -eq 0 ]]; then
-  cat >&2 <<EOF
+if [[ $CAPTURE -eq 1 ]]; then
+  stop_capture
+  say "done - run dir: $RUN_DIR; next:"
+  printf '\n    scripts/record-demo/process.sh %s/recording.mov %s\n\n' "$RUN_DIR" "$RUN_DIR" >&2
+else
+  say "done - run dir: $RUN_DIR"
+  if [[ $REHEARSE -eq 0 ]]; then
+    cat >&2 <<EOF
 
   Stop the recording now (the stop button in the menu bar), then:
 
     scripts/record-demo/process.sh <path-to-recording.mov> $RUN_DIR
 
 EOF
+  fi
 fi

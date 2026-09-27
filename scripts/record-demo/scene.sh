@@ -240,9 +240,12 @@ cat >"$DEMO_HOME/.claude.json" <<EOF
   }
 }
 EOF
+# `defaultMode` is spelled out because newer Claude Code starts in auto mode,
+# which runs `npm test` without asking - and the prompt is the scene.
 cat >"$DEMO_HOME/.claude/settings.json" <<'EOF'
 {
   "permissions": {
+    "defaultMode": "default",
     "allow": ["Read", "Edit", "Write", "Glob", "Grep"]
   }
 }
