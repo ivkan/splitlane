@@ -253,9 +253,21 @@ impl SplitlaneApp {
                 .workspace
                 .and_then(|idx| self.group_of_project(idx))
                 .map(|group| group.name.clone());
+            // A session is called here what the rail calls it. The surface
+            // name is an address for scripts (`claude@ledger`); shown as the
+            // row's label it read as three identical shells.
+            let label = meta
+                .thread_id
+                .and_then(|thread_id| self.thread_by_id(thread_id))
+                // A title can come from the agent's own summary, so it goes
+                // through the sanitizer a custom surface name does: control
+                // characters, bidi and zero-width marks out, 64 characters.
+                .and_then(|thread| crate::app::ipc_handler::sanitize_pane_name(&thread.title))
+                .unwrap_or_else(|| meta.name.clone());
             // Surface names and titles are OSC-driven and therefore untrusted;
             // `collect_surface_meta` has already scrubbed and clamped them.
             let matches = needle.is_empty()
+                || label.to_lowercase().contains(needle)
                 || meta.name.to_lowercase().contains(needle)
                 || meta.title.to_lowercase().contains(needle)
                 || detail.to_lowercase().contains(needle)
@@ -268,7 +280,7 @@ impl SplitlaneApp {
             let hint = self.surface_hint(&meta, cx);
             items.push(PaletteItem::Surface {
                 surface_id: meta.surface_id,
-                label: meta.name.clone(),
+                label,
                 detail,
                 hint,
                 group,

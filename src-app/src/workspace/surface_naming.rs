@@ -11,7 +11,8 @@
 //!      unique display names, honoring user custom names.
 //!
 //! The base name comes from the best available signal, in priority order:
-//! foreground command → OSC-set title → `shell`. The foreground-command lookup
+//! the agent the surface was started for → foreground command → OSC-set
+//! title → `shell`. The foreground-command lookup
 //! itself (OS-specific, `/proc` on Linux) lives on `TerminalState`; this module
 //! only shapes strings, so it stays platform-agnostic and trivially testable.
 
@@ -48,9 +49,23 @@ const FALLBACK: &str = "shell";
 
 /// Derive the un-disambiguated base name for a single surface.
 ///
-/// `cmd` is the foreground command line (argv joined by spaces) when known;
-/// `title` is the OSC 0/2 title. Priority: cmd → title → [`FALLBACK`].
-pub fn derive_surface_base_name(cmd: Option<&str>, title: Option<&str>) -> String {
+/// `agent` is the binary of the agent the surface was started for, when it
+/// was; `cmd` is the foreground command line (argv joined by spaces) when
+/// known; `title` is the OSC 0/2 title. Priority: agent → cmd → title →
+/// [`FALLBACK`].
+///
+/// The agent comes first because neither of the others names it reliably: the
+/// process scan runs in bursts, so `cmd` is often unknown, and agent CLIs set
+/// their own title - a status glyph and a summary of the conversation - which
+/// named every Claude Code pane `shell`.
+pub fn derive_surface_base_name(
+    agent: Option<&str>,
+    cmd: Option<&str>,
+    title: Option<&str>,
+) -> String {
+    if let Some(name) = agent.map(slugify).filter(|name| !name.is_empty()) {
+        return name;
+    }
     if let Some(name) = cmd.and_then(name_from_command) {
         return name;
     }
@@ -112,9 +127,12 @@ fn command_tokens(cmd: &str) -> Vec<String> {
 /// reduce a path to its basename, and slugify (`/home/a/dev/splitlane` →
 /// `splitlane`).
 fn name_from_title(title: &str) -> Option<String> {
-    let first = title.split_whitespace().next()?;
-    let slug = slugify(basename(first));
-    (!slug.is_empty()).then_some(slug)
+    // A leading token with nothing nameable in it - the status glyph an agent
+    // CLI puts before its title - is skipped rather than ending the search.
+    title
+        .split_whitespace()
+        .map(|token| slugify(basename(token)))
+        .find(|slug| !slug.is_empty())
 }
 
 /// Last path component, splitting on both `/` and `\` so Windows paths work.
@@ -228,7 +246,7 @@ mod tests {
     #[test]
     fn command_simple_subcommand() {
         assert_eq!(
-            derive_surface_base_name(Some("cargo run"), None),
+            derive_surface_base_name(None, Some("cargo run"), None),
             "cargo-run"
         );
     }
@@ -236,7 +254,7 @@ mod tests {
     #[test]
     fn command_absolute_path_argv0() {
         assert_eq!(
-            derive_surface_base_name(Some("/usr/bin/node server.js"), None),
+            derive_surface_base_name(None, Some("/usr/bin/node server.js"), None),
             "node-server.js"
         );
     }
@@ -245,6 +263,7 @@ mod tests {
     fn command_quoted_windows_path_argv0() {
         assert_eq!(
             derive_surface_base_name(
+                None,
                 Some(r#""C:\Program Files\nodejs\node.exe" "C:\repo\dev server.js""#),
                 None
             ),
@@ -256,7 +275,7 @@ mod tests {
     fn command_skips_leading_flags_for_qualifier() {
         // "-m" is a flag; the first non-flag token becomes the qualifier.
         assert_eq!(
-            derive_surface_base_name(Some("python -m http.server"), None),
+            derive_surface_base_name(None, Some("python -m http.server"), None),
             "python-http.server"
         );
     }
@@ -264,11 +283,11 @@ mod tests {
     #[test]
     fn idle_shell_maps_to_shell() {
         assert_eq!(
-            derive_surface_base_name(Some("/usr/bin/zsh"), None),
+            derive_surface_base_name(None, Some("/usr/bin/zsh"), None),
             "shell"
         );
         assert_eq!(
-            derive_surface_base_name(Some("bash"), Some("~/dev")),
+            derive_surface_base_name(None, Some("bash"), Some("~/dev")),
             "shell"
         );
     }
@@ -276,16 +295,48 @@ mod tests {
     #[test]
     fn title_used_when_no_command() {
         assert_eq!(
-            derive_surface_base_name(None, Some("/home/arthur/dev/splitlane")),
+            derive_surface_base_name(None, None, Some("/home/arthur/dev/splitlane")),
             "splitlane"
         );
-        assert_eq!(derive_surface_base_name(None, Some("claude")), "claude");
+        assert_eq!(
+            derive_surface_base_name(None, None, Some("claude")),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn a_status_glyph_before_the_title_is_skipped() {
+        assert_eq!(
+            derive_surface_base_name(None, None, Some("✳ Claude Code")),
+            "claude"
+        );
+        assert_eq!(derive_surface_base_name(None, None, Some("◑ ◐")), "shell");
+    }
+
+    #[test]
+    fn the_agent_names_its_surface_before_command_or_title() {
+        assert_eq!(
+            derive_surface_base_name(Some("claude"), None, Some("◑ Fix the parser")),
+            "claude"
+        );
+        assert_eq!(
+            derive_surface_base_name(Some("codex"), Some("node /opt/codex.js"), None),
+            "codex"
+        );
+        // An agent binary that slugs to nothing falls through to the rest.
+        assert_eq!(
+            derive_surface_base_name(Some("  "), Some("cargo run"), None),
+            "cargo-run"
+        );
     }
 
     #[test]
     fn no_signal_falls_back_to_shell() {
-        assert_eq!(derive_surface_base_name(None, None), "shell");
-        assert_eq!(derive_surface_base_name(Some("   "), Some("   ")), "shell");
+        assert_eq!(derive_surface_base_name(None, None, None), "shell");
+        assert_eq!(
+            derive_surface_base_name(None, Some("   "), Some("   ")),
+            "shell"
+        );
     }
 
     /// Helper: an auto (non-custom) naming input.

@@ -1689,7 +1689,13 @@ impl SplitlaneApp {
             .iter()
             .zip(&entries)
             .map(|(m, entry)| {
+                let agent = entry
+                    .thread_id
+                    .and_then(|thread_id| self.thread_by_id(thread_id))
+                    .and_then(|thread| thread.terminal_agent)
+                    .map(|agent| agent.binary());
                 let base = crate::workspace::surface_naming::derive_surface_base_name(
+                    agent,
                     m.cmd.as_deref(),
                     Some(m.title.as_str()).filter(|t| !t.is_empty()),
                 );
