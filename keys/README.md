@@ -8,10 +8,10 @@ artifacts.
 ASCII-armored OpenPGP public key used to sign `.deb` and `.rpm` release
 artifacts and, once a package repository exists, its apt/dnf metadata.
 
-- **Fingerprint:** `F87D 58DD 68A5 1E30 4ADD  0B92 3544 5D59 1132 AB3D`
+- **Fingerprint:** `8926 3EE2 EC93 CF81 F016  659C 0AE5 FA8D 18F8 B158`
 - **Algorithm / size:** RSA 4096
-- **User ID:** `Splitlane Release <ivan@topgun.build>`
-- **Expires:** 2028-09-15
+- **User ID:** `Splitlane Release (Splitlane package signing) <splitlane.dev@gmail.com>`
+- **Expires:** 2028-09-26
 
 ## Verifying the key before trusting it
 
