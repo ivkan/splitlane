@@ -657,6 +657,29 @@ pub(crate) fn fire_stalled_notification(
 // older `crate::find_first_terminal` lookups keep resolving.
 // ---------------------------------------------------------------------------
 
+/// Run `f` in the window whose root view is the app, once.
+///
+/// Not `AnyWindowHandle::downcast::<SplitlaneApp>`: the window opens on the
+/// startup splash and `replace_root` swaps the app in afterwards, while the
+/// handle keeps the splash's type - so that downcast never matches, and a
+/// deferred focus written with it silently did nothing. The root view itself
+/// has the app's type.
+fn with_app_window(cx: &mut gpui::App, f: impl FnOnce(&mut gpui::Window, &mut gpui::App)) {
+    let mut f = Some(f);
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |root, window, cx| {
+            if root.downcast::<SplitlaneApp>().is_ok()
+                && let Some(f) = f.take()
+            {
+                f(window, cx);
+            }
+        });
+        if f.is_none() {
+            return;
+        }
+    }
+}
+
 /// Same-UID RCE-primitive
 /// gate for `surface.send_text` and `surface.send_keystroke`.
 /// Returns `true` when `SPLITLANE_IPC_SCRIPTING=1` (the documented
@@ -1823,13 +1846,9 @@ impl SplitlaneApp {
             SurfaceScope::Workspace(_) => return None,
         }
         cx.defer(move |cx| {
-            for handle in cx.windows() {
-                if let Some(main) = handle.downcast::<SplitlaneApp>() {
-                    let _ = main.update(cx, |_, window, cx| {
-                        terminal.read(cx).focus_handle(cx).focus(window, cx);
-                    });
-                }
-            }
+            with_app_window(cx, |window, cx| {
+                terminal.read(cx).focus_handle(cx).focus(window, cx);
+            });
         });
         self.save_session(cx);
         cx.notify();
@@ -2889,17 +2908,13 @@ impl SplitlaneApp {
                 });
                 // …but the keyboard focus needs a `&mut Window`, which the IPC
                 // dispatch doesn't carry. Defer one tick and re-enter through
-                // the main window handle (locate it among `cx.windows()` by
-                // downcast); deferring keeps the re-entrant `SplitlaneApp` update
-                // out of this in-flight one.
+                // the window whose root is the app (`with_app_window`);
+                // deferring keeps the re-entrant `SplitlaneApp` update out of
+                // this in-flight one.
                 cx.defer(move |cx| {
-                    for handle in cx.windows() {
-                        if let Some(main) = handle.downcast::<SplitlaneApp>() {
-                            let _ = main.update(cx, |_, window, cx| {
-                                pane.read(cx).focus_handle(cx).focus(window, cx);
-                            });
-                        }
-                    }
+                    with_app_window(cx, |window, cx| {
+                        pane.read(cx).focus_handle(cx).focus(window, cx);
+                    });
                 });
                 self.save_session(cx);
                 cx.notify();
