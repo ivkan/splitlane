@@ -91,7 +91,7 @@ A bare binary works, but on macOS some features need a real `.app` bundle:
 
 ```bash
 cargo build --release -p splitlane-app
-scripts/bundle-macos.sh --version 0.8.2 --arch aarch64 --target-dir target/release
+scripts/bundle-macos.sh --version 0.1.0 --arch aarch64 --target-dir target/release
 ```
 
 The script writes `dist/Splitlane.app` with the binary, `Info.plist` (the
