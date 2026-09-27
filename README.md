@@ -109,7 +109,7 @@ Download the file for your platform from the
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple Silicon) | `splitlane-<version>-aarch64-apple-darwin.dmg` | Signed and notarized: open the image and drag Splitlane to Applications. Intel Macs are not built yet. |
+| macOS (Apple Silicon) | `splitlane-<version>-aarch64-apple-darwin.dmg` | Signed and notarized: open the image and drag Splitlane to Applications, or run `brew install --cask ivkan/splitlane/splitlane`. Intel Macs are not built yet. |
 | Debian, Ubuntu | `splitlane-<version>-<arch>.deb` | `sudo apt install ./splitlane-<version>-<arch>.deb` |
 | Fedora, openSUSE | `splitlane-<version>-<arch>.rpm` | `sudo dnf install ./splitlane-<version>-<arch>.rpm` (or `zypper install`) |
 | Other Linux | `.AppImage` or `.tar.gz` | The AppImage runs as is after `chmod +x`. |
