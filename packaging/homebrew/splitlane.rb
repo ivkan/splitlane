@@ -36,7 +36,7 @@ cask "splitlane" do
   # that era. Same value as `LSMinimumSystemVersion` in assets/Info.plist.
   # Bumping this here without bumping the plist (or vice versa)
   # causes install-time confusion - keep them synchronised.
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
   depends_on arch: :arm64
 
   # Gatekeeper on macOS extracts the bundle from the DMG and installs it;
