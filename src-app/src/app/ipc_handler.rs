@@ -2953,6 +2953,67 @@ impl SplitlaneApp {
                 });
                 serde_json::json!({"dispatched": true, "action": name})
             }
+            "surface.send_answer" => {
+                // The "Send last answer to ..." menu entry, for a script:
+                // `surface_id`'s last answer goes onto `to_surface_id`'s input
+                // line. Never submitted, as from the menu - the Enter stays with
+                // the person. Gated like the other writes into a pane.
+                if !ipc_scripting_enabled() {
+                    return JsonRpcError::method_not_enabled(
+                        "surface.send_answer disabled; set SPLITLANE_IPC_SCRIPTING=1 to use",
+                    )
+                    .into_value();
+                }
+                let (Some(from), Some(to)) = (
+                    params.get("surface_id").and_then(|s| s.as_u64()),
+                    params.get("to_surface_id").and_then(|s| s.as_u64()),
+                ) else {
+                    return JsonRpcError::invalid_params(
+                        "Missing 'surface_id' or 'to_surface_id' parameter",
+                    )
+                    .into_value();
+                };
+                let Some(thread_id) = self
+                    .find_surface_terminal_by_id(from, cx)
+                    .and_then(|t| t.read(cx).agent_thread_id)
+                else {
+                    return JsonRpcError::invalid_params("surface_id is not an agent session")
+                        .into_value();
+                };
+                // The menu offers the entry only when this holds; asked here
+                // too, so a script gets an error rather than a toast.
+                if self
+                    .thread_by_id(thread_id)
+                    .is_none_or(|thread| crate::claude_sessions::transcript_path(thread).is_none())
+                {
+                    return JsonRpcError::invalid_params(
+                        "surface_id has no session transcript Splitlane can read",
+                    )
+                    .into_value();
+                }
+                let Some(destination) = self
+                    .answer_destinations(thread_id, cx)
+                    .into_iter()
+                    .find(|d| d.terminal.entity_id().as_u64() == to)
+                else {
+                    return JsonRpcError::invalid_params(
+                        "to_surface_id is not another agent on screen beside surface_id",
+                    )
+                    .into_value();
+                };
+                // A click on the entry closes the menu it is in first.
+                self.close_agents_menu(cx);
+                self.tab_menu_open = None;
+                let app = cx.entity().downgrade();
+                cx.defer(move |cx| {
+                    with_app_window(cx, |window, cx| {
+                        let _ = app.update(cx, |app, cx| {
+                            app.send_last_answer(thread_id, destination, window, cx);
+                        });
+                    });
+                });
+                serde_json::json!({"sent": true, "surface_id": from, "to_surface_id": to})
+            }
             "surface.send_text" => {
                 // Same-UID RCE primitive gate. See ipc.rs module doc for the
                 // blast-radius rationale. Default off. There is a SECOND way

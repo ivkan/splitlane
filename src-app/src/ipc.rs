@@ -86,6 +86,8 @@
 //!   workspace (used by session restore).
 //! - `surface.list` / `surface.send_text` / `surface.send_keystroke` /
 //!   `surface.split` - pane operations.
+//! - `surface.send_answer` - put one agent session's last answer on another
+//!   on-screen agent's input line, unsubmitted; behind the scripting gate.
 //! - `app.dispatch_action` - run a keybinding action by its registry name,
 //!   behind the same `SPLITLANE_IPC_SCRIPTING=1` gate as the keystroke
 //!   methods: it reaches whatever the keyboard reaches.
@@ -1085,7 +1087,7 @@ fn handle_connection(
                                         "surface.list", "surface.read", "surface.search", "surface.rename",
                                         "surface.send_text", "surface.send_keystroke", "surface.split",
                                         "surface.focus", "surface.status",
-                                        "app.dispatch_action",
+                                        "surface.send_answer", "app.dispatch_action",
                                         "fleet.list",
                                         "events.subscribe",
                                         "ai.session_start",

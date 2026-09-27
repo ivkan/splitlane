@@ -102,7 +102,7 @@ The environment variables are read from the Splitlane process.
 | Reads: `ls`, `read`, `search`, `ps`, `status`, `watch`, `wait` | Always |
 | `new`, `select`, `focus`, `split` without spawn fields | Always |
 | `send`, `key` (`surface.send_text`, `surface.send_keystroke`) | `SPLITLANE_IPC_SCRIPTING=1` or `ai_unrestricted: true` |
-| `app.dispatch_action` | `SPLITLANE_IPC_SCRIPTING=1` |
+| `app.dispatch_action`, `surface.send_answer` | `SPLITLANE_IPC_SCRIPTING=1` |
 | `up`, `surface.split`, `workspace.up` with `command`, `prompt`, `context` or `env` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
 | `flow run` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
 | A flow with any `submit = true` | `SPLITLANE_IPC_SCRIPTING=1` (checked before the flow starts, also with `--dry-run` when the instance is reachable) |
@@ -321,6 +321,7 @@ by `surface.focus`, which requires `surface_id`.
 | `surface.send_text` | `text`, `submit` (default `false`), `paste` (default: automatic) | `{sent, length, submitted, paste, submit_mode, agent_target, agent_tool, terminal_bracketed_paste}` |
 | `surface.send_keystroke` | `keystroke` (for example `escape`, `ctrl-c`, `alt-f`) | `{sent}` |
 | `app.dispatch_action` | `action`: an action name from [Keybindings](../keybindings.md) (for example `jump_next_waiting`, `toggle_files_sidebar`) | `{dispatched, action}`. The action runs on the next frame, where the same key press would land; the result does not say whether anything answered it |
+| `surface.send_answer` | `surface_id` (an agent session), `to_surface_id` (another agent pane on screen in the same project) | `{sent, surface_id, to_surface_id}`. The same as the pane menu's "Send last answer to": the answer lands on the other agent's input line and is not submitted |
 | `fleet.list` | | See above |
 | `events.subscribe` | `surfaces` (array of ids), `types` (array of event names) | A stream; see below |
 | `ai.session_start`, `ai.prompt_submit`, `ai.tool_use`, `ai.notification`, `ai.stop`, `ai.exit`, `ai.session_end` | Hook payload | Sent by `splitlane-ai-hook`; see [Agent hooks](../hooks.md) |
