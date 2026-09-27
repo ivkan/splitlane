@@ -67,7 +67,7 @@ seed_session() {
   local cache="$DEMO_HOME/Library/Caches/splitlane-dev"
   mkdir -p "$cache"
   python3 - "$cache/session-dev.json" "$REPO" <<'PY'
-import json, sys, time, uuid
+import json, os, sys, time, uuid
 path, repo = sys.argv[1], sys.argv[2]
 now = int(time.time() * 1000)
 
@@ -86,15 +86,33 @@ surfaces = [
     agent(4, 2, "Claude Code", "claude_code", str(uuid.uuid4())),
 ]
 leaf = lambda s: {"type": "pane", "surfaces": [{"surface_type": "agent", "surface_id": s["id"]}]}
+
+# A few more projects, so the rail shows groups: `ledger` with two others
+# under "Work", and a folded "Side projects". They are empty folders beside
+# the repository; nothing runs in them.
+def neighbour(pid, title, group):
+    cwd = os.path.join(os.path.dirname(repo), title)
+    os.makedirs(cwd, exist_ok=True)
+    return {"id": pid, "title": title, "cwd": cwd, "is_expanded": False, "group": group}
+
 json.dump({
     "version": 2,
     "active_workspace": 0,
+    "groups": [
+        {"id": 1, "name": "Work"},
+        {"id": 2, "name": "Side projects", "collapsed": True},
+    ],
     "projects": [{
-        "id": 1, "title": "ledger", "cwd": repo, "is_expanded": True,
+        "id": 1, "title": "ledger", "cwd": repo, "is_expanded": True, "group": 1,
         "layout": {"type": "split", "direction": "vertical",
                    "children": [leaf(s) for s in surfaces]},
         "surfaces": surfaces,
-    }],
+    },
+        neighbour(5, "billing-api", 1),
+        neighbour(6, "web-app", 1),
+        neighbour(7, "dotfiles", 2),
+        neighbour(8, "blog", 2),
+    ],
 }, open(path, "w"), indent=2)
 PY
 }

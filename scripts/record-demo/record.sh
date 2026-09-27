@@ -294,6 +294,19 @@ wait_claude_status idle 3 240 || say "the three sessions did not all reach idle 
 sleep 4
 mark all-idle
 
+say "sending the parse.js explanation to the agent on the left"
+# The menu first, as a person would open it; then the entry, which closes it.
+# The answer lands on the left agent's input line and is not submitted.
+focus 1
+sleep 1.5
+mark answer-menu
+rpc app.dispatch_action '{"action": "open_agents_thread_menu"}' >/dev/null
+sleep 2.5
+mark answer-send
+rpc surface.send_answer "{\"surface_id\": ${SURFACES[1]}, \"to_surface_id\": ${SURFACES[0]}}" >/dev/null
+sleep 4
+mark answer-sent
+
 say "layout: the row becomes a grid, and a fourth pane opens holding the diff"
 focus 0
 sleep 1.5
@@ -304,6 +317,20 @@ mark grid
 sleep 3
 focus 2; sleep 1.5
 focus 0; sleep 1.5
+
+say "the file tree, then the command palette"
+rpc app.dispatch_action '{"action": "toggle_files_sidebar"}' >/dev/null
+sleep 1
+mark files
+sleep 4
+rpc app.dispatch_action '{"action": "toggle_files_sidebar"}' >/dev/null
+sleep 1.5
+rpc app.dispatch_action '{"action": "open_command_palette"}' >/dev/null
+sleep 0.8
+mark palette
+sleep 3.5
+rpc app.dispatch_action '{"action": "open_command_palette"}' >/dev/null
+sleep 1.5
 mark end
 sleep 2   # a tail for the cut, before the window closes
 
