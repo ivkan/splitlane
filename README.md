@@ -13,11 +13,11 @@
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/images/hero-light.png" />
-  <img src="assets/images/hero-dark.png" alt="Splitlane with three Claude Code sessions in one project. The rail on the left lists them; the right-hand pane shows a permission prompt, its header reads 'waiting for you', and the title bar reads '1 agent waiting'." width="100%" />
+  <img src="assets/images/hero-dark.png" alt="Splitlane with three Claude Code sessions in one project. The rail on the left lists them under the project, in a group named Work; the right-hand pane shows a permission prompt, its header reads 'waiting for you', and the title bar reads '1 agent waiting'." width="100%" />
 </picture>
 <p align="center"><sub>Three agents in one project. One is working, one has finished, and one is asking to run <code>npm test</code> - the rail, its pane header and the title bar all say so.</sub></p>
 
-https://github.com/user-attachments/assets/42481287-e16a-42b6-b825-31a5a133f470
+https://github.com/user-attachments/assets/8dbb4e22-822f-4928-90e0-1b394e192eb1
 
 Splitlane is a native desktop app for supervising several CLI coding agents at
 once. Every agent runs in a real terminal pane, exactly as it would in your own
@@ -71,6 +71,11 @@ approval UI to keep in sync.
   open sessions and its past sessions, and you pick one inside the pane.
 - **The rail.** One list of projects, each expanding to its sessions with their
   status. `⌥⇥` jumps to the next session waiting for you.
+- **Groups.** Projects can sit under named labels in the rail. Fold a group
+  away, or keep its project names out of notifications.
+- **Hand an answer over.** A session's last answer goes to another agent on
+  screen from the pane's menu, onto its input line; you press Enter. `⌘⌥C`
+  copies it instead.
 - **Diff.** A project's uncommitted changes, with a file list, a filter and a
   revision picker, in a pane next to the agents that made them.
 - **Files.** A tree of the project with git change marks (`⌘B`).
