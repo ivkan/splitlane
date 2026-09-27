@@ -101,11 +101,19 @@ not collide with readline. The full list is in Settings → Shortcuts and
 
 ## Install
 
-**There are no release builds yet** - for now Splitlane is built from source.
-Signed installers need an Apple Developer identity and a Windows code-signing
-certificate this project does not have yet; binaries will be published on the
-[Releases](https://github.com/ivkan/splitlane/releases) page once they exist,
-and this section will say how to open them.
+Download the file for your platform from the
+[latest release](https://github.com/ivkan/splitlane/releases/latest).
+
+| Platform | File | Notes |
+|---|---|---|
+| macOS (Apple Silicon) | `splitlane-<version>-aarch64-apple-darwin.dmg` | Signed and notarized: open the image and drag Splitlane to Applications. Intel Macs are not built yet. |
+| Debian, Ubuntu | `splitlane-<version>-<arch>.deb` | `sudo apt install ./splitlane-<version>-<arch>.deb` |
+| Fedora, openSUSE | `splitlane-<version>-<arch>.rpm` | `sudo dnf install ./splitlane-<version>-<arch>.rpm` (or `zypper install`) |
+| Other Linux | `.AppImage` or `.tar.gz` | The AppImage runs as is after `chmod +x`. |
+| Windows | - | No signed installer yet; [build from source](#build-from-source). |
+
+`<arch>` is `x86_64` or `aarch64`. The `.deb` and `.rpm` packages are signed
+with the key in [keys/](keys/README.md), which also explains how to check it.
 
 ### Build from source
 
