@@ -115,12 +115,28 @@ ln -s /Applications "$STAGING/Applications"
 mkdir -p "$(dirname "$FINAL_DMG")"
 
 echo "Creating $FINAL_DMG (source: $(du -sh "$STAGING" | awk '{print $1}'))..."
-hdiutil create \
-    -volname "$VOLNAME" \
-    -srcfolder "$STAGING" \
-    -ov \
-    -format UDZO \
-    "$FINAL_DMG" >/dev/null
+# Hosted macOS runners intermittently fail `hdiutil create` with
+# "Resource busy" while a background scanner still holds the freshly
+# signed bundle; the same inputs succeed seconds later. Retry that case
+# only, so a real failure still stops the build on its first error.
+attempt=1
+while true; do
+    if hdiutil_out="$(hdiutil create \
+        -volname "$VOLNAME" \
+        -srcfolder "$STAGING" \
+        -ov \
+        -format UDZO \
+        "$FINAL_DMG" 2>&1)"; then
+        break
+    fi
+    if [ "$attempt" -ge 5 ] || ! grep -q "Resource busy" <<< "$hdiutil_out"; then
+        printf '%s\n' "$hdiutil_out" >&2
+        die "hdiutil create failed (attempt $attempt)"
+    fi
+    echo "hdiutil create: resource busy, retrying (attempt $attempt of 5)..." >&2
+    attempt=$((attempt + 1))
+    sleep $((attempt * 5))
+done
 
 # --- Verify -------------------------------------------------------------
 # `hdiutil verify` checksums the compressed image - catches truncation.
