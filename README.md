@@ -3,6 +3,9 @@
   <h1>Splitlane</h1>
   <p><strong>Run Claude Code, Codex and other coding agents side by side,<br />and see at a glance which one is waiting for you.</strong></p>
   <p>
+    <a href="https://github.com/ivkan/splitlane/releases/latest"><img src="https://img.shields.io/github/v/release/ivkan/splitlane?label=download&sort=semver" alt="Download the latest release" /></a>
+  </p>
+  <p>
     <a href="#install">Install</a> ·
     <a href="#how-it-knows">How it knows</a> ·
     <a href="#what-is-in-the-window">What is in the window</a> ·
