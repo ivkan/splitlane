@@ -160,13 +160,16 @@ jobs:
           - target: aarch64-apple-darwin
             arch: aarch64
             runs-on: macos-14
-          # x86_64-pc-windows-msvc - a hard release gate like Linux and
-          # macOS: any Windows build, signing, packaging, or staging
-          # failure fails the workflow. Signing uses Azure Artifact
-          # Signing through the six AZURE_* secrets.
-          - target: x86_64-pc-windows-msvc
-            arch: x86_64
-            runs-on: windows-2022
+          # x86_64-pc-windows-msvc - left out until the project has an
+          # Authenticode signing identity. Signing uses Azure Artifact
+          # Signing through the six AZURE_* secrets; without them the leg
+          # stages no MSI, which fails a tag release. Once they exist,
+          # uncomment this entry, drop `if: false` from
+          # `smoke-test-windows-msi` and add it back to `release.needs`;
+          # the leg is then a hard release gate like Linux and macOS.
+          # - target: x86_64-pc-windows-msvc
+          #   arch: x86_64
+          #   runs-on: windows-2022
           # Not built: x86_64-apple-darwin (Intel Mac). The macos-13
           # runner queue is long enough to hold up the `Publish GitHub
           # Release` job, which waits for every matrix leg.
@@ -1752,7 +1755,7 @@ jobs:
       - smoke-test-debian
       - smoke-test-opensuse
       - smoke-test-arch
-      - smoke-test-windows-msi
+      # smoke-test-windows-msi returns here with the Windows build leg.
       - auto-update-e2e
     runs-on: ubuntu-22.04
     # Gate the publish job (which holds the
@@ -2335,6 +2338,9 @@ jobs:
   # diagnostics, removes its staged MSI, and requests a relaunch.
   smoke-test-windows-msi:
     name: Smoke test - Windows MSI install + relay
+    # Disabled while the Windows build leg is out of the matrix (see
+    # `build.strategy.matrix`): there is no MSI artifact to install.
+    if: false
     needs: build
     runs-on: windows-2022
     defaults:
