@@ -2925,6 +2925,34 @@ impl SplitlaneApp {
                     "scope": scope.as_wire(),
                 })
             }
+            "app.dispatch_action" => {
+                // Anything a key can do, by the action's registry name - the
+                // name a `shortcuts` override uses. Scripted demos and
+                // end-to-end runs drive the UI through this instead of posting
+                // OS key events, which need an Accessibility grant and race
+                // the window's focus. Gated like `surface.send_keystroke`:
+                // the keyboard reaches every shell on screen, so this does too.
+                if !ipc_scripting_enabled() {
+                    return JsonRpcError::method_not_enabled(
+                        "app.dispatch_action disabled; set SPLITLANE_IPC_SCRIPTING=1 to use",
+                    )
+                    .into_value();
+                }
+                let Some(name) = params.get("action").and_then(|a| a.as_str()) else {
+                    return JsonRpcError::invalid_params("Missing 'action' parameter").into_value();
+                };
+                let Some(action) = crate::keybindings::action_from_name(name) else {
+                    return JsonRpcError::invalid_params(format!("Unknown action: {name}"))
+                        .into_value();
+                };
+                // Dispatch needs a `&mut Window`; deferred for the same reason
+                // as `surface.focus` above. It goes down the focus path, so the
+                // action lands where the same key press would.
+                cx.defer(move |cx| {
+                    with_app_window(cx, |window, cx| window.dispatch_action(action, cx));
+                });
+                serde_json::json!({"dispatched": true, "action": name})
+            }
             "surface.send_text" => {
                 // Same-UID RCE primitive gate. See ipc.rs module doc for the
                 // blast-radius rationale. Default off. There is a SECOND way

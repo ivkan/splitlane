@@ -6,6 +6,10 @@
 #
 # Writes into <run-dir>/assets, <theme> being the run's DEMO_THEME:
 #   hero-<theme>.png  grid-diff-<theme>.png   stills, 1920 px wide
+#   window.mp4        the window at the recording's full resolution, and
+#   marks.json        the timeline in seconds into window.mp4 - the source
+#                     footage and cue sheet for the edited demo, where zooms
+#                     need every pixel the screen had
 # and, for the dark run only:
 #   social-preview.png                        1280x640, from the hero
 #   demo.mp4                                  the clip for a README <video>
@@ -43,6 +47,10 @@ still() {
     -draw "roundrectangle 1,1,$(( ${size%x*} - 2 )),$(( ${size#*x} - 2 )),22,22" \) \
     -alpha off -compose CopyOpacity -composite "PNG32:$OUT/$1"
 }
+ffmpeg -v error -y -i "$MOV" -vf "crop=$CROP,format=yuv420p" -an \
+  -c:v libx264 -preset slow -crf 16 -movflags +faststart "$OUT/window.mp4"
+printf '%s\n' "$MARKS_JSON" >"$OUT/marks.json"
+
 still "hero-$THEME.png" "$S_HERO_DARK"
 still "grid-diff-$THEME.png" "$S_GRID"
 

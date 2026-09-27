@@ -86,6 +86,9 @@
 //!   workspace (used by session restore).
 //! - `surface.list` / `surface.send_text` / `surface.send_keystroke` /
 //!   `surface.split` - pane operations.
+//! - `app.dispatch_action` - run a keybinding action by its registry name,
+//!   behind the same `SPLITLANE_IPC_SCRIPTING=1` gate as the keystroke
+//!   methods: it reaches whatever the keyboard reaches.
 //! - `ai.session_start` / `ai.prompt_submit` / `ai.tool_use` /
 //!   `ai.notification` / `ai.stop` / `ai.exit` / `ai.session_end` - AI
 //!   hook lifecycle (`ai.exit` carries the wrapped agent binary's real
@@ -1082,6 +1085,7 @@ fn handle_connection(
                                         "surface.list", "surface.read", "surface.search", "surface.rename",
                                         "surface.send_text", "surface.send_keystroke", "surface.split",
                                         "surface.focus", "surface.status",
+                                        "app.dispatch_action",
                                         "fleet.list",
                                         "events.subscribe",
                                         "ai.session_start",

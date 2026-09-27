@@ -92,6 +92,7 @@ fn ipc_workspace_methods_survive_the_container_merge() {
         "surface.split",
         "surface.send_text",
         "surface.send_keystroke",
+        "app.dispatch_action",
     ] {
         assert!(
             handler.contains(&format!("\"{method}\"")),

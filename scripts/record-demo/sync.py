@@ -3,7 +3,7 @@
 
     sync.py <recording.mov> <run-dir> <offset-seconds>
 """
-import json, subprocess, sys
+import json, shlex, subprocess, sys
 from datetime import datetime
 
 mov, run_dir, offset = sys.argv[1], sys.argv[2], float(sys.argv[3])
@@ -36,6 +36,12 @@ def t(name):
     return f"{value:.2f}"
 
 print(f"CROP={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}")
+# Every mark, for the edit: seconds into the recording, which is also seconds
+# into the uncut window.mp4. Marks from before the recording started are left
+# out rather than refused - the edit does not need them all.
+cue = {name: round(value, 2) for name, value in marks.items() if value >= 0}
+cue["_window"] = {"width": crop[0], "height": crop[1]}
+print(f"MARKS_JSON={shlex.quote(json.dumps(cue))}")
 print(f"THEME={geo.get('theme', 'dark')}")
 for name in ["agents-ready", "waiting", "hero-dark", "answered", "all-idle", "grid", "end"]:
     print(f"T_{name.replace('-', '_').upper()}={t(name)}")

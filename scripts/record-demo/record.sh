@@ -241,6 +241,15 @@ sleep 4   # the rail's pass (2 s) plus the announce movement (480 ms)
 mark hero-dark
 sleep 4
 
+# The keyboard way to the agent that is waiting: focus goes elsewhere first,
+# then the same action as its key brings it back.
+say "jumping to the waiting agent with jump_next_waiting"
+focus 0
+sleep 1.5
+mark jump
+rpc app.dispatch_action '{"action": "jump_next_waiting"}' >/dev/null
+sleep 2.5
+
 say "answering the prompt in its own pane"
 cli send "${SURFACES[2]}" "1" >/dev/null
 mark answered
