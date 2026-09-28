@@ -6,6 +6,18 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-28
+
+### Security
+
+- `"ai_unrestricted": true` in `splitlane.json` no longer opens `send` and
+  `key` by itself. The file is reloaded while Splitlane runs and agents can
+  edit it, so an agent could grant itself write access to other panes. The
+  key is now a request: Free access opens only when you turn it on in
+  Settings -> Agents, once per launch. Setting the key to `false` still
+  closes access at once. If you had Free access on, Splitlane tells you after
+  the upgrade and one click in Settings turns it back on.
+
 ## [0.1.1] - 2026-09-28
 
 ### Fixed
@@ -29,6 +41,7 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ivkan/splitlane/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ivkan/splitlane/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ivkan/splitlane/releases/tag/v0.1.0

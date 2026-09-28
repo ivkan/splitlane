@@ -63,6 +63,12 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.2" date="2026-09-28">
+      <description>
+        <p>Free access for agents can now be turned on only from Settings,
+        not by editing the config file.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-09-28">
       <description>
         <p>A freshly started agent without hooks no longer shows as running
