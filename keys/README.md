@@ -18,6 +18,13 @@ artifacts and, once a package repository exists, its apt/dnf metadata.
 Do not import this file into a keyring before checking its fingerprint -
 importing first defeats the check.
 
+Without a clone, download it first and drop the `keys/` prefix from the
+commands below:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/ivkan/splitlane/main/keys/splitlane-release.asc
+```
+
 ```sh
 gpg --show-keys --with-fingerprint keys/splitlane-release.asc
 ```

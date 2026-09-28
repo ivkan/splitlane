@@ -111,11 +111,13 @@ Download the file for your platform from the
 |---|---|---|
 | macOS (Apple Silicon) | `splitlane-<version>-aarch64-apple-darwin.dmg` | Signed and notarized: open the image and drag Splitlane to Applications, or run `brew install --cask ivkan/splitlane/splitlane`. Intel Macs are not built yet. |
 | Debian, Ubuntu | `splitlane-<version>-<arch>.deb` | `sudo apt install ./splitlane-<version>-<arch>.deb` |
-| Fedora, openSUSE | `splitlane-<version>-<arch>.rpm` | `sudo dnf install ./splitlane-<version>-<arch>.rpm` (or `zypper install`) |
-| Other Linux | `.AppImage` or `.tar.gz` | The AppImage runs as is after `chmod +x`. |
+| Fedora, openSUSE | `splitlane-<version>-<arch>.rpm` | Import the signing key once (check its fingerprint first, see [keys/](keys/README.md)), then install: `sudo rpm --import https://raw.githubusercontent.com/ivkan/splitlane/main/keys/splitlane-release.asc`, then `sudo dnf install ./splitlane-<version>-<arch>.rpm` or `sudo zypper install ./splitlane-<version>-<arch>.rpm`. zypper refuses the package without the key. |
+| Other Linux | `.AppImage` or `.tar.gz` | The AppImage runs as is after `chmod +x`. The tarball unpacks to `splitlane.app/`; `splitlane.app/install.sh` installs it under `~/.local` without sudo. |
 | Windows | - | No signed installer yet; [build from source](#build-from-source). |
 
-`<arch>` is `x86_64` or `aarch64`. Every file has a `.sha256` and a minisign
+`<arch>` is `x86_64` or `aarch64` (not `amd64`/`arm64`). Linux builds need
+glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later) and a
+Vulkan driver. Every file has a `.sha256` and a minisign
 `.minisig` beside it, and the `.deb` and `.rpm` are also GPG-signed;
 [keys/README.md](keys/README.md) has the public keys and the commands to check
 them. If the AppImage will not start because FUSE is missing, run it with
