@@ -791,7 +791,9 @@ It opens `send` and `key` only after the person turns **Free access** on in
 Settings -> Agents during the current run of the app (`app::free_access`). A
 `true` that arrives from disk (a hot reload, or the file as it stands at
 launch) leaves the gate closed and raises a toast whose `Open Settings` button lands
-on that switch; the Settings row repeats the reason while the request is
+on that switch - once per run, so an agent flipping the key back and forth
+cannot keep putting a button to the switch in front of the person; the
+Settings row repeats the reason while the request is
 pending, and a refused `send`/`key` names it too. A `false` from disk closes the
 gate at once and drops the confirmation, so a later `true` asks again. The
 environment variables are unaffected: they come from the process that launched

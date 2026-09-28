@@ -24,6 +24,10 @@ use crate::SplitlaneApp;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FreeAccess {
     confirmed: bool,
+    /// Whether the person has been told this run that the file is asking.
+    /// Once is enough: an agent that flips the key back and forth must not be
+    /// able to raise the notice - and its button to the switch - at will.
+    announced: bool,
 }
 
 impl FreeAccess {
@@ -47,6 +51,12 @@ impl FreeAccess {
             return false;
         }
         !was_requested && !self.confirmed
+    }
+
+    /// Whether to show the "confirm it in Settings" notice now. Answers `true`
+    /// at most once per run.
+    pub(crate) fn take_announcement(&mut self) -> bool {
+        !std::mem::replace(&mut self.announced, true)
     }
 
     /// The Settings switch: the one place free access is turned on.
@@ -88,6 +98,9 @@ impl SplitlaneApp {
     /// Tell the person that the file asks for free access and where to
     /// confirm it. Held long: it may fire while the window is still coming up.
     pub(crate) fn announce_free_access_awaiting(&mut self, cx: &mut Context<Self>) {
+        if !self.free_access.take_announcement() {
+            return;
+        }
         self.push_toast(
             "Free access is off until you confirm it in Settings".to_string(),
             vec![crate::ToastAction::ReviewFreeAccess],
@@ -113,6 +126,16 @@ mod tests {
         let access = FreeAccess::default();
         assert!(!access.is_open(false));
         assert!(!access.awaiting_confirmation(false));
+    }
+
+    #[test]
+    fn the_notice_is_shown_once_per_run() {
+        let mut access = FreeAccess::default();
+        assert!(access.take_announcement());
+        // An agent toggling the key off and on again gets no second notice.
+        access.observe_file(true, false);
+        access.observe_file(false, true);
+        assert!(!access.take_announcement());
     }
 
     #[test]
