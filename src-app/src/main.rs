@@ -3599,7 +3599,10 @@ fn main() {
             // field list complete.
             #[cfg_attr(target_os = "macos", allow(clippy::needless_update))]
             let titlebar_options = gpui::TitlebarOptions {
-                title: None,
+                // Never drawn on macOS (a transparent titlebar hides it), but
+                // it is the only name X11 and Wayland window managers get:
+                // without it the taskbar and Alt-Tab read "Unnamed Window".
+                title: Some("Splitlane".into()),
                 appears_transparent: true,
                 #[cfg(target_os = "macos")]
                 traffic_light_position: Some(point(px(12.0), px(12.0))),
