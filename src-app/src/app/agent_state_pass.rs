@@ -888,6 +888,14 @@ fn deposit_pty_flow(
             thread.status = ThreadStatus::Thinking;
             return (true, true);
         }
+        // Output that keeps coming renews this source's own claim; it is not
+        // somebody else's. Disowning it here left a `Thinking` that nothing
+        // would ever take back: a CLI that paints its screen across two passes
+        // at launch (Codex does) and then waits for a prompt showed as working
+        // until a hook first spoke.
+        if was_ours && thread.status == ThreadStatus::Thinking {
+            return (false, true);
+        }
         // Somebody else's claim is standing. Leave it, and do not adopt it.
         return (false, false);
     }
@@ -1330,6 +1338,40 @@ mod tests {
         assert!(moved);
         assert!(!ours);
         assert_eq!(t.status, ThreadStatus::Idle, "withdrawn, not left standing");
+    }
+
+    /// Output on two passes in a row is still this source's claim, so the
+    /// silence after it can take it back.
+    #[test]
+    fn continued_output_keeps_the_claim_this_source_made() {
+        let mut t = surface();
+        let (_, ours) = deposit_pty_flow(&mut t, Some(10), 11, false);
+        assert!(ours);
+        let (moved, ours) = deposit_pty_flow(&mut t, Some(11), 14, ours);
+        assert!(!moved);
+        assert!(ours, "its own claim, renewed");
+        assert_eq!(t.status, ThreadStatus::Thinking);
+        deposit_pty_flow(&mut t, Some(14), 14, ours);
+        assert_eq!(t.status, ThreadStatus::Idle);
+    }
+
+    /// The launch as a pane sees it for a CLI with no status reader and no
+    /// hook frame before the first turn (Codex writes its rollout file only
+    /// then): the launch word, a first paint, a later paint - an update notice
+    /// dismissed, the prompt drawn - and then nothing, while it waits for a
+    /// prompt. Driven through the same carry of `ours` the pass does.
+    #[test]
+    fn an_agent_started_with_no_turn_settles_to_idle() {
+        let mut t = surface();
+        t.status = ThreadStatus::Starting;
+        let mut ours = false;
+        let mut previous = Some(0);
+        for current in [6, 6, 7, 10, 10, 10] {
+            (_, ours) = deposit_pty_flow(&mut t, previous, current, ours);
+            previous = Some(current);
+        }
+        assert_eq!(t.status, ThreadStatus::Idle, "silent, so not working");
+        assert!(!ours);
     }
 
     /// Silence must never be read as a person being kept waiting. That is the

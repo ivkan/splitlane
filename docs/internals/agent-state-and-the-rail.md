@@ -40,6 +40,15 @@ promote, and their launch commands sit in `pending_input`. Without this second
 withdrawal nothing could end the word there. The case that forced it was a
 restored second project still showing the ring minutes after launch.
 
+**The counter keeps the `running` it raised for as long as output keeps
+coming.** Past `starting`, the same counter is the third source for an agent
+with no status reader and no hook frame yet, and it takes back only the
+`running` it put up itself. Output on the next pass renews that claim rather
+than reading as somebody else's. It used to read as somebody else's, and the
+claim was then nobody's: Codex paints its screen across two passes at launch,
+then waits for the first prompt with no rollout file and no hook frame, and the
+header showed `running` with a Stop button until the first turn.
+
 **A loader over the pane body was considered and refused.** The pane is the
 CLI's own terminal, so a curtain would hide the only two seconds that explain a
 failure, such as a session id already in use or a CLI not on PATH. There is also
