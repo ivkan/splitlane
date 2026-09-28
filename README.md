@@ -34,8 +34,8 @@ the CLIs you already use, with your own accounts.
 
 > **Status: early.** Splitlane is used daily on macOS (Apple Silicon). Linux
 > (x86_64, aarch64) and Windows (x64) are built and tested in CI but have had
-> far less hands-on use. There are no release builds yet - see
-> [Install](#install).
+> far less hands-on use. Release builds exist for macOS and Linux; Windows is
+> built from source for now - see [Install](#install).
 
 ## How it knows
 
