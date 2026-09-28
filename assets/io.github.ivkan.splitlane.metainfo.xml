@@ -63,6 +63,12 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.3" date="2026-09-28">
+      <description>
+        <p>Codex and Claude Code no longer show as running before their first
+        message, and every package ships the licenses of its dependencies.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-09-28">
       <description>
         <p>Free access for agents can now be turned on only from Settings,

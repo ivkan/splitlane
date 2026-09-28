@@ -6,6 +6,26 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-28
+
+### Fixed
+
+- Codex and Claude Code no longer show as running before their first
+  message. Codex 0.158 animates its idle prompt and repaints on focus, and
+  that output was read as work; for agents whose state Splitlane reads from
+  their own records, terminal output no longer counts as running.
+
+### Added
+
+- Every package now ships `THIRD_PARTY_LICENSES.md`, the license texts of
+  all Rust crates compiled into Splitlane. The macOS app bundle also carries
+  `LICENSE`.
+
+### Documentation
+
+- The README and `THIRD_PARTY_NOTICES.md` credit Zed Industries for GPUI and
+  list the code adapted from Zed's crates, with their licenses.
+
 ## [0.1.2] - 2026-09-28
 
 ### Security
@@ -41,7 +61,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/ivkan/splitlane/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ivkan/splitlane/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ivkan/splitlane/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ivkan/splitlane/releases/tag/v0.1.0
