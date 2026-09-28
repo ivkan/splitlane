@@ -67,6 +67,12 @@ pub fn paint_text_runs(
     }
 }
 
+/// Paint a shaped line with every glyph in the run's colour.
+///
+/// Adapted from GPUI's `paint_line` (`crates/gpui/src/text_system/line.rs`,
+/// Copyright Zed Industries, Inc., Apache License 2.0; see
+/// THIRD_PARTY_NOTICES.md) and modified for Splitlane: one terminal row with
+/// no wrapping or alignment, and the glyph colour taken from the run.
 fn paint_monochrome_shaped_line(
     shaped: &ShapedLine,
     origin: Point<Pixels>,

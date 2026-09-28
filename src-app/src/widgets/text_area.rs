@@ -3,7 +3,10 @@
 //!
 //! Design constraint: the existing single-line [`crate::widgets::text_input::TextInput`]
 //! is a faithful port of GPUI's `examples/input.rs` with full native text
-//! input. This module keeps the textarea smaller, but it still supports the
+//! input. The selection, clipboard, UTF-16 conversion and
+//! `EntityInputHandler` code here is adapted from the same example (Copyright
+//! Zed Industries, Inc., Apache License 2.0; see THIRD_PARTY_NOTICES.md) and
+//! modified for multi-line, grapheme-aware editing. This module keeps the textarea smaller, but it still supports the
 //! production editing surface the composer needs:
 //!
 //! - Stores `content: String` with `\n` separators.

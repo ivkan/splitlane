@@ -6,7 +6,8 @@
 //! 1. **APCA contrast** (`ensure_minimum_contrast`): fixes foreground/background
 //!    pairs that fail the APCA (Accessible Perceptual Contrast Algorithm) Lc
 //!    threshold. Polarity-aware and perceptually uniform - more accurate than
-//!    WCAG 2.0 on dark backgrounds. Matches Zed's algorithm.
+//!    WCAG 2.0 on dark backgrounds. Adapted from Zed's `apca_contrast` module
+//!    (`crates/ui/src/utils/apca_contrast.rs`, GPL-3.0-or-later).
 //! 2. **Color resolution** (`convert_color`, `named_color`, `indexed_color`):
 //!    translates alacritty `AnsiColor` (Named/Spec/Indexed) into themed `Hsla`,
 //!    covering the xterm-256color palette.

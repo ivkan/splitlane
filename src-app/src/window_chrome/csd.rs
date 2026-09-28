@@ -234,7 +234,8 @@ pub(crate) fn client_side_window_shell(
 /// Hit-test a mouse position against the CSD resize border.
 ///
 /// Returns `Some(edge)` if the cursor is in a resize zone, respecting the
-/// current tiling state (tiled edges are not resizable).
+/// current tiling state (tiled edges are not resizable). Adapted from Zed's
+/// `resize_edge` (`crates/workspace/src/workspace.rs`, GPL-3.0-or-later).
 pub fn resize_edge(
     pos: Point<Pixels>,
     border: Pixels,

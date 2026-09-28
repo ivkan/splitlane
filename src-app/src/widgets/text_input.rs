@@ -1,7 +1,8 @@
 //! Cursor-aware single-line text input widget for Splitlane.
 //!
-//! Adapted from GPUI's upstream `examples/input.rs` (pinned via the Zed git
-//! dep) with three goals: (1) splitlane theme colours instead of the demo's
+//! Adapted from GPUI's `examples/input.rs` in the Zed repository (Copyright
+//! Zed Industries, Inc., Apache License 2.0; see THIRD_PARTY_NOTICES.md) and
+//! modified for Splitlane with three goals: (1) splitlane theme colours instead of the demo's
 //! hardcoded greys, (2) a caller-supplied styled wrapper (so modal / settings
 //! contexts can control padding, border, font), (3) cross-platform ctrl/cmd
 //! clipboard bindings (Linux-first but macOS-correct).

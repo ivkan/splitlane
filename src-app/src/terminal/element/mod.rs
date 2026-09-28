@@ -62,7 +62,9 @@ pub(crate) const MIN_APCA_CONTRAST: f32 = 45.0;
 
 /// Returns `true` for characters whose colors should be preserved exactly
 /// (no contrast adjustment). Covers box-drawing, block elements, geometric
-/// shapes, and Powerline separator symbols.
+/// shapes, and Powerline separator symbols. The table is Zed's
+/// `is_decorative_character` (`crates/terminal_view/src/terminal_element.rs`,
+/// GPL-3.0-or-later).
 fn is_decorative_character(ch: char) -> bool {
     matches!(
         ch as u32,

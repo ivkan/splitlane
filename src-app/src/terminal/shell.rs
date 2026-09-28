@@ -531,6 +531,12 @@ fn resolve_default_shell_fallback() -> String {
 /// 4. `pwsh.exe` from a scoop shim
 /// 5. `pwsh.exe` anywhere on `PATH`
 /// 6. `powershell.exe` (Windows PowerShell 5.1) on `PATH`
+///
+/// Adapted from GPUI's `get_windows_system_shell`
+/// (`crates/gpui_util/src/lib.rs`, Copyright Zed Industries, Inc., Apache
+/// License 2.0; see THIRD_PARTY_NOTICES.md) and modified for Splitlane: no
+/// preview builds, and `None` instead of a `cmd.exe` default so the caller
+/// owns the fallback.
 #[cfg(windows)]
 fn find_windows_powershell() -> Option<String> {
     use std::path::PathBuf;

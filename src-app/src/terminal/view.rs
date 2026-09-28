@@ -1743,6 +1743,8 @@ impl gpui::Focusable for TerminalView {
 impl TerminalView {
     /// Build a rich key context from the terminal's current mode flags.
     /// Enables keybindings scoped to terminal state (e.g. `"Terminal && screen == alt"`).
+    /// Adapted from Zed's `TerminalView::dispatch_context`
+    /// (`crates/terminal_view/src/terminal_view.rs`, GPL-3.0-or-later).
     fn dispatch_context(&self) -> KeyContext {
         let mode = self.terminal.session_backend().modes();
         let mut ctx = KeyContext::default();

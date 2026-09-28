@@ -39,16 +39,10 @@ name = "splitlane"
 path = "src/main.rs"
 
 [dependencies]
-# GPUI framework pinned to a minimal Splitlane fork of Zed. The pinned commit
-# is based on zed-industries/zed@afc13dc8 and carries one additive performance
-# patch: `Markdown::append` accumulates streamed chunks in a private String
-# buffer while preserving Zed's `source() -> &SharedString` contract. The fork
-# also keeps the append-throughput Criterion benchmark.
-#
-# Switchover: when the append optimization lands in zed-industries/zed, point
-# the eight entries back to upstream and keep an exact tested revision. Until
-# then, create each bump from the chosen upstream revision, reapply the patch,
-# publish the fork commit, update every `rev` below, then run `cargo update`.
+# GPUI framework, taken unmodified from upstream zed-industries/zed at one
+# exact revision. `gpui`, `gpui_platform` and `collections` move together:
+# pick the new upstream revision, update every `rev` below (including the
+# Linux and dev-dependency entries further down), then run `cargo update`.
 #
 # `gpui_platform` MUST carry the `font-kit` feature on macOS - without it,
 # `gpui_macos` compiles cleanly but the optional `zed-font-kit` dep + Core
@@ -60,25 +54,10 @@ path = "src/main.rs"
 # Zed enables this feature explicitly in `zed/crates/zed/Cargo.toml`.
 # The feature is a no-op on Linux/Windows (where `gpui_macos` isn't
 # compiled in), so it's safe in the cross-platform default declaration
-# below - the Linux-only override on line ~97 adds wayland/x11 on top.
+# below - the Linux-only override further down adds wayland/x11 on top.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "afc13dc8e054705a42e2931b0840ed03ccfa583a" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "afc13dc8e054705a42e2931b0840ed03ccfa583a", features = ["font-kit"] }
 collections = { git = "https://github.com/zed-industries/zed", rev = "afc13dc8e054705a42e2931b0840ed03ccfa583a" }
-
-# Zed markdown rendering pipeline + design-system primitives. Pinned at the
-# same rev as gpui so the workspace graph resolves consistently. Pulls ~51
-# Zed workspace crates transitively (language/theme/ui/lsp/...) - accepted
-# trade-off for visual parity with Zed's agent panel.
-# Bootstraps Zed's `GlobalTheme` at startup. `MarkdownElement::paint` reads
-# `cx.theme().colors()` unconditionally for secondary chrome (borders, panel
-# backgrounds, etc.) regardless of the `MarkdownStyle` we pass in, so the
-# global must exist. `theme::init(LoadThemes::JustBase, cx)` is the minimal
-# bootstrap - no JSON theme bundles, no `theme_settings` integration.
-# Zed's design-system primitives (Icon + IconName, Disclosure, Label, ...).
-# Pinned at the same rev as gpui/markdown/theme. Required so the agent-panel
-# thinking + tool-call rows match Zed's exact rendering (`Icon::new(IconName::
-# ToolSearch).size(IconSize::Small).color(Color::Muted)` etc.) instead of
-# hand-rolled svg() paths.
 
 # Alacritty terminal emulation (upstream crates.io - migrated from Zed fork)
 alacritty_terminal = "0.26"

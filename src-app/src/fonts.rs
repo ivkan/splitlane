@@ -165,8 +165,10 @@ pub fn load_mono_fonts() -> Vec<String> {
 /// attribute and asserts it is a `CFString`, so a single installed font with an
 /// absent or malformed family-name attribute panics - poisoning the `LazyLock`
 /// registry (every later read re-panics) and tripping the workspace's
-/// `panic = "deny"` lint. Mirrors Zed's `lenient_font_attributes`, but
-/// `downcast`s instead of asserting so it never panics on a non-string value.
+/// `panic = "deny"` lint. Adapted from GPUI's `lenient_font_attributes`
+/// (`crates/gpui_macos/src/text_system.rs`, Copyright Zed Industries, Inc.,
+/// Apache License 2.0; see THIRD_PARTY_NOTICES.md) and modified to
+/// `downcast` instead of asserting, so it never panics on a non-string value.
 #[cfg(target_os = "macos")]
 mod lenient_font_attributes {
     use core_foundation::base::{CFType, TCFType};
