@@ -118,7 +118,7 @@ than 64 KiB.
 
 | `splitlane.json` key | Default | Effect |
 | --- | --- | --- |
-| `ai_unrestricted` | `false` | Opens `send`/`key` without the environment variable. Settings -> Agents -> Free access |
+| `ai_unrestricted` | `false` | Opens `send`/`key` without the environment variable, once confirmed in Settings -> Agents -> Free access (again after each restart); `true` in the file alone does not |
 | `ai_injection_fence` | `true` | Default for `surface.read`'s `fenced` param |
 | `submit_paste_delay_ms` | `70` (clamped 10-5000) | Delay before Enter after a bracketed-paste send |
 | `agent_stall_threshold_secs` | `60` (clamped 30-86400) | A `thinking` session with no hook activity for this long becomes `stalled` |

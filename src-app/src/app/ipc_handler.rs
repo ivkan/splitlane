@@ -752,6 +752,26 @@ fn send_text_gate_open(scripting_enabled: bool, unrestricted: bool) -> bool {
     scripting_enabled || unrestricted
 }
 
+/// The refusal for a closed `send`/`key` gate. When `splitlane.json` asks for
+/// free access that nobody has confirmed, say so: otherwise a person who set
+/// the key by hand sees the same message as one who never asked, and has no
+/// way to learn that the switch in Settings is what opens it.
+fn write_gate_refusal(method: &str, free_access_awaiting: bool) -> serde_json::Value {
+    let message = if free_access_awaiting {
+        format!(
+            "{method} disabled; ai_unrestricted in splitlane.json takes effect only once \
+             Free access is turned on in Settings -> Agents, or set SPLITLANE_IPC_SCRIPTING=1"
+        )
+    } else {
+        format!("{method} disabled; set SPLITLANE_IPC_SCRIPTING=1 to enable")
+    };
+    JsonRpcError {
+        code: -32601,
+        message,
+    }
+    .into_value()
+}
+
 /// Decide whether a
 /// `surface.send_text` write goes through the bracketed-paste path. An explicit
 /// `paste` param always wins (the CLI `--paste` override); otherwise auto-enable
@@ -1545,6 +1565,8 @@ impl SplitlaneApp {
             // toast; fire a one-time `telemetry_reenabled` breadcrumb on an
             // explicit opted-out → opted-in transition (ROPA audit trail).
             self.reconcile_telemetry_consent(&config, cx);
+            // A file edit may close free access but never open it.
+            self.observe_free_access_file(&config, cx);
             // Render cache: refresh the cached config so render paths
             // pick up the reload without a per-frame `load_config()`. Last use
             // of `config` - move it in.
@@ -3023,19 +3045,15 @@ impl SplitlaneApp {
             "surface.send_text" => {
                 // Same-UID RCE primitive gate. See ipc.rs module doc for the
                 // blast-radius rationale. Default off. There is a SECOND way
-                // through: AI free-access mode
-                // (`ai_unrestricted`, Settings -> AI Agent). When BOTH the env
-                // gate and free-access are off the behavior is strictly
-                // unchanged - the same -32601 refusal, verbatim, as before.
-                let unrestricted = self.cached_config.ai_unrestricted_enabled();
+                // through: AI free-access mode, which counts only once it is
+                // confirmed in Settings -> Agents (`app::free_access`), never
+                // because `splitlane.json` says so.
+                let unrestricted = self.free_access_open();
                 if !send_text_gate_open(ipc_scripting_enabled(), unrestricted) {
-                    return JsonRpcError {
-                        code: -32601,
-                        message:
-                            "surface.send_text disabled; set SPLITLANE_IPC_SCRIPTING=1 to enable"
-                                .to_string(),
-                    }
-                    .into_value();
+                    return write_gate_refusal(
+                        "surface.send_text",
+                        self.free_access_awaiting_confirmation(),
+                    );
                 }
                 let text = params.get("text").and_then(|t| t.as_str()).unwrap_or("");
                 // `submit: true` is the ONLY
@@ -3177,13 +3195,12 @@ impl SplitlaneApp {
                 // Same gate as `surface.send_text`. Even when enabled, CRLF
                 // bytes are rejected so a multi-keystroke payload
                 // cannot smuggle a newline-terminated PTY command.
-                let unrestricted = self.cached_config.ai_unrestricted_enabled();
+                let unrestricted = self.free_access_open();
                 if !send_text_gate_open(ipc_scripting_enabled(), unrestricted) {
-                    return JsonRpcError {
-                        code: -32601,
-                        message: "surface.send_keystroke disabled; set SPLITLANE_IPC_SCRIPTING=1 or enable ai_unrestricted to use".to_string(),
-                    }
-                    .into_value();
+                    return write_gate_refusal(
+                        "surface.send_keystroke",
+                        self.free_access_awaiting_confirmation(),
+                    );
                 }
                 let keystroke = params
                     .get("keystroke")
@@ -5158,6 +5175,44 @@ mod tests {
             "free-access mode opens it without the env gate"
         );
         assert!(super::send_text_gate_open(true, true));
+    }
+
+    #[test]
+    fn write_gate_ignores_free_access_the_file_turned_on() {
+        use crate::app::free_access::FreeAccess;
+        let mut access = FreeAccess::default();
+        // An agent writes `"ai_unrestricted": true`; the watcher reloads it.
+        access.observe_file(false, true);
+        assert!(!super::send_text_gate_open(false, access.is_open(true)));
+        // The environment gate is untouched by any of this.
+        assert!(super::send_text_gate_open(true, access.is_open(true)));
+        // The Settings switch is what opens it.
+        access.set_from_settings(true);
+        assert!(super::send_text_gate_open(false, access.is_open(true)));
+        // And a `false` from the file closes it again at once.
+        access.observe_file(true, false);
+        assert!(!super::send_text_gate_open(false, access.is_open(false)));
+    }
+
+    #[test]
+    fn write_gate_refusal_names_a_pending_free_access_request() {
+        for method in ["surface.send_text", "surface.send_keystroke"] {
+            let plain = super::write_gate_refusal(method, false);
+            let pending = super::write_gate_refusal(method, true);
+            for refusal in [&plain, &pending] {
+                assert_eq!(refusal[super::JSONRPC_ERROR_KEY]["code"], -32601);
+                let message = refusal[super::JSONRPC_ERROR_KEY]["message"]
+                    .as_str()
+                    .unwrap();
+                // The CLI keys its hint on "<method> disabled".
+                assert!(message.starts_with(&format!("{method} disabled")));
+                assert!(message.contains("SPLITLANE_IPC_SCRIPTING=1"));
+            }
+            let pending = pending[super::JSONRPC_ERROR_KEY]["message"]
+                .as_str()
+                .unwrap();
+            assert!(pending.contains("Settings -> Agents"));
+        }
     }
 
     #[test]

@@ -783,3 +783,41 @@ project - a surface with no directory claim - rather than bringing back `~` as a
 container. On Windows a GUI-subsystem binary has no console on `stdin` even when
 started from one, so a terminal launch there also opens no project; that is a
 missing convenience, not a wrong project.
+
+## Free access is opened in the app, never by the config file
+
+**The rule.** `ai_unrestricted` in `splitlane.json` is a request, not a grant.
+It opens `send` and `key` only after the person turns **Free access** on in
+Settings -> Agents during the current run of the app (`app::free_access`). A
+`true` that arrives from disk (a hot reload, or the file as it stands at
+launch) leaves the gate closed and raises a toast whose `Open Settings` button lands
+on that switch; the Settings row repeats the reason while the request is
+pending, and a refused `send`/`key` names it too. A `false` from disk closes the
+gate at once and drops the confirmation, so a later `true` asks again. The
+environment variables are unaffected: they come from the process that launched
+the app, which a pane cannot change.
+
+**The case that forced it.** The file is reloaded while the app runs, and the
+gate read the reloaded value on every call. So an agent in a pane with
+permission to edit files could write `"ai_unrestricted": true` and, a debounce
+later, type into every other pane - the one capability the switch is there to
+withhold until a person grants it.
+
+**Why the confirmation is not saved.** Every place it could be saved - a second
+file, a hash of the first, a timestamp - is written with the same rights as
+`splitlane.json`, so an agent that can forge the request can forge the record,
+and the record would add a step rather than a boundary. The confirmation
+therefore lives only in the running process, and someone who keeps free access
+on confirms it once per launch. That includes people who turned it on in a
+release before this rule: their first launch after it shows the toast rather
+than losing the setting without a word.
+
+**What it does not claim.** A process running as the same user can still drive
+the window through the operating system's accessibility or input-injection
+interfaces. The rule closes the silent path through a file every agent is able
+to write; it is not a sandbox.
+
+**What would re-open it.** A place to keep the confirmation that an agent
+running as the same user cannot write - for example a keychain item whose
+access is bound to the signed app on every platform - would let it survive a
+restart.

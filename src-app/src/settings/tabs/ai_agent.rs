@@ -54,7 +54,11 @@ impl SplitlaneApp {
         let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
         // AI free-access mode + the
         // independent injection fence. Defaults: unrestricted OFF, fence ON.
-        let unrestricted = config.ai_unrestricted_enabled();
+        // What the gate does, not what the file says: a file edit alone never
+        // opens free access (`app::free_access`), so the switch reads off
+        // until it has been turned on here.
+        let unrestricted = self.free_access_open();
+        let awaiting_confirmation = self.free_access_awaiting_confirmation();
         let fence = config.ai_injection_fence_enabled();
 
         let mut agents = div().flex().flex_col();
@@ -109,14 +113,24 @@ impl SplitlaneApp {
                 )),
                 unrestricted,
                 cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                    this.persist_setting(
-                        false,
-                        "ai_unrestricted",
-                        serde_json::Value::Bool(!unrestricted),
-                        cx,
-                    );
+                    this.set_free_access_from_settings(!unrestricted, cx);
                 }),
             ));
+
+        if awaiting_confirmation {
+            access = access.child(
+                div()
+                    .max_w(px(SETTING_ROW_MAX_WIDTH))
+                    .pt(tok::space::MD)
+                    .text_size(tok::text::CAPTION)
+                    .text_color(ui.agent_stalled)
+                    .child(
+                        "splitlane.json asks for free access. It stays off until you turn it on \
+                         here: any agent that can edit files can edit that file too. Splitlane \
+                         asks again after each restart.",
+                    ),
+            );
+        }
 
         // The fence sub-row only appears once free access is on: with the mode
         // off, surface.read is always fenced and there is nothing to relax.

@@ -230,7 +230,7 @@
     },
     "ai_unrestricted": {
       "type": ["boolean", "null"],
-      "description": "AI free-access mode. When true, a conductor (a CLI agent or external orchestrator) may auto-submit prompts to other panes (surface.send_text submit:true) WITHOUT the SPLITLANE_IPC_SCRIPTING env gate, and every such write is traced. Null/false (default) keeps the current behavior strictly unchanged. Re-evaluated per call, so toggling it off revokes the capability with no residual access.",
+      "description": "AI free-access mode. When true, a conductor (a CLI agent or external orchestrator) may auto-submit prompts to other panes (surface.send_text submit:true) WITHOUT the SPLITLANE_IPC_SCRIPTING env gate, and every such write is traced. Null/false (default) keeps the current behavior strictly unchanged. Setting it to true in this file is only a request: it takes effect once Free access is turned on in Settings -> Agents, and is asked again after each restart, because any agent that can edit files can edit this file. Setting it to false revokes the capability at once.",
       "default": false
     },
     "ai_injection_fence": {

@@ -888,14 +888,15 @@ impl SplitlaneApp {
             posthog_host,
             &telemetry_distinct_id,
         ));
-        // One-shot boot warn when AI
-        // free-access mode is enabled, mirroring the SPLITLANE_IPC_SCRIPTING
-        // boot warn in `ipc::start_server()`. Reuses the snapshot already
-        // loaded for telemetry so the file is not re-read. The fence is
-        // independent and defaults ON, so it does not warn.
+        // One-shot boot warn when the file asks for AI free access, mirroring
+        // the SPLITLANE_IPC_SCRIPTING boot warn in `ipc::start_server()`. The
+        // key alone no longer opens anything (see `app::free_access`), so the
+        // warn says what it does now. Reuses the snapshot already loaded for
+        // telemetry so the file is not re-read. The fence is independent and
+        // defaults ON, so it does not warn.
         if telemetry_config_snapshot.ai_unrestricted_enabled() {
             tracing::warn!(
-                "ai.unrestricted is ON; same-UID callers may auto-submit prompts to agent panes without SPLITLANE_IPC_SCRIPTING (toggle in Settings -> AI Agent)"
+                "ai_unrestricted is set in splitlane.json; free access stays off until it is confirmed in Settings -> Agents"
             );
         }
         // Now that the telemetry client exists, fire off the
@@ -1036,6 +1037,7 @@ impl SplitlaneApp {
             save_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             // Hydrate the render-path config cache once at startup.
             cached_config,
+            free_access: crate::app::free_access::FreeAccess::default(),
             ipc_rx,
             ipc_status,
             event_bus,
@@ -1327,6 +1329,11 @@ impl SplitlaneApp {
                 format!("{n} shells")
             }
         };
+        // A file that asks for free access at launch is a request, not a
+        // grant: tell the person, who is the only one who can confirm it.
+        if app.free_access_awaiting_confirmation() {
+            app.announce_free_access_awaiting(cx);
+        }
         if parked_over_cap > 0 {
             app.push_toast(
                 format!(

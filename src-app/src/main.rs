@@ -1089,6 +1089,10 @@ struct SplitlaneApp {
     /// click handlers that must observe a config write *they just made* still
     /// read fresh from disk (the cache lags the write by the watcher debounce).
     cached_config: splitlane_config::schema::SplitlaneConfig,
+    /// Whether free access (`ai_unrestricted`) was confirmed in Settings during
+    /// this run. The key in `cached_config` is only a request; see
+    /// `app::free_access` for why a file edit cannot open it.
+    free_access: crate::app::free_access::FreeAccess,
     ipc_rx: std::sync::mpsc::Receiver<ipc::IpcRequest>,
     ipc_status: ipc::IpcStatus,
     /// Outbound event bus shared with the IPC
@@ -2838,7 +2842,7 @@ impl Render for SplitlaneApp {
         }
 
         if let Some(toast) = &self.toast {
-            app_content = app_content.child(self.render_toast(toast, ui));
+            app_content = app_content.child(self.render_toast(toast, ui, cx));
         }
 
         if self.show_theme_picker {

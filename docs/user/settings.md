@@ -81,7 +81,7 @@ Under **What an agent may do**:
 | Row | What it is | Key |
 |---|---|---|
 | Bypass permissions | Launches Claude Code with `--permission-mode bypassPermissions`. This removes Claude Code's protection against prompt injection; use it only on machines you trust. | `claude_code_bypass_permissions` |
-| Free access | Lets a lead agent submit prompts to your other panes over the JSON-RPC socket without `SPLITLANE_IPC_SCRIPTING=1`. Every such write is logged. | `ai_unrestricted` |
+| Free access | Lets a lead agent submit prompts to your other panes over the JSON-RPC socket without `SPLITLANE_IPC_SCRIPTING=1`. Every such write is logged. Only this switch turns it on: `true` written to the file waits for you to confirm it here, again after each restart. | `ai_unrestricted` |
 | Injection fence | Shown only while Free access is on. Keeps pane text that an agent reads wrapped as untrusted output. On by default; turning it off shows a warning. | `ai_injection_fence` |
 
 ## MCP

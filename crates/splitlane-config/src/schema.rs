@@ -206,8 +206,10 @@ pub struct SplitlaneConfig {
     /// `SPLITLANE_IPC_SCRIPTING` env gate, and every such write is traced.
     /// `Some(false)` / `None` (the default) keeps the current behavior
     /// strictly unchanged (prefill-not-submitted + env-gated writes).
-    /// Re-evaluated per IPC call, so the mode takes effect (or is revoked)
-    /// hot with no residual capability. A non-boolean value resolves to
+    /// `Some(true)` read from the file is only a request: the app opens the
+    /// gate once the Settings switch confirms it in the running process, since
+    /// an agent that can edit files can edit this one. `Some(false)` revokes at
+    /// once, with no residual capability. A non-boolean value resolves to
     /// `None` (false) with a warn, never an accidentally-open state.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub ai_unrestricted: Option<bool>,

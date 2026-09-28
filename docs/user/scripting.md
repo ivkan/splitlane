@@ -111,6 +111,17 @@ start Splitlane from a shell that has them set.
 `ai_unrestricted` does not open pane creation, and a flow that submits checks
 the environment variable only.
 
+Free access is turned on in the app, not in the file. `splitlane.json` is
+reloaded while Splitlane runs, and any agent allowed to edit files can edit it,
+so `"ai_unrestricted": true` written to the file is only a request: `send` and
+`key` stay closed, and Splitlane shows a notice pointing at Settings -> Agents,
+until you turn **Free access** on there. That confirmation is held by the
+running app and is not saved anywhere an agent could write it, so after a
+restart the file's `true` is a request again and Splitlane asks once more.
+Setting the key to `false`, in the file or in Settings, closes the gate at once.
+While the file asks and nobody has confirmed, `send` and `key` fail with a
+message that says so.
+
 ```bash
 splitlane send reviewer "Review the current diff and list the top risks."
 splitlane send reviewer "Run the focused tests and report failures only." --submit
