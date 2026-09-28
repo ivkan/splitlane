@@ -6,6 +6,8 @@
 #     MacOS/splitlane                  (executable, chmod 755)
 #     Info.plist                      (from assets/Info.plist, @VERSION@ substituted)
 #     Resources/Splitlane.icns         (from assets/Splitlane.icns, produced by generate-icns.sh)
+#     Resources/LICENSE
+#     Resources/THIRD_PARTY_LICENSES.md (from scripts/generate-licenses.sh)
 #
 # Usage:
 #   scripts/bundle-macos.sh --version 0.2.0 --arch aarch64
@@ -161,6 +163,16 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 install -m 0755 "$BIN" "$MACOS_DIR/splitlane"
 install -m 0644 "$ICNS_SRC" "$RESOURCES_DIR/Splitlane.icns"
+install -m 0644 "$REPO_ROOT/LICENSE" "$RESOURCES_DIR/LICENSE"
+# The third-party licenses are generated, not checked in. A local bundle built
+# without them still runs; the release workflow checks that the bundle it
+# ships has them.
+LICENSES="${SPLITLANE_LICENSES_FILE:-$REPO_ROOT/target/licenses/THIRD_PARTY_LICENSES.md}"
+if [ -f "$LICENSES" ]; then
+    install -m 0644 "$LICENSES" "$RESOURCES_DIR/THIRD_PARTY_LICENSES.md"
+else
+    echo "warning: $LICENSES not found; run scripts/generate-licenses.sh to include third-party licenses" >&2
+fi
 
 # Substitute @VERSION@ in the Info.plist template. `sed -e` keeps the
 # command portable between BSD sed (macOS) and GNU sed (Linux CI).

@@ -10,6 +10,10 @@ on:
       - "Cargo.toml"
       - "LICENSE"
       - "README.md"
+      - "THIRD_PARTY_NOTICES.md"
+      - "about.toml"
+      - "packaging/licenses/**"
+      - "scripts/generate-licenses.sh"
       - "assets/icons/**"
       - "assets/io.github.ivkan.splitlane.metainfo.xml"
       - "assets/splitlane.desktop"
@@ -47,6 +51,10 @@ on:
       - "Cargo.toml"
       - "LICENSE"
       - "README.md"
+      - "THIRD_PARTY_NOTICES.md"
+      - "about.toml"
+      - "packaging/licenses/**"
+      - "scripts/generate-licenses.sh"
       - "assets/icons/**"
       - "assets/io.github.ivkan.splitlane.metainfo.xml"
       - "assets/splitlane.desktop"
@@ -257,12 +265,18 @@ jobs:
             --binary "$candidate" \
             --notice native/libghostty/THIRD_PARTY_NOTICES.md
 
+      # Every package format carries the generated THIRD_PARTY_LICENSES.md;
+      # same pinned version as release.yml and scripts/generate-licenses.sh.
+      - name: Install cargo-about (pinned)
+        run: cargo install cargo-about --version 0.9.2 --locked --features cli
+
       - name: Build unsigned candidate packages
         env:
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
         run: |
           version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          scripts/generate-licenses.sh
           scripts/bundle-tarball.sh "$version"
           cargo deb --no-build -p splitlane-app --target "$TARGET"
           cargo generate-rpm -p src-app --target "$TARGET"
@@ -272,18 +286,20 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          tar -tzf "$(find target/bundle -name '*.tar.gz' -print -quit)" \
-            | grep -Fq 'splitlane.app/THIRD_PARTY_NOTICES.md'
-          dpkg-deb -c "$(find "target/$TARGET/debian" -name '*.deb' -print -quit)" \
-            | grep -Fq './usr/share/doc/splitlane/THIRD_PARTY_NOTICES.md'
-          rpm -qlp "$(find "target/$TARGET/generate-rpm" -name '*.rpm' -print -quit)" \
-            | grep -Fq '/usr/share/doc/splitlane/THIRD_PARTY_NOTICES.md'
           appimage="$(find target/appimage -name '*.AppImage' -print -quit)"
           chmod +x "$appimage"
           extract_dir="$(mktemp -d)"
           trap 'rm -rf "$extract_dir"' EXIT
           (cd "$extract_dir" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
-          test -f "$extract_dir/squashfs-root/usr/share/doc/splitlane/THIRD_PARTY_NOTICES.md"
+          tar_list="$(tar -tzf "$(find target/bundle -name '*.tar.gz' -print -quit)")"
+          deb_list="$(dpkg-deb -c "$(find "target/$TARGET/debian" -name '*.deb' -print -quit)")"
+          rpm_list="$(rpm -qlp "$(find "target/$TARGET/generate-rpm" -name '*.rpm' -print -quit)")"
+          for notice in THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.md; do
+            grep -Fq "splitlane.app/$notice" <<<"$tar_list"
+            grep -Fq "./usr/share/doc/splitlane/$notice" <<<"$deb_list"
+            grep -Fq "/usr/share/doc/splitlane/$notice" <<<"$rpm_list"
+            test -f "$extract_dir/squashfs-root/usr/share/doc/splitlane/$notice"
+          done
 
       - name: Upload prepared native input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

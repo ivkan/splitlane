@@ -54,6 +54,16 @@ pointing at it. Let git run it for you:
 git config core.hooksPath scripts/hooks
 ```
 
+If you add or update a dependency, also check that its license notice can be
+generated; every release package ships the result as `THIRD_PARTY_LICENSES.md`,
+and CI fails on a crate whose license `cargo about` cannot identify or
+`about.toml` does not accept:
+
+```bash
+cargo install cargo-about --version 0.9.2 --locked --features cli
+scripts/generate-licenses.sh   # writes target/licenses/THIRD_PARTY_LICENSES.md
+```
+
 - **Cross-platform by default.** A change must build and behave on Linux
   (Wayland and X11), macOS and Windows. Guard OS-specific code with
   `#[cfg(target_os = "...")]` and give the other platforms a working path. If

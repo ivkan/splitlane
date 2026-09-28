@@ -9,6 +9,7 @@
 #     share/metainfo/io.github.ivkan.splitlane.metainfo.xml
 #     LICENSE
 #     THIRD_PARTY_NOTICES.md
+#     THIRD_PARTY_LICENSES.md
 #     README.md
 #     install.sh
 #
@@ -16,6 +17,9 @@
 #   scripts/bundle-tarball.sh                  # reads version from Cargo.toml
 #   scripts/bundle-tarball.sh 0.1.7            # explicit version
 #   TARGET=x86_64-unknown-linux-gnu scripts/bundle-tarball.sh
+#
+# THIRD_PARTY_LICENSES.md comes from scripts/generate-licenses.sh; run it
+# first, or point SPLITLANE_LICENSES_FILE at a generated copy.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
@@ -46,6 +50,13 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+LICENSES="${SPLITLANE_LICENSES_FILE:-$REPO_ROOT/target/licenses/THIRD_PARTY_LICENSES.md}"
+if [ ! -f "$LICENSES" ]; then
+    echo "error: third-party licenses not found at $LICENSES" >&2
+    echo "hint:  run 'scripts/generate-licenses.sh' first" >&2
+    exit 1
+fi
+
 BUNDLE_DIR="$REPO_ROOT/target/bundle"
 APP="$BUNDLE_DIR/splitlane.app"
 TARBALL="$BUNDLE_DIR/splitlane-${VERSION}-${ARCH}.tar.gz"
@@ -70,6 +81,7 @@ install -m 644 "$REPO_ROOT/LICENSE"   "$APP/LICENSE"
 install -m 644 "$REPO_ROOT/README.md" "$APP/README.md"
 install -m 644 "$REPO_ROOT/native/libghostty/THIRD_PARTY_NOTICES.md" \
                "$APP/THIRD_PARTY_NOTICES.md"
+install -m 644 "$LICENSES" "$APP/THIRD_PARTY_LICENSES.md"
 install -m 755 "$SCRIPT_DIR/tarball-install.sh" "$APP/install.sh"
 
 # Reproducible tar: sorted entries, fixed ownership, fixed mtime.

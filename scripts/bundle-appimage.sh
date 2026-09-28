@@ -9,6 +9,8 @@
 #   TARGET          - optional rust target triple (picks target/$TARGET/release/splitlane)
 #   SPLITLANE_BIN    - optional path to prebuilt binary (overrides auto-detection)
 #   LINUXDEPLOY     - optional path to a linuxdeploy binary (else downloaded)
+#   SPLITLANE_LICENSES_FILE - generated THIRD_PARTY_LICENSES.md (default:
+#                     target/licenses/, written by scripts/generate-licenses.sh)
 #   SOURCE_DATE_EPOCH - reproducible timestamps if set
 set -euo pipefail
 
@@ -100,6 +102,12 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+LICENSES="${SPLITLANE_LICENSES_FILE:-$REPO_ROOT/target/licenses/THIRD_PARTY_LICENSES.md}"
+if [ ! -f "$LICENSES" ]; then
+    echo "error: third-party licenses not found at $LICENSES (run 'scripts/generate-licenses.sh')" >&2
+    exit 1
+fi
+
 # --- linuxdeploy --------------------------------------------------------
 LD_BIN="${LINUXDEPLOY:-}"
 if [ -z "$LD_BIN" ]; then
@@ -124,6 +132,8 @@ install -m 644 "$REPO_ROOT/assets/io.github.ivkan.splitlane.metainfo.xml" \
                "$APPDIR/usr/share/metainfo/io.github.ivkan.splitlane.metainfo.xml"
 install -m 644 "$REPO_ROOT/native/libghostty/THIRD_PARTY_NOTICES.md" \
                "$APPDIR/usr/share/doc/splitlane/THIRD_PARTY_NOTICES.md"
+install -m 644 "$LICENSES" "$APPDIR/usr/share/doc/splitlane/THIRD_PARTY_LICENSES.md"
+install -m 644 "$REPO_ROOT/LICENSE" "$APPDIR/usr/share/doc/splitlane/LICENSE"
 
 # --- invoke linuxdeploy -------------------------------------------------
 # NOTE: UPDATE_INFORMATION must be set in the environment BEFORE linuxdeploy

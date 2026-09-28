@@ -2,8 +2,18 @@
 
 Splitlane is licensed under the GNU General Public License v3.0 or later (see
 [LICENSE](LICENSE)). It bundles the third-party assets listed below, each under
-its own license. Rust crate dependencies are not listed here; their licenses
-are in their own packages and are checked by `cargo deny` (`deny.toml`).
+its own license.
+
+The Rust crates compiled into Splitlane are not listed here. Their license
+notices are generated from the dependency graph by
+[`cargo about`](https://github.com/EmbarkStudios/cargo-about)
+(`scripts/generate-licenses.sh`, configured by `about.toml`) into
+`THIRD_PARTY_LICENSES.md`, which also carries this file. Every release
+package ships it beside `LICENSE`: at the root of the Linux tarball, under
+`/usr/share/doc/splitlane/` in the `.deb`, `.rpm` and AppImage, in
+`Splitlane.app/Contents/Resources/` on macOS, and in the install folder on
+Windows. Which licenses a dependency may carry is checked by `cargo deny`
+(`deny.toml`).
 
 ## Summary
 

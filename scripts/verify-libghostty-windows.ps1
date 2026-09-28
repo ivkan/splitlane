@@ -350,6 +350,7 @@ if (-not [string]::IsNullOrWhiteSpace($PackageRoot)) {
         "splitlane.exe",
         "LICENSE.txt",
         "THIRD_PARTY_NOTICES.md",
+        "THIRD_PARTY_LICENSES.md",
         "libghostty-sbom.cdx.json",
         "libghostty-manifest.toml",
         "libghostty-build-info.txt"
