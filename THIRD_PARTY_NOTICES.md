@@ -21,6 +21,14 @@ are in their own packages and are checked by `cargo deny` (`deny.toml`).
 - **Fonts** under `src-app/assets/fonts/` - Geist and Geist Mono, IBM Plex Mono
   and IBM Plex Sans, JetBrains Mono (Nerd Font patched), Lilex - SIL Open Font
   License 1.1. Each license text sits beside its fonts.
+- **Zed** - <https://github.com/zed-industries/zed> - Copyright Zed
+  Industries, Inc. GPUI and its companion crates (`gpui`, `gpui_platform`,
+  `collections`) are dependencies under the Apache License 2.0. Some code is
+  adapted from Zed crates licensed GPL-3.0-or-later, the same license as
+  Splitlane - among them the line and word diff under `src-app/src/diff/`,
+  the worktree listing parser in `src-app/src/diff/git.rs` and the pane drop
+  zones in `src-app/src/pane_drag.rs`. Each adapted function names the Zed
+  function it follows in its source comment.
 - **libghostty** - see
   [native/libghostty/THIRD_PARTY_NOTICES.md](native/libghostty/THIRD_PARTY_NOTICES.md).
 

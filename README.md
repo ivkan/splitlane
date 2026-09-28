@@ -194,6 +194,11 @@ Splitlane is based on [arthjean/paneflow](https://github.com/arthjean/paneflow)
 by Arthur Jean, and is distributed under the same license. It has been modified
 since 2026.
 
+The interface is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
+the UI framework of the [Zed](https://zed.dev) editor, by Zed Industries
+(Apache-2.0). A few functions are adapted from Zed's own crates
+(GPL-3.0-or-later); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 Bundled icons and fonts keep their own licenses; see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Product names, logos and
 brands shown in Splitlane (agent CLIs, editors, programming languages) are
