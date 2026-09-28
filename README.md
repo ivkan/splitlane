@@ -115,8 +115,11 @@ Download the file for your platform from the
 | Other Linux | `.AppImage` or `.tar.gz` | The AppImage runs as is after `chmod +x`. |
 | Windows | - | No signed installer yet; [build from source](#build-from-source). |
 
-`<arch>` is `x86_64` or `aarch64`. The `.deb` and `.rpm` packages are signed
-with the key in [keys/](keys/README.md), which also explains how to check it.
+`<arch>` is `x86_64` or `aarch64`. Every file has a `.sha256` and a minisign
+`.minisig` beside it, and the `.deb` and `.rpm` are also GPG-signed;
+[keys/README.md](keys/README.md) has the public keys and the commands to check
+them. If the AppImage will not start because FUSE is missing, run it with
+`--appimage-extract-and-run`.
 
 ### Build from source
 

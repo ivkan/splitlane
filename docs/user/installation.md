@@ -1,9 +1,14 @@
 # Installation
 
-Splitlane has no release builds. You build it from source. The short version
-is in the root [README](../../README.md#build-from-source). This page adds the
-per-platform details: what to install first, how to get a proper app on macOS,
-where your settings end up, and how to put the `splitlane` command on `PATH`.
+Release builds for macOS (Apple Silicon) and Linux are on the
+[releases page](https://github.com/ivkan/splitlane/releases/latest); the root
+[README](../../README.md#install) says which file to take, and
+[`keys/README.md`](../../keys/README.md) how to verify it. Windows, Intel Macs
+and anything else you want to change are built from source.
+
+The rest of this page is about building from source: what to install first,
+how to get a proper app on macOS, where your settings end up, and how to put
+the `splitlane` command on `PATH`.
 
 ## Rust
 

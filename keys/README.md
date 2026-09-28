@@ -1,6 +1,6 @@
 # Splitlane signing keys
 
-This directory holds public-key material for verifying Splitlane release
+This directory holds public keys for verifying Splitlane release
 artifacts.
 
 ## `splitlane-release.asc`
@@ -31,8 +31,36 @@ Then verify an artifact:
 ```sh
 gpg --import keys/splitlane-release.asc
 rpm --import keys/splitlane-release.asc && rpm -K splitlane-*.rpm   # RPM
-dpkg-sig --verify splitlane_*.deb                                  # .deb
 ```
+
+A `.deb` carries its signature as an `_gpgbuilder` member. `dpkg-sig` is gone
+from current Ubuntu, so check it by hand: the signed text lists an MD5 and a
+SHA-1 for each of the other members, and those must match what you extract.
+
+```sh
+ar x splitlane-*.deb
+gpg --verify _gpgbuilder
+sha1sum debian-binary control.tar.* data.tar.*
+```
+
+## Minisign
+
+Every release file also has a `.minisig` next to it, made with a separate
+minisign key. The self-updater checks the same signature before it installs
+anything. The public key is:
+
+```
+RWT90Nblmyd0uw4Z0iaLO6veBNbJJ6k89NbNfILrvyt0yVb6Qn9k8PtZ
+```
+
+Verify any artifact with it:
+
+```sh
+minisign -Vm splitlane-0.1.0-x86_64.tar.gz \
+  -P RWT90Nblmyd0uw4Z0iaLO6veBNbJJ6k89NbNfILrvyt0yVb6Qn9k8PtZ
+```
+
+The same key is printed in the release notes; if the two differ, stop.
 
 ## `keys/` and `packaging/`
 
