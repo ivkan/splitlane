@@ -49,6 +49,42 @@ claim was then nobody's: Codex paints its screen across two passes at launch,
 then waits for the first prompt with no rollout file and no hook frame, and the
 header showed `running` with a Stop button until the first turn.
 
+**An agent with a state reader of its own is never the counter's to claim, not
+even before that reader has a file.** The rule is `pty_flow_outranked_by`, and
+the agents are the ones `TerminalAgent::reports_state` names: Claude Code and
+Codex. The case that forced it is Codex 0.158. It plays an animation on its
+idle prompt for about fifteen seconds after launch (measured: 15-18 KB of
+output every two seconds, then nothing) and repaints again on every focus-in,
+which Codex asks the terminal to report. The renewal rule above then held
+`running` and a Stop button over an agent nobody had asked anything, for the
+whole animation, and brought it back each time the pane was focused. A byte
+counter cannot tell that animation from a turn, and nothing else speaks at that
+moment: Codex writes no rollout file before its first turn, and its
+`SessionStart` hook does not fire at launch either (measured with a trusted
+hook on 0.158, 25 seconds idle, no call). So the session id the Codex reader
+needs is not bound yet.
+
+Such an agent is idle by definition until its first turn, and the first turn is
+exactly what gives it a better source. With the hook installed and trusted, the
+`UserPromptSubmit` frame sets `running` the moment the prompt is submitted, the
+`SessionStart` frame binds the session id, and the pass after the rollout
+appears hands the surface to the detector. Claude Code loses nothing: its status
+file exists from launch, so the detector already owned it. `starting` still
+comes down for every agent, reader or not, because that part of the counter's
+job is about the launch and not about a turn.
+
+The price is Codex with no hook frames: the shim is not on `PATH`, Splitlane is
+not reachable from the pane, or the person answered Codex's "Hooks need review"
+prompt with "Continue without trusting". Codex has no forced-session-id flag, so
+without the hook no session id is ever bound, the reader never gets a file, and
+that surface never shows `running`, even during real turns. The other choice
+was to keep the counter for Codex and show `running` over an idle prompt, which
+is a false answer on the one agent where a better source is usually present.
+A missing word is the cheaper error. What would re-open it is a way to find a
+Codex rollout without the hook - for example matching the rollout's own
+`session_meta` (working directory and start time) to the surface - which would
+make the no-hook case read turns properly instead of falling back to bytes.
+
 **A loader over the pane body was considered and refused.** The pane is the
 CLI's own terminal, so a curtain would hide the only two seconds that explain a
 failure, such as a session id already in use or a CLI not on PATH. There is also
@@ -265,7 +301,9 @@ two seconds, for every surface, it logs:
   `incomplete`);
 - the resolved agent pid;
 - the worker;
-- which source decided.
+- which source decided;
+- what the PTY-output counter moved by, the status before and after it, and
+  whether it claimed `running` or stood down, and for whom.
 
 The one-shot probe next door (`claude_sessions::the_detector_on_a_real_session`,
 run with `--ignored`) answers about one surface at one instant. That is the

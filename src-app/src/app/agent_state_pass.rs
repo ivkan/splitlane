@@ -477,11 +477,27 @@ impl SplitlaneApp {
                         .pty_flow
                         .get(&reading.thread_id)
                         .is_some_and(|flow| flow.ours);
+                    let before = thread.status;
                     let (moved, ours) = deposit_pty_flow(
                         thread,
                         previous_generation,
                         reading.output_generation,
                         was_ours,
+                    );
+                    // This source decides from a byte counter, so a wrong
+                    // answer from it looks exactly like a right one on screen.
+                    // The line says what it saw and why it spoke or did not.
+                    log::debug!(
+                        target: TRACE,
+                        "#{} pty flow {previous_generation:?} -> {}: {before:?} -> {:?} ({})",
+                        reading.thread_id,
+                        reading.output_generation,
+                        thread.status,
+                        match pty_flow_outranked_by(thread) {
+                            Some(by) => format!("stands down for {by}"),
+                            None if ours => "claims it".to_string(),
+                            None => "claims nothing".to_string(),
+                        },
                     );
                     changed |= moved;
                     flow.ours = ours;
@@ -828,6 +844,9 @@ pub(crate) struct PtyFlow {
 ///   That guard is not decoration: the hook writes `Idle` at the end of every
 ///   turn, and without it this source would contradict that within two seconds
 ///   and the dot would blink for the whole life of the pane;
+/// - **an agent with a reader of its own outranks it from launch**
+///   ([`crate::agent_launcher::TerminalAgent::reports_state`]), before that
+///   reader has a file to read - see [`pty_flow_outranked_by`];
 /// - **and it never overwrites a standing claim.** It writes only over `Idle`,
 ///   the state that draws nothing.
 ///
@@ -861,7 +880,7 @@ fn deposit_pty_flow(
     // against, so the word goes whether the counter moved or not: an agent
     // that printed nothing is not still starting, and `idle` claims less than
     // `starting` does.
-    let better_source = thread.detector_read_at.is_some() || thread.hook_has_spoken;
+    let better_source = pty_flow_outranked_by(thread).is_some();
     if thread.status == ThreadStatus::Starting && previous.is_some() {
         let moved = previous.is_some_and(|previous| current > previous);
         thread.status = if moved && !better_source {
@@ -891,8 +910,8 @@ fn deposit_pty_flow(
         // Output that keeps coming renews this source's own claim; it is not
         // somebody else's. Disowning it here left a `Thinking` that nothing
         // would ever take back: a CLI that paints its screen across two passes
-        // at launch (Codex does) and then waits for a prompt showed as working
-        // until a hook first spoke.
+        // at launch and then waits for a prompt showed as working until a
+        // hook first spoke.
         if was_ours && thread.status == ThreadStatus::Thinking {
             return (false, true);
         }
@@ -904,6 +923,30 @@ fn deposit_pty_flow(
         return (true, false);
     }
     (false, was_ours)
+}
+
+/// Who speaks for this surface instead of the PTY-flow source, or `None` when
+/// nobody does and the byte counter may claim `Thinking`.
+///
+/// **An agent with a state reader of its own is never this source's to
+/// claim**, even before its reader has anything to read: until its first turn
+/// it is idle by definition, and the first turn writes the record the reader
+/// reads. A repainting idle prompt (Codex 0.158 animates one) is otherwise
+/// indistinguishable from work. The reasoning and its price are in
+/// `docs/internals/agent-state-and-the-rail.md`.
+fn pty_flow_outranked_by(thread: &crate::project::Thread) -> Option<&'static str> {
+    if thread.detector_read_at.is_some() {
+        Some("the detector")
+    } else if thread.hook_has_spoken {
+        Some("the hook")
+    } else if thread
+        .terminal_agent
+        .is_some_and(crate::agent_launcher::TerminalAgent::reports_state)
+    {
+        Some("its own state reader")
+    } else {
+        None
+    }
 }
 
 /// The blocking half: one process snapshot, then one bounded tail read per
@@ -1356,10 +1399,10 @@ mod tests {
     }
 
     /// The launch as a pane sees it for a CLI with no status reader and no
-    /// hook frame before the first turn (Codex writes its rollout file only
-    /// then): the launch word, a first paint, a later paint - an update notice
-    /// dismissed, the prompt drawn - and then nothing, while it waits for a
-    /// prompt. Driven through the same carry of `ours` the pass does.
+    /// hook frame before the first turn: the launch word, a first paint, a
+    /// later paint - an update notice dismissed, the prompt drawn - and then
+    /// nothing, while it waits for a prompt. Driven through the same carry of
+    /// `ours` the pass does.
     #[test]
     fn an_agent_started_with_no_turn_settles_to_idle() {
         let mut t = surface();
@@ -1410,6 +1453,54 @@ mod tests {
         assert!(!moved);
         assert!(!ours, "and it stops claiming what it last put up");
         assert_eq!(t.status, ThreadStatus::Idle);
+    }
+
+    /// An agent with a state reader of its own is idle until its first turn,
+    /// however much its idle prompt repaints. Codex 0.158 animates that prompt
+    /// for about fifteen seconds after launch and again on every focus-in, with
+    /// no rollout and no hook frame yet, and this source read it as a turn:
+    /// `running` and a Stop button over an agent nobody had asked anything.
+    #[test]
+    fn a_reader_agent_repainting_its_idle_prompt_stays_idle() {
+        use crate::agent_launcher::TerminalAgent;
+        for agent in [TerminalAgent::Codex, TerminalAgent::ClaudeCode] {
+            let mut t = Thread::new_terminal("agent", "/tmp", Some(agent));
+            t.status = ThreadStatus::Starting;
+            let mut ours = false;
+            let mut previous = Some(0);
+            for current in [40, 90, 150, 210, 260, 260, 263, 270] {
+                let moved;
+                (moved, ours) = deposit_pty_flow(&mut t, previous, current, ours);
+                assert!(!ours, "{agent:?} at {current}");
+                assert_eq!(t.status, ThreadStatus::Idle, "{agent:?} at {current}");
+                assert!(!moved || current == 40, "{agent:?}: only `starting` moves");
+                previous = Some(current);
+            }
+        }
+    }
+
+    /// And the agents without a reader keep the byte counter exactly as it
+    /// was: for them it is the only source there is.
+    #[test]
+    fn an_agent_without_a_reader_still_reads_output_as_work() {
+        use crate::agent_launcher::TerminalAgent;
+        let without_reader: Vec<_> = TerminalAgent::ALL
+            .into_iter()
+            .filter(|agent| !agent.reports_state())
+            .collect();
+        assert_eq!(without_reader.len(), 14);
+        for agent in without_reader {
+            let mut t = Thread::new_terminal("agent", "/tmp", Some(agent));
+            t.status = ThreadStatus::Starting;
+            let (moved, ours) = deposit_pty_flow(&mut t, Some(0), 40, false);
+            assert!(moved && ours, "{agent:?}");
+            assert_eq!(t.status, ThreadStatus::Thinking, "{agent:?}");
+            let (_, ours) = deposit_pty_flow(&mut t, Some(40), 90, ours);
+            assert!(ours, "{agent:?}: renewed");
+            let (moved, ours) = deposit_pty_flow(&mut t, Some(90), 90, ours);
+            assert!(moved && !ours, "{agent:?}");
+            assert_eq!(t.status, ThreadStatus::Idle, "{agent:?}");
+        }
     }
 
     /// A standing claim from anyone else is left alone. This source writes over
