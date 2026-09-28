@@ -63,6 +63,12 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.1" date="2026-09-28">
+      <description>
+        <p>A freshly started agent without hooks no longer shows as running
+        until its first message, and the window has a title on Linux.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-09-27">
       <description>
         <p>First Splitlane release.</p>
