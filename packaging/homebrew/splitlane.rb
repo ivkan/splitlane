@@ -36,6 +36,10 @@ cask "splitlane" do
   # that era. Same value as `LSMinimumSystemVersion` in assets/Info.plist.
   # Bumping this here without bumping the plist (or vice versa)
   # causes install-time confusion - keep them synchronised.
+  # The app replaces itself from the title bar, so the version Homebrew
+  # recorded goes stale. This tells `brew upgrade` to leave the app alone
+  # unless asked with `--greedy`, instead of reinstalling over a newer one.
+  auto_updates true
   depends_on macos: :ventura
   depends_on arch: :arm64
 
