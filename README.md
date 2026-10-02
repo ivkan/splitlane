@@ -9,6 +9,7 @@
     <a href="#install">Install</a> ·
     <a href="#how-it-knows">How it knows</a> ·
     <a href="#what-is-in-the-window">What is in the window</a> ·
+    <a href="#next-to-its-neighbours">Neighbours</a> ·
     <a href="#faq">FAQ</a> ·
     <a href="#docs">Docs</a>
   </p>
@@ -102,6 +103,56 @@ Keys above are macOS; Linux and Windows use `Ctrl`-based equivalents that do
 not collide with readline. The full list is in Settings → Shortcuts and
 [docs/user/keybindings.md](docs/user/keybindings.md).
 
+## Next to its neighbours
+
+Several tools put coding agents side by side, and three of them come up often
+next to this one. Everything said about them here is taken from each project's
+own documentation as of October 2026. All three change quickly, so check their
+docs before relying on it.
+
+| | Where the agents run | How it learns an agent needs you | Platforms | License |
+|---|---|---|---|---|
+| Splitlane | Terminal panes in a desktop app | The agent's own session records for Claude Code and Codex, hooks for eight more; for the rest, only whether the process is alive | macOS, Linux; Windows from source | GPL-3.0-or-later |
+| [herdr](https://github.com/herdrdev/herdr) | Panes inside the terminal you already use | Rules matched against what the agent draws on screen; hooks or the agent's own reports for some agents | Linux, macOS, Windows | Apache-2.0 |
+| [cmux](https://github.com/manaflow-ai/cmux) | Terminal panes in a native macOS app | Terminal notification sequences, a `cmux notify` command and hooks it installs | macOS | GPL-3.0-or-later |
+| [Conductor](https://www.conductor.build) | Its own chat interface, one git worktree per workspace | Its documentation does not say | macOS | Closed source |
+
+The third column is the one Splitlane was built around. A permission prompt and
+an idle prompt can look alike on screen, and an agent's interface changes from
+one release to the next. Claude Code and Codex each keep a record of their own
+session, so Splitlane reads that record and the process tree under the pane,
+and leaves the screen out of it. Here's the catch: that works for exactly two
+agents, and each has to be checked again when its record format changes. herdr
+reports state for more agents than Splitlane does.
+
+Where the neighbours are ahead:
+
+- **herdr** keeps terminals running in a background server after you close it
+  or lose an SSH connection, and lists several SSH machines together. Splitlane
+  does neither. It is local only, and closing it stops every process it
+  started. A Claude Code conversation resumes on the next launch; a turn that
+  was running does not.
+- **cmux** puts a scriptable browser next to the terminal. Splitlane has no
+  browser.
+- **Conductor** builds the whole workflow on worktrees, with a setup script and
+  a run script for each workspace. Splitlane's `+ worktree` is thinner: a
+  branch, a checkout and one setup command.
+
+Where Splitlane goes a different way on purpose:
+
+- Agents run in ordinary terminals, the same as outside the app. Conductor
+  puts them in its own chat interface and keeps its terminal mode experimental.
+- herdr and cmux both give agents an API that can send input to another pane.
+  In Splitlane the MCP bridge can only read, and the CLI commands that type
+  into a pane stay off until you turn them on.
+- The diff of what the agents changed and the project's file tree are in the
+  same window.
+
+If you work inside a terminal or over SSH, herdr or plain tmux will fit better.
+If you want a worktree per task behind a chat interface on a Mac, that is
+Conductor. Splitlane is for a few agents in ordinary terminals on your own
+machine, where the question is which one is waiting.
+
 ## Install
 
 Download the file for your platform from the
@@ -185,6 +236,7 @@ prompts, and `SPLITLANE_NO_TELEMETRY=1` turns it off regardless of settings.
 - [MCP bridge](docs/mcp-bridge.md) - letting agents read other panes
 - [Windows notes](docs/WINDOWS.md) - support matrix and caveats
 - [Architecture](ARCHITECTURE.md) and [design decisions](docs/internals/design-decisions.md) - for contributors
+- [Changelog](CHANGELOG.md) - what changed in each release
 - [Contributing](CONTRIBUTING.md) - building, the checks a pull request runs, and how to send one
 - [AGENTS.md](AGENTS.md) - instructions for coding agents working on this repository
 
