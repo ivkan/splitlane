@@ -3247,6 +3247,40 @@ fn mount_splitlane_app(window: &mut Window, cx: &mut App) -> Entity<SplitlaneApp
     view
 }
 
+/// Whether a Linux session has no display server to open a window on. An
+/// empty value counts as unset: that is what a stripped environment leaves
+/// behind, and no server answers to it.
+#[cfg(any(target_os = "linux", test))]
+fn no_display_server(
+    wayland_display: Option<std::ffi::OsString>,
+    x11_display: Option<std::ffi::OsString>,
+) -> bool {
+    let set = |value: Option<std::ffi::OsString>| value.is_some_and(|v| !v.is_empty());
+    !set(wayland_display) && !set(x11_display)
+}
+
+#[cfg(test)]
+mod display_server_tests {
+    use super::no_display_server;
+    use std::ffi::OsString;
+
+    #[test]
+    fn either_display_variable_is_enough() {
+        let some = |v: &str| Some(OsString::from(v));
+        assert!(!no_display_server(some("wayland-0"), None));
+        assert!(!no_display_server(None, some(":0")));
+        assert!(!no_display_server(some("wayland-0"), some(":0")));
+    }
+
+    #[test]
+    fn unset_or_empty_is_no_display() {
+        let some = |v: &str| Some(OsString::from(v));
+        assert!(no_display_server(None, None));
+        assert!(no_display_server(some(""), None));
+        assert!(no_display_server(some(""), some("")));
+    }
+}
+
 fn main() {
     // Handle --help and --version before initializing GPUI
     let args: Vec<String> = std::env::args().collect();
@@ -3326,7 +3360,6 @@ fn main() {
              Options:\n\
              \x20 -h, --help       Print this help message\n\
              \x20 -v, --version    Print version\n\
-             \x20 --update-and-exit  Check for an update and exit (CI harness)\n\
              \n\
              Agent workflow:\n\
              \x20 Launch Claude Code, Codex, opencode, Pi, or any CLI agent in panes\n\
@@ -3509,6 +3542,24 @@ fn main() {
     if is_unknown_verb && let Some(verb) = args.get(1) {
         eprintln!("splitlane: unknown verb '{verb}'; see `splitlane --help` for the verb list");
         std::process::exit(2);
+    }
+
+    // Everything that runs without a window has exited by now, so what is
+    // left is the app itself. With no display server to connect to, the
+    // window toolkit waits for one that never comes and the process hangs
+    // with nothing printed - the usual way to meet this is `splitlane` typed
+    // into an SSH session.
+    #[cfg(target_os = "linux")]
+    if no_display_server(
+        std::env::var_os("WAYLAND_DISPLAY"),
+        std::env::var_os("DISPLAY"),
+    ) {
+        eprintln!(
+            "splitlane: no display to open a window on (neither WAYLAND_DISPLAY nor DISPLAY is set).\n\
+             The app needs a graphical session. From a shell without one, the scripting\n\
+             commands still reach an instance that is already running: `splitlane ls`."
+        );
+        std::process::exit(1);
     }
 
     warn_if_legacy_run_install();

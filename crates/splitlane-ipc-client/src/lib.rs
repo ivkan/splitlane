@@ -74,7 +74,7 @@ impl IpcTransport for IpcClient {
         let request = build_request(id, method, params);
         let line = send_and_receive(&self.socket, &request).map_err(|e| {
             format!(
-                "splitlane IPC unreachable at {} ({e}); is Splitlane running?",
+                "cannot reach the app at {} ({e}); is Splitlane running?",
                 self.socket.display()
             )
         })?;
@@ -696,7 +696,7 @@ fn default_socket_path() -> Option<PathBuf> {
         })
         // 4th level, mirroring the server's `dirs::cache_dir().join("run")`
         // (`runtime_paths::runtime_dir`). Without this, a client whose $TMPDIR
-        // is stripped (launchd/cron) returned None - "IPC unreachable" - even
+        // is stripped (launchd/cron) returned None - "cannot reach the app" - even
         // though the server had bound under the cache dir.
         .or_else(cache_run_dir)?;
     let subdir = if cfg!(debug_assertions) {
@@ -975,6 +975,9 @@ mod tests {
         let err = client
             .call("surface.list", json!({}))
             .expect_err("must fail with no listener");
-        assert!(err.contains("unreachable"), "got: {err}");
+        assert!(err.contains("cannot reach the app"), "got: {err}");
+        // The CLI prints this after its own `splitlane: `, so the message
+        // must not open with the name again.
+        assert!(!err.starts_with("splitlane"), "got: {err}");
     }
 }
