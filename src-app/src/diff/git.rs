@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use super::engine::{DiffHunk, compute_hunks};
 
@@ -155,20 +154,22 @@ const GIT_STDOUT_CAP: u64 = 16 * 1024 * 1024;
 /// generic message); the caller renders the diff's "unavailable" state. Never
 /// panics, never blocks past [`GIT_DEADLINE`].
 fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args)
-        .current_dir(dir)
-        // U-035: never block on a credential/helper prompt.
-        .env("GIT_TERMINAL_PROMPT", "0");
-    // U-035: bound the subprocess (run_with_timeout also nulls stdin + caps
-    // stdout) so a hung git can't pin the diff viewer's blocking-pool task.
-    let output =
-        splitlane_process::run_with_timeout(cmd, GIT_DEADLINE, GIT_STDOUT_CAP).map_err(|e| {
-            format!(
-                "git {} failed: {e}",
-                args.first().copied().unwrap_or("command")
-            )
-        })?;
+    // Everything the diff viewer asks git is a read it makes on its own, so
+    // none of it runs what the repository's configuration names. Bounded, so
+    // a hung git can't pin the viewer's blocking-pool task.
+    let output = crate::git_command::run(
+        crate::git_command::GitProfile::Probe,
+        dir,
+        args,
+        GIT_DEADLINE,
+        GIT_STDOUT_CAP,
+    )
+    .map_err(|e| {
+        format!(
+            "git {} failed: {e}",
+            args.first().copied().unwrap_or("command")
+        )
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let msg = stderr.trim();

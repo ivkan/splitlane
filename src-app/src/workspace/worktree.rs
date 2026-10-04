@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use crate::git_command::{self, GitProfile};
+
 /// Wall-clock bound for plumbing git calls (list/status/remove/prune).
 const GIT_DEADLINE: Duration = Duration::from_secs(10);
 /// `worktree add` checks out a full tree - give it more room on big repos.
@@ -214,10 +216,13 @@ pub fn is_splitlane_worktree_dir(repo_root: &Path, branch: &str, path: &Path) ->
 
 /// Run a git plumbing command and return trimmed stdout, mapping every
 /// failure mode (spawn, timeout, non-zero exit) to a displayable message.
-fn run_git(repo: &Path, args: &[&str], deadline: Duration) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(repo).args(args);
-    let out = splitlane_process::run_with_timeout(cmd, deadline, STDOUT_CAP)
+fn run_git(
+    profile: GitProfile,
+    repo: &Path,
+    args: &[&str],
+    deadline: Duration,
+) -> Result<String, String> {
+    let out = git_command::run(profile, repo, args, deadline, STDOUT_CAP)
         .map_err(|e| format!("git {} failed: {e}", args.join(" ")))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -233,6 +238,7 @@ fn run_git(repo: &Path, args: &[&str], deadline: Duration) -> Result<String, Str
 /// `git worktree list --porcelain`, parsed.
 pub fn list_worktrees(repo_root: &Path) -> Result<Vec<WorktreeEntry>, String> {
     let stdout = run_git(
+        GitProfile::Probe,
         repo_root,
         &["worktree", "list", "--porcelain"],
         GIT_DEADLINE,
@@ -269,6 +275,7 @@ pub fn parse_worktree_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
 /// True when `branch` exists locally in the repo.
 pub fn branch_exists(repo_root: &Path, branch: &str) -> bool {
     run_git(
+        GitProfile::Probe,
         repo_root,
         &[
             "rev-parse",
@@ -299,7 +306,9 @@ pub fn add_worktree(
         args.push("-b");
     }
     args.push(branch);
-    run_git(repo_root, &args, ADD_DEADLINE)?;
+    // Creating a worktree is the person's request, so the repository's
+    // checkout hooks and filters run as they would from their own shell.
+    run_git(GitProfile::UserAction, repo_root, &args, ADD_DEADLINE)?;
     if let Err(e) = write_owner_marker(path, repo_root, branch) {
         let _ = remove_worktree(repo_root, path);
         return Err(e);
@@ -311,7 +320,13 @@ pub fn add_worktree(
 /// empty). An error (worktree gone, git missing) is NOT "clean" - the caller
 /// must keep its hands off when it cannot prove cleanliness.
 pub fn is_clean(worktree_path: &Path) -> Result<bool, String> {
-    run_git(worktree_path, &["status", "--porcelain"], GIT_DEADLINE).map(|out| out.is_empty())
+    run_git(
+        GitProfile::Probe,
+        worktree_path,
+        &["status", "--porcelain"],
+        GIT_DEADLINE,
+    )
+    .map(|out| out.is_empty())
 }
 
 /// `git worktree remove <path>`. Refuses dirty worktrees by itself too (git
@@ -319,14 +334,26 @@ pub fn is_clean(worktree_path: &Path) -> Result<bool, String> {
 /// The BRANCH IS NEVER DELETED - that is an invariant of this module, not a TODO.
 pub fn remove_worktree(repo_root: &Path, path: &Path) -> Result<(), String> {
     let path_s = path.to_string_lossy();
-    run_git(repo_root, &["worktree", "remove", &path_s], GIT_DEADLINE).map(|_| ())
+    run_git(
+        GitProfile::UserAction,
+        repo_root,
+        &["worktree", "remove", &path_s],
+        GIT_DEADLINE,
+    )
+    .map(|_| ())
 }
 
 /// `git worktree prune` - drops references whose directory no longer exists.
 /// Git-native guarantee: a worktree whose directory still exists is untouched,
 /// so this is safe to run blindly at startup.
 pub fn prune(repo_root: &Path) -> Result<(), String> {
-    run_git(repo_root, &["worktree", "prune"], GIT_DEADLINE).map(|_| ())
+    run_git(
+        GitProfile::UserAction,
+        repo_root,
+        &["worktree", "prune"],
+        GIT_DEADLINE,
+    )
+    .map(|_| ())
 }
 
 /// Read a remembered `setup` command: blank in any form means "run nothing".

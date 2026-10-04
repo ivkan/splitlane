@@ -221,26 +221,27 @@ fn parse_status_porcelain_z(
 }
 
 fn git_status_stdout(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(args)
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0");
-    let output =
-        splitlane_process::run_with_timeout(cmd, GIT_STATUS_DEADLINE, GIT_STATUS_STDOUT_CAP)
-            .ok()?;
-    output.status.success().then_some(output.stdout)
+    git_probe_stdout(cwd, args, GIT_STATUS_DEADLINE, GIT_STATUS_STDOUT_CAP)
 }
 
 fn git_stdout(cwd: &str, args: &[&str]) -> Option<Vec<u8>> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(args)
-        .current_dir(cwd)
-        // U-035: a hung credential/helper prompt would otherwise pin the
-        // blocking-pool task. With no terminal git fails fast instead.
-        .env("GIT_TERMINAL_PROMPT", "0");
-    let output =
-        splitlane_process::run_with_timeout(cmd, GIT_DIFF_STAT_DEADLINE, GIT_DIFF_STAT_STDOUT_CAP)
-            .ok()?;
+    git_probe_stdout(cwd, args, GIT_DIFF_STAT_DEADLINE, GIT_DIFF_STAT_STDOUT_CAP)
+}
+
+fn git_probe_stdout(
+    cwd: &str,
+    args: &[&str],
+    deadline: std::time::Duration,
+    stdout_cap: u64,
+) -> Option<Vec<u8>> {
+    let output = crate::git_command::run(
+        crate::git_command::GitProfile::Probe,
+        std::path::Path::new(cwd),
+        args,
+        deadline,
+        stdout_cap,
+    )
+    .ok()?;
     output.status.success().then_some(output.stdout)
 }
 

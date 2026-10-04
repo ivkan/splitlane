@@ -1288,14 +1288,10 @@ fn agents_environment_branch_label(branch: &str) -> Option<String> {
 }
 
 fn list_agents_environment_branches(cwd: &str) -> Result<Vec<String>, String> {
-    let mut command = std::process::Command::new("git");
-    command
-        .args(["branch", "--format=%(refname:short)"])
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0");
-
-    let output = splitlane_process::run_with_timeout(
-        command,
+    let output = crate::git_command::run(
+        crate::git_command::GitProfile::Probe,
+        std::path::Path::new(cwd),
+        &["branch", "--format=%(refname:short)"],
         AGENTS_BRANCH_GIT_DEADLINE,
         AGENTS_BRANCH_GIT_OUTPUT_CAP,
     )
@@ -1325,14 +1321,12 @@ fn switch_agents_environment_branch(
     cwd: &str,
     branch: &str,
 ) -> Result<(String, bool, crate::workspace::GitDiffStats), String> {
-    let mut command = std::process::Command::new("git");
-    command
-        .args(["switch", "--", branch])
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0");
-
-    let output = splitlane_process::run_with_timeout(
-        command,
+    // The person picked this branch, so its checkout hooks and filters run
+    // as they would from their own shell.
+    let output = crate::git_command::run(
+        crate::git_command::GitProfile::UserAction,
+        std::path::Path::new(cwd),
+        &["switch", "--", branch],
         AGENTS_BRANCH_GIT_DEADLINE,
         AGENTS_BRANCH_GIT_OUTPUT_CAP,
     )

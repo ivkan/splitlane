@@ -45,6 +45,7 @@ mod editor;
 mod external_open;
 mod file_view;
 mod fonts;
+mod git_command;
 mod ipc;
 mod ipc_events;
 mod keybindings;
