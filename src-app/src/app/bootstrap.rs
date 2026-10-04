@@ -916,6 +916,18 @@ impl SplitlaneApp {
                 update::checker::UpdateCheckTrigger::Auto,
             )
         };
+        // The same question again, for as long as the window stays open.
+        cx.spawn(
+            async |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    smol::Timer::after(update::checker::RECHECK_INTERVAL).await;
+                    if this.update(cx, |app, _| app.recheck_for_update()).is_err() {
+                        break;
+                    }
+                }
+            },
+        )
+        .detach();
         // Background flusher: every 5 s the client inspects its queue and
         // posts when the size or age threshold is met. Re-spawned when the
         // telemetry client is swapped by config reconciliation.
@@ -1196,6 +1208,7 @@ impl SplitlaneApp {
             self_update: crate::SelfUpdateState {
                 pending_update,
                 update_status: None,
+                recheck_in_flight: false,
                 self_update_status: update::SelfUpdateStatus::default(),
                 install_method,
                 update_attempt_count: 0,

@@ -174,10 +174,10 @@ Vulkan driver. Every file has a `.sha256` and a minisign
 them. If the AppImage will not start because FUSE is missing, run it with
 `--appimage-extract-and-run`.
 
-Splitlane asks the release feed for a newer version once, at startup. When
-there is one it appears in the title bar, and a click installs it (through
-the package manager for a `.deb` or `.rpm`). An app left running for days will
-not notice a release until it is restarted. A Homebrew install updates the
+Splitlane asks the release feed for a newer version at startup and every four
+hours after that, for as long as it stays open. When there is one it appears
+in the title bar, and a click installs it (through the package manager for a
+`.deb` or `.rpm`). A Homebrew install updates the
 same way, since the cask only puts the app in place; `brew upgrade --cask
 splitlane` works too. `"check_for_updates": false` in `splitlane.json` turns
 the check off.

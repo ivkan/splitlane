@@ -80,7 +80,7 @@ something in Settings.
 | `agent_stall_threshold_secs` | integer or null | `60` | Silence, in seconds, before a session counts as stalled. Clamped to `30`-`86400`. The check runs every 30 seconds, so detection can lag by up to that much. |
 | `review_prefill_delay_ms` | integer or null | `2000` | How long the diff view's review waits before typing its prompt into a freshly started agent. The prompt is also copied to the clipboard. Clamped to `250`-`10000`. |
 | `submit_paste_delay_ms` | integer or null | `70` | Minimum pause between pasting text into an agent and pressing Enter to submit it (Send to agent, `splitlane send --submit`). Raise it if a slow agent swallows the Enter. Clamped to `10`-`5000`. |
-| `check_for_updates` | boolean or null | `true` | `false` stops Splitlane from contacting the GitHub releases feed at startup. |
+| `check_for_updates` | boolean or null | `true` | `false` stops Splitlane from contacting the GitHub releases feed, at startup and on the four-hourly check after it. |
 | `shortcuts` | object | `{}` | Keybinding overrides, key chord -> action name, for example `{ "secondary-shift-a": "add_pane" }` (`secondary` is Cmd on macOS and Ctrl elsewhere). Map a chord to `"none"` to unbind it. Applied while running. Action names: [Keybindings](../keybindings.md). |
 | `terminal` | object or null | see below | Terminal renderer and PTY settings. |
 | `agent_panel` | object or null | see below | Notification level, plus keys that currently have no effect. |

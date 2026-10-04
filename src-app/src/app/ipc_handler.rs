@@ -1657,9 +1657,33 @@ impl SplitlaneApp {
         }
     }
 
-    /// Pick up the background update check result (runs once, then stops polling).
+    /// Ask the release feed again. Called on a timer for as long as the app is
+    /// open; `check_for_updates` is read now rather than at startup, so turning
+    /// the setting off in Settings stops the next check and turning it on gets
+    /// one without a restart.
+    pub(crate) fn recheck_for_update(&mut self) {
+        if !update::checker::should_recheck(
+            self.cached_config.check_for_updates != Some(false),
+            self.self_update.update_status.as_ref(),
+            matches!(
+                self.self_update.self_update_status,
+                update::SelfUpdateStatus::Idle
+            ),
+            self.self_update.recheck_in_flight,
+        ) {
+            return;
+        }
+        self.self_update.pending_update = update::checker::spawn_check(
+            std::sync::Arc::clone(&self.telemetry),
+            update::checker::UpdateCheckTrigger::Periodic,
+        );
+        self.self_update.recheck_in_flight = true;
+    }
+
+    /// Pick up the background update check result. Polls until the check at
+    /// startup has answered, and again while a repeated check is in flight.
     pub(crate) fn process_update_check(&mut self, cx: &mut Context<Self>) {
-        if self.self_update.update_status.is_some() {
+        if self.self_update.update_status.is_some() && !self.self_update.recheck_in_flight {
             return; // Already resolved
         }
         let status = self
@@ -1671,6 +1695,15 @@ impl SplitlaneApp {
         if let Some(status) = status
             && !matches!(status, update::checker::UpdateStatus::Checking)
         {
+            let repeated = std::mem::take(&mut self.self_update.recheck_in_flight);
+            // A repeated check that could not reach the feed says nothing new:
+            // the laptop was closed, or offline. The earlier answer stands.
+            if repeated
+                && matches!(status, update::checker::UpdateStatus::Failed)
+                && self.self_update.update_status.is_some()
+            {
+                return;
+            }
             self.self_update.update_status = Some(status);
             cx.notify();
             // Zed-style silent pre-install: as soon as we know there's

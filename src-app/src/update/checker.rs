@@ -359,20 +359,49 @@ pub enum UpdateStatus {
 
 pub type SharedUpdateSlot = std::sync::Arc<std::sync::Mutex<Option<UpdateStatus>>>;
 
-/// Trigger source for an `update_check_started` telemetry event.
-/// Only the startup auto-check exists today; a `Manual` variant should
-/// be added when a "Check for updates…" menu entry lands.
+/// Trigger source for an `update_check_started` telemetry event: the check at
+/// startup, or the one repeated while the app stays open. A `Manual` variant
+/// should be added when a "Check for updates…" menu entry lands.
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateCheckTrigger {
     Auto,
+    Periodic,
 }
 
 impl UpdateCheckTrigger {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             UpdateCheckTrigger::Auto => "auto",
+            UpdateCheckTrigger::Periodic => "periodic",
         }
     }
+}
+
+/// How long an open app waits before asking the release feed again.
+///
+/// The app is built to stay open for days with agents running in it, and a
+/// check made only at startup never tells that window about a release. Four
+/// hours puts a fix in front of a person the same working day without making
+/// the feed a thing the app talks to all the time.
+pub const RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4 * 60 * 60);
+
+/// Whether the repeated check should run now.
+///
+/// It stays out of the way of everything already known: a release that has
+/// been found is not looked for again (the next startup will see anything
+/// newer), and nothing is asked while a download or an install is in flight or
+/// waiting for its restart - a new answer arriving then would replace the
+/// release being installed with a different one.
+pub(crate) fn should_recheck(
+    enabled: bool,
+    known: Option<&UpdateStatus>,
+    install_idle: bool,
+    check_in_flight: bool,
+) -> bool {
+    enabled
+        && install_idle
+        && !check_in_flight
+        && !matches!(known, Some(UpdateStatus::Available { .. }))
 }
 
 /// Spawn a detached thread that checks GitHub for a newer release.
@@ -1166,6 +1195,58 @@ mod tests {
     /// `update_check_started` carries `trigger` and
     /// `current_version` exactly as documented; Null-client
     /// emit is a no-op (consent gating verified at the adapter level).
+    #[test]
+    fn the_repeated_check_stays_out_of_the_way_of_what_is_already_known() {
+        let available = UpdateStatus::Available {
+            version: "9.9.9".to_string(),
+            url: "https://example.com/release".to_string(),
+            asset_url: None,
+            asset_format: None,
+        };
+        // Nothing known yet, or nothing newer last time, or the feed was out
+        // of reach: ask again.
+        assert!(should_recheck(true, None, true, false));
+        assert!(should_recheck(
+            true,
+            Some(&UpdateStatus::UpToDate),
+            true,
+            false
+        ));
+        assert!(should_recheck(
+            true,
+            Some(&UpdateStatus::Failed),
+            true,
+            false
+        ));
+        // A release already found is not looked for again.
+        assert!(!should_recheck(true, Some(&available), true, false));
+        // Nor is anything asked while one is downloading, installing or
+        // waiting for its restart - the resolved status is cleared at that
+        // point, so only the install state says so.
+        assert!(!should_recheck(true, None, false, false));
+        // One check at a time.
+        assert!(!should_recheck(
+            true,
+            Some(&UpdateStatus::UpToDate),
+            true,
+            true
+        ));
+        // `check_for_updates: false` means the feed is never contacted.
+        assert!(!should_recheck(false, None, true, false));
+        assert!(!should_recheck(
+            false,
+            Some(&UpdateStatus::Failed),
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn the_two_triggers_are_told_apart_in_telemetry() {
+        assert_eq!(UpdateCheckTrigger::Auto.as_str(), "auto");
+        assert_eq!(UpdateCheckTrigger::Periodic.as_str(), "periodic");
+    }
+
     #[test]
     fn update_check_started_props_match_ac1_schema() {
         let props = update_check_started_props(UpdateCheckTrigger::Auto, "0.2.11");

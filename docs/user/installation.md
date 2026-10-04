@@ -177,8 +177,8 @@ reading its own, empty, state. Every config key is documented in the
 
 ## Turn off update checks for your own build
 
-At startup Splitlane asks the GitHub releases feed whether a newer version
-exists. The updater can't tell a binary you built from an official one, so
+At startup, and every four hours while it stays open, Splitlane asks the
+GitHub releases feed whether a newer version exists. The updater can't tell a binary you built from an official one, so
 accepting an offered update would replace your build. To stop the check
 entirely, add this to `splitlane.json`:
 

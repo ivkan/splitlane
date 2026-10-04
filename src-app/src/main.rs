@@ -305,6 +305,10 @@ struct SelfUpdateState {
     pending_update: update::checker::SharedUpdateSlot,
     /// Resolved update status (set once the background check completes).
     update_status: Option<update::checker::UpdateStatus>,
+    /// A repeated check is running and its answer has not been collected.
+    /// `update_status` keeps the previous answer meanwhile, so this is what
+    /// tells the poll there is something new to pick up.
+    recheck_in_flight: bool,
     /// Live state of the in-app self-update flow (download → install → restart).
     self_update_status: update::SelfUpdateStatus,
     /// How the running binary was installed. Detected once at startup -
