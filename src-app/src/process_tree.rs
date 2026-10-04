@@ -1327,6 +1327,12 @@ mod tests {
 
     /// A child that exists is seen, and its disappearance is seen too. Written
     /// as one test because the second half is only meaningful after the first.
+    ///
+    /// The second half asks about **this** child, not about the test process
+    /// as a whole: `SPAWNING` only orders the tests in this module, and tests
+    /// elsewhere in the binary (git, worktrees, updates) spawn children of the
+    /// same process at any moment. Asking `worker_under(me)` for `Absent` made
+    /// the test fail whenever one of them was mid-command.
     #[test]
     #[cfg(unix)]
     fn a_spawned_child_is_seen_and_then_is_not() {
@@ -1336,16 +1342,17 @@ mod tests {
             .arg("sleep 30")
             .spawn()
             .expect("spawn");
+        let pid = child.id();
         let me = std::process::id();
         let snap = ProcessSnapshot::capture().expect("snapshot");
+        assert!(snap.children_of(me).contains(&pid), "the child is listed");
         assert_eq!(snap.worker_under(me), Worker::Present);
 
         child.kill().expect("kill");
         child.wait().expect("reap");
         let snap = ProcessSnapshot::capture().expect("snapshot");
-        assert_eq!(
-            snap.worker_under(me),
-            Worker::Absent,
+        assert!(
+            !snap.children_of(me).contains(&pid),
             "a reaped child must stop counting - a zombie left behind would \
              keep every session looking busy"
         );
