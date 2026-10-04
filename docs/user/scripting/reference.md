@@ -299,6 +299,11 @@ Methods that take a surface accept `surface_id`; `surface.read`,
 `name`. With neither, the first terminal of the active project is used, except
 by `surface.focus`, which requires `surface_id`.
 
+A parameter that names a target (`surface_id`, `to_surface_id`, `index`) must
+be a non-negative JSON number. Any other type, a string such as `"42"` or
+`null` included, is refused with `-32602` rather than read as "not given".
+Leave the key out to get the default.
+
 | Method | Params | Result |
 | --- | --- | --- |
 | `system.ping` | | `{pong: true}` |
@@ -307,8 +312,8 @@ by `surface.focus`, which requires `surface_id`.
 | `workspace.list` | | `{workspaces: [{index, title, cwd, panes, active}]}` |
 | `workspace.current` | | `{index, title, cwd, panes, layout}` |
 | `workspace.create` | `name` (default `"Terminal"`), `cwd`, `layout` (layout tree) | `{index, title, panes}` |
-| `workspace.select` | `index` | `{selected}` |
-| `workspace.close` | `index` (default active) | `{closed}`; refuses to close the last project |
+| `workspace.select` | `index` (required) | `{selected}` |
+| `workspace.close` | `index` (required) | `{closed}`; refuses to close the last project |
 | `workspace.restore_layout` | `layout` (layout tree) | `{restored, panes}` for the active project |
 | `workspace.up` | `name`, `layout` (`even_h`, `even_v`, `grid`), `panes: [{cwd, command, prompt, focus, env, name` or `label, context, profile}]` | `{index, title, panes, surface_ids, labels}` |
 | `surface.list` | | See above |
@@ -336,6 +341,7 @@ by `surface.focus`, which requires `surface_id`.
 | `-32602` | Invalid params, including an unknown surface or event type |
 | `-32001` | Connecting process belongs to another user |
 | `-32002` | The app did not answer within 5 seconds |
+| `-32003` | The pane did not take the input: its process has exited, or its input queue is full. Nothing was sent |
 | `-32000` | Busy, too many connections or subscriptions, or shutting down |
 
 Some older failures (for example `workspace.select` out of range) come back as

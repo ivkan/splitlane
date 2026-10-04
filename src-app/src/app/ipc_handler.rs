@@ -1927,7 +1927,7 @@ impl SplitlaneApp {
         params: &serde_json::Value,
         cx: &App,
     ) -> Result<gpui::Entity<TerminalView>, JsonRpcError> {
-        if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
+        if let Some(sid) = optional_id_param(params, "surface_id")? {
             return self.find_surface_terminal_by_id(sid, cx).ok_or_else(|| {
                 JsonRpcError::invalid_params(format!("surface_id {sid} not found"))
             });
@@ -2683,7 +2683,10 @@ impl SplitlaneApp {
             }
             "workspace.up" => self.handle_workspace_up(params, cx),
             "workspace.select" => {
-                let idx = params.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                let idx = match required_id_param(params, "index") {
+                    Ok(idx) => idx as usize,
+                    Err(e) => return e.into_value(),
+                };
                 if idx < self.workspaces.len() {
                     self.activate_workspace_without_window(idx, cx);
                     serde_json::json!({"selected": idx})
@@ -2695,11 +2698,14 @@ impl SplitlaneApp {
                 if self.workspaces.len() <= 1 {
                     serde_json::json!({"error": "Cannot close last workspace"})
                 } else {
-                    let idx = params
-                        .get("index")
-                        .and_then(|i| i.as_u64())
-                        .map(|i| i as usize)
-                        .unwrap_or(self.active_idx);
+                    // No default: closing removes the project's worktrees
+                    // and ends its sessions, and "whichever project the
+                    // person happens to be looking at" is not a target a
+                    // script can have meant.
+                    let idx = match required_id_param(params, "index") {
+                        Ok(idx) => idx as usize,
+                        Err(e) => return e.into_value(),
+                    };
                     if idx < self.workspaces.len() {
                         if let Some(dir) = self.workspaces[idx].git_dir.clone() {
                             self.unwatch_git_dir(&dir);
@@ -2910,8 +2916,9 @@ impl SplitlaneApp {
                 // Navigation only (no PTY write), so - like `workspace.select`
                 // and unlike `surface.send_*` - it does NOT require the
                 // `SPLITLANE_IPC_SCRIPTING` gate.
-                let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) else {
-                    return serde_json::json!({"error": "Missing 'surface_id' parameter"});
+                let sid = match required_id_param(params, "surface_id") {
+                    Ok(sid) => sid,
+                    Err(e) => return e.into_value(),
                 };
                 let Some(scope) = self.surface_scope_by_id(sid, cx) else {
                     return serde_json::json!({"error": "Surface not found"});
@@ -2992,14 +2999,12 @@ impl SplitlaneApp {
                     )
                     .into_value();
                 }
-                let (Some(from), Some(to)) = (
-                    params.get("surface_id").and_then(|s| s.as_u64()),
-                    params.get("to_surface_id").and_then(|s| s.as_u64()),
-                ) else {
-                    return JsonRpcError::invalid_params(
-                        "Missing 'surface_id' or 'to_surface_id' parameter",
-                    )
-                    .into_value();
+                let (from, to) = match (
+                    required_id_param(params, "surface_id"),
+                    required_id_param(params, "to_surface_id"),
+                ) {
+                    (Ok(from), Ok(to)) => (from, to),
+                    (Err(e), _) | (_, Err(e)) => return e.into_value(),
                 };
                 let Some(thread_id) = self
                     .find_surface_terminal_by_id(from, cx)
@@ -3029,6 +3034,9 @@ impl SplitlaneApp {
                     )
                     .into_value();
                 };
+                if let Err(e) = pane_takes_input(&destination.terminal, cx) {
+                    return e.into_value();
+                }
                 // A click on the entry closes the menu it is in first.
                 self.close_agents_menu(cx);
                 self.tab_menu_open = None;
@@ -3084,9 +3092,11 @@ impl SplitlaneApp {
                 // surface_id the active workspace's first terminal is used - the
                 // same default routing as `surface.send_keystroke`
                 // (`find_first_terminal` skips markdown leaves).
-                let target: Option<Entity<TerminalView>> = if let Some(sid) =
-                    params.get("surface_id").and_then(|s| s.as_u64())
-                {
+                let surface_id = match optional_id_param(params, "surface_id") {
+                    Ok(surface_id) => surface_id,
+                    Err(e) => return e.into_value(),
+                };
+                let target: Option<Entity<TerminalView>> = if let Some(sid) = surface_id {
                     match self.find_surface_terminal_by_id(sid, cx) {
                         Some(t) => Some(t),
                         None => {
@@ -3107,6 +3117,10 @@ impl SplitlaneApp {
                 // the payload sit in `pending_input` until the user happens to
                 // open that pane.
                 terminal.update(cx, |view, cx| view.ensure_backend_started(cx));
+                if let Err(e) = pane_takes_input(&terminal, cx) {
+                    return e.into_value();
+                }
+                let refused_before = terminal.read(cx).terminal.refused_input_count();
                 let wrote_sid = terminal.entity_id().as_u64();
                 let agent_hint = self.surface_agent_hint(wrote_sid, cx);
                 let terminal_bracketed_paste = terminal.read(cx).bracketed_paste_enabled();
@@ -3143,6 +3157,15 @@ impl SplitlaneApp {
                     } else {
                         terminal.read(cx).send_text(text);
                     }
+                }
+                // The payload is the part a caller cannot afford to lose
+                // without being told: the submit below would then press Enter
+                // on whatever was in the composer before.
+                if terminal.read(cx).terminal.refused_input_count() != refused_before {
+                    return JsonRpcError::input_not_taken(
+                        "The pane's input queue is full; the text was not sent",
+                    )
+                    .into_value();
                 }
                 // Submit. The bracketed-paste path defers the `\r` off the render
                 // thread so the agent does not swallow it; the verbatim
@@ -3217,8 +3240,11 @@ impl SplitlaneApp {
                     .into_value();
                 }
                 // Route by surface_id if provided, otherwise use active terminal
-                let terminal = if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64())
-                {
+                let surface_id = match optional_id_param(params, "surface_id") {
+                    Ok(surface_id) => surface_id,
+                    Err(e) => return e.into_value(),
+                };
+                let terminal = if let Some(sid) = surface_id {
                     self.find_surface_terminal_by_id(sid, cx)
                 } else if let Some(ws) = self.active_workspace()
                     && let Some(root) = &ws.root
@@ -3233,7 +3259,19 @@ impl SplitlaneApp {
                         // Same as `surface.send_text` - an explicit write
                         // mounts a surface that has not been shown yet.
                         t.update(cx, |view, cx| view.ensure_backend_started(cx));
+                        if let Err(e) = pane_takes_input(&t, cx) {
+                            return e.into_value();
+                        }
+                        let refused_before = t.read(cx).terminal.refused_input_count();
                         match t.read(cx).send_keystroke(keystroke) {
+                            Ok(())
+                                if t.read(cx).terminal.refused_input_count() != refused_before =>
+                            {
+                                JsonRpcError::input_not_taken(
+                                    "The pane's input queue is full; the key was not sent",
+                                )
+                                .into_value()
+                            }
                             Ok(()) => serde_json::json!({"sent": true}),
                             Err(e) => JsonRpcError::invalid_params(e).into_value(),
                         }
@@ -3306,17 +3344,20 @@ impl SplitlaneApp {
                 // lives - instead of the active workspace's first leaf. Absent
                 // = the legacy first-leaf behavior, so existing clients are
                 // untouched.
-                let (ws_idx, target_pane) =
-                    if let Some(sid) = params.get("surface_id").and_then(|s| s.as_u64()) {
-                        let Some((ws_idx, target_pane, _tab)) =
-                            find_pane_by_surface_id(&self.workspaces, sid, cx)
-                        else {
-                            return JsonRpcError::invalid_params("Surface not found").into_value();
-                        };
-                        (ws_idx, Some(target_pane))
-                    } else {
-                        (self.active_idx, None)
+                let surface_id = match optional_id_param(params, "surface_id") {
+                    Ok(surface_id) => surface_id,
+                    Err(e) => return e.into_value(),
+                };
+                let (ws_idx, target_pane) = if let Some(sid) = surface_id {
+                    let Some((ws_idx, target_pane, _tab)) =
+                        find_pane_by_surface_id(&self.workspaces, sid, cx)
+                    else {
+                        return JsonRpcError::invalid_params("Surface not found").into_value();
                     };
+                    (ws_idx, Some(target_pane))
+                } else {
+                    (self.active_idx, None)
+                };
                 let Some(ws) = self.workspaces.get(ws_idx) else {
                     return JsonRpcError::invalid_params("No active workspace").into_value();
                 };
@@ -4274,6 +4315,39 @@ fn read_session_pid(params: &serde_json::Value) -> Option<u32> {
         .filter(|&p| p > 0 && p <= i32::MAX as u32)
 }
 
+/// Read a parameter that names a target - a surface id, a project index.
+///
+/// Absent is `None`: the method then applies whatever default it documents.
+/// Present with any other type is a refusal, never the default: a client that
+/// sends `"surface_id": "42"` named a pane, and falling back to the active one
+/// would type its text into a pane it did not name. `null` is refused for the
+/// same reason - it is what a client serializes when the variable holding its
+/// target was never filled in.
+fn optional_id_param(params: &serde_json::Value, key: &str) -> Result<Option<u64>, JsonRpcError> {
+    match params.get(key) {
+        None => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            JsonRpcError::invalid_params(format!("'{key}' must be a non-negative integer"))
+        }),
+    }
+}
+
+fn required_id_param(params: &serde_json::Value, key: &str) -> Result<u64, JsonRpcError> {
+    optional_id_param(params, key)?
+        .ok_or_else(|| JsonRpcError::invalid_params(format!("Missing '{key}' parameter")))
+}
+
+/// Refuse a write to a pane whose process has ended: the bytes would go
+/// nowhere, and answering `sent` would tell a script its prompt arrived.
+fn pane_takes_input(terminal: &Entity<TerminalView>, cx: &App) -> Result<(), JsonRpcError> {
+    match terminal.read(cx).terminal.exited {
+        Some(_) => Err(JsonRpcError::input_not_taken(
+            "The pane's process has exited; nothing was sent",
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Read the surface id carried by a modern hook frame. `splitlane-ai-hook`
 /// stamps the top-level params from `SPLITLANE_SURFACE_ID`; accepting the same
 /// key under `hook_payload` keeps the server tolerant of older/alternate shims.
@@ -4454,6 +4528,9 @@ impl JsonRpcError {
     pub(crate) const METHOD_NOT_ENABLED: i32 = -32601;
     /// JSON-RPC 2.0 reserved error code for unknown methods.
     pub(crate) const METHOD_NOT_FOUND: i32 = -32601;
+    /// A write that reached a pane which could not take it. Distinct from
+    /// invalid params: the request was well formed and nothing was written.
+    pub(crate) const INPUT_NOT_TAKEN: i32 = -32003;
 
     pub(crate) fn invalid_params(message: impl Into<String>) -> Self {
         Self {
@@ -4465,6 +4542,14 @@ impl JsonRpcError {
     pub(crate) fn method_not_enabled(message: impl Into<String>) -> Self {
         Self {
             code: Self::METHOD_NOT_ENABLED,
+            message: message.into(),
+        }
+    }
+
+    /// The pane named by the request exists but did not take the input.
+    pub(crate) fn input_not_taken(message: impl Into<String>) -> Self {
+        Self {
+            code: Self::INPUT_NOT_TAKEN,
             message: message.into(),
         }
     }
@@ -4856,6 +4941,43 @@ mod tests {
         assert_eq!(pid(serde_json::json!(u32::MAX)), None);
         assert_eq!(pid(serde_json::json!(0)), None);
         assert_eq!(read_session_pid(&serde_json::json!({})), None);
+    }
+
+    /// The defect this guards: `"surface_id": "42"` read as "no surface
+    /// named", and the write went to the first pane of the active project.
+    #[test]
+    fn a_target_of_the_wrong_type_is_refused_not_defaulted() {
+        use serde_json::json;
+        assert_eq!(
+            optional_id_param(&json!({ "surface_id": 42 }), "surface_id").ok(),
+            Some(Some(42))
+        );
+        assert_eq!(optional_id_param(&json!({}), "surface_id").ok(), Some(None));
+        for wrong in [
+            json!("42"),
+            json!(-1),
+            json!(4.5),
+            json!(true),
+            json!([42]),
+            json!(null),
+        ] {
+            let err = optional_id_param(&json!({ "surface_id": wrong }), "surface_id")
+                .expect_err("a target of the wrong type is an error");
+            assert_eq!(err.code, JsonRpcError::INVALID_PARAMS, "{wrong}");
+        }
+    }
+
+    #[test]
+    fn a_required_target_has_no_default() {
+        use serde_json::json;
+        assert_eq!(
+            required_id_param(&json!({ "index": 0 }), "index").ok(),
+            Some(0)
+        );
+        for params in [json!({}), json!({ "index": null }), json!({ "index": "0" })] {
+            let err = required_id_param(&params, "index").expect_err("no default");
+            assert_eq!(err.code, JsonRpcError::INVALID_PARAMS, "{params}");
+        }
     }
 
     #[test]

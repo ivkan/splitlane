@@ -1501,6 +1501,11 @@ pub struct TerminalState {
     /// visible). Atomic because `write_to_pty` takes `&self`. Mirrors Zed's
     /// keyboard_input_sent (crates/terminal/src/terminal.rs:2572-2576).
     keyboard_input_sent: std::sync::atomic::AtomicBool,
+    /// How many writes were dropped because the input queue was full. Input
+    /// is written through several layers that return nothing, so a caller
+    /// that has to know - an IPC write answering `sent` - compares this
+    /// before and after instead.
+    refused_input: std::sync::atomic::AtomicU64,
     /// Numeric signal + name if the child was terminated by a
     /// signal (crash), formatted "N (Name)" e.g. "11 (Segmentation fault)".
     /// `None` for a normal code exit. The numeric signal comes directly from
@@ -2907,6 +2912,7 @@ impl TerminalState {
             marks: Arc::new(std::sync::Mutex::new(Default::default())),
             exited: None,
             keyboard_input_sent: std::sync::atomic::AtomicBool::new(false),
+            refused_input: std::sync::atomic::AtomicU64::new(0),
             exit_signal: None,
             child_pid: 0,
             #[cfg(target_os = "macos")]
@@ -3654,7 +3660,11 @@ impl TerminalState {
         if let Some(ghostty) = &self.ghostty {
             if !input.is_empty() {
                 let _ = ghostty;
-                self.dispatch_ghostty_input(PendingTerminalInput::Raw(input), false);
+                if self.dispatch_ghostty_input(PendingTerminalInput::Raw(input), false)
+                    == BackendInputResult::Rejected
+                {
+                    self.note_refused_input();
+                }
             }
             return;
         }
@@ -3669,8 +3679,20 @@ impl TerminalState {
             let queued: usize = pending.iter().map(PendingTerminalInput::queued_bytes).sum();
             if queued + input.len() <= MAX_PENDING_INPUT_BYTES {
                 pending.push_back(PendingTerminalInput::Raw(input));
+            } else {
+                self.note_refused_input();
             }
         }
+    }
+
+    fn note_refused_input(&self) {
+        self.refused_input
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn refused_input_count(&self) -> u64 {
+        self.refused_input
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Write to the PTY WITHOUT marking the session user-initiated.
@@ -5124,6 +5146,16 @@ mod tests {
             queued <= MAX_PENDING_INPUT_BYTES,
             "buffered {queued} bytes exceeds the {MAX_PENDING_INPUT_BYTES} cap"
         );
+        // A dropped write is counted, so a caller that answers "sent" can
+        // tell the write that was queued from the one that was not.
+        assert_eq!(state.refused_input_count(), 2);
+    }
+
+    #[test]
+    fn a_write_that_fits_is_not_counted_as_refused() {
+        let (state, _events_tx) = TerminalState::new_pending(80, 24);
+        state.write_to_pty(b"echo hello".to_vec());
+        assert_eq!(state.refused_input_count(), 0);
     }
 
     #[cfg(any(
