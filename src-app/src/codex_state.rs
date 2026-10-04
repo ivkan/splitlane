@@ -310,6 +310,119 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
     }
 }
 
+/// How much of a rollout's tail is read for the last answer. An answer is
+/// asked for once, on demand, so the bound is about not loading an all-day
+/// session whole rather than about a two-second cadence.
+const ANSWER_TAIL_BYTES: u64 = 8 * 1024 * 1024;
+
+/// What a look for a Codex session's last answer found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexAnswer {
+    /// The newest ended turn's answer.
+    Found(String),
+    /// The newest ended turn ended in an error, and this is what it said.
+    /// Reported as itself: an empty answer would read as "the agent had
+    /// nothing to say", and the answer before it belongs to another turn.
+    TurnFailed(String),
+    /// The newest ended turn was stopped by a person before it answered.
+    Aborted,
+    /// The rollout is there and no turn in it has ended.
+    NotYet,
+    /// The file could not be read.
+    Unreadable,
+}
+
+/// The answer of the newest turn that has **ended** in this rollout.
+///
+/// A turn's answer is `task_complete.last_agent_message`, which Codex writes
+/// for exactly this purpose. When that is `null`, the last assistant message
+/// of the same turn stands in - Codex writes those as `response_item` records
+/// (`message`, role `assistant`, `output_text` blocks) and, in older releases,
+/// also as `agent_message` events. A message from an earlier turn never does:
+/// each `task_started` clears what was collected.
+///
+/// Blocking I/O.
+pub fn read_last_answer(path: &Path) -> CodexAnswer {
+    match read_tail(path, ANSWER_TAIL_BYTES) {
+        Some((text, truncated_head)) => last_answer_from_text(&text, truncated_head),
+        None => CodexAnswer::Unreadable,
+    }
+}
+
+fn last_answer_from_text(text: &str, truncated_head: bool) -> CodexAnswer {
+    let mut newest = CodexAnswer::NotYet;
+    // The last thing the assistant said in the turn being read.
+    let mut said: Option<String> = None;
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || (index == 0 && truncated_head) {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(payload) = record.get("payload") else {
+            continue;
+        };
+        let kind = payload.get("type").and_then(|t| t.as_str());
+        match (record.get("type").and_then(|t| t.as_str()), kind) {
+            (Some("event_msg"), Some("task_started")) => said = None,
+            (Some("event_msg"), Some("agent_message")) => {
+                if let Some(message) = non_blank(payload.get("message")) {
+                    said = Some(message);
+                }
+            }
+            (Some("response_item"), Some("message"))
+                if payload.get("role").and_then(|r| r.as_str()) == Some("assistant") =>
+            {
+                let blocks = payload.get("content").and_then(|c| c.as_array());
+                let joined = blocks
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| {
+                        block.get("type").and_then(|t| t.as_str()) == Some("output_text")
+                    })
+                    .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if !joined.trim().is_empty() {
+                    said = Some(joined.trim_end().to_string());
+                }
+            }
+            (Some("event_msg"), Some("task_complete")) => {
+                let error = payload.get("error").filter(|error| !error.is_null());
+                newest = if let Some(error) = error {
+                    CodexAnswer::TurnFailed(
+                        non_blank(error.get("message")).unwrap_or_else(|| error.to_string()),
+                    )
+                } else if let Some(answer) =
+                    non_blank(payload.get("last_agent_message")).or_else(|| said.take())
+                {
+                    CodexAnswer::Found(answer)
+                } else {
+                    // A turn that ended with nothing said. The answer before
+                    // it is another turn's and is not offered in its place.
+                    CodexAnswer::NotYet
+                };
+                said = None;
+            }
+            (Some("event_msg"), Some("turn_aborted")) => {
+                newest = CodexAnswer::Aborted;
+                said = None;
+            }
+            _ => {}
+        }
+    }
+    newest
+}
+
+fn non_blank(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(|v| v.as_str())
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| text.trim_end().to_string())
+}
+
 /// How a Codex call executes, from its name **and its arguments**.
 ///
 /// The escalation flag is what separates the two, and it is read out of
@@ -531,6 +644,82 @@ mod tests {
             .last_turn_end
             .expect("the turn ended");
         assert_eq!(end.marker, at(10));
+    }
+
+    /// The answer is what Codex itself recorded as the turn's last message,
+    /// and it is the newest ended turn's.
+    #[test]
+    fn the_last_answer_is_the_newest_ended_turns() {
+        let CodexAnswer::Found(answer) = last_answer_from_text(TWO_TURNS, false) else {
+            panic!("the rollout holds two answered turns");
+        };
+        assert!(
+            answer.starts_with("I can’t proceed without explicit approval"),
+            "{answer}"
+        );
+        let first: String = TWO_TURNS.lines().take(3).collect::<Vec<_>>().join("\n");
+        let CodexAnswer::Found(answer) = last_answer_from_text(&first, false) else {
+            panic!("the first turn was answered");
+        };
+        assert!(
+            answer.starts_with("I can’t write to /private/tmp"),
+            "{answer}"
+        );
+    }
+
+    /// A turn that failed says so. It is not "no answer", and the answer of
+    /// the turn before it is not offered instead.
+    #[test]
+    fn a_failed_turn_reports_its_error_not_an_older_answer() {
+        let both = format!("{TWO_TURNS}{FAILED_TURN}");
+        let CodexAnswer::TurnFailed(error) = last_answer_from_text(&both, false) else {
+            panic!("the newest turn failed");
+        };
+        assert!(error.contains("no credits remaining"), "{error}");
+    }
+
+    /// A turn a person stopped has no answer, whatever it had said by then.
+    #[test]
+    fn an_aborted_turn_has_no_answer() {
+        assert_eq!(
+            last_answer_from_text(ABORTED_TURN, false),
+            CodexAnswer::Aborted
+        );
+        let both = format!("{TWO_TURNS}{ABORTED_TURN}");
+        assert_eq!(last_answer_from_text(&both, false), CodexAnswer::Aborted);
+    }
+
+    /// When `last_agent_message` is `null` and the turn did say something, the
+    /// last assistant message of **that** turn is the answer.
+    #[test]
+    fn a_null_last_message_falls_back_to_what_the_turn_said() {
+        let turn: Vec<&str> = ABORTED_TURN.lines().take(2).collect();
+        let complete = r#"{"timestamp":"2026-08-24T17:13:53.307Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"01a034c1-8854-7721-965a-36b2d39e2996","last_agent_message":null}}"#;
+        let text = format!("{}\n{complete}", turn.join("\n"));
+        let CodexAnswer::Found(answer) = last_answer_from_text(&text, false) else {
+            panic!("the turn said something");
+        };
+        assert!(answer.starts_with("I'll request permission"), "{answer}");
+
+        // Said in an earlier turn: not this turn's answer.
+        let started = r#"{"timestamp":"2026-08-24T17:14:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"next"}}"#;
+        let silent = format!("{}\n{started}\n{complete}", turn.join("\n"));
+        assert_eq!(last_answer_from_text(&silent, false), CodexAnswer::NotYet);
+    }
+
+    #[test]
+    fn a_rollout_with_no_ended_turn_has_no_answer_yet() {
+        let started: String = TWO_TURNS.lines().take(2).collect::<Vec<_>>().join("\n");
+        assert_eq!(last_answer_from_text(&started, false), CodexAnswer::NotYet);
+        assert_eq!(last_answer_from_text("", false), CodexAnswer::NotYet);
+    }
+
+    #[test]
+    fn a_missing_rollout_is_unreadable() {
+        assert_eq!(
+            read_last_answer(Path::new("/nonexistent/rollout.jsonl")),
+            CodexAnswer::Unreadable
+        );
     }
 
     /// A turn still running has not ended.

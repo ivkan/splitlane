@@ -117,6 +117,9 @@ fn the_rail_keeps_its_published_names() {
         "the event type `surface.rail` is a published name"
     );
     for field in [
+        "\"agent\"",
+        "\"session_id\"",
+        "\"cwd\"",
         "\"status\"",
         "\"source\"",
         "\"tier\"",

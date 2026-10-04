@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
 use splitlane_ipc_client::IpcClient;
 
+mod answer_cmd;
 mod control_cmds;
 mod flow_cmd;
 mod flow_spec;
@@ -67,6 +68,7 @@ const VERBS: &[&str] = &[
     "send",
     "up",
     "wait",
+    "answer",
     "watch",
     "focus",
     "key",
@@ -168,6 +170,32 @@ enum Commands {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
         /// Emit the status envelope as JSON instead of a one-line summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the last answer an agent gave, read from the agent's own record
+    /// of the conversation (Claude Code and Codex), never from scrollback.
+    Answer {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+        /// The `runs_ended` value read before the prompt was sent. The answer
+        /// is refused until a run past it has ended, so the answer of the turn
+        /// before is not taken for this one's.
+        #[arg(long, value_name = "N")]
+        after: Option<u64>,
+        /// Above this many bytes the answer is written to a file and only its
+        /// first lines are printed (default 16384).
+        #[arg(long, value_name = "BYTES")]
+        max_bytes: Option<usize>,
+        /// Write the whole answer to this file as well.
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+        /// Print the answer as written, without the
+        /// `<untrusted_terminal_output>` fence that otherwise wraps it.
+        #[arg(long)]
+        raw: bool,
+        /// Emit `{outcome, surface_id, agent, runs_ended, text, bytes,
+        /// truncated, file}` as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -463,6 +491,24 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
         } => read_cmds::search(client, &target, &pattern, max, human),
         Commands::Ps { json } => read_cmds::ps(client, json),
         Commands::Status { target, json } => read_cmds::status(client, &target, json),
+        Commands::Answer {
+            target,
+            after,
+            max_bytes,
+            out,
+            raw,
+            json,
+        } => answer_cmd::answer(
+            client,
+            &target,
+            answer_cmd::AnswerOptions {
+                after,
+                max_bytes: max_bytes.unwrap_or(answer_cmd::DEFAULT_MAX_BYTES),
+                out,
+                raw,
+                json,
+            },
+        ),
         Commands::New { name, cwd } => {
             control_cmds::new_workspace(client, name.as_deref(), cwd.as_deref())
         }
@@ -733,6 +779,33 @@ mod tests {
         assert_eq!(err.exit_code(), 2);
         let cli = Cli::try_parse_from(["splitlane", "key", "backend", "escape"]).expect("parse");
         assert!(matches!(cli.command, Some(Commands::Key { .. })));
+    }
+
+    #[test]
+    fn answer_parsing() {
+        let cli = Cli::try_parse_from([
+            "splitlane",
+            "answer",
+            "reviewer",
+            "--after",
+            "7",
+            "--max-bytes",
+            "4096",
+            "--raw",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Answer {
+                after: Some(7),
+                max_bytes: Some(4096),
+                raw: true,
+                json: false,
+                ..
+            })
+        ));
+        let err = Cli::try_parse_from(["splitlane", "answer"]).expect_err("usage");
+        assert_eq!(err.exit_code(), 2);
     }
 
     /// The rail modes parse without `--pattern`, carry their own flags, and

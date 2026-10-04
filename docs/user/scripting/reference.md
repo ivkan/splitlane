@@ -20,6 +20,7 @@ like a verb but is not one exits with code `2`.
 | `search <target> <pattern>` | `--max N`, `--human` | `surface.search` | JSON (default) or `line: text` |
 | `ps` | `--json` | `fleet.list` | Table (default) or JSON |
 | `status <target>` | `--json` | `surface.status` | `state (tool)` line (default) or JSON |
+| `answer <target>` | `--after N`, `--max-bytes BYTES`, `--out FILE`, `--raw`, `--json` | `surface.status`, then the agent's own conversation file | The answer, fenced (default), or JSON |
 | `new` | `--name NAME`, `--cwd DIR` | `workspace.create` | JSON |
 | `select <index>` | | `workspace.select` | JSON |
 | `split <h\|horizontal\|v\|vertical>` | `--target SEL` | `surface.split` | JSON |
@@ -109,6 +110,37 @@ configuration files:
   comma-separated words (`starting`, `running`, `waiting`, `idle`, `failed`),
   on any tier and with no confirmation of its own. Prints the same object
   with `outcome: "matched"`. `--any` and `--all` work as above.
+- `answer` prints the agent's answer to the newest prompt, as the Markdown it
+  was written in. An answer to an earlier prompt is never printed in its
+  place. It reads the agent's own record of the conversation - Claude
+  Code's transcript, Codex's rollout file - and never the terminal's
+  scrollback, where a full-screen agent keeps no history. The CLI reads the
+  file itself, using `rail.agent`, `rail.session_id` and `rail.cwd` from
+  `surface.status`, so it must run as the user who owns those files, on the
+  same machine as Splitlane. Running Splitlane on Windows and the CLI inside
+  WSL is not supported.
+
+  | `outcome` | Exit | Meaning |
+  | --- | --- | --- |
+  | `found` | `0` | The answer is printed |
+  | `not_yet` | `1` | No answer yet, or with `--after N` no run past `N` has ended. Wait with `wait --until turn-end` |
+  | `turn_in_flight` | `1` | The status is `running`, `waiting` or `starting`, so the newest answer on disk is the previous turn's |
+  | `no_transcript` | `1` | The session has no conversation on disk; nothing was sent to it yet |
+  | `unreadable` | `1` | The conversation file exists and could not be read |
+  | `turn_aborted` | `1` | A person stopped the newest turn before it answered |
+  | `turn_failed` | `6` | Codex: the turn ended in an error, printed on standard error and in `error` |
+  | `no_reader` | `7` | The agent is not Claude Code or Codex, or the surface has no `rail`. Use `send --report-file` instead |
+
+  The answer is wrapped in `<untrusted_terminal_output ... kind="answer"
+  id="...">`, like `read`: it is text another agent wrote. `--raw` prints it
+  bare. An answer longer than `--max-bytes` (default 16384) is written whole
+  to a file in the temporary directory, and only its first lines are printed;
+  the path is on standard error and in `file`. `--out FILE` writes the whole
+  answer to `FILE` whatever its length. For an outcome other than `found`,
+  nothing is printed on standard output unless `--json` is given.
+
+  This is not `last_result` in `status`, which is a short summary some hooks
+  report and is absent for most agents.
 - `wait --until` and `wait --state` are woken by the `surface.rail` event on
   Linux and macOS and poll `surface.status` every 500 ms on Windows.
 - `wait --timeout` defaults to 300 seconds.
@@ -131,13 +163,13 @@ No match, or several matches where one is required, exits with code `3`.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | Runtime failure: instance unreachable, method refused by a gate, handler error, surface closed, flow failed or aborted. `wait --until turn-end`: no turn was in flight |
+| `1` | Runtime failure: instance unreachable, method refused by a gate, handler error, surface closed, flow failed or aborted. `wait --until turn-end`: no turn was in flight. `answer`: no answer to give yet |
 | `2` | Usage error, including an unknown verb |
 | `3` | Target not found or ambiguous. `watch` and `wait --idle` also use `3` when they cannot open the event stream |
 | `4` | `wait` timed out; a flow `ready` barrier timed out |
 | `5` | `wait --until turn-end`: the agent is waiting for a person |
-| `6` | `wait --until turn-end`: the run failed, or the agent exited |
-| `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`) |
+| `6` | `wait --until turn-end`: the run failed, or the agent exited. `answer`: the turn ended in an error |
+| `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`). `answer`: no reader for that agent's conversation |
 | `130` | `wait --idle` interrupted with `Ctrl-C` |
 
 ## Gates
@@ -146,7 +178,7 @@ The environment variables are read from the Splitlane process.
 
 | Operation | Allowed when |
 | --- | --- |
-| Reads: `ls`, `read`, `search`, `ps`, `status`, `watch`, `wait` | Always |
+| Reads: `ls`, `read`, `search`, `ps`, `status`, `watch`, `wait`, `answer` | Always |
 | `new`, `select`, `focus`, `split` without spawn fields | Always |
 | `send`, `key` (`surface.send_text`, `surface.send_keystroke`) | `SPLITLANE_IPC_SCRIPTING=1` or `ai_unrestricted: true` |
 | `app.dispatch_action`, `surface.send_answer` | `SPLITLANE_IPC_SCRIPTING=1` |
@@ -260,6 +292,9 @@ Prefer `rail` when deciding whether a turn is over.
 | `runs_ended` | How many runs have ended on this surface since it was opened. Only grows; resets when Splitlane restarts |
 | `last_outcome` | `finished` or `failed` for the last ended run, `null` before the first |
 | `turn_marker` | An id of the newest turn end in the agent's own file (Claude Code and Codex), otherwise `null` |
+| `agent` | The agent's binary name (`claude`, `codex`, ...), when known |
+| `session_id` | The id of the agent's own session, when Splitlane knows it. `null` for a terminal that is not an agent session |
+| `cwd` | The directory the session was started in. `null` for a terminal that is not an agent session |
 | `exited` | `true` when the agent's exit was reported by its wrapper or the pane's process has ended |
 | `message` | The question being asked while `status` is `waiting`, when a hook reported one |
 
@@ -453,7 +488,7 @@ means all.
 
 `ts` is milliseconds since the Unix epoch. `types` accepts the seven `ai.*`
 names, `surface_changed` and `surface.rail`; anything else is rejected with
-`-32602`. `thread_id` is the agent session's internal id, or `null` for a
-terminal that is not an agent session. Each
+`-32602`. `thread_id` is the internal id of the surface's row in the rail,
+or `null` when it has none. Each
 subscriber queues up to 1024 events. After `dropped`, re-read state with
 `splitlane ps --json` or `splitlane status <target> --json`.

@@ -592,6 +592,50 @@ status is the hook session's, its count is kept per surface (the session entry
 is dropped a few seconds after a turn ends), and its tier is `T2`. A shell no
 hook has reported from has `rail: null`.
 
+**`wait --until turn-end` refuses a surface on the lowest tier instead of
+waiting on it.** Nothing that speaks for such a surface can say a turn ended,
+so the only thing a wait could return on is output stopping - the same reading
+the rail refuses for itself. It gives the surface ten seconds first, because a
+session's first hook frame arrives with its first prompt and a wait issued
+right after a prompt can be looking at a surface that has not been spoken for
+yet. A surface that had a better source earlier in the same wait and lost it
+is refused at once. And waiting for a person is returned to the caller with
+its own exit code and never waited through by default: it is the middle of a
+run, and the one thing a script must not do with it is carry on as if the
+agent had answered.
+
+**The last answer is read by the CLI, from the agent's own file, never from
+scrollback.** `surface.status` says where the conversation is (`rail.agent`,
+`rail.session_id`, `rail.cwd`) and `splitlane answer` opens it with the same
+reader "Copy the last answer" uses. The server does not read it: a transcript
+can be tens of megabytes, the server answers on the thread that draws the
+window, and its dispatcher gives a request five seconds. Scrollback is not a
+fallback, because a full-screen agent keeps none - an answer guessed from the
+current screen is a statement about another session with nothing behind it.
+An agent this build has no reader for gets a refusal that says so.
+
+**`answer` reads the answer to the newest prompt, not the last answer in the
+file**, and the difference was found on a live session. "Copy the last answer"
+wants the last answer the session ever gave. A script that sent a prompt and
+waited for the turn wants the answer to that prompt, and the two differ exactly
+when the turn produced none: a person pressed Esc while the agent was asking a
+question, the count of ended runs moved, and the read handed back the previous
+turn's answer as this one's. So the script's read
+(`claude_sessions::read_newest_turn_answer`) drops what it has collected at
+every prompt a person wrote and at every interrupt, and stops widening its
+window once it has seen the newest prompt. A tool result, a local command, a
+background task's notification and a subagent's record are `user` records too,
+and none of them is a person asking something new.
+
+Codex gets a reader of its own (`codex_state::read_last_answer`). A turn's
+answer is `task_complete.last_agent_message`; when that is `null`, the last
+assistant message of the **same** turn stands in, and a message from an
+earlier turn never does. A turn that ended in an error reports the error, and
+an aborted turn reports that it was aborted: in both cases the answer before
+it belongs to another turn and offering it would be answering a different
+question. While the rail says a turn is running or waiting, no answer is
+offered at all, for the same reason.
+
 
 ## `Thread::finished_unseen`, the Activity chip, and the popover
 

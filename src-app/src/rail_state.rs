@@ -138,6 +138,14 @@ pub struct RailSnapshot {
     pub turn_marker: Option<String>,
     pub exited: bool,
     pub message: Option<String>,
+    /// Where the agent's own record of the conversation is, for a client that
+    /// reads the last answer from it: the agent's binary name, the session id
+    /// and the directory the session was started in. The client reads the
+    /// file, not the server - a transcript can be tens of megabytes, and the
+    /// server answers requests on the thread that draws the window.
+    pub agent: Option<&'static str>,
+    pub session_id: Option<String>,
+    pub cwd: Option<String>,
 }
 
 impl RailSnapshot {
@@ -156,6 +164,9 @@ impl RailSnapshot {
                 .message
                 .as_deref()
                 .filter(|_| self.status == ThreadStatus::WaitingForInput),
+            "agent": self.agent,
+            "session_id": self.session_id,
+            "cwd": self.cwd,
         })
     }
 }
@@ -327,6 +338,9 @@ mod tests {
             turn_marker: None,
             exited: false,
             message: None,
+            agent: None,
+            session_id: None,
+            cwd: None,
         }
     }
 

@@ -198,14 +198,65 @@ pub enum LastAnswer {
 ///
 /// Blocking I/O - call from inside `smol::unblock`.
 pub fn read_last_answer(cwd: &str, session_id: &str) -> LastAnswer {
+    whole_session(read_answer(cwd, session_id, AnswerScope::WholeSession))
+}
+
+fn whole_session(answer: NewestTurnAnswer) -> LastAnswer {
+    match answer {
+        NewestTurnAnswer::Found(answer) => LastAnswer::Found(answer),
+        // Not reachable over the whole session, which never stops at a prompt;
+        // mapped rather than asserted.
+        NewestTurnAnswer::NotYet | NewestTurnAnswer::Interrupted => LastAnswer::NotYet,
+        NewestTurnAnswer::NoTranscript => LastAnswer::NoTranscript,
+        NewestTurnAnswer::Unreadable => LastAnswer::Unreadable,
+    }
+}
+
+/// What a look for the answer to the session's **newest prompt** found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewestTurnAnswer {
+    Found(String),
+    /// The person stopped the turn, and it had not answered.
+    Interrupted,
+    /// The newest prompt has no answer after it.
+    NotYet,
+    NoTranscript,
+    Unreadable,
+}
+
+/// The answer to the newest prompt in the session, and nothing older.
+///
+/// [`read_last_answer`] returns the last answer the session ever gave, which
+/// is what a person copying it from a menu wants. A script that sent a prompt
+/// and waited for the turn wants the answer to **that** prompt, and the two
+/// differ exactly when the turn produced none: a turn stopped with Esc leaves
+/// the answer before it as the newest one on disk. Measured on a live session:
+/// a turn interrupted at a question, then a read that handed back the answer
+/// of the turn before as if it were this one's.
+///
+/// Blocking I/O.
+pub fn read_newest_turn_answer(cwd: &str, session_id: &str) -> NewestTurnAnswer {
+    read_answer(cwd, session_id, AnswerScope::NewestTurn)
+}
+
+/// How far back an answer may come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnswerScope {
+    /// The last answer anywhere in the session.
+    WholeSession,
+    /// Only an answer written after the newest prompt.
+    NewestTurn,
+}
+
+fn read_answer(cwd: &str, session_id: &str, scope: AnswerScope) -> NewestTurnAnswer {
     if !crate::agent_sessions::is_valid_session_id(session_id) {
-        return LastAnswer::NoTranscript;
+        return NewestTurnAnswer::NoTranscript;
     }
     let composed = project_dir_for_cwd(cwd).map(|dir| dir.join(format!("{session_id}.jsonl")));
     if let Some(path) = composed.as_deref()
         && path.is_file()
     {
-        return read_last_answer_from_tail(path);
+        return read_answer_from_tail(path, scope);
     }
     let found = crate::claude_pid_state::claude_config_dir()
         .and_then(|root| find_transcript_in(&root.join("projects"), session_id));
@@ -215,7 +266,7 @@ pub fn read_last_answer(cwd: &str, session_id: &str) -> LastAnswer {
                 "last answer: no transcript at {composed:?}; found {} by session id",
                 path.display()
             );
-            read_last_answer_from_tail(&path)
+            read_answer_from_tail(&path, scope)
         }
         None => {
             // The ordinary case for a session that has not been sent anything
@@ -224,7 +275,7 @@ pub fn read_last_answer(cwd: &str, session_id: &str) -> LastAnswer {
                 "last answer: no transcript for session {session_id} at {composed:?} \
                  or in any other project"
             );
-            LastAnswer::NoTranscript
+            NewestTurnAnswer::NoTranscript
         }
     }
 }
@@ -266,32 +317,32 @@ fn find_transcript_in(projects: &Path, session_id: &str) -> Option<PathBuf> {
 /// returned: an agent that ends on a tool call has not finished answering.
 ///
 /// Blocking I/O - call from inside `smol::unblock`.
-fn read_last_answer_from_tail(path: &Path) -> LastAnswer {
+fn read_answer_from_tail(path: &Path, scope: AnswerScope) -> NewestTurnAnswer {
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             log::debug!("last answer: no transcript at {}", path.display());
-            return LastAnswer::NoTranscript;
+            return NewestTurnAnswer::NoTranscript;
         }
         Err(e) => {
             log::warn!("last answer: cannot open {}: {e}", path.display());
-            return LastAnswer::Unreadable;
+            return NewestTurnAnswer::Unreadable;
         }
     };
     let len = match file.metadata() {
         Ok(meta) => meta.len(),
         Err(e) => {
             log::warn!("last answer: cannot stat {}: {e}", path.display());
-            return LastAnswer::Unreadable;
+            return NewestTurnAnswer::Unreadable;
         }
     };
     let mut window = ANSWER_TAIL_BYTES;
     loop {
-        let scan = match scan_tail_for_answer(&mut file, len, window) {
+        let scan = match scan_tail_for_answer(&mut file, len, window, scope) {
             Ok(scan) => scan,
             Err(e) => {
                 log::warn!("last answer: cannot read {}: {e}", path.display());
-                return LastAnswer::Unreadable;
+                return NewestTurnAnswer::Unreadable;
             }
         };
         log::debug!(
@@ -308,13 +359,27 @@ fn read_last_answer_from_tail(path: &Path) -> LastAnswer {
             },
         );
         if let Some(answer) = scan.answer {
-            return LastAnswer::Found(answer);
+            return NewestTurnAnswer::Found(answer);
+        }
+        if scan.interrupted {
+            return NewestTurnAnswer::Interrupted;
+        }
+        // The newest prompt is in the window with nothing after it. A wider
+        // window could only find answers to older prompts.
+        if scan.prompt_seen {
+            return NewestTurnAnswer::NotYet;
         }
         if scan.bytes >= len || window >= ANSWER_TAIL_CEILING {
-            return LastAnswer::NotYet;
+            return NewestTurnAnswer::NotYet;
         }
         window = (window * 4).min(ANSWER_TAIL_CEILING);
     }
+}
+
+/// The whole-session read over one file, as the tests of that read call it.
+#[cfg(test)]
+fn read_last_answer_from_tail(path: &Path) -> LastAnswer {
+    whole_session(read_answer_from_tail(path, AnswerScope::WholeSession))
 }
 
 /// One window's worth of [`read_last_answer_from_tail`], with what it saw.
@@ -323,6 +388,54 @@ struct AnswerScan {
     bytes: u64,
     records: usize,
     assistant_records: usize,
+    /// [`AnswerScope::NewestTurn`] only: a person's prompt is in the window.
+    prompt_seen: bool,
+    /// [`AnswerScope::NewestTurn`] only: the newest thing after that prompt is
+    /// the person stopping the turn.
+    interrupted: bool,
+}
+
+/// What a `user` record means for "the answer to the newest prompt".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersonMark {
+    /// A prompt: whatever was answered before it answers something else.
+    Prompt,
+    /// The person pressed Esc: what the turn had said so far is not its answer.
+    Interrupt,
+}
+
+/// Whether this record is a person's prompt or their interrupt.
+///
+/// `None` for everything else a `user` record can be: a tool result, a
+/// subagent's record, a local command and its output, and the CLI's own
+/// bookkeeping (`isMeta`, a background task's notification). None of those is
+/// a person asking something new.
+fn person_mark(value: &serde_json::Value, raw_line: &str) -> Option<PersonMark> {
+    if value.get("type").and_then(|v| v.as_str()) != Some("user") {
+        return None;
+    }
+    if value.get("isSidechain").and_then(|v| v.as_bool()) == Some(true)
+        || value.get("isMeta").and_then(|v| v.as_bool()) == Some(true)
+    {
+        return None;
+    }
+    if raw_line.contains(TASK_NOTIFICATION_TAG)
+        || LOCAL_COMMAND_TAGS.iter().any(|tag| raw_line.contains(tag))
+    {
+        return None;
+    }
+    let content = value.get("message")?.get("content")?;
+    if let Some(text) = content.as_str() {
+        return (!text.trim().is_empty()).then_some(PersonMark::Prompt);
+    }
+    let blocks = content.as_array()?;
+    if blocks.iter().any(is_interrupt_block) {
+        return Some(PersonMark::Interrupt);
+    }
+    blocks
+        .iter()
+        .any(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
+        .then_some(PersonMark::Prompt)
 }
 
 /// Read the last `window` bytes of a `len`-byte transcript for the newest
@@ -339,7 +452,12 @@ struct AnswerScan {
 /// that result scrolled out of the window. Reading raw lines makes the dropped fragment inert, and
 /// the window itself is the bound a line cap used to provide: nothing here can
 /// allocate more than `window` for a line, however an agent wrote the file.
-fn scan_tail_for_answer(file: &mut fs::File, len: u64, window: u64) -> std::io::Result<AnswerScan> {
+fn scan_tail_for_answer(
+    file: &mut fs::File,
+    len: u64,
+    window: u64,
+    scope: AnswerScope,
+) -> std::io::Result<AnswerScan> {
     use std::io::{Seek, SeekFrom};
     let start = len.saturating_sub(window);
     // Opened one byte early, so that the fragment dropped below is exactly the
@@ -359,6 +477,8 @@ fn scan_tail_for_answer(file: &mut fs::File, len: u64, window: u64) -> std::io::
         bytes: len - start,
         records: 0,
         assistant_records: 0,
+        prompt_seen: false,
+        interrupted: false,
     };
     loop {
         line.clear();
@@ -372,8 +492,25 @@ fn scan_tail_for_answer(file: &mut fs::File, len: u64, window: u64) -> std::io::
         if value.get("type").and_then(|v| v.as_str()) == Some("assistant") {
             scan.assistant_records += 1;
         }
+        if scope == AnswerScope::NewestTurn {
+            // The line parsed as JSON, so it is UTF-8.
+            let raw = std::str::from_utf8(line.trim_ascii()).unwrap_or_default();
+            match person_mark(&value, raw) {
+                Some(PersonMark::Prompt) => {
+                    scan.answer = None;
+                    scan.prompt_seen = true;
+                    scan.interrupted = false;
+                }
+                Some(PersonMark::Interrupt) => {
+                    scan.answer = None;
+                    scan.interrupted = true;
+                }
+                None => {}
+            }
+        }
         if let Some(answer) = answer_text_of(&value) {
             scan.answer = Some(answer);
+            scan.interrupted = false;
         }
     }
     Ok(scan)
@@ -1948,6 +2085,119 @@ mod answer_tests {
             read_last_answer_from_tail(&path),
             LastAnswer::Found("before the tool calls".into())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `user` and `assistant` records of a session Claude Code 2.1.270
+    /// wrote on a developer machine, cut down to the fields the readers use:
+    /// an answered turn, a turn that ran a tool and answered, and a turn the
+    /// person stopped with Esc while the agent was asking a question.
+    const THREE_TURNS: &str =
+        include_str!("../tests/fixtures/claude/transcript-interrupted-turn.jsonl");
+
+    fn newest_turn(name: &str, body: &str) -> NewestTurnAnswer {
+        let dir = scratch(name);
+        let path = dir.join("t.jsonl");
+        std::fs::write(&path, body).expect("write");
+        let found = read_answer_from_tail(&path, AnswerScope::NewestTurn);
+        let _ = std::fs::remove_dir_all(&dir);
+        found
+    }
+
+    fn first_records(count: usize) -> String {
+        THREE_TURNS
+            .lines()
+            .take(count)
+            .map(|line| format!("{line}\n"))
+            .collect()
+    }
+
+    /// The case that was measured live: the person stopped the newest turn
+    /// before it answered. The answer on disk is the turn before's, and a
+    /// script that asked about **this** turn must not be handed it.
+    #[test]
+    fn an_interrupted_turn_does_not_hand_back_the_answer_before_it() {
+        assert_eq!(
+            newest_turn("interrupted", THREE_TURNS),
+            NewestTurnAnswer::Interrupted
+        );
+        // The whole-session read still finds the older answer, which is what
+        // "copy the last answer" is for.
+        let dir = scratch("interrupted-whole");
+        let path = dir.join("t.jsonl");
+        std::fs::write(&path, THREE_TURNS).expect("write");
+        assert!(matches!(
+            read_last_answer_from_tail(&path),
+            LastAnswer::Found(answer) if answer.starts_with("The command ran successfully")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An answered turn is found, across the tool call inside it: a tool
+    /// result is a `user` record and is not a new prompt.
+    #[test]
+    fn the_newest_turns_answer_is_found_across_a_tool_call() {
+        assert_eq!(
+            newest_turn("one", &first_records(2)),
+            NewestTurnAnswer::Found("probe one".into())
+        );
+        assert!(matches!(
+            newest_turn("two", &first_records(6)),
+            NewestTurnAnswer::Found(answer) if answer.starts_with("The command ran successfully")
+        ));
+    }
+
+    /// A prompt with nothing after it, or with only a tool call after it, has
+    /// no answer yet - whatever was answered before it.
+    #[test]
+    fn a_prompt_without_an_answer_is_not_yet() {
+        assert_eq!(
+            newest_turn("asked", &first_records(3)),
+            NewestTurnAnswer::NotYet
+        );
+        assert_eq!(
+            newest_turn("calling", &first_records(5)),
+            NewestTurnAnswer::NotYet
+        );
+        assert_eq!(
+            newest_turn("asking", &first_records(8)),
+            NewestTurnAnswer::NotYet
+        );
+    }
+
+    /// The CLI's own `user` records are not a person asking something new:
+    /// they leave the standing answer alone.
+    #[test]
+    fn the_clis_own_user_records_are_not_prompts() {
+        let answered = first_records(2);
+        for own in [
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"Caveat: the messages below were generated by the user while running local commands."}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<command-name>/cost</command-name>"}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<task-notification><task-id>a1</task-id></task-notification>"}}"#,
+            r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"a subagent's prompt"}}"#,
+        ] {
+            assert_eq!(
+                newest_turn("own", &format!("{answered}{own}\n")),
+                NewestTurnAnswer::Found("probe one".into()),
+                "{own}"
+            );
+        }
+    }
+
+    /// The same file gives the state probe its turn-end marker: the closing
+    /// record of the last turn that finished, not the interrupt after it.
+    #[test]
+    fn the_real_transcripts_turn_end_marker_is_the_last_finished_turns() {
+        let dir = scratch("marker");
+        let path = dir.join("t.jsonl");
+        std::fs::write(&path, THREE_TURNS).expect("write");
+        let now = crate::agent_sessions::last_activity_secs_from_iso("2026-10-04T16:14:20.000Z");
+        let probe = probe_state_from_tail(&path, now).expect("probe");
+        assert_eq!(
+            probe.last_turn_end.map(|end| end.marker).as_deref(),
+            Some("824c0234-da56-41d7-950e-203bf4521610")
+        );
+        assert_eq!(probe.open_turn, None, "the interrupt closed the turn");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

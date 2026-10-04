@@ -1204,7 +1204,7 @@ fn neutralize_sentinel(body: &str) -> String {
 /// on BOTH tags plus body sentinel neutralization (defense in depth). The pane
 /// content cannot emit a matching `</untrusted_terminal_output id="…">` to break
 /// out because it cannot predict the id.
-fn wrap_untrusted(header_attrs: &str, body: &str) -> String {
+pub(crate) fn wrap_untrusted(header_attrs: &str, body: &str) -> String {
     let id = fence_id();
     let body = neutralize_sentinel(body);
     format!(
@@ -1357,6 +1357,9 @@ fn thread_rail_snapshot(
         turn_marker: thread.rail.turn_marker.clone(),
         exited: pane_exited || thread.rail.agent_exited,
         message: thread.rail.waiting_message.clone(),
+        agent: thread.terminal_agent.map(|agent| agent.binary()),
+        session_id: thread.session_id.clone(),
+        cwd: Some(thread.cwd.clone()),
     })
 }
 
@@ -1388,6 +1391,11 @@ fn hooked_rail_snapshot(
         // report that it exited.
         exited: pane_exited || (record.is_some_and(|r| r.agent_exited) && !working),
         message: session.and_then(|s| s.message.clone()),
+        // No session record: nothing here knows which conversation file is
+        // this pane's.
+        agent: session.map(|s| s.tool.binary()),
+        session_id: None,
+        cwd: None,
     })
 }
 
@@ -6600,6 +6608,9 @@ mod tests {
             turn_marker: Some("m-1".to_string()),
             exited: false,
             message: None,
+            agent: Some("claude"),
+            session_id: Some("0f8fad5b-d9cb-469f-a165-70867728950e".to_string()),
+            cwd: Some("/work/app".to_string()),
         }
     }
 
@@ -6643,6 +6654,9 @@ mod tests {
                 "turn_marker": "m-1",
                 "exited": false,
                 "message": null,
+                "agent": "claude",
+                "session_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+                "cwd": "/work/app",
             }))
         );
 
