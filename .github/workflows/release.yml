@@ -1170,6 +1170,32 @@ jobs:
           version="${TAG#v}"
           bash scripts/create-dmg.sh --version "$version" --arch "$ARCH"
 
+      # ─── Sign + notarize + staple the .dmg itself ────────────────────
+      # The app inside is already signed, notarized and stapled. The image
+      # around it was not, so it carried no ticket of its own and "signed
+      # and notarized" was true of the contents but not of the file people
+      # download. Runs before staging because stapling rewrites the file and
+      # the checksum must be taken after.
+      #
+      # Same failure policy as the app's notarization: hard-required on a
+      # tag push, tolerated in a dry run so a notary outage still leaves the
+      # other artifacts to inspect.
+      - name: Sign + notarize + staple macOS .dmg
+        if: runner.os == 'macOS' && steps.macos_signing.outputs.signing_available == 'true'
+        continue-on-error: ${{ env.RELEASE_MODE == 'dry-run' }}
+        env:
+          APPLE_DEVELOPER_CERT_P12: ${{ secrets.APPLE_DEVELOPER_CERT_P12 }}
+          APPLE_DEVELOPER_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAG: ${{ env.RELEASE_TAG }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          bash scripts/sign-notarize-dmg.sh "dist/splitlane-${version}-${ARCH}-apple-darwin.dmg"
+
       # Stage the .dmg + SHA-256 sibling into release-assets/ so the
       # downstream `release` job picks it up alongside the Linux-leg
       # artifacts. Mirrors the sha256 pattern used by the tar.gz step.
