@@ -410,31 +410,55 @@ enum PersonMark {
 /// subagent's record, a local command and its output, and the CLI's own
 /// bookkeeping (`isMeta`, a background task's notification). None of those is
 /// a person asking something new.
-fn person_mark(value: &serde_json::Value, raw_line: &str) -> Option<PersonMark> {
+///
+/// **The CLI's own records are told by how their text begins, not by what it
+/// contains.** A person can quote `<command-name>` in a prompt - asking what a
+/// line of their transcript means is an ordinary question - and a match
+/// anywhere in the line would drop that prompt and hand back the answer
+/// before it. Over a thousand such records in a local corpus, every one the
+/// CLI wrote starts with its tag.
+fn person_mark(value: &serde_json::Value) -> Option<PersonMark> {
     if value.get("type").and_then(|v| v.as_str()) != Some("user") {
         return None;
     }
     if value.get("isSidechain").and_then(|v| v.as_bool()) == Some(true)
         || value.get("isMeta").and_then(|v| v.as_bool()) == Some(true)
-    {
-        return None;
-    }
-    if raw_line.contains(TASK_NOTIFICATION_TAG)
-        || LOCAL_COMMAND_TAGS.iter().any(|tag| raw_line.contains(tag))
+        // A tool's result, in whatever shape its content takes - one that
+        // returns an image carries an `image` block beside the result.
+        || value.get("toolUseResult").is_some()
     {
         return None;
     }
     let content = value.get("message")?.get("content")?;
+    let written_by_the_cli = |text: &str| {
+        let text = text.trim_start();
+        text.starts_with(TASK_NOTIFICATION_TAG)
+            || LOCAL_COMMAND_TAGS.iter().any(|tag| text.starts_with(tag))
+    };
     if let Some(text) = content.as_str() {
-        return (!text.trim().is_empty()).then_some(PersonMark::Prompt);
+        return (!text.trim().is_empty() && !written_by_the_cli(text))
+            .then_some(PersonMark::Prompt);
     }
     let blocks = content.as_array()?;
     if blocks.iter().any(is_interrupt_block) {
         return Some(PersonMark::Interrupt);
     }
+    fn kind(block: &serde_json::Value) -> Option<&str> {
+        block.get("type").and_then(|v| v.as_str())
+    }
+    if blocks
+        .iter()
+        .filter(|block| kind(block) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+        .any(written_by_the_cli)
+    {
+        return None;
+    }
+    // Anything a person can attach is a prompt - text, an image alone, a
+    // document. Only a record made of tool results is not.
     blocks
         .iter()
-        .any(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
+        .any(|block| kind(block).is_some_and(|kind| kind != "tool_result"))
         .then_some(PersonMark::Prompt)
 }
 
@@ -493,9 +517,7 @@ fn scan_tail_for_answer(
             scan.assistant_records += 1;
         }
         if scope == AnswerScope::NewestTurn {
-            // The line parsed as JSON, so it is UTF-8.
-            let raw = std::str::from_utf8(line.trim_ascii()).unwrap_or_default();
-            match person_mark(&value, raw) {
+            match person_mark(&value) {
                 Some(PersonMark::Prompt) => {
                     scan.answer = None;
                     scan.prompt_seen = true;
@@ -2182,6 +2204,32 @@ mod answer_tests {
                 "{own}"
             );
         }
+    }
+
+    /// A person may quote the CLI's own tags, and may send a picture with no
+    /// words. Both are prompts: dropping either would hand back the answer to
+    /// the prompt before.
+    #[test]
+    fn a_prompt_that_quotes_a_tag_or_carries_only_an_image_is_still_a_prompt() {
+        let answered = first_records(2);
+        for prompt in [
+            r#"{"type":"user","message":{"role":"user","content":"what does <command-name>/cost</command-name> mean in my transcript?"}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"why is there a <task-notification> record here?"}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"text","text":"what is this?"}]}}"#,
+        ] {
+            assert_eq!(
+                newest_turn("quoted", &format!("{answered}{prompt}\n")),
+                NewestTurnAnswer::NotYet,
+                "{prompt}"
+            );
+        }
+        // A tool that returns an image is a tool result, not a prompt.
+        let tool_image = r#"{"type":"user","toolUseResult":{"type":"image"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}}"#;
+        assert_eq!(
+            newest_turn("tool-image", &format!("{answered}{tool_image}\n")),
+            NewestTurnAnswer::Found("probe one".into())
+        );
     }
 
     /// The same file gives the state probe its turn-end marker: the closing

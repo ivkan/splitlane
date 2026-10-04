@@ -186,7 +186,12 @@ fn read_turn_end(
     now: i64,
 ) -> Option<(u64, Option<crate::rail_state::TurnEnd>)> {
     let state_file = state_file?;
-    let len = state_file_len(state_file)?;
+    let Some(len) = state_file_len(state_file) else {
+        // Not written yet: a session nothing has been sent to. That is a look
+        // at the file all the same, and the one that lets its first turn be
+        // counted rather than taken for history.
+        return (known_len != Some(0)).then_some((0, None));
+    };
     if known_len == Some(len) {
         return None;
     }

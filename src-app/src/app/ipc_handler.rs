@@ -1604,6 +1604,16 @@ impl SplitlaneApp {
         self.event_bus.broadcast(method, surface_id, &event);
     }
 
+    /// An agent has started, or is working, in a terminal whose earlier agent
+    /// was reported gone. Without this the report stood for the life of the
+    /// pane: the next agent started there read as exited as soon as its
+    /// session entry was dropped at the end of a turn.
+    fn hooked_agent_is_back(&mut self, surface_id: Option<u64>) {
+        if let Some(record) = surface_id.and_then(|sid| self.hook_rail.get_mut(&sid)) {
+            record.agent_exited = false;
+        }
+    }
+
     /// What the rail says about one terminal, or `None` for a plain shell.
     ///
     /// `thread_id` overrides the view's own binding for a surface the session
@@ -3678,6 +3688,7 @@ impl SplitlaneApp {
                     // so this is a shell someone typed an agent into. There is
                     // no surface record to carry a session id.
                     let _ = (pid, tool, ws);
+                    self.hooked_agent_is_back(_explicit_surface_id);
                     serde_json::json!({"registered": true})
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     // An agent has started in this pane, whatever exited
@@ -3703,6 +3714,7 @@ impl SplitlaneApp {
                     return serde_json::json!({"error": "Unknown tool"});
                 };
                 let explicit_surface_id = self.validated_frame_surface_id(params, cx);
+                self.hooked_agent_is_back(explicit_surface_id);
 
                 if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
                     let key = upsert_session_state(
@@ -3961,10 +3973,10 @@ impl SplitlaneApp {
                     // a few seconds from now. A frame that names no pane has
                     // nothing to be counted against.
                     if let Some(surface_id) = surface_id {
-                        self.hook_rail
-                            .entry(surface_id)
-                            .or_default()
-                            .record_run_end(crate::rail_state::RunOutcome::Finished);
+                        let record = self.hook_rail.entry(surface_id).or_default();
+                        record.record_run_end(crate::rail_state::RunOutcome::Finished);
+                        // An agent that ends a turn is an agent that is there.
+                        record.agent_exited = false;
                     }
                     cx.notify();
                     // A completion is information, not an

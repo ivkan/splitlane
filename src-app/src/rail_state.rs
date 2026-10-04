@@ -232,9 +232,11 @@ pub struct TurnEndWatch {
     pub current: Option<TurnEnd>,
     /// The marker already accounted for in `runs_ended`.
     counted: Option<String>,
-    /// Whether `counted` has been taken at all. A surface seen for the first
-    /// time adopts whatever its file already holds: a turn that ended before
-    /// this process was watching is not a run that ended now.
+    /// Whether the file has been looked at. The first look adopts whatever
+    /// the file already holds: a turn that ended before this process was
+    /// watching is not a run that ended now. It is the first **look** that
+    /// primes, not the first marker - a fresh session has no marker to see,
+    /// and waiting for one would adopt its first turn instead of counting it.
     primed: bool,
     /// When a watched run last ended. A marker that moves just after belongs
     /// to that run - the status can settle a moment before the record lands.
@@ -249,6 +251,10 @@ impl TurnEndWatch {
     /// it means "not read" or "not in the window", never "there is none".
     pub fn observe(&mut self, file_len: u64, end: Option<TurnEnd>) {
         self.file_len = Some(file_len);
+        if !self.primed {
+            self.primed = true;
+            self.counted = end.as_ref().map(|end| end.marker.clone());
+        }
         if end.is_some() {
             self.current = end;
         }
@@ -277,11 +283,6 @@ impl TurnEndWatch {
         let Some(marker) = self.current.as_ref().map(|end| end.marker.clone()) else {
             return false;
         };
-        if !self.primed {
-            self.primed = true;
-            self.counted = Some(marker);
-            return false;
-        }
         if self.counted.as_deref() == Some(marker.as_str()) {
             self.pending = None;
             return false;
@@ -516,6 +517,22 @@ mod tests {
         let after = t0 + Duration::from_secs(1);
         assert!(!late.unseen_turn_ended(ThreadStatus::Idle, after, CONFIRM));
         assert!(!late.unseen_turn_ended(ThreadStatus::Idle, after + CONFIRM * 2, CONFIRM));
+    }
+
+    /// A session with nothing on disk yet is primed by that first look, so
+    /// its first turn is counted even when the pass never saw it running.
+    /// Priming on the first marker instead adopted that turn as history.
+    #[test]
+    fn the_first_turn_of_a_fresh_session_is_counted() {
+        let mut watch = TurnEndWatch::default();
+        let t0 = Instant::now();
+        watch.observe(0, None);
+        assert!(!watch.unseen_turn_ended(ThreadStatus::Idle, t0, CONFIRM));
+
+        watch.observe(40, end("first"));
+        let seen = t0 + Duration::from_secs(4);
+        assert!(!watch.unseen_turn_ended(ThreadStatus::Idle, seen, CONFIRM));
+        assert!(watch.unseen_turn_ended(ThreadStatus::Idle, seen + CONFIRM, CONFIRM));
     }
 
     /// A read that found no marker says nothing about the one already known.
