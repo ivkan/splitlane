@@ -103,6 +103,43 @@ fn ipc_workspace_methods_survive_the_container_merge() {
 }
 
 #[test]
+fn the_rail_keeps_its_published_names() {
+    // The object scripts read to learn what a surface is doing, and the event
+    // they subscribe to instead of polling for it.
+    let handler = read("src-app/src/app/ipc_handler.rs");
+    assert!(
+        handler.contains("value[\"rail\"]"),
+        "`surface.status` must keep answering under the key `rail`"
+    );
+    let rail = read("src-app/src/rail_state.rs");
+    assert!(
+        rail.contains("\"surface.rail\""),
+        "the event type `surface.rail` is a published name"
+    );
+    for field in [
+        "\"status\"",
+        "\"source\"",
+        "\"tier\"",
+        "\"runs_ended\"",
+        "\"last_outcome\"",
+        "\"turn_marker\"",
+        "\"exited\"",
+        "\"message\"",
+    ] {
+        assert!(rail.contains(field), "`rail` lost its field {field}");
+    }
+    for word in [
+        "\"starting\"",
+        "\"running\"",
+        "\"waiting\"",
+        "\"idle\"",
+        "\"failed\"",
+    ] {
+        assert!(rail.contains(word), "the status word {word} is published");
+    }
+}
+
+#[test]
 fn mcp_bridge_tool_names_keep_reading_pane_as_surface() {
     let tools = read("crates/splitlane-mcp/src/tools.rs");
     for tool in ["list_panes", "read_pane", "search_pane"] {

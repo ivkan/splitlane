@@ -475,6 +475,11 @@ pub struct Thread {
     /// decides that per binary, and a second copy of that list in the app is a
     /// copy that drifts. The surface answers for itself.
     pub hook_has_spoken: bool,
+    /// What `surface.status` and the `surface.rail` event say about this
+    /// surface beyond its status word: how many runs have ended, how the last
+    /// one ended, the agent's own turn marker. Transient, like the two fields
+    /// above it.
+    pub rail: crate::rail_state::RailRecord,
 }
 
 impl Thread {
@@ -506,6 +511,7 @@ impl Thread {
             finished_unseen: None,
             detector_read_at: None,
             hook_has_spoken: false,
+            rail: crate::rail_state::RailRecord::default(),
         }
     }
 
@@ -579,6 +585,7 @@ impl Thread {
             finished_unseen: None,
             detector_read_at: None,
             hook_has_spoken: false,
+            rail: crate::rail_state::RailRecord::default(),
         }
     }
 }
@@ -763,6 +770,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         finished_unseen: None,
         detector_read_at: None,
         hook_has_spoken: false,
+        rail: crate::rail_state::RailRecord::default(),
     })
 }
 

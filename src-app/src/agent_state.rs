@@ -231,6 +231,13 @@ pub(crate) struct TranscriptProbe {
     /// So the flag exists to make the reader admit what it missed instead of
     /// inventing a state from it.
     pub(crate) incomplete: bool,
+    /// The newest turn end the window records, or `None` when it holds none.
+    ///
+    /// Not a state signal and nothing in [`classify`] looks at it. It rides
+    /// here for the reason the spend does: the read is already paid for. It is
+    /// the second, independent sign that a turn ended, for a turn too short
+    /// for a two-second sample to catch running.
+    pub(crate) last_turn_end: Option<crate::rail_state::TurnEnd>,
 }
 
 impl TranscriptProbe {
@@ -639,6 +646,7 @@ mod tests {
             open_turn: None,
             errored: false,
             incomplete: false,
+            last_turn_end: None,
         }
     }
 

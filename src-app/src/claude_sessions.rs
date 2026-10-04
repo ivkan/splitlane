@@ -451,6 +451,7 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
     // on a record that had an opinion - see `turn_signal`.
     let mut turn_open = false;
     let mut turn_at: Option<i64> = None;
+    let mut last_turn_end: Option<crate::rail_state::TurnEnd> = None;
     let mut incomplete = false;
     let mut last_error: Option<usize> = None;
     let mut last_message: Option<usize> = None;
@@ -617,6 +618,19 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
         if let Some(open_now) = turn_signal(&value, text) {
             turn_open = open_now;
             turn_at = open_now.then_some(secs).flatten();
+            // The closing `assistant` record is the turn's own end mark, and
+            // its `uuid` differs between turns. Only that record: an interrupt
+            // also closes the turn, but it is a `user` record the person
+            // wrote by pressing Esc, not the agent finishing an answer.
+            if !open_now
+                && value.get("type").and_then(|v| v.as_str()) == Some("assistant")
+                && let Some(uuid) = value.get("uuid").and_then(|v| v.as_str())
+            {
+                last_turn_end = Some(crate::rail_state::TurnEnd {
+                    marker: uuid.to_string(),
+                    failed: false,
+                });
+            }
         }
 
         let Some(content) = value
@@ -693,6 +707,7 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
             _ => false,
         },
         incomplete,
+        last_turn_end,
     })
 }
 
@@ -2143,6 +2158,111 @@ mod tests {
 
     fn at(secs: &str) -> String {
         format!("2026-08-25T10:00:{secs}.000Z")
+    }
+
+    /// An `assistant` record in the shape Claude Code writes it: the two real
+    /// records these were cut from carry `parentUuid`, `isSidechain`, `uuid`,
+    /// `timestamp` and a `message` with `model`, `id`, `role`, `content` and
+    /// `stop_reason` (checked against a transcript written by CLI 2.1.270).
+    fn assistant_record(uuid: &str, stop_reason: &str, sidechain: bool, model: &str) -> String {
+        format!(
+            r#"{{"parentUuid":"b2d593bd-4033-4428-8ab4-f29d6930661f","isSidechain":{sidechain},"message":{{"model":"{model}","id":"msg_011CffbiMDJPPMcfSUFdAAVd","role":"assistant","content":[{{"type":"text","text":"done"}}],"stop_reason":"{stop_reason}"}},"type":"assistant","uuid":"{uuid}","timestamp":"{}"}}"#,
+            at("40")
+        )
+    }
+
+    fn turn_end_marker(lines: &[&str]) -> Option<String> {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        probe_lines(lines, now).last_turn_end.map(|end| end.marker)
+    }
+
+    /// The turn's end mark is the closing record's own `uuid`, and the newest
+    /// one wins.
+    #[test]
+    fn the_turn_end_marker_is_the_closing_records_uuid() {
+        let first = assistant_record(
+            "35c89ced-9c42-4286-a1bf-8283abdcffa5",
+            "end_turn",
+            false,
+            "claude-opus-5-5",
+        );
+        let second = assistant_record(
+            "ea099cf6-a9cd-412b-b324-9c1a37654a5d",
+            "stop_sequence",
+            false,
+            "claude-opus-5-5",
+        );
+        assert_eq!(
+            turn_end_marker(&[&first]).as_deref(),
+            Some("35c89ced-9c42-4286-a1bf-8283abdcffa5")
+        );
+        assert_eq!(
+            turn_end_marker(&[&first, &second]).as_deref(),
+            Some("ea099cf6-a9cd-412b-b324-9c1a37654a5d")
+        );
+    }
+
+    /// The same four exclusions the open-turn reading makes, for the same
+    /// reasons: none of these records is the agent finishing its answer, so
+    /// none of them may count as a turn that ended.
+    #[test]
+    fn records_that_do_not_end_a_turn_leave_no_marker() {
+        let closed = assistant_record(
+            "35c89ced-9c42-4286-a1bf-8283abdcffa5",
+            "end_turn",
+            false,
+            "claude-opus-5-5",
+        );
+        let standing = Some("35c89ced-9c42-4286-a1bf-8283abdcffa5");
+
+        // A subagent's own end of turn.
+        let sidechain = assistant_record(
+            "11111111-1111-4111-8111-111111111111",
+            "end_turn",
+            true,
+            "claude-opus-5-5",
+        );
+        // The CLI speaking under its synthetic model name.
+        let synthetic = assistant_record(
+            "22222222-2222-4222-8222-222222222222",
+            "end_turn",
+            false,
+            SYNTHETIC_MODEL,
+        );
+        // The model ran out of output and the CLI carries the turn on.
+        let max_tokens = assistant_record(
+            "33333333-3333-4333-8333-333333333333",
+            "max_tokens",
+            false,
+            "claude-opus-5-5",
+        );
+        // Still calling tools.
+        let tool_use = assistant_record(
+            "44444444-4444-4444-8444-444444444444",
+            "tool_use",
+            false,
+            "claude-opus-5-5",
+        );
+        // A person pressing Esc: it closes the turn, but as a `user` record.
+        let interrupt = format!(
+            r#"{{"type":"user","uuid":"55555555-5555-4555-8555-555555555555","timestamp":"{}","message":{{"role":"user","content":[{{"type":"text","text":"[Request interrupted by user]"}}]}}}}"#,
+            at("45")
+        );
+
+        for (what, line) in [
+            ("sidechain", &sidechain),
+            ("synthetic", &synthetic),
+            ("max_tokens", &max_tokens),
+            ("tool_use", &tool_use),
+            ("interrupt", &interrupt),
+        ] {
+            assert_eq!(turn_end_marker(&[line]), None, "{what} alone");
+            assert_eq!(
+                turn_end_marker(&[&closed, line]).as_deref(),
+                standing,
+                "{what} after a real end"
+            );
+        }
     }
 
     /// `stop_reason` is not a two-value field, and reading everything but

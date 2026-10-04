@@ -1326,9 +1326,90 @@ fn build_fleet_rows(
     rows.into_iter().map(|(_, _, _, v)| v).collect()
 }
 
+/// What the rail says about an agent session's surface, or `None` for a
+/// record that launches no agent (a shell).
+///
+/// `pty_flow_owns` is whether the `running` showing now was put up by the
+/// byte counter, and `pane_exited` whether the pane's own process has ended.
+fn thread_rail_snapshot(
+    thread: &crate::project::Thread,
+    pty_flow_owns: bool,
+    pane_exited: bool,
+) -> Option<crate::rail_state::RailSnapshot> {
+    use crate::rail_state::RailSource;
+    thread.terminal_agent?;
+    // The same ranking the state pass applies when it decides who may write
+    // the status, read off the same fields.
+    let source = if thread.detector_read_at.is_some() {
+        RailSource::Detector
+    } else if thread.hook_has_spoken {
+        RailSource::Hook
+    } else if pty_flow_owns {
+        RailSource::PtyFlow
+    } else {
+        RailSource::None
+    };
+    Some(crate::rail_state::RailSnapshot {
+        status: thread.status,
+        source,
+        runs_ended: thread.rail.runs_ended,
+        last_outcome: thread.rail.last_outcome,
+        turn_marker: thread.rail.turn_marker.clone(),
+        exited: pane_exited || thread.rail.agent_exited,
+        message: thread.rail.waiting_message.clone(),
+    })
+}
+
+/// The same answer for a terminal with no agent record of its own, where hook
+/// frames are the only source: an agent somebody typed into a shell pane, or
+/// one started by `workspace.up`. `None` when no hook has ever spoken for it.
+fn hooked_rail_snapshot(
+    session: Option<&AgentSession>,
+    record: Option<&crate::rail_state::RailRecord>,
+    pane_exited: bool,
+) -> Option<crate::rail_state::RailSnapshot> {
+    if session.is_none() && record.is_none() {
+        return None;
+    }
+    let status = session.map_or(crate::project::ThreadStatus::Idle, |s| {
+        crate::project::ThreadStatus::from_agent_state(s.state.clone())
+    });
+    let working = matches!(
+        status,
+        crate::project::ThreadStatus::Thinking | crate::project::ThreadStatus::WaitingForInput
+    );
+    Some(crate::rail_state::RailSnapshot {
+        status,
+        source: crate::rail_state::RailSource::Hook,
+        runs_ended: record.map_or(0, |r| r.runs_ended),
+        last_outcome: record.and_then(|r| r.last_outcome),
+        turn_marker: None,
+        // A frame that says the agent is working again outranks an earlier
+        // report that it exited.
+        exited: pane_exited || (record.is_some_and(|r| r.agent_exited) && !working),
+        message: session.and_then(|s| s.message.clone()),
+    })
+}
+
 /// The `surface.status` response for a
 /// pane, given the session living in it (if any). Pure. `idle` when `None`.
+///
+/// `rail` is added beside the older fields, never in place of them: `state`
+/// and `hooked` are read by scripts already written against them, and they
+/// keep saying what the hook said.
 fn surface_status_value(
+    sid: u64,
+    session: Option<&AgentSession>,
+    output_generation: u64,
+    now: std::time::Instant,
+    rail: Option<&crate::rail_state::RailSnapshot>,
+) -> serde_json::Value {
+    let mut value = surface_status_base(sid, session, output_generation, now);
+    value["rail"] = rail.map_or(serde_json::Value::Null, |rail| rail.to_json());
+    value
+}
+
+fn surface_status_base(
     sid: u64,
     session: Option<&AgentSession>,
     output_generation: u64,
@@ -1453,6 +1534,10 @@ impl SplitlaneApp {
             {
                 self.broadcast_ai_frame(&req.method, &req.params);
             }
+            // Every `ai.*` frame can move a status word or end a run.
+            if req.method.starts_with("ai.") {
+                self.publish_rail_changes(cx);
+            }
             let _ = req.response_tx.send(result);
         }
     }
@@ -1509,6 +1594,83 @@ impl SplitlaneApp {
             active_tool.as_deref(),
         );
         self.event_bus.broadcast(method, surface_id, &event);
+    }
+
+    /// What the rail says about one terminal, or `None` for a plain shell.
+    ///
+    /// `thread_id` overrides the view's own binding for a surface the session
+    /// cache holds under a record id.
+    fn rail_snapshot_for(
+        &self,
+        terminal: &Entity<TerminalView>,
+        thread_id: Option<u64>,
+        cx: &App,
+    ) -> Option<crate::rail_state::RailSnapshot> {
+        let sid = terminal.entity_id().as_u64();
+        let view = terminal.read(cx);
+        let pane_exited = view.terminal.exited.is_some();
+        let thread_id = thread_id.or(view.agent_thread_id);
+        if let Some(thread_id) = thread_id
+            && let Some(thread) = self.thread_by_id(thread_id)
+            && let Some(snapshot) = thread_rail_snapshot(
+                thread,
+                self.pty_flow.get(&thread_id).is_some_and(|flow| flow.ours),
+                pane_exited,
+            )
+        {
+            return Some(snapshot);
+        }
+        let session = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.agent_sessions.values())
+            .find(|s| s.surface_id == Some(sid));
+        hooked_rail_snapshot(session, self.hook_rail.get(&sid), pane_exited)
+    }
+
+    /// Publish a `surface.rail` event for every surface whose status word or
+    /// count of ended runs differs from what was last published.
+    ///
+    /// Called from the places that change either - the state pass and the
+    /// `ai.*` frame handlers - and deliberately not from rendering: a window
+    /// that is minimised or covered draws nothing while both of those keep
+    /// running, and that is exactly when a script is the only one watching.
+    pub(crate) fn publish_rail_changes(&mut self, cx: &mut Context<Self>) {
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut current = Vec::new();
+        for ws in &self.workspaces {
+            for pane in ws.collect_panes() {
+                for terminal in pane.read(cx).terminals() {
+                    let sid = terminal.entity_id().as_u64();
+                    if !seen.insert(sid) {
+                        continue;
+                    }
+                    if let Some(snapshot) = self.rail_snapshot_for(terminal, None, cx) {
+                        current.push((sid, terminal.read(cx).agent_thread_id, snapshot));
+                    }
+                }
+            }
+        }
+        for (thread_id, terminal) in &self.agents_view.agents_terminal_view_cache {
+            let sid = terminal.entity_id().as_u64();
+            if !seen.insert(sid) {
+                continue;
+            }
+            if let Some(snapshot) = self.rail_snapshot_for(terminal, Some(*thread_id), cx) {
+                current.push((sid, Some(*thread_id), snapshot));
+            }
+        }
+        // A closed pane takes its count with it.
+        self.hook_rail.retain(|sid, _| seen.contains(sid));
+        let events = crate::rail_state::rail_changes(
+            &mut self.rail_published,
+            &current,
+            crate::ipc_events::now_ms(),
+        );
+        for (sid, event) in events {
+            self.event_bus
+                .broadcast(crate::rail_state::RAIL_EVENT_TYPE, Some(sid), &event);
+        }
     }
 
     /// Emit a `surface_changed` event for every terminal surface
@@ -2889,7 +3051,14 @@ impl SplitlaneApp {
                     .iter()
                     .flat_map(|ws| ws.agent_sessions.values())
                     .find(|s| s.surface_id == Some(sid));
-                surface_status_value(sid, session, output_generation, std::time::Instant::now())
+                let rail = self.rail_snapshot_for(&terminal, None, cx);
+                surface_status_value(
+                    sid,
+                    session,
+                    output_generation,
+                    std::time::Instant::now(),
+                    rail.as_ref(),
+                )
             }
             "surface.search" => {
                 // Locate a pattern in a surface's scrollback without
@@ -3502,7 +3671,10 @@ impl SplitlaneApp {
                     // no surface record to carry a session id.
                     let _ = (pid, tool, ws);
                     serde_json::json!({"registered": true})
-                } else if self.agents_thread_mut_by_env_id(workspace_id).is_some() {
+                } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
+                    // An agent has started in this pane, whatever exited
+                    // there before.
+                    t.rail.agent_exited = false;
                     // Same no-op policy for an Agents thread: the spinner
                     // only appears once a prompt is actually in flight.
                     self.bind_reported_session(workspace_id, reported_session.as_deref(), cx);
@@ -3681,6 +3853,8 @@ impl SplitlaneApp {
                 } else if let Some(t) = self.agents_thread_mut_by_env_id(workspace_id) {
                     let accelerate =
                         apply_agents_thread_state(t, ai_types::AgentState::WaitingForInput, pid);
+                    // Untrusted text, kept verbatim for `surface.status`.
+                    t.rail.waiting_message = message.clone();
                     // Notification body uses the cleaned title so a CLI
                     // spinner glyph baked into the OSC title never leaks
                     // into the desktop notification.
@@ -3775,6 +3949,15 @@ impl SplitlaneApp {
                             .get(&session_key)
                             .and_then(|s| s.surface_id)
                     });
+                    // Counted per surface: the session entry itself is dropped
+                    // a few seconds from now. A frame that names no pane has
+                    // nothing to be counted against.
+                    if let Some(surface_id) = surface_id {
+                        self.hook_rail
+                            .entry(surface_id)
+                            .or_default()
+                            .record_run_end(crate::rail_state::RunOutcome::Finished);
+                    }
                     cx.notify();
                     // A completion is information, not an
                     // interruption, so it carries a floor the three attention
@@ -3905,6 +4088,19 @@ impl SplitlaneApp {
                     // Claude Code run would announce itself twice, once from
                     // each channel, a second or two apart.
                     let detector_will_announce = accelerate.is_some();
+                    // The run is counted here for the surfaces the hook speaks
+                    // for, and by the state pass for the ones the detector
+                    // reads - the same split as the unread mark just below.
+                    // An interrupted turn is counted too: the mark is news for
+                    // a reader and an interrupt is not news, but the run did
+                    // end, and a script waiting for that must not wait for
+                    // its timeout.
+                    if !detector_will_announce
+                        && let Some(t) = self.agents_thread_mut_by_id(thread_id)
+                    {
+                        t.rail
+                            .record_run_end(crate::rail_state::RunOutcome::Finished);
+                    }
                     if !interrupt_stop && !detector_will_announce {
                         let seen = self.thread_is_seen(thread_id, cx);
                         // The row's mark, for the fourteen agents the detector
@@ -3995,6 +4191,13 @@ impl SplitlaneApp {
                     }
                     let ws_title = ws.title.clone();
                     let surface_id = ws.agent_sessions.get(&key).and_then(|s| s.surface_id);
+                    if let Some(surface_id) = surface_id {
+                        let record = self.hook_rail.entry(surface_id).or_default();
+                        record.agent_exited = true;
+                        if errored {
+                            record.record_run_end(crate::rail_state::RunOutcome::Failed);
+                        }
+                    }
                     cx.notify();
                     if errored {
                         // No duration floor here, and that is the rule rather
@@ -4048,6 +4251,14 @@ impl SplitlaneApp {
                     let accelerate = self
                         .agents_thread_mut_by_id(thread_id)
                         .and_then(|t| apply_agents_thread_state(t, state, pid));
+                    if let Some(t) = self.agents_thread_mut_by_id(thread_id) {
+                        t.rail.agent_exited = true;
+                        // A crash ends the run. Counted here only where the
+                        // hook owns the status; the state pass counts the rest.
+                        if errored && accelerate.is_none() {
+                            t.rail.record_run_end(crate::rail_state::RunOutcome::Failed);
+                        }
+                    }
                     if let Some(thread_id) = accelerate {
                         self.accelerate_agent_state(thread_id, cx);
                     }
@@ -4295,6 +4506,18 @@ fn apply_agents_thread_state(
     thread.hook_has_spoken = true;
     if !detector_owns {
         thread.status = reported;
+    }
+    // A question belongs to the wait it was asked in; any frame that is not a
+    // wait means it was answered or abandoned.
+    if reported != crate::project::ThreadStatus::WaitingForInput {
+        thread.rail.waiting_message = None;
+    }
+    // And a frame that says the agent is working means it is there.
+    if matches!(
+        reported,
+        crate::project::ThreadStatus::Thinking | crate::project::ThreadStatus::WaitingForInput
+    ) {
+        thread.rail.agent_exited = false;
     }
     match reported {
         crate::project::ThreadStatus::Idle | crate::project::ThreadStatus::Failed => {
@@ -6153,13 +6376,13 @@ mod tests {
         use crate::agent_launcher::TerminalAgent;
         use crate::ai_types::{AgentSession, AgentState};
         let mut s = AgentSession::new(TerminalAgent::ClaudeCode, AgentState::Finished);
-        let v = super::surface_status_value(7, Some(&s), 1, std::time::Instant::now());
+        let v = super::surface_status_value(7, Some(&s), 1, std::time::Instant::now(), None);
         assert!(
             v["last_result"].is_null(),
             "absent resolves to null, not missing"
         );
         s.last_result = Some("compiled clean".into());
-        let v = super::surface_status_value(7, Some(&s), 1, std::time::Instant::now());
+        let v = super::surface_status_value(7, Some(&s), 1, std::time::Instant::now(), None);
         assert_eq!(v["last_result"], "compiled clean");
     }
 
@@ -6345,7 +6568,7 @@ mod tests {
     // surface.status is pure - idle vs live session.
     #[test]
     fn surface_status_value_idle_when_no_session() {
-        let v = surface_status_value(7, None, 99, std::time::Instant::now());
+        let v = surface_status_value(7, None, 99, std::time::Instant::now(), None);
         assert_eq!(v["surface_id"], 7);
         assert_eq!(v["state"], "idle");
         assert_eq!(v["output_generation"], 99);
@@ -6360,12 +6583,168 @@ mod tests {
         use crate::agent_launcher::TerminalAgent;
         use crate::ai_types::{AgentSession, AgentState};
         let s = AgentSession::new(TerminalAgent::Codex, AgentState::Thinking);
-        let v = surface_status_value(7, Some(&s), 12, std::time::Instant::now());
+        let v = surface_status_value(7, Some(&s), 12, std::time::Instant::now(), None);
         assert_eq!(v["state"], "thinking");
         assert_eq!(v["tool"], "codex");
         assert_eq!(v["output_generation"], 12);
         // A tracked session reports hooked:true.
         assert_eq!(v["hooked"], true);
+    }
+
+    fn rail_fixture(status: crate::project::ThreadStatus) -> crate::rail_state::RailSnapshot {
+        crate::rail_state::RailSnapshot {
+            status,
+            source: crate::rail_state::RailSource::Detector,
+            runs_ended: 3,
+            last_outcome: Some(crate::rail_state::RunOutcome::Finished),
+            turn_marker: Some("m-1".to_string()),
+            exited: false,
+            message: None,
+        }
+    }
+
+    /// `state`, `hooked` and the rest are read by scripts written before `rail`
+    /// existed. Adding the object must leave every one of them exactly as it
+    /// was, for a tracked session and for none - including the case where the
+    /// two sources disagree, which is the reason `rail` exists.
+    #[test]
+    fn surface_status_keeps_its_published_fields_beside_rail() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        use crate::project::ThreadStatus;
+
+        let s = AgentSession::new(TerminalAgent::Codex, AgentState::Thinking);
+        let rail = rail_fixture(ThreadStatus::WaitingForInput);
+        let mut v = surface_status_value(7, Some(&s), 12, s.last_activity, Some(&rail));
+        let got = v.as_object_mut().expect("object").remove("rail");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "surface_id": 7,
+                "state": "thinking",
+                "hooked": true,
+                "tool": "codex",
+                "active_tool_name": null,
+                "message": null,
+                "last_result": null,
+                "waiting_ms": null,
+                "idle_ms": 0,
+                "output_generation": 12,
+            })
+        );
+        assert_eq!(
+            got,
+            Some(serde_json::json!({
+                "status": "waiting",
+                "source": "detector",
+                "tier": "T1",
+                "runs_ended": 3,
+                "last_outcome": "finished",
+                "turn_marker": "m-1",
+                "exited": false,
+                "message": null,
+            }))
+        );
+
+        let mut v = surface_status_value(7, None, 99, std::time::Instant::now(), None);
+        let got = v.as_object_mut().expect("object").remove("rail");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "surface_id": 7,
+                "state": "idle",
+                "hooked": false,
+                "output_generation": 99,
+            })
+        );
+        assert_eq!(got, Some(serde_json::Value::Null), "a shell has no rail");
+    }
+
+    /// The source is read off the same fields, in the same order, that decide
+    /// who may write the status.
+    #[test]
+    fn thread_rail_source_follows_the_ranking() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        use crate::rail_state::RailSource;
+
+        let shell = Thread::new_terminal("shell", "/tmp", None);
+        assert!(thread_rail_snapshot(&shell, false, false).is_none());
+
+        let mut t = Thread::new_terminal("agent", "/tmp", Some(TerminalAgent::Amp));
+        let source = |t: &Thread, flow: bool| {
+            thread_rail_snapshot(t, flow, false)
+                .expect("an agent surface has a rail")
+                .source
+        };
+        assert_eq!(source(&t, false), RailSource::None);
+        assert_eq!(source(&t, true), RailSource::PtyFlow);
+        t.hook_has_spoken = true;
+        assert_eq!(source(&t, true), RailSource::Hook);
+        t.detector_read_at = Some(std::time::Instant::now());
+        assert_eq!(source(&t, true), RailSource::Detector);
+    }
+
+    #[test]
+    fn thread_rail_reports_an_exit_from_either_side() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+
+        let mut t = Thread::new_terminal("agent", "/tmp", Some(TerminalAgent::ClaudeCode));
+        let exited = |t: &Thread, pane: bool| {
+            thread_rail_snapshot(t, false, pane)
+                .expect("an agent surface has a rail")
+                .exited
+        };
+        assert!(!exited(&t, false));
+        assert!(exited(&t, true), "the pane's process ended");
+        t.rail.agent_exited = true;
+        assert!(exited(&t, false), "the shim reported the agent's exit");
+        // And a frame that says the agent is working takes it back.
+        let _ = apply_agents_thread_state(&mut t, crate::ai_types::AgentState::Thinking, None);
+        assert!(!exited(&t, false));
+    }
+
+    /// A terminal with no agent record answers from the hook alone, and one no
+    /// hook has spoken for answers nothing.
+    #[test]
+    fn hooked_rail_answers_only_where_a_hook_has_spoken() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        use crate::project::ThreadStatus;
+        use crate::rail_state::{RailRecord, RunOutcome};
+
+        assert!(hooked_rail_snapshot(None, None, false).is_none());
+
+        let mut waiting = AgentSession::new(TerminalAgent::OpenCode, AgentState::WaitingForInput);
+        waiting.message = Some("Allow?".to_string());
+        let snap = hooked_rail_snapshot(Some(&waiting), None, false).expect("hooked");
+        assert_eq!(snap.status, ThreadStatus::WaitingForInput);
+        assert_eq!(snap.source.tier(), "T2");
+        assert_eq!(snap.to_json()["message"], "Allow?");
+
+        // The session entry is dropped a few seconds after a turn ends; the
+        // count outlives it.
+        let mut record = RailRecord::default();
+        record.record_run_end(RunOutcome::Finished);
+        let snap = hooked_rail_snapshot(None, Some(&record), false).expect("counted");
+        assert_eq!(snap.status, ThreadStatus::Idle);
+        assert_eq!(snap.runs_ended, 1);
+        assert_eq!(snap.last_outcome, Some(RunOutcome::Finished));
+    }
+
+    /// A question is dropped by the first frame that is not a wait.
+    #[test]
+    fn a_hook_frame_that_is_not_a_wait_drops_the_question() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+
+        let mut t = Thread::new_terminal("agent", "/tmp", Some(TerminalAgent::OpenCode));
+        let _ =
+            apply_agents_thread_state(&mut t, crate::ai_types::AgentState::WaitingForInput, None);
+        t.rail.waiting_message = Some("Allow?".to_string());
+        let _ = apply_agents_thread_state(&mut t, crate::ai_types::AgentState::Thinking, None);
+        assert_eq!(t.rail.waiting_message, None);
     }
 
     // The ai.* event wire shape (timestamp aside).

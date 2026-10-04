@@ -165,6 +165,7 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
     // it was written. See the deposit at the end of this function.
     let mut turn_open = false;
     let mut turn_at: Option<Duration> = None;
+    let mut last_turn_end: Option<crate::rail_state::TurnEnd> = None;
 
     for (index, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -255,9 +256,26 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
                 // `turn_aborted` is the human refusing. It ends the turn, and
                 // any call still standing was the one they refused - a record,
                 // not a question.
-                Some("task_complete" | "turn_aborted") => {
+                Some(ending @ ("task_complete" | "turn_aborted")) => {
                     turn_open = false;
                     turn_at = None;
+                    // `turn_id` is optional on `turn_aborted` in the writer's
+                    // own type (`TurnAbortedEvent`, read at `rust-v0.158.0`),
+                    // so the record's stamp stands in: all the marker has to
+                    // do is differ between turns.
+                    let marker = payload
+                        .get("turn_id")
+                        .and_then(|id| id.as_str())
+                        .or_else(|| record.get("timestamp").and_then(|t| t.as_str()));
+                    if let Some(marker) = marker {
+                        last_turn_end = Some(crate::rail_state::TurnEnd {
+                            marker: marker.to_string(),
+                            // A turn that could not finish still writes
+                            // `task_complete`, with what went wrong in `error`.
+                            failed: ending == "task_complete"
+                                && payload.get("error").is_some_and(|e| !e.is_null()),
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -288,6 +306,7 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
         open_turn: turn_open.then_some(turn_at).flatten(),
         errored,
         incomplete,
+        last_turn_end,
     }
 }
 
@@ -450,6 +469,74 @@ mod tests {
             let probe = probe(&[event("task_started", 130), event(ending, 10)]);
             assert_eq!(probe.open_turn, None, "{ending} must end the turn");
         }
+    }
+
+    /// Records cut from rollouts Codex 0.149.1 wrote on a developer machine:
+    /// the turn-lifecycle events and the assistant messages, with the prose
+    /// left as written. The same three events and the same fields are in the
+    /// writer's types at `rust-v0.158.0` (`TurnCompleteEvent`,
+    /// `TurnAbortedEvent`), where `turn_id` is optional on an aborted turn.
+    const TWO_TURNS: &str = include_str!("../tests/fixtures/codex/rollout-0.149.1-two-turns.jsonl");
+    const FAILED_TURN: &str =
+        include_str!("../tests/fixtures/codex/rollout-0.149.1-failed-turn.jsonl");
+    const ABORTED_TURN: &str =
+        include_str!("../tests/fixtures/codex/rollout-0.149.1-aborted-turn.jsonl");
+
+    /// A completed turn's marker is its `turn_id`, and the newest turn wins.
+    #[test]
+    fn the_turn_end_marker_is_the_turn_id_of_the_newest_ended_turn() {
+        let end = probe_from_text(TWO_TURNS, false, NOW)
+            .last_turn_end
+            .expect("two turns ended");
+        assert_eq!(end.marker, "01a03489-8303-79c3-a15a-2685e8ef6126");
+        assert!(!end.failed);
+        // The first turn alone.
+        let first: String = TWO_TURNS.lines().take(3).collect::<Vec<_>>().join("\n");
+        let end = probe_from_text(&first, false, NOW)
+            .last_turn_end
+            .expect("one turn ended");
+        assert_eq!(end.marker, "01a03488-84ec-73d3-913f-4bc25252f512");
+    }
+
+    /// A turn that could not finish still ends, and says why: `task_complete`
+    /// with no message and an `error`.
+    #[test]
+    fn a_turn_that_ended_in_an_error_is_marked_failed() {
+        let end = probe_from_text(FAILED_TURN, false, NOW)
+            .last_turn_end
+            .expect("the turn ended");
+        assert_eq!(end.marker, "01a0e7b6-f5d5-7cf1-a279-21bdf7ae0e79");
+        assert!(end.failed);
+    }
+
+    /// A person stopping the turn ends it too, and is not a failure.
+    #[test]
+    fn an_aborted_turn_is_a_turn_end() {
+        let end = probe_from_text(ABORTED_TURN, false, NOW)
+            .last_turn_end
+            .expect("the turn ended");
+        assert_eq!(end.marker, "01a034c1-8854-7721-965a-36b2d39e2996");
+        assert!(!end.failed);
+    }
+
+    /// The writer's type makes `turn_id` optional on an aborted turn. The
+    /// record's own stamp then stands in, so two such turns still differ.
+    #[test]
+    fn an_aborted_turn_without_an_id_is_marked_by_its_stamp() {
+        let line = format!(
+            r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"turn_aborted","reason":"interrupted"}}}}"#,
+            at(10)
+        );
+        let end = probe_from_text(&line, false, NOW)
+            .last_turn_end
+            .expect("the turn ended");
+        assert_eq!(end.marker, at(10));
+    }
+
+    /// A turn still running has not ended.
+    #[test]
+    fn a_turn_in_flight_leaves_no_marker() {
+        assert_eq!(probe(&[event("task_started", 30)]).last_turn_end, None);
     }
 
     /// The fixture and the reader must agree about time, or every age assertion

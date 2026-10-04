@@ -50,6 +50,7 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     "ai.exit",
     "ai.session_end",
     "surface_changed",
+    crate::rail_state::RAIL_EVENT_TYPE,
 ];
 
 /// Subscription filter. `None` on a field = match everything for that axis.

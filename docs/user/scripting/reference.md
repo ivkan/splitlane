@@ -193,7 +193,43 @@ An empty fleet is `{"agents": []}`.
 `state` values: `thinking`, `waiting_for_input`, `finished`, `errored`,
 `stalled`; `fleet.list` adds `unknown_running` for agents seen only by the
 process scan. `surface.status` on a surface with no tracked agent returns
-`{surface_id, state: "idle", hooked: false, output_generation}`.
+`{surface_id, state: "idle", hooked: false, output_generation, rail}`.
+
+These fields report what the agent's hook last said. `surface.status` also
+carries `rail`, which is what the rail row for that surface shows, and the two
+can differ: while an agent waits on a permission prompt the hook's last frame
+was a tool call, so `state` is `thinking` and `rail.status` is `waiting`.
+Prefer `rail` when deciding whether a turn is over.
+
+#### `rail`
+
+`null` for a plain shell that no agent hook has reported from. Otherwise:
+
+| Field | Meaning |
+| --- | --- |
+| `status` | `starting`, `running`, `waiting`, `idle` or `failed` |
+| `source` | Who decided the status: `detector` (the agent's own status file or transcript), `hook`, `pty_flow` (output arriving from the pane) or `none` |
+| `tier` | `T1` for `detector`, `T2` for `hook`, `T3` for `pty_flow` and `none`. See below |
+| `runs_ended` | How many runs have ended on this surface since it was opened. Only grows; resets when Splitlane restarts |
+| `last_outcome` | `finished` or `failed` for the last ended run, `null` before the first |
+| `turn_marker` | An id of the newest turn end in the agent's own file (Claude Code and Codex), otherwise `null` |
+| `exited` | `true` when the agent's exit was reported by its wrapper or the pane's process has ended |
+| `message` | The question being asked while `status` is `waiting`, when a hook reported one |
+
+What each tier can tell you:
+
+| Tier | Agents | End of a turn |
+| --- | --- | --- |
+| `T1` | Claude Code and Codex opened as agent sessions. Codex reaches it once its hook has reported a session id, which happens with its first prompt | Read from the file the agent writes for itself |
+| `T2` | Agents whose hooks are installed, and any agent in a pane made by `up`, `split` or by typing its command into a shell | The agent's `Stop` hook. It depends on the vendor keeping that hook's behavior |
+| `T3` | Agents with no hook, and any agent before its first hook frame | None. Output arriving shows work; output stopping does not show that a turn ended |
+
+`runs_ended` counts a run when the status leaves `running` for `idle` or
+`failed`. A finish is confirmed for 3 seconds before it counts, so that a
+session resuming after a background task is not counted as finished; expect
+`runs_ended` to move 3 to 6 seconds after the agent stops. On `T1`, a turn too
+short to be seen as `running` is still counted, from the agent's own record of
+it.
 
 ## `splitlane up` file
 
@@ -364,10 +400,13 @@ means all.
 | `ai.exit` | same | The agent process exits |
 | `ai.session_end` | same | The session ends |
 | `surface_changed` | `surface_id, output_generation, ts` | A surface's `output_generation` advanced (checked every 50 ms) |
+| `surface.rail` | `surface_id, thread_id, status, source, runs_ended, last_outcome, ts` | A surface's `rail.status` or `rail.runs_ended` changed. Also sent once for each surface when it is first seen |
 | `heartbeat` | | 30 s without other frames |
 | `dropped` | `count` | The subscriber fell behind and `count` events were discarded |
 
 `ts` is milliseconds since the Unix epoch. `types` accepts the seven `ai.*`
-names and `surface_changed`; anything else is rejected with `-32602`. Each
+names, `surface_changed` and `surface.rail`; anything else is rejected with
+`-32602`. `thread_id` is the agent session's internal id, or `null` for a
+terminal that is not an agent session. Each
 subscriber queues up to 1024 events. After `dropped`, re-read state with
 `splitlane ps --json` or `splitlane status <target> --json`.

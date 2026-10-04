@@ -64,6 +64,7 @@ mod preset;
 mod pricing;
 mod process_tree;
 mod project;
+mod rail_state;
 mod runtime_paths;
 mod search;
 mod settings;
@@ -1420,6 +1421,17 @@ struct SplitlaneApp {
     /// See `app::agent_state_pass::confirm_run_end` for why a run does not end
     /// on one reading.
     run_end_seen_at: std::collections::HashMap<u64, std::time::Instant>,
+    /// Each surface's turn-end marker and how much of it is already counted in
+    /// `Thread::rail`. Freed with its surface, beside the maps above.
+    turn_ends: std::collections::HashMap<u64, rail_state::TurnEndWatch>,
+    /// The `(status, runs_ended)` last published for each surface id, which is
+    /// what `publish_rail_changes` compares against.
+    rail_published: std::collections::HashMap<u64, (project::ThreadStatus, u64)>,
+    /// Ended runs for a terminal that has no agent record of its own - an
+    /// agent typed into a shell pane, or started by `workspace.up` - keyed by
+    /// surface id. The hook is the only source there, and its session entry is
+    /// dropped a few seconds after a turn ends, so the count cannot live on it.
+    hook_rail: std::collections::HashMap<u64, rail_state::RailRecord>,
     /// What the chip and the popover are looking at, measured once a frame by
     /// `refresh_attention_edge`.
     ///

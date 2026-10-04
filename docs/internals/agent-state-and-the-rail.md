@@ -512,6 +512,87 @@ otherwise hold a session on `running` for its whole life. The CLI's own
 `claude ps` draws `shell` as working. That disagreement is known and deliberate.
 
 
+## What a script is told
+
+**`surface.status` carries the rail's own word, beside the hook's.** It used to
+answer from the hook's session table alone, and that is the weaker of the two
+sources by the argument above: during a permission ask the hook says `thinking`
+and the detector says `waiting`. A script that waited on the hook's word made
+the mistake the rail was built to stop making. So the response has a `rail`
+object - the five status words, who decided (`detector`, `hook`, `pty_flow`,
+`none`), and a tier derived from that. The older fields are unchanged and still
+say what the hook said, because scripts are written against them.
+
+**The tier is the source, not the agent.** `T1` is the agent's own file, `T2`
+is a hook, `T3` is the byte counter or nothing. It is read off
+`Thread::detector_read_at` and `Thread::hook_has_spoken` at the moment of the
+call, so a surface that loses its better source reports the lower tier the next
+time it is asked. A fresh Codex session is `T3` until its first prompt: nothing
+speaks for it before then, and saying otherwise would be a claim about a
+reader that has no file yet.
+
+**`runs_ended` is counted where the run clock is emptied**, in the state pass
+for the surfaces the detector reads and in the `ai.stop` handler for the rest.
+That is the same decision that leads to the row's unread mark, and it is one
+decision on purpose: a script waiting on the count and a person reading the
+rail must not be able to disagree about whether a run ended. The count is
+wider than the mark in two ways, and both follow from what each is for. The
+mark is news for a reader, so a run that ended on screen leaves none; the run
+still ended, and it is counted. An interrupted turn is not news either, and it
+is counted for the same reason: a script waiting for that turn would otherwise
+wait for its timeout.
+
+**A surface only the byte counter speaks for has no count.** Its `running` is
+taken down by output stopping, and output stopping says nothing about a turn:
+an agent thinking, an agent waiting for a person and an agent that has finished
+are all silent. Counting that as an ended run would hand a script the negative
+signal the rail itself refuses to read.
+
+**A turn too short to be seen running is counted from the agent's own record.**
+`run_ended` reports only a run the pass watched begin, which is right for a
+mark and a notification, and leaves a turn that starts and ends between two
+samples with no trace at all. For a script that is a wait that never returns.
+The file still records the end: Claude Code's closing `assistant` record has a
+`uuid`, and Codex's `task_complete` and `turn_aborted` carry a `turn_id`. The
+probe reports the newest one, and when it moves while the status stays `idle`
+for `RUN_END_CONFIRM`, the run is counted. The same span as a watched finish,
+for the same reason: a working session reads `idle` for about a second when a
+background task ends, and its previous turn may have just written a closing
+record. Nothing else follows from this count - no mark and no notification.
+Those stay with runs somebody could have been waiting on.
+
+Two details keep the two counters from counting one run twice. A marker
+already on disk when the surface is first seen is adopted, not counted: it is a
+turn that ended before anybody was watching. And a marker that moves within the
+span after a watched run ended belongs to that run, because the status can
+settle a moment before the record lands.
+
+**Claude Code's marker costs a second read, taken only when it can matter.**
+The status file answers first, and when it does the transcript is not read. So
+the marker is fetched separately, only while the status says the turn is over,
+and only when the file's length has changed since the last read. An idle
+session's transcript does not grow, so an idle surface costs one `stat` per
+pass.
+
+**The `surface.rail` event is published from one function, and never from
+rendering.** `publish_rail_changes` compares each surface's status word and
+count against what it last published, and it runs after the state pass and
+after every `ai.*` frame. It compares rather than being told, because the
+status is written from many places and a publisher that trusts each of them to
+report its change is one that some future writer forgets. It is kept out of the
+frame loop for the reason the attention edge is kept out of it above: a
+minimised or covered window draws nothing while the pass and the hooks keep
+running, so an event tied to a frame would go quiet exactly when a script is
+the only one watching.
+
+**A terminal with no agent record still has a rail when a hook has spoken for
+it.** An agent typed into a shell pane, or started by `workspace.up`, reports
+through hook frames routed to the project rather than to a session record. Its
+status is the hook session's, its count is kept per surface (the session entry
+is dropped a few seconds after a turn ends), and its tier is `T2`. A shell no
+hook has reported from has `rail: null`.
+
+
 ## `Thread::finished_unseen`, the Activity chip, and the popover
 
 **`Thread::finished_unseen` is the read/unread axis, and it is not a sixth

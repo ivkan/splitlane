@@ -114,6 +114,10 @@ struct StateTarget {
     /// reads. Adoption is asked only of it, for the same reason the status
     /// source is: no other CLI writes the file.
     reads_status_file: bool,
+    /// How long this surface's file was when its turn-end marker was last
+    /// read. An idle session's file does not grow, so a pass that finds the
+    /// same length has nothing new to learn and skips the parse.
+    turn_end_len: Option<u64>,
     /// The surface's name, for the trace and nothing else.
     ///
     /// Filled only when [`TRACE`] logging is actually on, because a pass that
@@ -163,6 +167,44 @@ struct StateReading {
     /// for what makes it necessary and `apply_agent_states` for why it takes two
     /// passes to act on.
     proposed_session: Option<String>,
+    /// The file's length and the newest turn end it records, when this pass
+    /// read them. `None` means the marker was not read - no reader for this
+    /// agent, or a file that has not changed - and keeps what is known.
+    turn_end: Option<(u64, Option<crate::rail_state::TurnEnd>)>,
+}
+
+/// The agent's own turn-end marker, read out of turn for a surface whose state
+/// came from somewhere other than its transcript.
+///
+/// Claude Code's status file answers first and the transcript is then not read
+/// at all, so the marker has to be fetched separately. Only when the status
+/// says the turn is over - a marker cannot matter before that - and only when
+/// the file has grown since the last read.
+fn read_turn_end(
+    state_file: Option<&crate::agent_sessions::StateFile>,
+    known_len: Option<u64>,
+    now: i64,
+) -> Option<(u64, Option<crate::rail_state::TurnEnd>)> {
+    let state_file = state_file?;
+    let len = state_file_len(state_file)?;
+    if known_len == Some(len) {
+        return None;
+    }
+    let probe = match state_file {
+        crate::agent_sessions::StateFile::Claude(path) => {
+            crate::claude_sessions::probe_state_from_tail(path, now)
+        }
+        crate::agent_sessions::StateFile::Codex(path) => {
+            crate::codex_state::probe_state_from_tail(path, now)
+        }
+    }?;
+    Some((len, probe.last_turn_end))
+}
+
+fn state_file_len(state_file: &crate::agent_sessions::StateFile) -> Option<u64> {
+    let (crate::agent_sessions::StateFile::Claude(path)
+    | crate::agent_sessions::StateFile::Codex(path)) = state_file;
+    std::fs::metadata(path).ok().map(|meta| meta.len())
 }
 
 impl SplitlaneApp {
@@ -195,6 +237,7 @@ impl SplitlaneApp {
                             app.worker_baselines.retain(|id, _| live.contains(id));
                             app.pty_flow.retain(|id, _| live.contains(id));
                             app.proposed_sessions.retain(|id, _| live.contains(id));
+                            app.turn_ends.retain(|id, _| live.contains(id));
                             // And the one place that can take `starting` off a
                             // surface this pass cannot even look at.
                             //
@@ -224,6 +267,7 @@ impl SplitlaneApp {
                             }
                             if withdrew {
                                 cx.notify();
+                                app.publish_rail_changes(cx);
                             }
                             targets
                         })
@@ -350,6 +394,10 @@ impl SplitlaneApp {
                             cwd: thread.cwd.clone(),
                             reads_status_file: thread.terminal_agent
                                 == Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+                            turn_end_len: self
+                                .turn_ends
+                                .get(&thread_id)
+                                .and_then(|watch| watch.file_len),
                             label: log::log_enabled!(target: TRACE, log::Level::Debug)
                                 .then(|| thread.title.clone()),
                         });
@@ -469,10 +517,64 @@ impl SplitlaneApp {
                         reading.state.clone(),
                     );
                     changed |= deposit(thread, read_at, state);
+                    let watch = self.turn_ends.entry(reading.thread_id).or_default();
+                    if let Some((len, end)) = reading.turn_end.clone() {
+                        watch.observe(len, end);
+                    }
+                    let was_in_run = self.running_since.contains_key(&reading.thread_id);
                     // After the deposit, not across it: the clock's own
                     // presence says whether this surface was in a run, so the
                     // status before the write is no longer part of the question.
                     finished_runs.extend(run_ended(&mut self.running_since, thread));
+                    // **The count of ended runs is taken here, where the run
+                    // clock is emptied**, which is also what leads to the
+                    // row's unread mark. One decision, so a script waiting on
+                    // the count and a person reading the rail cannot disagree
+                    // about whether a run ended. The count is wider than the
+                    // mark on purpose: the mark is about what somebody has not
+                    // looked at, and a run that ended on screen still ended.
+                    //
+                    // Only where the detector is the one speaking. A surface
+                    // the hook owns is counted by the `ai.stop` handler, and
+                    // one that only the byte counter speaks for has no turn
+                    // boundary to count: its `running` is withdrawn by output
+                    // stopping, which says nothing about a turn.
+                    let left_run =
+                        was_in_run && !self.running_since.contains_key(&reading.thread_id);
+                    let file_says_failed = watch.current.as_ref().is_some_and(|end| end.failed);
+                    if thread.detector_read_at.is_some() {
+                        let outcome = match thread.status {
+                            crate::project::ThreadStatus::Failed => {
+                                Some(crate::rail_state::RunOutcome::Failed)
+                            }
+                            crate::project::ThreadStatus::Idle if file_says_failed => {
+                                Some(crate::rail_state::RunOutcome::Failed)
+                            }
+                            crate::project::ThreadStatus::Idle => {
+                                Some(crate::rail_state::RunOutcome::Finished)
+                            }
+                            _ => None,
+                        };
+                        if left_run && let Some(outcome) = outcome {
+                            watch.settle(read_at);
+                            thread.rail.record_run_end(outcome);
+                        } else if watch.unseen_turn_ended(thread.status, read_at, RUN_END_CONFIRM)
+                            && let Some(outcome) = outcome
+                        {
+                            // A turn too short for a two-second sample to catch
+                            // running. It is counted from the record the agent
+                            // wrote, and nothing else follows: no unread mark
+                            // and no notification, which stay with runs this
+                            // pass watched.
+                            log::debug!(
+                                target: TRACE,
+                                "#{} ended a turn this pass never saw running; counted from its own record",
+                                reading.thread_id,
+                            );
+                            thread.rail.record_run_end(outcome);
+                        }
+                    }
+                    thread.rail.turn_marker = watch.current.as_ref().map(|end| end.marker.clone());
                     let was_ours = self
                         .pty_flow
                         .get(&reading.thread_id)
@@ -546,6 +648,9 @@ impl SplitlaneApp {
         for run in finished_runs {
             self.announce_finished_run(run, cx);
         }
+        // Unconditionally, not under `changed`: a counted run moves nothing
+        // the rail draws, and it is exactly what a waiting script watches.
+        self.publish_rail_changes(cx);
         // A Claude session alive while the limits read said there was no
         // usable login is what signing in inside a pane looks like from here.
         // Floored inside; a no-op whenever the last read succeeded.
@@ -1080,12 +1185,16 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                         })
                     })
                     .flatten();
+                let turn_end = (state == AgentState::Finished)
+                    .then(|| read_turn_end(target.state_file.as_ref(), target.turn_end_len, now))
+                    .flatten();
                 return StateReading {
                     thread_id: target.thread_id,
                     state: Some(state),
                     output_generation: target.output_generation,
                     baseline,
                     proposed_session,
+                    turn_end,
                 };
             }
 
@@ -1110,6 +1219,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     output_generation: target.output_generation,
                     baseline: None,
                     proposed_session,
+                    turn_end: None,
                 };
             };
             // Each agent's own reader, over its own file's shape. What comes
@@ -1139,6 +1249,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     output_generation: target.output_generation,
                     baseline: None,
                     proposed_session,
+                    turn_end: None,
                 };
             };
             let (agent, worker) = match (&snapshot, &shim_dir) {
@@ -1228,6 +1339,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                 output_generation: target.output_generation,
                 baseline,
                 proposed_session,
+                turn_end: state_file_len(state_file).map(|len| (len, probe.last_turn_end.clone())),
             }
         })
         .collect();
