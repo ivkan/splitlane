@@ -140,6 +140,21 @@ fn the_rail_keeps_its_published_names() {
 }
 
 #[test]
+fn the_wait_exit_codes_keep_their_numbers() {
+    // Scripts branch on these. A renumbering compiles and passes every test
+    // that reads the constants by name.
+    let cli = read("src-app/src/cli/mod.rs");
+    for line in [
+        "pub const EXIT_TIMEOUT: i32 = 4;",
+        "pub const EXIT_NEEDS_PERSON: i32 = 5;",
+        "pub const EXIT_AGENT_FAILED: i32 = 6;",
+        "pub const EXIT_NO_TURN_SIGNAL: i32 = 7;",
+    ] {
+        assert!(cli.contains(line), "exit code changed: expected `{line}`");
+    }
+}
+
+#[test]
 fn mcp_bridge_tool_names_keep_reading_pane_as_surface() {
     let tools = read("crates/splitlane-mcp/src/tools.rs");
     for tool in ["list_panes", "read_pane", "search_pane"] {

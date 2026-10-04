@@ -132,6 +132,12 @@ fn send_to(
     match client.call("surface.send_text", params) {
         Ok(result) => {
             let mut result = super::reject_legacy_error(result)?;
+            // The count as it stood before this text was written: the
+            // baseline for `wait --until turn-end --after`. Taken before the
+            // write so a turn that ends at once is still past it.
+            if let Some(runs_ended) = before.as_ref().and_then(|b| b.runs_ended) {
+                result["runs_ended"] = json!(runs_ended);
+            }
             if should_wait_for_submit_start(&result) {
                 match wait_for_submit_start(client, surface_id, before.as_ref()) {
                     SubmitStart::Confirmed(reason) => {
@@ -167,6 +173,8 @@ pub(super) enum SubmitStart {
 pub(super) struct StatusSnapshot {
     state: String,
     output_generation: Option<u64>,
+    /// The rail's count of ended runs, taken before the text was written.
+    runs_ended: Option<u64>,
 }
 
 pub(super) fn status_snapshot(
@@ -184,6 +192,10 @@ pub(super) fn status_snapshot(
             .to_string(),
         output_generation: v
             .get("output_generation")
+            .and_then(serde_json::Value::as_u64),
+        runs_ended: v
+            .get("rail")
+            .and_then(|rail| rail.get("runs_ended"))
             .and_then(serde_json::Value::as_u64),
     })
 }

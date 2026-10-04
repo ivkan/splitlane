@@ -26,7 +26,7 @@ like a verb but is not one exits with code `2`.
 | `focus <target>` | | `surface.focus` | JSON |
 | `send <target> <text>` | `--submit`, `--paste`, `--broadcast`, `--report-file PATH` | `surface.send_text` | JSON |
 | `key <target> <keystroke>` | | `surface.send_keystroke` | JSON |
-| `wait` | `--match SEL` (required), `--pattern REGEX`, `--idle`, `--for MS`, `--timeout SECS`, `--any`, `--all` | `surface.read`, `events.subscribe` | JSON |
+| `wait` | `--match SEL` (required), one of `--pattern REGEX`, `--idle`, `--until turn-end`, `--state WORDS`; `--for MS`, `--timeout SECS`, `--any`, `--all`, `--after N`, `--through-waiting`, `--start-grace SECS` | `surface.read`, `surface.status`, `events.subscribe` | JSON |
 | `watch` | `--surface SEL`, `--type TYPE` (repeatable), `--events-only` | `events.subscribe` | JSON lines |
 | `up <file>` | `--dry-run` | `workspace.up` | JSON |
 | `flow run <file>` | `--dry-run`, `--json` | `workspace.up`, `surface.split`, `surface.send_text`, `surface.read` | Progress lines, or a JSON report with `--json` |
@@ -57,7 +57,10 @@ configuration files:
   `report_sentinel` (`REPORT_DONE <path>`) to the output.
 - `send --submit` toward an agent waits up to 3 s for a turn to start and
   exits `1` when it cannot confirm one; the output then carries `started` and
-  `start_reason`.
+  `start_reason`. The confirmation is weak for an agent with no hook: any new
+  output counts, including the echo of the text just sent. With `--submit`
+  the output also carries `runs_ended`, the surface's `rail.runs_ended` read
+  before the text was written, for `wait --until turn-end --after`.
 - `wait --pattern` polls every 500 ms over the last 500 lines and matches only
   output that appeared after `wait` started. Prints
   `{matched, panes, matches: [{surface_id, lines}]}`. `--any` and `--all`
@@ -67,6 +70,47 @@ configuration files:
   1000). With `--pattern` as well, whichever happens first returns. Prints
   `{surface_id, idle, matched}`. Single target only; `--any`/`--all` are
   ignored.
+- `wait --until turn-end` returns when the agent's turn is over, reading
+  [`rail`](#rail) rather than output. It checks, in this order:
+
+  | Condition | `outcome` | Exit |
+  | --- | --- | --- |
+  | The surface closed | `closed` | `1` |
+  | The surface has no `rail` | `no_rail` | `7` |
+  | A run past the baseline has ended and the status is `idle` | `finished`, or `failed` when that run's `last_outcome` is `failed` | `0`, or `6` |
+  | `rail.exited`, or the status is `failed` | `failed` | `6` |
+  | The tier is `T3` | `no_turn_signal` after `--start-grace`, or `degraded` at once if the surface was on a higher tier earlier in this wait | `7` |
+  | The status is `waiting` | `waiting`, with the question in `message` when known | `5` |
+  | No baseline was given, no turn was seen in flight, and `--start-grace` has passed | `no_turn` | `1` |
+  | `--timeout` passed | `timeout` | `4` |
+
+  The baseline is `--after N`; without it, `rail.runs_ended` as it is when
+  the wait starts. Pass `--after` with the `runs_ended` printed by
+  `send --submit`, so a turn that ends before `wait` starts is not missed.
+  `--start-grace` defaults to 10 seconds.
+
+  Exit `5` means the agent asked a person a question. It is not an answer to
+  wait for and not the end of the turn: answer it in the agent's own pane.
+  `--through-waiting` keeps waiting instead, for a script that runs with a
+  person at the keyboard.
+
+  A finish is reported 3 to 6 seconds after the agent stops, because the rail
+  confirms it for 3 seconds first.
+
+  On tier `T3` the wait is refused, not answered from silence. Use
+  `wait --idle --pattern <sentinel>` or `send --report-file` there.
+
+  Prints `{outcome, targets: [{surface_id, outcome, status, tier, runs_ended,
+  last_outcome, message}]}`. With `--all` every surface the selector matches
+  is waited on until it reaches an outcome of its own, and the exit code is
+  the worst one: `6`, then `5`, `7`, `1`, `4`, `0`. With `--any` the first
+  surface to reach an outcome ends the wait and is the only one listed.
+- `wait --state WORDS` returns when `rail.status` is one of the
+  comma-separated words (`starting`, `running`, `waiting`, `idle`, `failed`),
+  on any tier and with no confirmation of its own. Prints the same object
+  with `outcome: "matched"`. `--any` and `--all` work as above.
+- `wait --until` and `wait --state` are woken by the `surface.rail` event on
+  Linux and macOS and poll `surface.status` every 500 ms on Windows.
 - `wait --timeout` defaults to 300 seconds.
 - `watch` runs until interrupted (`Ctrl-C` exits `0`). `--events-only` hides
   `subscribed`, `heartbeat` and `dropped` frames.
@@ -87,10 +131,13 @@ No match, or several matches where one is required, exits with code `3`.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | Runtime failure: instance unreachable, method refused by a gate, handler error, surface closed, flow failed or aborted |
+| `1` | Runtime failure: instance unreachable, method refused by a gate, handler error, surface closed, flow failed or aborted. `wait --until turn-end`: no turn was in flight |
 | `2` | Usage error, including an unknown verb |
 | `3` | Target not found or ambiguous. `watch` and `wait --idle` also use `3` when they cannot open the event stream |
 | `4` | `wait` timed out; a flow `ready` barrier timed out |
+| `5` | `wait --until turn-end`: the agent is waiting for a person |
+| `6` | `wait --until turn-end`: the run failed, or the agent exited |
+| `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`) |
 | `130` | `wait --idle` interrupted with `Ctrl-C` |
 
 ## Gates

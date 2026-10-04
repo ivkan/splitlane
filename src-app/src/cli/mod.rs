@@ -21,6 +21,7 @@ mod selector;
 mod send_cmd;
 mod up_cmd;
 mod wait_cmd;
+mod wait_rail;
 mod watch_cmd;
 mod workspace_spec;
 
@@ -34,6 +35,16 @@ pub const EXIT_TARGET: i32 = 3;
 /// EXIT_TARGET (no/ambiguous match) and EXIT_RUNTIME (instance down / pane
 /// closed) so scripts can tell a timeout apart from a hard failure.
 pub const EXIT_TIMEOUT: i32 = 4;
+/// `wait --until turn-end`: the agent is waiting for a person. Its own code
+/// because the caller must do something different from every other outcome:
+/// pass the question on, not retry and not answer it.
+pub const EXIT_NEEDS_PERSON: i32 = 5;
+/// `wait --until turn-end`: the run failed, or the agent is gone.
+pub const EXIT_AGENT_FAILED: i32 = 6;
+/// Nothing that reports for the surface can answer the question asked of it:
+/// no source that can say a turn ended, or no reader for the agent's
+/// conversation. The caller should switch method, not wait longer.
+pub const EXIT_NO_TURN_SIGNAL: i32 = 7;
 
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
@@ -255,7 +266,7 @@ enum Commands {
         /// `--idle` is set. With `--idle` it is an optional sentinel: it is
         /// checked on each new output and EITHER signal (pattern match OR going
         /// idle) returns first.
-        #[arg(long, required_unless_present = "idle")]
+        #[arg(long, required_unless_present_any = ["idle", "until", "state"])]
         pattern: Option<String>,
         /// Wait until the pane's output goes quiet (no `output_generation`
         /// change for `--for` ms) by subscribing to the push stream - zero
@@ -276,6 +287,30 @@ enum Commands {
         /// Require ALL matching panes to match the pattern. `--pattern` mode only.
         #[arg(long)]
         all: bool,
+        /// Wait for what the rail says rather than for output: `turn-end`
+        /// returns when the agent's turn is over (exit 0), when it is waiting
+        /// for a person (5), when the run failed (6), or when nothing can
+        /// report a turn ending for that surface (7). Works with `--any` and
+        /// `--all`.
+        #[arg(long, value_enum, conflicts_with_all = ["idle", "pattern", "for_ms", "state"])]
+        until: Option<WaitUntil>,
+        /// Wait until the rail's status word is one of these, comma separated:
+        /// starting, running, waiting, idle, failed.
+        #[arg(long, value_name = "WORDS", conflicts_with_all = ["idle", "pattern", "for_ms"])]
+        state: Option<String>,
+        /// With `--until turn-end`: the `runs_ended` value read before the
+        /// prompt was sent (`send --submit` prints it). The wait returns once
+        /// a run past it has ended.
+        #[arg(long, value_name = "N", requires = "until")]
+        after: Option<u64>,
+        /// With `--until turn-end`: keep waiting while the agent waits for a
+        /// person, instead of returning with exit 5.
+        #[arg(long, requires = "until")]
+        through_waiting: bool,
+        /// With `--until turn-end`: seconds a surface is given to start a turn
+        /// or to gain a source that can report one ending (default 10).
+        #[arg(long, value_name = "SECS", requires = "until")]
+        start_grace: Option<u64>,
     },
     /// Stream lifecycle events from the running instance as JSONL.
     Watch {
@@ -325,6 +360,13 @@ impl SplitDir {
             SplitDir::Vertical => "vertical",
         }
     }
+}
+
+/// What `wait --until` waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum WaitUntil {
+    /// The agent's turn is over.
+    TurnEnd,
 }
 
 /// A CLI failure carrying the process exit code to surface for it.
@@ -460,8 +502,48 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             timeout,
             any,
             all,
+            until,
+            state,
+            after,
+            through_waiting,
+            start_grace,
         } => {
-            if idle {
+            let mode = if all {
+                wait_cmd::MatchMode::All
+            } else if any {
+                wait_cmd::MatchMode::Any
+            } else {
+                wait_cmd::MatchMode::Single
+            };
+            let rail_wait = match (until, state.as_deref()) {
+                (Some(WaitUntil::TurnEnd), _) => Some(wait_rail::RailWait::TurnEnd),
+                (None, Some(words)) => Some(wait_rail::RailWait::State(
+                    wait_rail::parse_state_words(words)?,
+                )),
+                (None, None) => None,
+            };
+            // clap drops `requires = "until"` when `--state` is present,
+            // because the two conflict; so the pairing is checked here.
+            if until.is_none() && (after.is_some() || through_waiting || start_grace.is_some()) {
+                return Err(CliError::runtime(
+                    "--after, --through-waiting and --start-grace apply to --until turn-end only",
+                ));
+            }
+            if let Some(wait) = rail_wait {
+                let (timeout, start_grace) = wait_rail::durations(timeout, start_grace);
+                wait_rail::wait_rail(
+                    client,
+                    &selector,
+                    wait_rail::RailWaitOptions {
+                        wait,
+                        after,
+                        through_waiting,
+                        start_grace,
+                        timeout,
+                        mode,
+                    },
+                )
+            } else if idle {
                 // Push-based quiescence; optional sentinel.
                 wait_cmd::wait_idle(client, &selector, for_ms, timeout, pattern.as_deref())
             } else {
@@ -473,13 +555,6 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
                     return Err(CliError::runtime(
                         "wait requires --pattern <regex> unless --idle is set",
                     ));
-                };
-                let mode = if all {
-                    wait_cmd::MatchMode::All
-                } else if any {
-                    wait_cmd::MatchMode::Any
-                } else {
-                    wait_cmd::MatchMode::Single
                 };
                 wait_cmd::wait(client, &selector, &pattern, timeout, mode)
             }
@@ -658,6 +733,58 @@ mod tests {
         assert_eq!(err.exit_code(), 2);
         let cli = Cli::try_parse_from(["splitlane", "key", "backend", "escape"]).expect("parse");
         assert!(matches!(cli.command, Some(Commands::Key { .. })));
+    }
+
+    /// The rail modes parse without `--pattern`, carry their own flags, and
+    /// refuse to be mixed with the output-based modes.
+    #[test]
+    fn wait_rail_modes_parsing() {
+        let cli = Cli::try_parse_from([
+            "splitlane",
+            "wait",
+            "--match",
+            "reviewer",
+            "--until",
+            "turn-end",
+            "--after",
+            "7",
+            "--through-waiting",
+            "--all",
+        ])
+        .expect("--until turn-end parses");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Wait {
+                until: Some(WaitUntil::TurnEnd),
+                after: Some(7),
+                through_waiting: true,
+                all: true,
+                pattern: None,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "splitlane",
+            "wait",
+            "--match",
+            "a",
+            "--state",
+            "idle,waiting",
+        ])
+        .expect("--state parses");
+        assert!(
+            matches!(cli.command, Some(Commands::Wait { state: Some(s), until: None, .. }) if s == "idle,waiting")
+        );
+        for bad in [
+            vec!["--until", "turn-end", "--idle"],
+            vec!["--until", "turn-end", "--pattern", "DONE"],
+            vec!["--until", "turn-end", "--state", "idle"],
+            vec!["--until", "quiet"],
+        ] {
+            let mut argv = vec!["splitlane", "wait", "--match", "a"];
+            argv.extend(bad.iter().copied());
+            assert!(Cli::try_parse_from(argv).is_err(), "{bad:?} must not parse");
+        }
     }
 
     #[test]
