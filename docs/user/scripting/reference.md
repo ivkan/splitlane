@@ -221,7 +221,7 @@ The preset format. Unknown keys are errors.
 | `copy_env` | bool | `true` | Copy the repository's top-level git-ignored `.env*` files into a new worktree. Needs `worktree` |
 | `setup` | string | none | Command run in a new worktree before the pane starts; failure warns only. Needs `worktree` |
 | `setup_timeout_secs` | integer | `300` | Limit for `setup`. Needs `worktree` |
-| `worktree_teardown` | string | `"auto"` | `auto` removes the worktree on close when clean; `keep` leaves it. Needs `worktree` |
+| `worktree_teardown` | string | `"auto"` | `auto` removes the worktree on close when it holds only committed files (an ignored file keeps it); `keep` leaves it. Needs `worktree` |
 
 `${port_offset}` is replaced, per pane that uses it, with the first port of a
 free block of ten at or above `port_base`.

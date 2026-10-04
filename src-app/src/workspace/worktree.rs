@@ -10,7 +10,8 @@
 //!
 //! Invariants:
 //! - a branch is NEVER deleted, only the worktree directory;
-//! - a worktree with uncommitted changes is NEVER removed;
+//! - a worktree with uncommitted changes is NEVER removed, and neither is one
+//!   holding a file git would not report - ignored, or hidden from status;
 //! - only worktrees Splitlane created (tracked in `managed_worktrees`) are
 //!   ever torn down - a pre-existing worktree pointed at by `cwd` is not ours;
 //! - every git invocation is a subprocess with argv (no shell interpolation)
@@ -31,6 +32,9 @@ const GIT_DEADLINE: Duration = Duration::from_secs(10);
 /// `worktree add` checks out a full tree - give it more room on big repos.
 const ADD_DEADLINE: Duration = Duration::from_secs(120);
 const STDOUT_CAP: u64 = 256 * 1024;
+/// `ls-files -v` names every tracked file, so its listing is sized for a
+/// large repository rather than for a plumbing answer.
+const INDEX_LISTING_CAP: u64 = 64 * 1024 * 1024;
 const OWNER_MARKER_FILE: &str = ".splitlane-worktree";
 
 /// Teardown policy for a managed worktree. `Auto` removes the
@@ -316,17 +320,132 @@ pub fn add_worktree(
     Ok(())
 }
 
-/// True when the worktree has no uncommitted changes (`status --porcelain`
-/// empty). An error (worktree gone, git missing) is NOT "clean" - the caller
-/// must keep its hands off when it cannot prove cleanliness.
-pub fn is_clean(worktree_path: &Path) -> Result<bool, String> {
-    run_git(
+/// True when removing the worktree would lose nothing: every file in it is
+/// either committed or something Splitlane put there itself.
+///
+/// A plain `git status --porcelain` is not that question. It leaves out
+/// ignored files, it leaves out untracked files when the repository sets
+/// `status.showUntrackedFiles=no`, and it leaves out edits to a file marked
+/// assume-unchanged or skip-worktree - and `git worktree remove` asks git the
+/// same plain question, so it deletes all three without a word. An ignored
+/// `.env` an agent filled in is exactly the file nobody committed.
+///
+/// So this asks for everything, and then excuses two things by name: the
+/// owner marker, and a `.env*` file that is still byte for byte the copy
+/// [`copy_env_files`] made. Anything else keeps the worktree, an installed
+/// dependency directory included: it cannot be told from a directory of
+/// notes, and a kept directory can be deleted by hand while a deleted one
+/// cannot be brought back.
+///
+/// A submodule's own ignored files are not listed either, and need not be:
+/// git refuses to remove a worktree that has a submodule checked out.
+///
+/// An error (worktree gone, git missing, a listing too long to read in full,
+/// files hidden from status) is NOT "clean" - the caller must keep its hands
+/// off when it cannot prove cleanliness.
+pub fn is_clean(worktree_path: &Path, repo_root: &Path) -> Result<bool, String> {
+    let status = git_command::run(
         GitProfile::Probe,
         worktree_path,
-        &["status", "--porcelain"],
+        &[
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--ignore-submodules=none",
+        ],
         GIT_DEADLINE,
+        STDOUT_CAP,
     )
-    .map(|out| out.is_empty())
+    .map_err(|e| format!("git status failed: {e}"))?;
+    if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        return Err(format!(
+            "git status failed: {}",
+            stderr.trim().lines().last().unwrap_or("non-zero exit")
+        ));
+    }
+    // A cut listing ends mid-record; the records before the cut are whole,
+    // and one that holds work settles the answer without the rest.
+    let mut records: Vec<&[u8]> = status.stdout.split(|byte| *byte == 0).collect();
+    records.pop();
+    if records
+        .iter()
+        .any(|record| !is_splitlanes_own(record, worktree_path, repo_root))
+    {
+        return Ok(false);
+    }
+    if status.stdout_truncated {
+        return Err("git status listed more than could be read".to_string());
+    }
+
+    let index = git_command::run(
+        GitProfile::Probe,
+        worktree_path,
+        &["ls-files", "-v", "-z"],
+        GIT_DEADLINE,
+        INDEX_LISTING_CAP,
+    )
+    .map_err(|e| format!("git ls-files failed: {e}"))?;
+    if !index.status.success() || index.stdout_truncated {
+        return Err("the index could not be listed in full".to_string());
+    }
+    // `-v` tags each entry: lowercase for assume-unchanged, `S` for
+    // skip-worktree. Either means status did not look at the file.
+    let hidden = index
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| {
+            entry
+                .first()
+                .is_some_and(|tag| tag.is_ascii_lowercase() || *tag == b'S')
+        })
+        .count();
+    if hidden > 0 {
+        return Err(format!(
+            "{hidden} tracked file(s) are marked assume-unchanged or skip-worktree, \
+             so their edits cannot be seen"
+        ));
+    }
+    Ok(true)
+}
+
+/// Whether one `status --porcelain -z` record names a file Splitlane itself
+/// put in the worktree. A record is `XY <path>`.
+fn is_splitlanes_own(record: &[u8], worktree_path: &Path, repo_root: &Path) -> bool {
+    let Some((state, path)) = record.split_at_checked(3) else {
+        return false;
+    };
+    let Ok(path) = std::str::from_utf8(path) else {
+        return false;
+    };
+    match state {
+        b"?? " | b"!! " if path == OWNER_MARKER_FILE => true,
+        // Only an ignored copy: git refuses to remove a worktree that holds
+        // an untracked file, so excusing one here would promise a removal
+        // that then does not happen.
+        b"!! " if path.starts_with(".env") && !path.contains('/') => {
+            is_unchanged_copy(&repo_root.join(path), &worktree_path.join(path))
+        }
+        _ => false,
+    }
+}
+
+fn is_unchanged_copy(source: &Path, copy: &Path) -> bool {
+    let (Ok(source_meta), Ok(copy_meta)) = (
+        std::fs::symlink_metadata(source),
+        std::fs::symlink_metadata(copy),
+    ) else {
+        return false;
+    };
+    if !source_meta.is_file() || !copy_meta.is_file() || source_meta.len() != copy_meta.len() {
+        return false;
+    }
+    match (std::fs::read(source), std::fs::read(copy)) {
+        (Ok(source), Ok(copy)) => source == copy,
+        _ => false,
+    }
 }
 
 /// `git worktree remove <path>`. Refuses dirty worktrees by itself too (git
@@ -341,6 +460,40 @@ pub fn remove_worktree(repo_root: &Path, path: &Path) -> Result<(), String> {
         GIT_DEADLINE,
     )
     .map(|_| ())
+}
+
+/// Remove a worktree [`is_clean`] has just vouched for.
+///
+/// Splitlane's marker is an untracked file, and git refuses to remove a
+/// worktree that holds one - so with the marker in place no managed worktree
+/// was ever removed. It goes first, and comes back if git still says no: a
+/// worktree that stays must stay Splitlane's, or the next close would not
+/// try again.
+fn remove_clean_worktree(repo_root: &Path, path: &Path) -> Result<(), String> {
+    let marker = owner_marker_path(path);
+    let contents = std::fs::read(&marker)
+        .map_err(|e| format!("cannot read owner marker {}: {e}", marker.display()))?;
+    std::fs::remove_file(&marker)
+        .map_err(|e| format!("cannot remove owner marker {}: {e}", marker.display()))?;
+    // Asked again, as late as it can be asked: git's own check before the
+    // removal does not look at ignored files, so a file an agent wrote while
+    // its pane was closing is only ever seen here. This narrows that gap; it
+    // does not close it.
+    let removed = match is_clean(path, repo_root) {
+        Ok(true) => remove_worktree(repo_root, path),
+        Ok(false) => Err("files appeared while the worktree was being removed".to_string()),
+        Err(e) => Err(e),
+    };
+    if removed.is_err()
+        && path.is_dir()
+        && let Err(e) = std::fs::write(&marker, &contents)
+    {
+        log::warn!(
+            "worktree kept without its marker, so it will not be removed later ({}): {e}",
+            path.display()
+        );
+    }
+    removed
 }
 
 /// `git worktree prune` - drops references whose directory no longer exists.
@@ -533,13 +686,13 @@ pub fn teardown_all(worktrees: Vec<ManagedWorktree>, open_containers: &[PathBuf]
             );
             continue;
         }
-        match is_clean(&wt.path) {
-            Ok(true) => match remove_worktree(&wt.repo_root, &wt.path) {
+        match is_clean(&wt.path, &wt.repo_root) {
+            Ok(true) => match remove_clean_worktree(&wt.repo_root, &wt.path) {
                 Ok(()) => log::info!("worktree removed: {}", wt.path.display()),
                 Err(e) => log::warn!("worktree kept ({}): {e}", wt.path.display()),
             },
             Ok(false) => log::warn!(
-                "worktree kept: uncommitted changes in {}",
+                "worktree kept: uncommitted or ignored files in {}",
                 wt.path.display()
             ),
             Err(e) => log::warn!(
@@ -589,6 +742,130 @@ mod tests {
         assert!(contains_or_equals(&gone, &gone));
         assert!(!contains_or_equals(&gone, &worktree));
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn test_git(cwd: &Path, args: &[&str]) {
+        let out = git_command::run(GitProfile::UserAction, cwd, args, ADD_DEADLINE, STDOUT_CAP)
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A repository that ignores `.env` and `build/`, holding an ignored
+    /// `.env`, with one managed worktree made the way both doors make it.
+    fn repo_with_managed_worktree(name: &str) -> (PathBuf, ManagedWorktree) {
+        let tmp =
+            std::env::temp_dir().join(format!("splitlane-teardown-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let repo = tmp.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        test_git(&repo, &["init", "-q"]);
+        test_git(&repo, &["config", "user.email", "test@example.com"]);
+        test_git(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join(".gitignore"), ".env\nbuild/\n").expect("gitignore");
+        std::fs::write(repo.join("a.txt"), "one\n").expect("file");
+        test_git(&repo, &["add", "."]);
+        test_git(&repo, &["commit", "-q", "-m", "init"]);
+        std::fs::write(repo.join(".env"), "KEY=source\n").expect("env");
+
+        let path = worktree_dir(&repo, "feat");
+        add_worktree(&repo, &path, "feat", true).expect("worktree");
+        assert_eq!(copy_env_files(&repo, &path), vec![".env".to_string()]);
+        let managed = ManagedWorktree {
+            path,
+            repo_root: repo,
+            branch: "feat".to_string(),
+            teardown: TeardownPolicy::Auto,
+        };
+        (tmp, managed)
+    }
+
+    /// The marker and the copied `.env` are both in every managed worktree,
+    /// and neither is the person's work. With either counted as work the
+    /// promise on the dialog's checkbox was never kept.
+    #[test]
+    fn a_worktree_holding_only_what_splitlane_put_there_is_removed() {
+        let (tmp, managed) = repo_with_managed_worktree("clean");
+        let path = managed.path.clone();
+        let repo = managed.repo_root.clone();
+
+        teardown_all(vec![managed], &[]);
+
+        assert!(!path.exists(), "a clean managed worktree is removed");
+        assert!(branch_exists(&repo, "feat"), "the branch is never deleted");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_worktree_holding_an_ignored_file_is_kept() {
+        let (tmp, managed) = repo_with_managed_worktree("ignored");
+        let path = managed.path.clone();
+        std::fs::create_dir_all(path.join("build")).expect("build dir");
+        std::fs::write(path.join("build").join("notes.txt"), "work\n").expect("ignored file");
+
+        teardown_all(vec![managed], &[]);
+
+        assert!(path.join("build").join("notes.txt").exists());
+        assert!(has_owner_marker(&path), "a kept worktree stays managed");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_worktree_whose_env_copy_was_edited_is_kept() {
+        let (tmp, managed) = repo_with_managed_worktree("env");
+        let path = managed.path.clone();
+        std::fs::write(path.join(".env"), "KEY=filled-in-by-hand\n").expect("edit");
+
+        teardown_all(vec![managed], &[]);
+
+        assert!(path.join(".env").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_worktree_holding_an_untracked_file_the_repository_hides_is_kept() {
+        let (tmp, managed) = repo_with_managed_worktree("hidden-untracked");
+        let path = managed.path.clone();
+        test_git(
+            &managed.repo_root,
+            &["config", "status.showUntrackedFiles", "no"],
+        );
+        std::fs::write(path.join("draft.txt"), "work\n").expect("untracked file");
+
+        teardown_all(vec![managed], &[]);
+
+        assert!(path.join("draft.txt").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_worktree_with_an_edit_git_was_told_not_to_look_at_is_kept() {
+        let (tmp, managed) = repo_with_managed_worktree("assume-unchanged");
+        let path = managed.path.clone();
+        test_git(&path, &["update-index", "--assume-unchanged", "a.txt"]);
+        std::fs::write(path.join("a.txt"), "one\nedited\n").expect("edit");
+
+        assert!(is_clean(&path, &managed.repo_root).is_err());
+        teardown_all(vec![managed], &[]);
+
+        assert!(path.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_worktree_with_a_tracked_edit_is_kept() {
+        let (tmp, managed) = repo_with_managed_worktree("tracked");
+        let path = managed.path.clone();
+        std::fs::write(path.join("a.txt"), "one\nedited\n").expect("edit");
+
+        assert_eq!(is_clean(&path, &managed.repo_root), Ok(false));
+        teardown_all(vec![managed], &[]);
+
+        assert!(path.exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

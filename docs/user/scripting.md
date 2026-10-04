@@ -178,9 +178,13 @@ env = { PORT = "${port_offset}" }
 - A `prompt` is typed into the agent and never submitted.
 - `worktree` puts that pane in a git worktree for the branch, in a directory
   next to the repository (`<repo>.worktrees/<branch-slug>`), creating the
-  branch if needed. When the project closes, the worktree is removed if it has
-  no uncommitted changes and is not open as another project, unless
-  `worktree_teardown = "keep"`; the branch is never deleted.
+  branch if needed. When the project closes, the worktree is removed if it
+  holds nothing but committed files and is not open as another project, unless
+  `worktree_teardown = "keep"`; the branch is never deleted. Ignored files
+  count as something to keep: a worktree with `node_modules`, a build
+  directory or an edited `.env` stays, because git would delete those without
+  asking. Only the `.env*` files Splitlane copied in, still unchanged, do not
+  hold it back.
 - `${port_offset}` in an `env` value becomes a port from a free block of ten
   starting at `port_base` (default 3000), a different block per pane.
 
