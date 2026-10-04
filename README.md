@@ -160,7 +160,7 @@ Download the file for your platform from the
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple Silicon) | `splitlane-<version>-aarch64-apple-darwin.dmg` | The app is signed and notarized: open the image and drag Splitlane to Applications, or run `brew install --cask ivkan/splitlane/splitlane`. Intel Macs are not built yet. |
+| macOS (Apple Silicon) | `splitlane-<version>-aarch64-apple-darwin.dmg` | The image and the app in it are signed and notarized: open the image and drag Splitlane to Applications, or run `brew install --cask ivkan/splitlane/splitlane`. Intel Macs are not built yet. |
 | Debian, Ubuntu | `splitlane-<version>-<arch>.deb` | `sudo apt install ./splitlane-<version>-<arch>.deb` |
 | Fedora, openSUSE | `splitlane-<version>-<arch>.rpm` | Import the signing key once (check its fingerprint first, see [keys/](keys/README.md)), then install: `sudo rpm --import https://raw.githubusercontent.com/ivkan/splitlane/main/keys/splitlane-release.asc`, then `sudo dnf install ./splitlane-<version>-<arch>.rpm` or `sudo zypper install ./splitlane-<version>-<arch>.rpm`. zypper refuses the package without the key. |
 | Other Linux | `.AppImage` or `.tar.gz` | The AppImage runs as is after `chmod +x`. The tarball unpacks to `splitlane.app/`; `splitlane.app/install.sh` installs it under `~/.local` without sudo. |

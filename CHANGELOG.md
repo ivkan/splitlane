@@ -6,6 +6,43 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-04
+
+### Changed
+
+- A worktree Splitlane created is now removed when its project closes, as
+  the "Remove it when the project closes" choice always said. Until now it
+  never was. It is removed only when it holds nothing but committed files:
+  an ignored file, an untracked file or an edited `.env` keeps it, because
+  git would delete those without asking. The branch is never deleted.
+- `workspace.close` and `workspace.select` require `index`. Without one,
+  `workspace.close` used to close whichever project was active.
+- A parameter that names a target (`surface_id`, `to_surface_id`, `index`)
+  must be a JSON number. A string such as `"42"` used to be read as "not
+  given", and the write went to the first pane of the active project; it is
+  now refused with `-32602`.
+
+### Added
+
+- Splitlane asks the release feed for a newer version every four hours
+  while it stays open, not only at startup.
+- The macOS `.dmg` is itself signed, notarized and stapled. Before, only the
+  app inside it was.
+- `surface.send_text` and `surface.send_keystroke` answer `-32003` when the
+  pane did not take the input - its process has exited, or its input queue
+  is full - instead of `sent: true`.
+
+### Fixed
+
+- The git commands Splitlane runs in the background no longer run programs
+  named in a repository's own configuration: a file-system monitor, a text
+  converter, an external diff or a content filter. Opening a folder is not
+  enough to execute what its `.git/config` says.
+- On Linux, starting the app with no display server prints an error and
+  exits instead of hanging.
+- The error for an unreachable instance no longer repeats the program name,
+  and `--help` no longer lists a flag meant for the update test harness.
+
 ## [0.1.3] - 2026-09-28
 
 ### Fixed
@@ -61,7 +98,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/ivkan/splitlane/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ivkan/splitlane/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ivkan/splitlane/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ivkan/splitlane/compare/v0.1.0...v0.1.1
