@@ -99,6 +99,28 @@ you. They come from signals no vendor has to keep providing. The pass is
 surface in every container, not only the visible ones, and asks two sources in
 order.
 
+**"Every" includes a surface that is in no pane.** A session pushed out of its
+pane by another keeps its PTY, its agent and its row in the rail; the only
+thing it loses is the pane. The target list used to be built from the layout
+tree alone, so the pass stopped visiting such a session, and nothing took its
+place: `Thread::detector_read_at` is written only by a pass that visits the
+surface, so it stayed set, the hook kept standing down for a reader that was
+not coming, and the out-of-turn re-read found no target either. Measured on a
+live Claude Code session that was thirty seconds into a turn when another
+session was opened in its pane: the turn ended, the `Stop` frame arrived, and
+the row said `running` for the next seventy-five seconds, with no unread mark,
+no notification and no count for a script waiting on it. The run was announced
+when the session was shown again, with a duration that included the time it
+had been out of sight.
+
+So `agent_state_targets` walks the panes and then the views the surface cache
+holds, merged by surface id. A view whose PTY has not spawned is skipped in
+both, which is still what keeps a restored session nobody has opened out of
+the pass. The alternative was to hand such a surface back to the hook when the
+pass stops visiting it. It was refused because the hook cannot say the one
+thing a session out of sight most needs said: during a permission ask its last
+frame is a tool call, so it says `running` while a person is being waited on.
+
 **The status file is asked first.** Claude Code writes
 `~/.claude/sessions/<pid>.json`, and `claude_pid_state::state_for` reads it. The
 read is keyed by the surface's forced session uuid, so it cannot answer about

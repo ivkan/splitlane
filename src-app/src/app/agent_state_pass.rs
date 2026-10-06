@@ -358,57 +358,78 @@ impl SplitlaneApp {
     /// statement about the wrong kind of object, and one that reaches the
     /// attention queue and `⌥⇥` through `Thread::status` like any other. The
     /// rail owes three answers about **agents**.
+    ///
+    /// **A surface that is not in a pane is read too**: the views the surface
+    /// cache holds are walked after the panes and merged by surface id. A
+    /// session pushed out of its pane keeps its PTY and its row, and the pass
+    /// that stopped visiting it left its status standing with nobody to end
+    /// it. The case is in `docs/internals/agent-state-and-the-rail.md`.
     fn agent_state_targets(&self, only: Option<u64>, cx: &gpui::App) -> Vec<StateTarget> {
         let mut seen = std::collections::HashSet::new();
         let mut targets = Vec::new();
+        let mut consider = |view: &crate::terminal::view::TerminalView| {
+            let Some(thread_id) = view.agent_thread_id else {
+                return;
+            };
+            if only.is_some_and(|wanted| wanted != thread_id) {
+                return;
+            }
+            if seen.contains(&thread_id) {
+                return;
+            }
+            let pty_child = view.terminal.child_pid;
+            if pty_child == 0 {
+                return;
+            }
+            // Ids come from one process-wide counter, so the first record
+            // with this id is the only one, whichever container holds it.
+            let Some(thread) = self
+                .workspaces
+                .iter()
+                .flat_map(|container| container.threads.iter())
+                .find(|t| t.id == thread_id && t.terminal_agent.is_some())
+            else {
+                return;
+            };
+            // Marked only now: a view with no PTY must not stand in the way
+            // of a live one for the same surface met later in the walk.
+            seen.insert(thread_id);
+            targets.push(StateTarget {
+                thread_id,
+                state_file: crate::agent_sessions::state_file_for(thread),
+                pty_child,
+                baseline: self.worker_baselines.get(&thread_id).cloned(),
+                session_id: thread.session_id.clone(),
+                output_generation: view.terminal.output_generation,
+                cwd: thread.cwd.clone(),
+                reads_status_file: thread.terminal_agent
+                    == Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+                turn_end_len: self
+                    .turn_ends
+                    .get(&thread_id)
+                    .and_then(|watch| watch.file_len),
+                label: log::log_enabled!(target: TRACE, log::Level::Debug)
+                    .then(|| thread.title.clone()),
+            });
+        };
         for container in &self.workspaces {
             let Some(root) = container.root.as_ref() else {
                 continue;
             };
             for pane in root.collect_leaves() {
                 for tab in &pane.read(cx).tabs {
-                    let Some(view) = tab.as_terminal() else {
-                        continue;
-                    };
-                    let view = view.read(cx);
-                    let Some(thread_id) = view.agent_thread_id else {
-                        continue;
-                    };
-                    if only.is_some_and(|wanted| wanted != thread_id) {
-                        continue;
-                    }
-                    if !seen.insert(thread_id) {
-                        continue;
-                    }
-                    let pty_child = view.terminal.child_pid;
-                    if pty_child == 0 {
-                        continue;
-                    }
-                    if let Some(thread) = container
-                        .threads
-                        .iter()
-                        .find(|t| t.id == thread_id && t.terminal_agent.is_some())
-                    {
-                        targets.push(StateTarget {
-                            thread_id,
-                            state_file: crate::agent_sessions::state_file_for(thread),
-                            pty_child,
-                            baseline: self.worker_baselines.get(&thread_id).cloned(),
-                            session_id: thread.session_id.clone(),
-                            output_generation: view.terminal.output_generation,
-                            cwd: thread.cwd.clone(),
-                            reads_status_file: thread.terminal_agent
-                                == Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
-                            turn_end_len: self
-                                .turn_ends
-                                .get(&thread_id)
-                                .and_then(|watch| watch.file_len),
-                            label: log::log_enabled!(target: TRACE, log::Level::Debug)
-                                .then(|| thread.title.clone()),
-                        });
+                    if let Some(view) = tab.as_terminal() {
+                        consider(view.read(cx));
                     }
                 }
             }
+        }
+        // The cached ones in id order, so what a pass reads does not depend
+        // on the map's iteration.
+        let mut cached: Vec<_> = self.agents_view.agents_terminal_view_cache.iter().collect();
+        cached.sort_unstable_by_key(|(thread_id, _)| **thread_id);
+        for (_, view) in cached {
+            consider(view.read(cx));
         }
         targets
     }
