@@ -167,7 +167,19 @@ fn opening_a_session_keeps_its_published_names() {
         handler.contains("\"surface.add_agent\""),
         "IPC method `surface.add_agent` disappeared"
     );
+    for method in ["surface.park", "surface.show"] {
+        assert!(
+            handler.contains(&format!("\"{method}\"")),
+            "IPC method `{method}` disappeared"
+        );
+    }
     let rules = read("src-app/src/app/orchestration.rs");
+    for field in ["\"parked\"", "\"shown\"", "\"displaced_surface_id\""] {
+        assert!(
+            rules.contains(field),
+            "a move lost its response field {field}"
+        );
+    }
     for field in [
         "\"surface_id\"",
         "\"thread_id\"",

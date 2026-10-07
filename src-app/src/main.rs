@@ -1275,6 +1275,13 @@ struct SplitlaneApp {
     /// fails to upgrade, which is the right answer for a return chord.
     focused_pane_now: Option<gpui::WeakEntity<crate::pane::Pane>>,
     focused_pane_before: Option<gpui::WeakEntity<crate::pane::Pane>>,
+    /// When each pane last took focus, as a count that only grows.
+    ///
+    /// The pair above remembers two panes. A session asking for a pane for one
+    /// it opened, with none free, gives up the pane of another of its own that
+    /// has gone longest without focus, and that needs an order over all of
+    /// them. A pane that never had focus is absent, which sorts it first.
+    pub(crate) pane_focus_order: std::collections::HashMap<gpui::EntityId, u64>,
     /// The panes area's own size in points, captured each frame by a canvas
     /// laid over it.
     ///

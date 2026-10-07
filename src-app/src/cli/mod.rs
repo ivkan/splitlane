@@ -71,6 +71,8 @@ const VERBS: &[&str] = &[
     "select",
     "split",
     "add",
+    "park",
+    "show",
     "send",
     "up",
     "wait",
@@ -264,6 +266,40 @@ enum Commands {
         pane: bool,
         /// Emit `{surface_id, thread_id, agent, tier, session_id, runs_ended,
         /// placement, placement_reason, opened_by}` as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take a session out of its pane. It keeps running and keeps its row in
+    /// the rail, as when its pane is closed by hand.
+    ///
+    /// For a session the caller opened with `add`; anything else is refused
+    /// (exit 8).
+    Park {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+        /// Emit `{parked, surface_id}` as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put a session that is in no pane into one.
+    ///
+    /// For a session the caller opened with `add`. It takes an empty pane, or
+    /// a new one where one fits. With neither, it takes the place of another
+    /// session the caller opened - the one that has gone longest without
+    /// focus - and never the caller's own pane or a pane showing anything
+    /// else; if there is none to give up, it is refused (exit 8).
+    Show {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+        /// Add the pane next to the one showing this target, when a pane can
+        /// be added.
+        #[arg(long, value_name = "TARGET")]
+        beside: Option<String>,
+        /// With `--beside`: `h`/`horizontal` (stacked) or `v`/`vertical`
+        /// (side by side, the default).
+        #[arg(long, requires = "beside")]
+        direction: Option<SplitDir>,
+        /// Emit `{shown, surface_id, displaced_surface_id}` as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -585,6 +621,19 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
                 pane,
                 json,
             },
+        ),
+        Commands::Park { target, json } => session_cmds::park(client, &target, json),
+        Commands::Show {
+            target,
+            beside,
+            direction,
+            json,
+        } => session_cmds::show(
+            client,
+            &target,
+            beside.as_deref(),
+            direction.map(SplitDir::as_ipc),
+            json,
         ),
         Commands::Send {
             target,

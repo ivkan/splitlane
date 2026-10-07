@@ -1,4 +1,4 @@
-//! The verbs a session uses on the sessions it opened: `add`.
+//! The verbs a session uses on the sessions it opened: `add`, `park`, `show`.
 //!
 //! Thin wrappers over the `surface.*` methods of the same names. What a caller
 //! may do is decided by the server, which knows which pane the call came from;
@@ -7,6 +7,7 @@
 use serde_json::{Value, json};
 use splitlane_ipc_client::IpcTransport;
 
+use super::selector::resolve_target;
 use super::{CliError, EXIT_OK, EXIT_REFUSED};
 
 /// What `splitlane add` was asked for.
@@ -100,6 +101,53 @@ fn add_summary(result: &Value) -> String {
         _ => "in a pane".to_string(),
     };
     format!("{surface}\t{agent} opened {place}; runs_ended {runs_ended}")
+}
+
+/// `splitlane park <target> [--json]`: take a session out of its pane. It
+/// keeps running and keeps its row in the rail.
+pub fn park(client: &impl IpcTransport, target: &str, json: bool) -> Result<i32, CliError> {
+    let surface_id = resolve_target(client, target)?;
+    let result = super::reject_legacy_error(
+        client
+            .call("surface.park", json!({ "surface_id": surface_id }))
+            .map_err(call_error)?,
+    )?;
+    if json {
+        super::print_json(&result)?;
+    } else {
+        println!("{surface_id}\tin the rail, no pane");
+    }
+    Ok(EXIT_OK)
+}
+
+/// `splitlane show <target> [--beside <target>] [--direction h|v] [--json]`:
+/// put a session that is in no pane into one.
+pub fn show(
+    client: &impl IpcTransport,
+    target: &str,
+    beside: Option<&str>,
+    direction: Option<&str>,
+    json: bool,
+) -> Result<i32, CliError> {
+    let surface_id = resolve_target(client, target)?;
+    let mut params = json!({ "surface_id": surface_id });
+    if let Some(beside) = beside {
+        params["beside_surface_id"] = json!(resolve_target(client, beside)?);
+    }
+    if let Some(direction) = direction {
+        params["direction"] = json!(direction);
+    }
+    let result =
+        super::reject_legacy_error(client.call("surface.show", params).map_err(call_error)?)?;
+    if json {
+        super::print_json(&result)?;
+    } else {
+        match result.get("displaced_surface_id").and_then(Value::as_u64) {
+            Some(displaced) => println!("{surface_id}\tin a pane, in place of {displaced}"),
+            None => println!("{surface_id}\tin a pane"),
+        }
+    }
+    Ok(EXIT_OK)
 }
 
 #[cfg(test)]
@@ -197,6 +245,70 @@ mod tests {
         let err = add(&fake, asked).expect_err("no file");
         assert_eq!(err.code, crate::cli::EXIT_RUNTIME);
         assert!(fake.calls.borrow().is_empty());
+    }
+
+    /// Answers `surface.list` with two surfaces and records everything else.
+    struct Listed {
+        calls: RefCell<Vec<(String, Value)>>,
+        reply: Result<Value, String>,
+    }
+    impl IpcTransport for Listed {
+        fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+            if method == "surface.list" {
+                return Ok(json!({ "surfaces": [
+                    { "surface_id": 12, "name": "api-docs" },
+                    { "surface_id": 18, "name": "plan" },
+                ]}));
+            }
+            self.calls.borrow_mut().push((method.to_string(), params));
+            self.reply.clone()
+        }
+    }
+
+    #[test]
+    fn park_names_the_surface_it_resolved() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Ok(json!({ "parked": true, "surface_id": 12 })),
+        };
+        assert_eq!(park(&fake, "api-docs", true).expect("ok"), EXIT_OK);
+        let calls = fake.calls.borrow();
+        assert_eq!(calls[0].0, "surface.park");
+        assert_eq!(calls[0].1, json!({ "surface_id": 12 }));
+    }
+
+    #[test]
+    fn show_passes_the_neighbour_and_the_direction_only_when_given() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Ok(json!({ "shown": true, "surface_id": 12 })),
+        };
+        assert_eq!(
+            show(&fake, "api-docs", None, None, true).expect("ok"),
+            EXIT_OK
+        );
+        assert_eq!(
+            show(&fake, "api-docs", Some("plan"), Some("horizontal"), true).expect("ok"),
+            EXIT_OK
+        );
+        let calls = fake.calls.borrow();
+        assert_eq!(calls[0].1, json!({ "surface_id": 12 }));
+        assert_eq!(
+            calls[1].1,
+            json!({ "surface_id": 12, "beside_surface_id": 18, "direction": "horizontal" })
+        );
+    }
+
+    #[test]
+    fn a_refused_move_is_exit_8_and_an_unknown_target_is_exit_3() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Err("splitlane error -32004: surface.show refused (no_room): no".to_string()),
+        };
+        let err = show(&fake, "api-docs", None, None, false).expect_err("refused");
+        assert_eq!(err.code, EXIT_REFUSED);
+        let err = park(&fake, "nothing-by-this-name", false).expect_err("no target");
+        assert_eq!(err.code, crate::cli::EXIT_TARGET);
     }
 
     #[test]

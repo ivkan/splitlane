@@ -140,6 +140,21 @@ impl SplitlaneApp {
         }
         self.focused_pane_before = self.focused_pane_now.take();
         self.focused_pane_now = Some(current.downgrade());
+        // Closed panes are dropped here, where the map grows, so it stays
+        // the size of what is on screen across every project.
+        let live: std::collections::HashSet<gpui::EntityId> = self
+            .workspaces
+            .iter()
+            .flat_map(|container| container.collect_panes())
+            .map(|pane| pane.entity_id())
+            .collect();
+        self.pane_focus_order.retain(|pane, _| live.contains(pane));
+        let next = self
+            .pane_focus_order
+            .values()
+            .max()
+            .map_or(1, |last| last + 1);
+        self.pane_focus_order.insert(current.entity_id(), next);
     }
 
     /// The surface taking input, or `None` when nothing that has a rail row

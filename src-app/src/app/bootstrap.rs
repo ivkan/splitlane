@@ -1136,6 +1136,7 @@ impl SplitlaneApp {
             pending_rail_surface_drop: None,
             pending_palette_output: None,
             focused_pane_before: None,
+            pane_focus_order: std::collections::HashMap::new(),
             swap_source: None,
             closed_panes: Vec::new(),
             show_about_dialog: false,

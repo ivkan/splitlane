@@ -2135,7 +2135,7 @@ impl SplitlaneApp {
     /// entity. Precedence: explicit `surface_id` → `name` →
     /// the active workspace's first leaf. Returns a structured `-32602` error
     /// when the target is missing, unknown, or an ambiguous name.
-    fn resolve_surface(
+    pub(crate) fn resolve_surface(
         &self,
         params: &serde_json::Value,
         cx: &App,
@@ -3707,6 +3707,8 @@ impl SplitlaneApp {
                 })
             }
             "surface.add_agent" => self.handle_add_agent(params, caller, cx),
+            "surface.park" => self.handle_park(params, caller, cx),
+            "surface.show" => self.handle_show(params, caller, cx),
             "workspace.restore_layout" => {
                 let Some(layout_value) = params.get("layout") else {
                     return serde_json::json!({"error": "Missing 'layout' parameter"});
@@ -4667,7 +4669,10 @@ fn read_session_pid(params: &serde_json::Value) -> Option<u32> {
 /// would type its text into a pane it did not name. `null` is refused for the
 /// same reason - it is what a client serializes when the variable holding its
 /// target was never filled in.
-fn optional_id_param(params: &serde_json::Value, key: &str) -> Result<Option<u64>, JsonRpcError> {
+pub(crate) fn optional_id_param(
+    params: &serde_json::Value,
+    key: &str,
+) -> Result<Option<u64>, JsonRpcError> {
     match params.get(key) {
         None => Ok(None),
         Some(value) => value.as_u64().map(Some).ok_or_else(|| {

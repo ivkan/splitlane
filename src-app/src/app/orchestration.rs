@@ -100,7 +100,7 @@ impl Refusal {
                  requiring a pane to open the session in the rail"
                 .to_string(),
             Refusal::NotYours => "the target is not a session the calling session opened; a \
-                 session writes only into the sessions it opened"
+                 session works only through the sessions it opened"
                 .to_string(),
             Refusal::Itself => "the target is the calling session itself".to_string(),
             Refusal::Waiting => "the target is waiting for a person, and only a person \
@@ -261,6 +261,73 @@ pub(crate) fn may_write(
     } else {
         Err(WriteDenied::Refused(Refusal::NotYours))
     }
+}
+
+/// Whether `caller` may take `target` out of its pane or put it in one.
+///
+/// Neither types into the session, so whether it is waiting for a person does
+/// not come into it. A caller outside a pane rearranges on the strength of the
+/// launch variable, like the other calls that change the layout for a script.
+pub(crate) fn may_arrange(
+    caller: &Caller,
+    target: WriteTarget,
+    gates: LaunchGates,
+) -> Result<(), Refusal> {
+    let Caller::Pane(pane) = caller else {
+        return if gates.orchestration {
+            Ok(())
+        } else {
+            Err(Refusal::NotFromAPane)
+        };
+    };
+    if target.thread_id == Some(pane.thread_id) {
+        return Err(Refusal::Itself);
+    }
+    if target.opened_by == Some(pane.thread_id) {
+        Ok(())
+    } else {
+        Err(Refusal::NotYours)
+    }
+}
+
+/// The session a call to move one names.
+struct ArrangedTarget {
+    terminal: Entity<TerminalView>,
+    target: WriteTarget,
+    /// The project and the position in it of the session's record.
+    position: Option<(usize, usize)>,
+}
+
+/// A pane, as the choice of which one to give up sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PaneFacts {
+    /// The surface record showing in it, if it shows one.
+    pub thread_id: Option<u64>,
+    /// Who opened that session.
+    pub opened_by: Option<u64>,
+    /// When the pane last took focus; 0 for never.
+    pub focused: u64,
+}
+
+/// Which pane a session gives up to show `showing`, when none is free and
+/// none can be added: the pane of another session it opened, the one that has
+/// gone longest without focus. The index into `panes`, or `None`.
+///
+/// Its own pane and a pane showing anything it did not open are never
+/// candidates. A person's layout is theirs, and a session that could take
+/// their pane to show its own work would be deciding what they look at.
+pub(crate) fn pane_to_give_up(panes: &[PaneFacts], opener: u64, showing: u64) -> Option<usize> {
+    panes
+        .iter()
+        .enumerate()
+        .filter(|(_, pane)| {
+            pane.opened_by == Some(opener)
+                && pane.thread_id.is_some()
+                && pane.thread_id != Some(showing)
+                && pane.thread_id != Some(opener)
+        })
+        .min_by_key(|(_, pane)| pane.focused)
+        .map(|(idx, _)| idx)
 }
 
 /// What the caller asked for about a pane.
@@ -429,6 +496,252 @@ impl SplitlaneApp {
                 .rail_snapshot_for(terminal, thread_id, cx)
                 .is_some_and(|rail| rail.status == crate::project::ThreadStatus::WaitingForInput),
         }
+    }
+
+    /// The target of a call that names one, with the project and position of
+    /// its record. `Err` is the response to send.
+    fn arranged_target(
+        &self,
+        params: &serde_json::Value,
+        cx: &App,
+    ) -> Result<ArrangedTarget, serde_json::Value> {
+        if params.get("surface_id").is_none_or(|v| v.is_null())
+            && params
+                .get("name")
+                .and_then(|n| n.as_str())
+                .is_none_or(str::is_empty)
+        {
+            return Err(JsonRpcError::invalid_params(
+                "A target is required: 'surface_id' or 'name'",
+            )
+            .into_value());
+        }
+        let terminal = self
+            .resolve_surface(params, cx)
+            .map_err(JsonRpcError::into_value)?;
+        let target = self.write_target(&terminal, cx);
+        let position = target.thread_id.and_then(|thread_id| {
+            self.workspaces
+                .iter()
+                .enumerate()
+                .find_map(|(ws_idx, container)| {
+                    let thread_idx = container.threads.iter().position(|t| t.id == thread_id)?;
+                    Some((ws_idx, thread_idx))
+                })
+        });
+        Ok(ArrangedTarget {
+            terminal,
+            target,
+            position,
+        })
+    }
+
+    /// `surface.park`: take a session out of its pane and leave it running in
+    /// the rail - what closing its pane by hand does.
+    pub(crate) fn handle_park(
+        &mut self,
+        params: &serde_json::Value,
+        lineage: &CallerLineage,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        let ArrangedTarget {
+            terminal,
+            target,
+            position,
+        } = match self.arranged_target(params, cx) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        let caller = self.caller_of(lineage, cx);
+        if let Err(refusal) = may_arrange(&caller, target, LaunchGates::read()) {
+            return refusal.into_value("surface.park");
+        }
+        let surface_id = terminal.entity_id().as_u64();
+        let (Some(thread_id), Some((ws_idx, _))) = (target.thread_id, position) else {
+            return JsonRpcError::invalid_params(
+                "The target has no row in the rail to stay in; it cannot be parked",
+            )
+            .into_value();
+        };
+        // Already out of a pane is the state asked for.
+        if self.agent_surface_in_slot(ws_idx, thread_id, cx) {
+            self.remove_agent_from_slots(ws_idx, thread_id, cx);
+            self.save_session(cx);
+            cx.notify();
+        }
+        serde_json::json!({ "parked": true, "surface_id": surface_id })
+    }
+
+    /// `surface.show`: put a session that is in no pane into one.
+    pub(crate) fn handle_show(
+        &mut self,
+        params: &serde_json::Value,
+        lineage: &CallerLineage,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        const METHOD: &str = "surface.show";
+        let direction = match params.get("direction").map(|d| d.as_str()) {
+            None | Some(Some("vertical")) => crate::layout::SplitDirection::Vertical,
+            Some(Some("horizontal")) => crate::layout::SplitDirection::Horizontal,
+            Some(_) => {
+                return JsonRpcError::invalid_params(
+                    "direction must be \"horizontal\" or \"vertical\"",
+                )
+                .into_value();
+            }
+        };
+        let ArrangedTarget {
+            terminal,
+            target,
+            position,
+        } = match self.arranged_target(params, cx) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        let caller = self.caller_of(lineage, cx);
+        if let Err(refusal) = may_arrange(&caller, target, LaunchGates::read()) {
+            return refusal.into_value(METHOD);
+        }
+        let surface_id = terminal.entity_id().as_u64();
+        let shown = |displaced: Option<u64>| {
+            serde_json::json!({
+                "shown": true,
+                "surface_id": surface_id,
+                "displaced_surface_id": displaced,
+            })
+        };
+        // A terminal with no record lives in a pane and nowhere else.
+        let (Some(thread_id), Some((ws_idx, thread_idx))) = (target.thread_id, position) else {
+            return shown(None);
+        };
+        if self.agent_surface_in_slot(ws_idx, thread_id, cx) {
+            return shown(None);
+        }
+        let leaves = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|container| container.root.as_ref())
+            .map(|root| root.collect_leaves())
+            .unwrap_or_default();
+        let beside = match crate::app::ipc_handler::optional_id_param(params, "beside_surface_id") {
+            Ok(None) => None,
+            Ok(Some(beside)) => {
+                let Some(pane) = leaves.iter().find(|pane| {
+                    pane.read(cx)
+                        .terminals()
+                        .any(|held| held.entity_id().as_u64() == beside)
+                }) else {
+                    return JsonRpcError::invalid_params(
+                        "beside_surface_id is not in a pane of the target's project",
+                    )
+                    .into_value();
+                };
+                Some(pane.clone())
+            }
+            Err(e) => return e.into_value(),
+        };
+        let room = self.refuse_another_pane_in(ws_idx, cx);
+        let empty_pane = leaves
+            .iter()
+            .find(|pane| pane.read(cx).tabs.is_empty())
+            .cloned();
+        // Where it goes, decided before the view is touched. A named
+        // neighbour is honoured when a pane can be added next to it; when
+        // none can, the request is still for a pane and the ladder answers.
+        enum Spot {
+            Beside(Entity<crate::pane::Pane>),
+            Empty(Entity<crate::pane::Pane>),
+            New,
+            InPlaceOf(Entity<crate::pane::Pane>, u64),
+        }
+        let can_add = matches!(room, None | Some(PaneRefusal::NoPanes));
+        let spot = match (beside, empty_pane) {
+            (Some(pane), _) if can_add => Spot::Beside(pane),
+            (_, Some(pane)) => Spot::Empty(pane),
+            _ if can_add => Spot::New,
+            _ => {
+                let opener = match &caller {
+                    Caller::Pane(pane) => pane.thread_id,
+                    // A script outside a pane opened nothing it could give up.
+                    Caller::Outside => return Refusal::NoRoom.into_value(METHOD),
+                };
+                let facts: Vec<PaneFacts> = leaves
+                    .iter()
+                    .map(|pane| {
+                        let shown_thread = pane
+                            .read(cx)
+                            .surface()
+                            .and_then(|tab| tab.as_terminal().cloned())
+                            .and_then(|view| view.read(cx).agent_thread_id);
+                        PaneFacts {
+                            thread_id: shown_thread,
+                            opened_by: shown_thread
+                                .and_then(|id| self.thread_by_id(id))
+                                .and_then(|thread| thread.opened_by.as_ref())
+                                .map(|by| by.id),
+                            focused: self
+                                .pane_focus_order
+                                .get(&pane.entity_id())
+                                .copied()
+                                .unwrap_or(0),
+                        }
+                    })
+                    .collect();
+                let Some(idx) = pane_to_give_up(&facts, opener, thread_id) else {
+                    return Refusal::NoRoom.into_value(METHOD);
+                };
+                let pane = leaves[idx].clone();
+                let displaced = pane
+                    .read(cx)
+                    .surface()
+                    .and_then(|tab| tab.as_terminal().map(|view| view.entity_id().as_u64()))
+                    .unwrap_or(0);
+                Spot::InPlaceOf(pane, displaced)
+            }
+        };
+        let agents_target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
+        let Some(view) = self.mount_agents_terminal_for_target(agents_target, cx) else {
+            return JsonRpcError::invalid_params("The session could not be shown").into_value();
+        };
+        // As with opening: the keyboard stays where the person left it.
+        let displaced = match spot {
+            Spot::Empty(pane) => {
+                pane.update(cx, |pane, cx| pane.show_terminal(view.clone(), cx));
+                None
+            }
+            Spot::InPlaceOf(pane, displaced) => {
+                // The session it replaces is an agent's, owned by the surface
+                // cache: it goes on running in the rail.
+                pane.update(cx, |pane, cx| pane.show_terminal(view.clone(), cx));
+                Some(displaced)
+            }
+            Spot::New => {
+                if self
+                    .append_pane_with(ws_idx, TabContent::Terminal(view.clone()), cx)
+                    .is_none()
+                {
+                    return Refusal::NoRoom.into_value(METHOD);
+                }
+                None
+            }
+            Spot::Beside(neighbour) => {
+                let pane =
+                    self.create_pane_with_existing_tab(TabContent::Terminal(view.clone()), cx);
+                let inserted = self
+                    .workspaces
+                    .get_mut(ws_idx)
+                    .and_then(|container| container.root.as_mut())
+                    .is_some_and(|root| root.split_at_pane(&neighbour, direction, pane));
+                if !inserted {
+                    return Refusal::NoRoom.into_value(METHOD);
+                }
+                None
+            }
+        };
+        view.update(cx, |view, cx| view.ensure_backend_started(cx));
+        self.save_session(cx);
+        cx.notify();
+        shown(displaced)
     }
 
     /// How many of the sessions `opener` opened still have a process.
@@ -932,6 +1245,93 @@ mod tests {
             may_write(&pane(false), itself, true),
             Ok(WriteLeave::LaunchVariable)
         );
+    }
+
+    const ALL_GATES: LaunchGates = LaunchGates {
+        orchestration: true,
+        scripting: true,
+    };
+
+    #[test]
+    fn a_session_moves_only_what_it_opened() {
+        assert_eq!(may_arrange(&pane(false), MINE, NO_GATES), Ok(()));
+        assert_eq!(
+            may_arrange(&pane(false), A_PERSONS, NO_GATES),
+            Err(Refusal::NotYours)
+        );
+        // The variable is for a caller outside a pane; in one it adds nothing.
+        assert_eq!(
+            may_arrange(&pane(false), A_PERSONS, ALL_GATES),
+            Err(Refusal::NotYours)
+        );
+        let itself = WriteTarget {
+            thread_id: Some(3),
+            opened_by: None,
+            waiting: false,
+        };
+        assert_eq!(
+            may_arrange(&pane(false), itself, NO_GATES),
+            Err(Refusal::Itself)
+        );
+        // Moving a session types nothing into it, so a question on its screen
+        // does not stand in the way.
+        let waiting = WriteTarget {
+            waiting: true,
+            ..MINE
+        };
+        assert_eq!(may_arrange(&pane(false), waiting, NO_GATES), Ok(()));
+    }
+
+    #[test]
+    fn a_script_outside_a_pane_rearranges_by_the_launch_variable() {
+        assert_eq!(
+            may_arrange(&Caller::Outside, A_PERSONS, NO_GATES),
+            Err(Refusal::NotFromAPane)
+        );
+        assert_eq!(may_arrange(&Caller::Outside, A_PERSONS, ALL_GATES), Ok(()));
+    }
+
+    fn facts(thread_id: u64, opened_by: Option<u64>, focused: u64) -> PaneFacts {
+        PaneFacts {
+            thread_id: Some(thread_id),
+            opened_by,
+            focused,
+        }
+    }
+
+    /// The opener is record 3. It gives up the pane of one of its own that
+    /// has gone longest without focus.
+    #[test]
+    fn the_pane_given_up_is_the_openers_own_least_recently_focused() {
+        let panes = [
+            facts(3, None, 9),     // the opener itself
+            facts(10, None, 1),    // a person's session, long unfocused
+            facts(11, Some(3), 7), // opened by it
+            facts(12, Some(3), 4), // opened by it, older focus
+        ];
+        assert_eq!(pane_to_give_up(&panes, 3, 20), Some(3));
+        // A pane that never had focus goes first.
+        let panes = [facts(11, Some(3), 7), facts(12, Some(3), 0)];
+        assert_eq!(pane_to_give_up(&panes, 3, 20), Some(1));
+    }
+
+    #[test]
+    fn a_persons_pane_and_the_openers_own_are_never_given_up() {
+        let empty = PaneFacts {
+            thread_id: None,
+            opened_by: None,
+            focused: 0,
+        };
+        let panes = [
+            facts(3, None, 0),
+            facts(10, None, 0),
+            facts(13, Some(77), 0), // opened by some other session
+            empty,
+        ];
+        assert_eq!(pane_to_give_up(&panes, 3, 20), None);
+        // Nor the pane of the session being shown, were it somehow in one.
+        let panes = [facts(20, Some(3), 0)];
+        assert_eq!(pane_to_give_up(&panes, 3, 20), None);
     }
 
     #[test]

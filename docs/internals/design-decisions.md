@@ -891,6 +891,23 @@ text sent while the model is generating becomes a second turn straight after
 the first, whose answer is then the only one a later read returns. A caller
 that wrote into `running` has to know it did.
 
+**A session arranges the panes of what it opened, and no others.** With eight
+sessions and four panes, opening and closing are not enough: a session has to
+be able to free a pane without ending the work in it, and to bring a session
+that has none back onto the screen. `surface.park` does what closing a pane by
+hand does - the session leaves the layout and goes on running in the rail.
+`surface.show` gives a session a pane: an empty one, then a new one where one
+fits, and failing both, the pane of another session **of the same opener**,
+the one that has gone longest without focus (`orchestration::pane_to_give_up`).
+The opener's own pane and a pane showing anything it did not open are never
+candidates, and with no candidate the answer is a refusal. A person's layout
+is theirs; a session that could take a pane of theirs to show its own work
+would be deciding what they look at. Neither call moves the keyboard.
+
+"Longest without focus" needed state that was not there: the app remembered
+the focused pane and the one before it, which is an order over two. It now
+keeps a count per pane, written where the pair is (`track_pane_focus`).
+
 **What it does not claim.** A process of the same user that runs code inside a
 pane is, as far as the process table can tell, that pane - and it is: that is
 what the agent in the pane does. The rule places a call; it does not vouch for

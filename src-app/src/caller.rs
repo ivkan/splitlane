@@ -58,7 +58,11 @@ pub(crate) enum CallerLineage {
 pub(crate) fn method_asks_who_calls(method: &str) -> bool {
     matches!(
         method,
-        "surface.add_agent" | "surface.send_text" | "surface.send_keystroke"
+        "surface.add_agent"
+            | "surface.send_text"
+            | "surface.send_keystroke"
+            | "surface.park"
+            | "surface.show"
     )
 }
 
