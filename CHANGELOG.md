@@ -21,6 +21,29 @@ Notable changes to Splitlane are recorded here. The format follows
   went in.
 - Exit code `8` (JSON-RPC `-32004`): a rule refused the request and nothing
   was done. The reason is in the message and under `error.data.reason`.
+- `splitlane interrupt <target>` stops the turn a session is in and leaves
+  the session open for a new task. It presses the agent's own interrupt key,
+  and reports `interrupted` only when the agent's own record shows the turn
+  was stopped; `not_running` when there was nothing to stop, `not_confirmed`
+  otherwise. Claude Code only for now: other agents are refused with
+  `no_interrupt` (exit `7`). `rail.last_outcome` has a third word,
+  `interrupted`.
+- An agent can work through a session **you** opened, once you say it may.
+  When it sends to one, nothing is written and its own pane shows a strip
+  under the header - `plan wants to send messages to api`, with `Allow` and
+  `Don't allow`. Your answer holds for that pair of sessions until you quit
+  Splitlane. The agent's call returns at once with exit code `9` (JSON-RPC
+  `-32005`, reason `asked_person`), and `splitlane wait --until allowed`
+  waits for your answer. After a no it is refused with `person_declined`.
+- A session's row menu has `Let <name> drive` to hand it to another session
+  without being asked, and `Stop <name> driving` to take it back. A driven
+  session says `by <name>` in the rail and `driven by <name>` in its pane's
+  header; `surface.list` and `surface.status` carry `driven_by`, and
+  `surface.status` carries `drive` for the caller.
+- The sessions a session opened sit under it in the rail, in the order they
+  were opened, and each one's pane says `opened by <name>`.
+- The skill in `skills/splitlane-fleet` teaches an agent to open its own
+  sessions, wait on them, read their answers, redirect and close them.
 
 ### Changed
 
@@ -29,6 +52,9 @@ Notable changes to Splitlane are recorded here. The format follows
   set. A script outside a pane is not affected.
 - The injection fence has its row in Settings -> Agents at all times. It was
   shown only while Free access was on, though it acted regardless.
+- `splitlane close` refuses a session that finished a turn you started and
+  that you have not looked at yet (`unseen_by_person`), with or without
+  `--stop-turn`: closing it would take the result away with the row.
 
 ### Removed
 
@@ -49,6 +75,12 @@ Notable changes to Splitlane are recorded here. The format follows
   project to open them from.
 - A prompt given when opening a session is not written into a pane whose
   agent did not start.
+- A turn stopped with Esc before the agent had answered anything is no
+  longer marked and announced as finished. Neither is the first turn of a
+  session when it is stopped.
+- When `splitlane interrupt` stops a turn that early, Claude Code puts the
+  prompt back on its input line, and the next text sent was appended to it
+  and submitted as one prompt. Splitlane now clears the line in that case.
 
 ## [0.1.4] - 2026-10-04
 
