@@ -775,9 +775,17 @@ impl SplitlaneApp {
         };
         let title = crate::project::clean_sidebar_title(&thread.title)
             .unwrap_or_else(|| thread.title.clone());
-        let Some(message) = thread.rail.waiting_message.clone() else {
+        // From the questions themselves, not from the row's message: that
+        // may be holding a question the agent was already asking.
+        let names: Vec<String> = self
+            .drive_questions_of(asker)
+            .into_iter()
+            .map(|question| question.target_name.to_string())
+            .collect();
+        if names.is_empty() {
             return;
-        };
+        }
+        let message = crate::app::drive::question_summary(&names);
         let Some(ws_id) = self
             .workspaces
             .iter()

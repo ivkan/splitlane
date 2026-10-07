@@ -74,18 +74,21 @@ impl DriveBook {
     }
 
     /// The person answered a standing question. `false` when there was none.
+    ///
+    /// A yes takes the session from whoever drove it before, like handing it
+    /// over does: the question can have stood while the person gave the
+    /// session to somebody else, and two sessions allowed at once would leave
+    /// "stop driving" taking it back from only one of them.
     pub(crate) fn answer(&mut self, asker: u64, target: u64, allow: bool) -> bool {
-        match self.pairs.get_mut(&(asker, target)) {
-            Some(standing @ Standing::Asked) => {
-                *standing = if allow {
-                    Standing::Allowed
-                } else {
-                    Standing::Declined
-                };
-                true
-            }
-            _ => false,
+        if self.standing(asker, target) != Some(Standing::Asked) {
+            return false;
         }
+        if allow {
+            self.give(asker, target);
+        } else {
+            self.pairs.insert((asker, target), Standing::Declined);
+        }
+        true
     }
 
     /// The person handed `target` to `asker` without being asked. It lifts an
@@ -213,6 +216,21 @@ mod tests {
         book.give(WEB, API);
         assert_eq!(book.driver_of(API), Some(WEB));
         assert_eq!(book.standing(PLAN, API), None);
+    }
+
+    /// A question stood while the person handed the session to another, and
+    /// was then answered yes. The answer moves the session; it does not add a
+    /// second driver that taking back would leave behind.
+    #[test]
+    fn a_yes_to_a_standing_question_takes_the_session_from_its_driver() {
+        let mut book = DriveBook::default();
+        book.ask(PLAN, API);
+        book.give(WEB, API);
+        assert!(book.answer(PLAN, API, true));
+        assert_eq!(book.driver_of(API), Some(PLAN));
+        assert_eq!(book.standing(WEB, API), None);
+        assert_eq!(book.take_back(API), Some(PLAN));
+        assert_eq!(book.driver_of(API), None);
     }
 
     /// The person can change their mind, and handing a session over is how.
