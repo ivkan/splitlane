@@ -238,6 +238,7 @@ fn opening_a_session_keeps_its_published_names() {
         "\"other_project\"",
         "\"turn_in_flight\"",
         "\"no_interrupt\"",
+        "\"unseen_by_person\"",
     ] {
         assert!(rules.contains(word), "the refusal word {word} is published");
     }

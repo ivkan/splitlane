@@ -994,7 +994,13 @@ out of reach; a session the caller did not open is refused - and for one a
 person opened there is no flag, variable or later permission that changes
 that. Last, a session whose rail word is `running` or `waiting` is closed
 only with `stop_turn`: the turn is what would be lost, the same line Quit
-draws when agents are working. A dialog asking the person to confirm was
+draws when agents are working. Before that last one, a session whose row
+carries the mark of a finished run nobody has looked at is refused with
+`unseen_by_person`, and `stop_turn` does not lift it. The mark is put there
+only when the last message was a person's: they typed into a session an
+agent opened, the answer came, and the mark is the one thing telling them it
+is there. A run the opener started leaves no mark, so the opener closing its
+own finished work is never stopped by this. A dialog asking the person to confirm was
 considered and refused, because it would make a request wait on a person's
 answer, and the server has no call that waits on a person.
 

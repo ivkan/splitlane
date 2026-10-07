@@ -75,6 +75,9 @@ pub(crate) enum Refusal {
     TurnInFlight,
     /// No key is known that stops a turn of the target's agent.
     NoInterrupt,
+    /// The target finished a turn a person started, and the person has not
+    /// looked at it yet.
+    UnseenByPerson,
 }
 
 impl Refusal {
@@ -94,6 +97,7 @@ impl Refusal {
             Refusal::OtherProject => "other_project",
             Refusal::TurnInFlight => "turn_in_flight",
             Refusal::NoInterrupt => "no_interrupt",
+            Refusal::UnseenByPerson => "unseen_by_person",
         }
     }
 
@@ -129,6 +133,10 @@ impl Refusal {
                 .to_string(),
             Refusal::NoInterrupt => "no key is known that stops a turn of the target's agent \
                  and leaves the agent running"
+                .to_string(),
+            Refusal::UnseenByPerson => "the target finished a turn a person started, and the \
+                 person has not looked at it yet; closing it would take the result away \
+                 from them"
                 .to_string(),
         }
     }
@@ -376,6 +384,10 @@ pub(crate) struct CloseTarget {
     /// The rail says `running` or `waiting`: a turn is in flight, or a
     /// question to a person is on screen.
     pub turn_in_flight: bool,
+    /// Its row carries the mark of a finished run nobody has looked at. The
+    /// mark is only ever put there for a person: a run its opener started is
+    /// the opener's to read and leaves none.
+    pub unseen_by_person: bool,
 }
 
 /// Whether `caller` may close `target`: stop its process and drop its row.
@@ -404,6 +416,14 @@ pub(crate) fn may_close(
             }
             if target.opened_by != Some(pane.thread_id) {
                 return Err(Refusal::NotYours);
+            }
+            // A person typed into a session this one opened, the answer
+            // came, and they have not seen it. The row's mark is the only
+            // thing telling them it is there, and it goes with the row.
+            // Saying the turn may be stopped does not lift this: no turn is
+            // what would be lost.
+            if target.unseen_by_person {
+                return Err(Refusal::UnseenByPerson);
             }
         }
         Caller::Outside => {
@@ -735,6 +755,9 @@ impl SplitlaneApp {
             ws_idx,
             opened_by: target.opened_by,
             turn_in_flight,
+            unseen_by_person: self
+                .thread_by_id(thread_id)
+                .is_some_and(|thread| thread.finished_unseen.is_some()),
         };
         if let Err(refusal) = may_close(&caller, close_target, LaunchGates::read(), stop_turn) {
             return refusal.into_value(METHOD);
@@ -1686,6 +1709,7 @@ mod tests {
         ws_idx: 0,
         opened_by: Some(3),
         turn_in_flight: false,
+        unseen_by_person: false,
     };
 
     const NEWS: RunFacts = RunFacts {
@@ -1798,6 +1822,37 @@ mod tests {
             Err(Refusal::TurnInFlight)
         );
         assert_eq!(may_close(&pane(false), busy, NO_GATES, true), Ok(()));
+    }
+
+    /// The mark on the row is a person's unread result. Stopping the turn is
+    /// not what the caller would have to mean, so saying so changes nothing.
+    #[test]
+    fn a_result_a_person_has_not_seen_is_not_closed_away() {
+        let unseen = CloseTarget {
+            unseen_by_person: true,
+            ..MINE_IDLE
+        };
+        for stop_turn in [false, true] {
+            assert_eq!(
+                may_close(&pane(false), unseen, NO_GATES, stop_turn),
+                Err(Refusal::UnseenByPerson)
+            );
+        }
+        // A person's own script, let in at launch, is the person's hand.
+        assert_eq!(
+            may_close(&Caller::Outside, unseen, ALL_GATES, false),
+            Ok(())
+        );
+        // Not the caller's to close comes first: the word must not tell a
+        // session anything about one it has no business with.
+        let anothers = CloseTarget {
+            opened_by: Some(77),
+            ..unseen
+        };
+        assert_eq!(
+            may_close(&pane(false), anothers, NO_GATES, false),
+            Err(Refusal::NotYours)
+        );
     }
 
     #[test]
