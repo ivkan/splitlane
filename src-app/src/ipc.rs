@@ -905,12 +905,40 @@ fn reject_overloaded(mut stream: Stream) {
     write_overloaded_error(&mut stream, "server busy: too many concurrent connections");
 }
 
-/// The connected peer's PID, for tracing
-/// writes granted by AI free-access mode. `SO_PEERCRED` exposes it on Linux;
-/// macOS `LOCAL_PEERCRED` and Windows named pipes do not, so this returns None
-/// there. Best-effort and advisory only - never an authorization input (the
-/// peer-UID check in `auth::check_peer` is the security boundary).
-#[cfg(unix)]
+/// The connected peer's PID.
+///
+/// All three platforms give it, each through its own call: `SO_PEERCRED` on
+/// Linux, `LOCAL_PEERPID` on macOS (the credentials `LOCAL_PEERCRED` returns
+/// there carry a uid and no pid, which is why the generic query answers
+/// `None`), and `GetNamedPipeClientProcessId` on Windows.
+///
+/// It is the pid of the process that **connected**. A process that inherited
+/// the connection from it is not named, and the number can be reused once
+/// that process exits, so it identifies a caller only while the connection it
+/// came from is still being served. The peer-UID check in `auth::check_peer`
+/// stays the boundary for who may connect at all.
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &Stream) -> Option<i64> {
+    use std::os::fd::{AsFd, AsRawFd};
+
+    let Stream::UdSocket(socket) = stream;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: `pid` and `len` are valid for the size passed, and the
+    // descriptor is borrowed from a stream that outlives the call.
+    let status = unsafe {
+        libc::getsockopt(
+            socket.as_fd().as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            std::ptr::from_mut(&mut pid).cast(),
+            &raw mut len,
+        )
+    };
+    (status == 0 && pid > 0).then_some(i64::from(pid))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 fn peer_pid(stream: &Stream) -> Option<i64> {
     stream
         .peer_creds()
@@ -919,9 +947,73 @@ fn peer_pid(stream: &Stream) -> Option<i64> {
         .map(|p| p as i64)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn peer_pid(stream: &Stream) -> Option<i64> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+
+    let Stream::NamedPipe(pipe) = stream;
+    let mut pid: u32 = 0;
+    // SAFETY: the handle is borrowed from a stream that outlives the call and
+    // `pid` is a valid out-pointer.
+    let ok =
+        unsafe { GetNamedPipeClientProcessId(pipe.as_handle().as_raw_handle() as _, &raw mut pid) };
+    (ok != 0 && pid != 0).then_some(i64::from(pid))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn peer_pid(_stream: &Stream) -> Option<i64> {
     None
+}
+
+#[cfg(test)]
+mod peer_pid_tests {
+    use super::*;
+
+    fn unique_path() -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let name = format!("splitlane-peer-pid-{}-{stamp}", std::process::id());
+        if cfg!(windows) {
+            std::path::PathBuf::from(format!(r"\\.\pipe\{name}"))
+        } else {
+            std::env::temp_dir().join(format!("{name}.sock"))
+        }
+    }
+
+    /// The server learns who connected from the connection itself, on every
+    /// platform this runs on. A client in this same process is the one caller
+    /// whose pid the test knows without asking anybody.
+    #[test]
+    fn the_server_reads_the_pid_of_the_process_that_connected() {
+        let path = unique_path();
+        let listener = ListenerOptions::new()
+            .name(
+                path.as_path()
+                    .to_fs_name::<GenericFilePath>()
+                    .expect("listener name"),
+            )
+            .create_sync()
+            .expect("bind");
+        let client_path = path.clone();
+        let client = std::thread::spawn(move || {
+            Stream::connect(
+                client_path
+                    .as_path()
+                    .to_fs_name::<GenericFilePath>()
+                    .expect("client name"),
+            )
+            .expect("connect")
+        });
+        let server = listener.accept().expect("accept");
+        let _client = client.join().expect("client thread");
+
+        assert_eq!(peer_pid(&server), Some(i64::from(std::process::id())));
+
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 fn handle_connection(
