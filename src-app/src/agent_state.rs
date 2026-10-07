@@ -238,6 +238,14 @@ pub(crate) struct TranscriptProbe {
     /// the second, independent sign that a turn ended, for a turn too short
     /// for a two-second sample to catch running.
     pub(crate) last_turn_end: Option<crate::rail_state::TurnEnd>,
+    /// The id of a person's prompt that is the newest thing in the window
+    /// with an opinion about the turn: a prompt nothing has answered yet.
+    ///
+    /// On its own this is a turn that has just begun. Beside a status that
+    /// says the turn is over it is a prompt that was withdrawn - see
+    /// [`crate::rail_state::TurnEnd::prompt_returned`]. `None` for an agent
+    /// whose reader does not look for it.
+    pub(crate) unanswered_prompt: Option<String>,
 }
 
 impl TranscriptProbe {
@@ -647,6 +655,7 @@ mod tests {
             errored: false,
             incomplete: false,
             last_turn_end: None,
+            unanswered_prompt: None,
         }
     }
 

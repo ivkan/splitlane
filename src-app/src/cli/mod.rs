@@ -333,10 +333,8 @@ enum Commands {
     ///
     /// Exits 0 when the agent's own record shows the turn was stopped, 1
     /// when no turn was running (nothing is sent), and 4 when the key was
-    /// sent and no such record followed. After a 4 the session's input line
-    /// may hold the prompt it was working on: Claude Code puts a prompt back
-    /// when it is stopped before the first token, and text sent next is
-    /// appended to it.
+    /// sent and the run did not end as stopped: it finished by itself a
+    /// moment earlier, or the time ran out.
     Interrupt {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,

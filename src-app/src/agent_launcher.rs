@@ -517,14 +517,32 @@ impl TerminalAgent {
     /// **Esc before the first token is a different thing**, measured on
     /// 2.1.292: nothing is written to the transcript, and the prompt is put
     /// back on the input line, where the next text sent is appended to it.
-    /// Such a stop is not confirmed by anything, and is reported as not
-    /// confirmed.
+    /// The state pass recognises that stop by the prompt nothing followed,
+    /// and [`Self::clear_input_key`] is what empties the line afterwards.
     ///
     /// Codex has not been measured, so it has no key here even though its
     /// reader knows the record an abort leaves.
     pub fn interrupt_key(self) -> Option<&'static str> {
         match self {
             TerminalAgent::ClaudeCode => Some("escape"),
+            _ => None,
+        }
+    }
+
+    /// The key that empties this agent's input line when there is text on it.
+    /// `None` until it has been measured.
+    ///
+    /// Written only into a line known to hold a prompt the agent put back
+    /// after [`Self::interrupt_key`] landed before its first token. Never on
+    /// a guess: for Claude Code the key is Ctrl-C, and Ctrl-C on an empty
+    /// line is the first half of quitting.
+    ///
+    /// Measured on Claude Code 2.1.292 with a three-line prompt on the line:
+    /// Ctrl-U removed one line of it, Ctrl-C removed all that was left and
+    /// the process stayed.
+    pub fn clear_input_key(self) -> Option<&'static str> {
+        match self {
+            TerminalAgent::ClaudeCode => Some("ctrl-c"),
             _ => None,
         }
     }
@@ -891,6 +909,14 @@ mod capability_tests {
             assert!(gpui::Keystroke::parse(key).is_ok(), "{key} does not parse");
         }
         assert_eq!(TerminalAgent::ClaudeCode.interrupt_key(), Some("escape"));
+        // The line is only ever cleared after an interrupt, so a key for it
+        // without the other would never be pressed.
+        for agent in TerminalAgent::ALL {
+            if let Some(key) = agent.clear_input_key() {
+                assert!(agent.interrupt_key().is_some(), "{agent:?}");
+                assert!(gpui::Keystroke::parse(key).is_ok(), "{key} does not parse");
+            }
+        }
         assert_eq!(TerminalAgent::Codex.interrupt_key(), None);
     }
 

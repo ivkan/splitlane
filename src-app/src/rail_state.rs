@@ -108,6 +108,11 @@ pub struct TurnEnd {
     /// **finished**: an interrupt is a record the person wrote by pressing
     /// Esc, and it leaves the marker where it was.
     pub interrupted: bool,
+    /// The turn was stopped before the agent answered at all, and the agent
+    /// put the prompt back on its input line. Nothing in the file records
+    /// such a stop; it is read from a prompt with nothing after it under a
+    /// status that says the turn is over, by the pass and not by a reader.
+    pub prompt_returned: bool,
 }
 
 /// The part of the rail's answer that is kept on the surface's record.
@@ -338,6 +343,7 @@ mod tests {
             marker: marker.to_string(),
             failed: false,
             interrupted: false,
+            prompt_returned: false,
         })
     }
 

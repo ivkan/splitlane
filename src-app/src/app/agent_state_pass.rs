@@ -203,7 +203,21 @@ fn read_turn_end(
             crate::codex_state::probe_state_from_tail(path, now)
         }
     }?;
-    Some((len, probe.last_turn_end))
+    // This is only asked once the status says the turn is over. A prompt
+    // that nothing followed is then a turn that ended with no record at all:
+    // stopped before the first token, with the prompt put back on the input
+    // line. It is given an end of its own, so the stop is counted as one and
+    // not announced as an answer.
+    let end = match probe.unanswered_prompt {
+        Some(marker) => Some(crate::rail_state::TurnEnd {
+            marker,
+            failed: false,
+            interrupted: true,
+            prompt_returned: true,
+        }),
+        None => probe.last_turn_end,
+    };
+    Some((len, end))
 }
 
 fn state_file_len(state_file: &crate::agent_sessions::StateFile) -> Option<u64> {
@@ -470,6 +484,9 @@ impl SplitlaneApp {
         // the loop holds a borrow of `self.workspaces`, and the notification
         // wants to ask `self` whether the pane is on screen.
         let mut finished_runs: Vec<FinishedRun> = Vec::new();
+        // Sessions whose input line holds a prompt our own key put back.
+        // Cleared after the loop for the same reason.
+        let mut returned_prompts: Vec<u64> = Vec::new();
         for reading in read {
             // A baseline is only ever **replaced**, never cleared from here: a
             // pass that did not see the turn end has learned nothing about the
@@ -578,6 +595,16 @@ impl SplitlaneApp {
                     let left_run =
                         was_in_run && !self.running_since.contains_key(&reading.thread_id);
                     let file_says_failed = watch.current.as_ref().is_some_and(|end| end.failed);
+                    if left_run
+                        && let Some(asked) = self.interrupts_asked.remove(&reading.thread_id)
+                        && asked.elapsed() < crate::app::orchestration::INTERRUPT_ASK_STANDS
+                        && watch
+                            .current
+                            .as_ref()
+                            .is_some_and(|end| end.prompt_returned)
+                    {
+                        returned_prompts.push(reading.thread_id);
+                    }
                     if thread.detector_read_at.is_some() {
                         let outcome = match thread.status {
                             crate::project::ThreadStatus::Failed => {
@@ -674,6 +701,9 @@ impl SplitlaneApp {
         self.run_end_seen_at.retain(|thread_id, _| {
             crate::project::find_surface(&self.workspaces, *thread_id).is_some()
         });
+        self.interrupts_asked.retain(|thread_id, _| {
+            crate::project::find_surface(&self.workspaces, *thread_id).is_some()
+        });
         if adopted_any {
             // Debounced and coalesced by `save_session` itself, and reached
             // only when an id actually moved - which is once per `/clear`, not
@@ -686,6 +716,12 @@ impl SplitlaneApp {
             // same way a hook-reported one does.
             self.sync_attention(cx);
             cx.notify();
+        }
+        // Before the count is published: a caller waiting on it sends its
+        // next text the moment it moves, and that text must find the line
+        // empty.
+        for thread_id in returned_prompts {
+            self.clear_returned_prompt(thread_id, cx);
         }
         for run in finished_runs {
             self.announce_finished_run(run, cx);
@@ -1428,6 +1464,31 @@ mod tests {
 
     fn surface() -> Thread {
         Thread::new_terminal("agent", "/tmp", None)
+    }
+
+    /// Asked once the status says the turn is over, a transcript that ends on
+    /// a prompt nothing followed is a turn stopped before its first token.
+    /// One with an answer after the prompt is an ordinary finished turn.
+    #[test]
+    fn a_prompt_nothing_followed_under_an_idle_status_is_a_returned_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("s.jsonl");
+        let prompt = r#"{"type":"user","uuid":"p-1","timestamp":"2026-10-07T17:22:46.000Z","message":{"role":"user","content":"count to sixty"}}"#;
+        let answer = r#"{"type":"assistant","uuid":"a-1","timestamp":"2026-10-07T17:22:50.000Z","message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"one"}],"stop_reason":"end_turn"}}"#;
+        let now = crate::agent_sessions::last_activity_secs_from_iso("2026-10-07T17:22:55.000Z");
+        let file = crate::agent_sessions::StateFile::Claude(path.clone());
+
+        std::fs::write(&path, format!("{prompt}\n")).expect("write");
+        let (_, end) = super::read_turn_end(Some(&file), None, now).expect("read");
+        let end = end.expect("an end");
+        assert_eq!(end.marker, "p-1");
+        assert!(end.interrupted && end.prompt_returned);
+
+        std::fs::write(&path, format!("{prompt}\n{answer}\n")).expect("write");
+        let (_, end) = super::read_turn_end(Some(&file), None, now).expect("read");
+        let end = end.expect("an end");
+        assert_eq!(end.marker, "a-1");
+        assert!(!end.interrupted && !end.prompt_returned);
     }
 
     /// A surface the pass cannot look at wears no claim.

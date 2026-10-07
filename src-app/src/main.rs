@@ -1425,6 +1425,11 @@ struct SplitlaneApp {
     /// See `app::agent_state_pass::confirm_run_end` for why a run does not end
     /// on one reading.
     run_end_seen_at: std::collections::HashMap<u64, std::time::Instant>,
+    /// Sessions another caller asked to have their turn stopped, and when.
+    /// Read once, where that run ends: it is what tells a prompt the agent
+    /// put back on its input line because of our key from one a person
+    /// withdrew by hand and wants to keep.
+    interrupts_asked: std::collections::HashMap<u64, std::time::Instant>,
     /// Each surface's turn-end marker and how much of it is already counted in
     /// `Thread::rail`. Freed with its surface, beside the maps above.
     turn_ends: std::collections::HashMap<u64, rail_state::TurnEndWatch>,

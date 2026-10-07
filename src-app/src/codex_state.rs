@@ -275,6 +275,7 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
                             failed: ending == "task_complete"
                                 && payload.get("error").is_some_and(|e| !e.is_null()),
                             interrupted: ending == "turn_aborted",
+                            prompt_returned: false,
                         });
                     }
                 }
@@ -308,6 +309,7 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
         errored,
         incomplete,
         last_turn_end,
+        unanswered_prompt: None,
     }
 }
 

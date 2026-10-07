@@ -527,8 +527,10 @@ and the notification are for a person, the count is for whoever is waiting.
   as finished. The flag is dropped as soon as another turn opens, because it
   is about the newest turn and the next one can end with no record at all -
   Esc before the first token writes nothing and puts the prompt back on the
-  input line. Such a turn is still reported as finished; nothing in the file
-  says otherwise yet. The same record gives the run its `last_outcome`,
+  input line. That turn is recognised by what the file does show: a prompt
+  nothing followed, read at a moment the status says the turn is over. It is
+  given an end of its own, marked stopped, so it is not announced as an
+  answer either. The same reading gives the run its `last_outcome`,
   `interrupted`, which is what a caller that asked for the stop waits for.
 - **News of a finished run belongs to whoever sent the last message.** A
   session opened by another session ends a run its opener started, and the

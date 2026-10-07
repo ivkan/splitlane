@@ -46,6 +46,11 @@ const OPENING_PROMPT_POLL: Duration = Duration::from_millis(200);
 const OPENING_PROMPT_SETTLE_FLOOR: Duration = Duration::from_millis(700);
 const OPENING_PROMPT_SETTLE_MAX: Duration = Duration::from_secs(8);
 
+/// How long a request to stop a turn stands. Past this, a run that ends was
+/// not ended by that request, and what is on the session's input line is not
+/// ours to remove.
+pub(crate) const INTERRUPT_ASK_STANDS: Duration = Duration::from_secs(30);
+
 /// Why a request was refused. Nothing was done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Refusal {
@@ -818,8 +823,41 @@ impl SplitlaneApp {
                 )
                 .into_value()
             }
-            Ok(()) => answer(true),
+            Ok(()) => {
+                if let Some(thread_id) = target.thread_id {
+                    self.interrupts_asked
+                        .insert(thread_id, std::time::Instant::now());
+                }
+                answer(true)
+            }
             Err(e) => JsonRpcError::invalid_params(e).into_value(),
+        }
+    }
+
+    /// Empty the input line of a session whose agent put its prompt back
+    /// there when our key stopped the turn before the first token.
+    ///
+    /// Left alone, the next text the caller sends is appended to that prompt
+    /// and the two are submitted as one. Called by the state pass at the end
+    /// of the run, and only for a run a caller asked to stop: a person who
+    /// pressed the key themselves gets their prompt back to edit, which is
+    /// what the agent meant by returning it.
+    pub(crate) fn clear_returned_prompt(&mut self, thread_id: u64, cx: &App) {
+        let key = self
+            .thread_by_id(thread_id)
+            .and_then(|thread| thread.terminal_agent)
+            .and_then(crate::agent_launcher::TerminalAgent::clear_input_key);
+        let (Some(key), Some(terminal)) = (key, self.terminal_of(thread_id, cx)) else {
+            return;
+        };
+        match terminal.read(cx).send_keystroke(key) {
+            Ok(()) => log::info!(
+                "surface record {thread_id}: its turn was stopped before the first token; \
+                 the prompt its agent put back on the input line was cleared"
+            ),
+            Err(e) => {
+                log::warn!("surface record {thread_id}: could not clear the returned prompt: {e}")
+            }
         }
     }
 

@@ -611,6 +611,10 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
     let mut turn_open = false;
     let mut turn_at: Option<i64> = None;
     let mut last_turn_end: Option<crate::rail_state::TurnEnd> = None;
+    // The id of a person's prompt while it is the newest record with an
+    // opinion about the turn. Any later such record - an answer, a tool
+    // result, an interrupt - means the prompt was taken up, and clears it.
+    let mut unanswered_prompt: Option<String> = None;
     let mut incomplete = false;
     let mut last_error: Option<usize> = None;
     let mut last_message: Option<usize> = None;
@@ -786,6 +790,10 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
             if open_now && let Some(end) = last_turn_end.as_mut() {
                 end.interrupted = false;
             }
+            unanswered_prompt = (open_now && is_prompt_record(&value))
+                .then(|| value.get("uuid").and_then(|v| v.as_str()))
+                .flatten()
+                .map(str::to_string);
             // The closing `assistant` record is the turn's own end mark, and
             // its `uuid` differs between turns. Only that record: an interrupt
             // also closes the turn, but it is a `user` record the person
@@ -797,6 +805,7 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
                             marker: uuid.to_string(),
                             failed: false,
                             interrupted: false,
+                            prompt_returned: false,
                         });
                     }
                     // The one `user` record that closes a turn is the
@@ -814,6 +823,7 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
                                 marker: uuid.to_string(),
                                 failed: false,
                                 interrupted: true,
+                                prompt_returned: false,
                             });
                         }
                     },
@@ -897,6 +907,7 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
         },
         incomplete,
         last_turn_end,
+        unanswered_prompt,
     })
 }
 
@@ -1009,6 +1020,22 @@ fn turn_signal(value: &serde_json::Value, raw_line: &str) -> Option<bool> {
 /// pasting a transcript excerpt and asking why it stopped there is exactly the
 /// shape of question people put to an agent. Their prompt would have read as an
 /// interrupt, and the rail would have said `idle` about the turn answering it.
+/// Whether a `user` record is something a person (or a session writing for
+/// one) submitted, and not a tool handing its result back: the two share a
+/// record type, and only the first can be put back on the input line.
+fn is_prompt_record(value: &serde_json::Value) -> bool {
+    if value.get("type").and_then(|v| v.as_str()) != Some("user") {
+        return false;
+    }
+    match value.get("message").and_then(|m| m.get("content")) {
+        Some(serde_json::Value::String(_)) => true,
+        Some(serde_json::Value::Array(blocks)) => !blocks
+            .iter()
+            .any(|block| block.get("type").and_then(|v| v.as_str()) == Some("tool_result")),
+        _ => false,
+    }
+}
+
 /// Across the local corpus every interrupt record's text block is the mark and
 /// nothing else, in both of its two forms.
 fn is_interrupt_block(block: &serde_json::Value) -> bool {
@@ -2584,6 +2611,49 @@ mod tests {
             .last_turn_end
             .expect("end");
         assert!(end.interrupted);
+    }
+
+    /// A prompt is unanswered while nothing with an opinion about the turn
+    /// follows it. That is every turn's first moment, and it is also all the
+    /// file ever shows of a turn stopped before the first token.
+    #[test]
+    fn a_prompt_nothing_followed_is_reported_as_unanswered() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        let finished = assistant_record(
+            "35c89ced-9c42-4286-a1bf-8283abdcffa5",
+            "end_turn",
+            false,
+            "claude-opus-5-5",
+        );
+        let prompt = format!(
+            r#"{{"type":"user","uuid":"66666666-6666-4666-8666-666666666666","timestamp":"{}","message":{{"role":"user","content":"go on"}}}}"#,
+            at("30")
+        );
+        // What Claude Code writes after a prompt whatever happens next.
+        let furniture = r#"{"type":"attachment","uuid":"77777777-7777-4777-8777-777777777777"}"#;
+        let tool_result = format!(
+            r#"{{"type":"user","uuid":"88888888-8888-4888-8888-888888888888","timestamp":"{}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"ok"}}]}}}}"#,
+            at("35")
+        );
+        let unanswered = |lines: &[&str]| probe_lines(lines, now).unanswered_prompt;
+
+        assert_eq!(unanswered(&[&finished]), None);
+        assert_eq!(
+            unanswered(&[&finished, &prompt, furniture]).as_deref(),
+            Some("66666666-6666-4666-8666-666666666666")
+        );
+        // Taken up: answered, or stopped once there was something to stop.
+        assert_eq!(unanswered(&[&prompt, &finished]), None);
+        assert_eq!(
+            unanswered(&[
+                &prompt,
+                &interrupt_record("55555555-5555-4555-8555-555555555555")
+            ]),
+            None
+        );
+        // A tool handing its result back opens the turn too, and is nothing
+        // that could be put back on an input line.
+        assert_eq!(unanswered(&[&prompt, &tool_result]), None);
     }
 
     /// The turn's end mark is the closing record's own `uuid`, and the newest

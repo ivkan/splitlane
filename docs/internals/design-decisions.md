@@ -917,17 +917,32 @@ during generation and a later turn stopped during a tool call were both
 confirmed in five to six seconds, the tool's child was gone, the agent
 stayed, and text sent afterwards reached the transcript as itself.
 
-**A stop before the first token is not confirmed, and it leaves the prompt
-behind.** Asked the moment the rail first said `running`, the key landed
+**A stop before the first token leaves the prompt behind, and the app
+removes it.** Asked the moment the rail first said `running`, the key landed
 before the model had answered. Claude Code wrote nothing to the transcript
 and put the prompt back on the input line; the next text sent was appended
-to it and submitted as one prompt. The run still ended, as `finished`, so
-the caller is told `not_confirmed` and nothing claims the turn was stopped.
-Ctrl-U removes one line of such a prompt and Ctrl-C removes all of it, but
-Ctrl-C on an empty line is the first half of quitting, so the app does not
-press either on a guess. What would close this is telling that case apart
-in the agent's own file - a prompt with nothing after it, under a status
-that says idle - and clearing the line only then.
+to it and submitted as one prompt. A caller that redirects a session - stop,
+then a new task - would have handed it the old task and the new one glued
+together.
+
+The case is told apart in the agent's own file: a prompt with nothing after
+it, under a status that says the turn is over (`read_turn_end` in the state
+pass, from `TranscriptProbe::unanswered_prompt`). Such a run ends as
+`interrupted` like any other stop, for a person's Esc as much as for a
+caller's. The line is cleared only when a caller asked for the stop within
+the last half minute (`clear_returned_prompt`): a person who pressed Esc
+themselves gets their prompt back to edit, which is what the agent meant by
+returning it. The key is the agent's own (`TerminalAgent::clear_input_key`),
+measured: for Claude Code, Ctrl-U removes one line of a three-line prompt
+and Ctrl-C removes all of it. Ctrl-C on an empty line is the first half of
+quitting, which is why it is never pressed on a guess. It is written in the
+same pass that counts the run, before the count is published, so the text a
+waiting caller sends next finds the line empty. Measured end to end on
+2.1.292: the stop was reported `interrupted`, and the next text reached the
+transcript as itself.
+
+`not_confirmed` is what is left: the key was written and the run did not end
+as stopped - it finished by itself a moment earlier, or the time ran out.
 
 **A session arranges the panes of what it opened, and no others.** With eight
 sessions and four panes, opening and closing are not enough: a session has to
