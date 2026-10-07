@@ -142,11 +142,6 @@ pub struct IpcRequest {
     /// thread cancels only queued work; once a handler starts, it waits for the
     /// real result so retrying clients do not duplicate mutations.
     pub started: Arc<AtomicBool>,
-    /// The socket peer's PID, captured
-    /// from `SO_PEERCRED` once per connection (None on macOS/Windows, where
-    /// the local-socket peer PID is not exposed). Used only to trace writes
-    /// granted by AI free-access mode; never an authorization input.
-    pub caller_pid: Option<i64>,
     /// The caller's ancestors, for the methods that answer differently
     /// depending on which pane called. Read on the connection's thread, so
     /// the handler has it without touching the process table itself.
@@ -1085,13 +1080,12 @@ fn handle_connection(
         }
     }
 
-    // Capture the peer PID once, while `stream` is still the
-    // bare socket (peer_creds is unreachable through the BufReader wrapper
-    // below). Threaded into each IpcRequest for the free-access write trace.
-    let caller_pid = peer_pid(&stream);
-    // And who that pid is, now: the number alone can change hands between
-    // this line and a request that asks which pane it belongs to.
-    let peer = crate::caller::Peer::connected(caller_pid);
+    // Note who connected, once, while `stream` is still the bare socket
+    // (peer_creds is unreachable through the BufReader wrapper below): the
+    // pid, and the process's start token, because the number alone can change
+    // hands between this line and a request that asks which pane it belongs
+    // to.
+    let peer = crate::caller::Peer::connected(peer_pid(&stream));
 
     // Drop a peer that opens a connection and then goes mute,
     // so it can't pin this handler thread forever. Unix sockets use the OS
@@ -1208,14 +1202,7 @@ fn handle_connection(
                                     "protocol": "jsonrpc-2.0"
                                 }, "id": response_id})
                             }
-                            _ => dispatch_to_gpui(
-                                &request_tx,
-                                method,
-                                params,
-                                response_id,
-                                caller_pid,
-                                peer,
-                            ),
+                            _ => dispatch_to_gpui(&request_tx, method, params, response_id, peer),
                         }
                     }
                     None => {
@@ -1645,7 +1632,6 @@ fn dispatch_to_gpui(
     method: String,
     params: Value,
     id: Value,
-    caller_pid: Option<i64>,
     peer: Option<crate::caller::Peer>,
 ) -> Value {
     // Blocking, and this is the thread it may block: the handler runs on the
@@ -1667,7 +1653,6 @@ fn dispatch_to_gpui(
         response_tx: resp_tx,
         cancelled: Arc::clone(&cancelled),
         started: Arc::clone(&started),
-        caller_pid,
         caller,
     };
 
@@ -2021,7 +2006,6 @@ mod dispatch_tests {
             response_tx,
             cancelled: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
-            caller_pid: None,
             caller: crate::caller::CallerLineage::NotAsked,
         }
     }
@@ -2036,7 +2020,6 @@ mod dispatch_tests {
             "surface.read".to_string(),
             json!({ "surface_id": 1 }),
             json!("req-overload"),
-            None,
             None,
         );
 
@@ -2055,7 +2038,6 @@ mod dispatch_tests {
             "surface.read".to_string(),
             json!({ "surface_id": 1 }),
             json!("req-closed"),
-            None,
             None,
         );
 

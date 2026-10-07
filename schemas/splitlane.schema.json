@@ -228,14 +228,9 @@
       "description": "When false, Splitlane never contacts the release feed: no startup check, no update prompt, and no in-app install. Set this when you build Splitlane yourself - a locally built binary is indistinguishable from an official one to the updater, so accepting an update would replace your own build with the upstream release.",
       "default": true
     },
-    "ai_unrestricted": {
-      "type": ["boolean", "null"],
-      "description": "AI free-access mode. When true, a conductor (a CLI agent or external orchestrator) may auto-submit prompts to other panes (surface.send_text submit:true) WITHOUT the SPLITLANE_IPC_SCRIPTING env gate, and every such write is traced. Null/false (default) keeps the current behavior strictly unchanged. Setting it to true in this file is only a request: it takes effect once Free access is turned on in Settings -> Agents, and is asked again after each restart, because any agent that can edit files can edit this file. Setting it to false revokes the capability at once.",
-      "default": false
-    },
     "ai_injection_fence": {
       "type": ["boolean", "null"],
-      "description": "Anti-injection fence on the surface.read CLI/IPC path, independent of ai_unrestricted. Null/true (default) wraps returned terminal text in an <untrusted_terminal_output> marker so a malicious peer pane cannot hijack a conductor reading it. False returns raw text (an assumed risk). Stays ON by default even in free-access mode because the fence protects the AI, it does not bridle it.",
+      "description": "Anti-injection fence on the surface.read CLI/IPC path. Null/true (default) wraps returned terminal text in an <untrusted_terminal_output> marker so a malicious peer pane cannot hijack a conductor reading it. False returns raw text (an assumed risk). The fence protects the AI, it does not bridle it.",
       "default": true
     },
     "claude_code_button_visible": {

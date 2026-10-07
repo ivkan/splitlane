@@ -181,7 +181,7 @@ The environment variables are read from the Splitlane process.
 | --- | --- |
 | Reads: `ls`, `read`, `search`, `ps`, `status`, `watch`, `wait`, `answer` | Always |
 | `new`, `select`, `focus`, `split` without spawn fields | Always |
-| `send`, `key` (`surface.send_text`, `surface.send_keystroke`) | `SPLITLANE_IPC_SCRIPTING=1` or `ai_unrestricted: true` |
+| `send`, `key` (`surface.send_text`, `surface.send_keystroke`) | `SPLITLANE_IPC_SCRIPTING=1`, or always when the target is a session the caller opened with `add` |
 | `app.dispatch_action`, `surface.send_answer` | `SPLITLANE_IPC_SCRIPTING=1` |
 | `up`, `surface.split`, `workspace.up` with `command`, `prompt`, `context` or `env` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
 | `flow run` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
@@ -198,7 +198,6 @@ than 64 KiB.
 
 | `splitlane.json` key | Default | Effect |
 | --- | --- | --- |
-| `ai_unrestricted` | `false` | Opens `send`/`key` without the environment variable, once confirmed in Settings -> Agents -> Free access (again after each restart); `true` in the file alone does not |
 | `ai_injection_fence` | `true` | Default for `surface.read`'s `fenced` param |
 | `submit_paste_delay_ms` | `70` (clamped 10-5000) | Delay before Enter after a bracketed-paste send |
 | `agent_stall_threshold_secs` | `60` (clamped 30-86400) | A `thinking` session with no hook activity for this long becomes `stalled` |

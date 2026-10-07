@@ -151,22 +151,13 @@ start Splitlane from a shell that has them set.
 | --- | --- | --- |
 | `SPLITLANE_IPC_SCRIPTING=1` | off | `send` and `key`; everything `SPLITLANE_IPC_ORCHESTRATION` opens; flow steps with `submit = true` |
 | `SPLITLANE_IPC_ORCHESTRATION=1` | off | Creating panes that run a command, pre-fill a prompt or set environment variables (`up`, `flow run`, `surface.split`, `workspace.up`) |
-| `ai_unrestricted` in `splitlane.json` (Settings -> Agents -> **Free access**) | `false` | `send` and `key` without the environment variable; each write is logged |
 | `ai_injection_fence` in `splitlane.json` | `true` | Not a gate: wraps `read` output as untrusted text |
 
-`ai_unrestricted` does not open pane creation, and a flow that submits checks
-the environment variable only.
+A flow that submits checks `SPLITLANE_IPC_SCRIPTING` only.
 
-Free access is turned on in the app, not in the file. `splitlane.json` is
-reloaded while Splitlane runs, and any agent allowed to edit files can edit it,
-so `"ai_unrestricted": true` written to the file is only a request: `send` and
-`key` stay closed, and Splitlane shows a notice pointing at Settings -> Agents,
-until you turn **Free access** on there. That confirmation is held by the
-running app and is not saved anywhere an agent could write it, so after a
-restart the file's `true` is a request again and Splitlane asks once more.
-Setting the key to `false`, in the file or in Settings, closes the gate at once.
-While the file asks and nobody has confirmed, `send` and `key` fail with a
-message that says so.
+There is no setting that opens `send` and `key`. The `ai_unrestricted` key
+and the **Free access** switch that used to are gone; a `splitlane.json` that
+still has the key loads as before and the key does nothing.
 
 ```bash
 splitlane send reviewer "Review the current diff and list the top risks."

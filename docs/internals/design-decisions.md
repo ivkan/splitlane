@@ -950,42 +950,37 @@ leaves every caller "in no pane", which is the launch-variable path and no
 worse than before. The Windows call (`GetNamedPipeClientProcessId`) compiles
 and has not been run against a live pipe.
 
-## Free access is opened in the app, never by the config file
+## There is no switch that lets an agent write into any pane
 
-**The rule.** `ai_unrestricted` in `splitlane.json` is a request, not a grant.
-It opens `send` and `key` only after the person turns **Free access** on in
-Settings -> Agents during the current run of the app (`app::free_access`). A
-`true` that arrives from disk (a hot reload, or the file as it stands at
-launch) leaves the gate closed and raises a toast whose `Open Settings` button lands
-on that switch - once per run, so an agent flipping the key back and forth
-cannot keep putting a button to the switch in front of the person; the
-Settings row repeats the reason while the request is
-pending, and a refused `send`/`key` names it too. A `false` from disk closes the
-gate at once and drops the confirmation, so a later `true` asks again. The
-environment variables are unaffected: they come from the process that launched
-the app, which a pane cannot change.
+**The rule.** Free access - a switch in Settings -> Agents, backed by the key
+`ai_unrestricted` in `splitlane.json` - is gone. Nothing replaces it as a
+setting. An agent in a pane writes into the sessions it opened, by default
+("A session works through the sessions it opened", above); into a session a
+person opened, an agent does not write. A person's own script outside a pane
+is let in by the variables the app is launched with, as it always was.
 
-**The case that forced it.** The file is reloaded while the app runs, and the
-gate read the reloaded value on every call. So an agent in a pane with
-permission to edit files could write `"ai_unrestricted": true` and, a debounce
-later, type into every other pane - the one capability the switch is there to
-withhold until a person grants it.
+**What the switch was, and what it protected.** One right: any caller on the
+socket may type into any pane without the launch variable. It could not be
+granted by the file alone, because the file is reloaded while the app runs
+and an agent allowed to edit files could write `"ai_unrestricted": true` and
+then type into every other pane. So the key was a request, the grant was a
+switch a person turned on, and the grant lived only in the running process -
+every place it could have been saved is written with the same rights as the
+file that asked.
 
-**Why the confirmation is not saved.** Every place it could be saved - a second
-file, a hash of the first, a timestamp - is written with the same rights as
-`splitlane.json`, so an agent that can forge the request can forge the record,
-and the record would add a step rather than a boundary. The confirmation
-therefore lives only in the running process, and someone who keeps free access
-on confirms it once per launch. That includes people who turned it on in a
-release before this rule: their first launch after it shows the toast rather
-than losing the setting without a word.
+**Why it was removed rather than fixed.** That last property is what made it
+unusable for the thing it was for. A grant that resets on every launch means
+orchestration stops working after a restart until someone remembers a switch,
+and remembering it safely needs a store an agent of the same user cannot
+write, which Linux and Windows do not have. The way out was not a better
+store but a narrower right: once the server can tell which pane a call comes
+from, "a session reaches what it opened" needs no grant at all, because it
+gives an agent nothing it could not already do by starting a second agent in
+its own shell. With that in place the wide right had no user left.
 
-**What it does not claim.** A process running as the same user can still drive
-the window through the operating system's accessibility or input-injection
-interfaces. The rule closes the silent path through a file every agent is able
-to write; it is not a sandbox.
+**What a file that still has the key does.** Nothing. The key is not read,
+and a file containing it loads as before; unknown keys are ignored.
 
-**What would re-open it.** A place to keep the confirmation that an agent
-running as the same user cannot write - for example a keychain item whose
-access is bound to the signed app on every platform - would let it survive a
-restart.
+**What would re-open it.** A need for agents to write into sessions a person
+opened. The answer to that is not a switch set ahead of time but a question
+put to the person at the moment it matters, for that one session.

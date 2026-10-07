@@ -743,31 +743,12 @@ fn orchestration_disabled_error(method: &str) -> JsonRpcError {
     ))
 }
 
-/// The `surface.send_text` write gate is
-/// open when EITHER the process-wide env gate is set OR AI free-access mode
-/// (`ai_unrestricted`) is on. With free-access off this reduces to the legacy
-/// env-only rule, so the gate-off behavior is strictly unchanged. Pure truth
-/// table, extracted so the rule is unit-tested without a running app.
-fn send_text_gate_open(scripting_enabled: bool, unrestricted: bool) -> bool {
-    scripting_enabled || unrestricted
-}
-
-/// The refusal for a closed `send`/`key` gate. When `splitlane.json` asks for
-/// free access that nobody has confirmed, say so: otherwise a person who set
-/// the key by hand sees the same message as one who never asked, and has no
-/// way to learn that the switch in Settings is what opens it.
-fn write_gate_refusal(method: &str, free_access_awaiting: bool) -> serde_json::Value {
-    let message = if free_access_awaiting {
-        format!(
-            "{method} disabled; ai_unrestricted in splitlane.json takes effect only once \
-             Free access is turned on in Settings -> Agents, or set SPLITLANE_IPC_SCRIPTING=1"
-        )
-    } else {
-        format!("{method} disabled; set SPLITLANE_IPC_SCRIPTING=1 to enable")
-    };
+/// The refusal for a write from a caller in no pane when the app was not
+/// launched with the variable that opens writes.
+fn write_gate_refusal(method: &str) -> serde_json::Value {
     JsonRpcError {
         code: -32601,
-        message,
+        message: format!("{method} disabled; set SPLITLANE_IPC_SCRIPTING=1 to enable"),
     }
     .into_value()
 }
@@ -1532,7 +1513,7 @@ impl SplitlaneApp {
             }
             req.started
                 .store(true, std::sync::atomic::Ordering::Release);
-            let result = self.handle_ipc(&req.method, &req.params, req.caller_pid, &req.caller, cx);
+            let result = self.handle_ipc(&req.method, &req.params, &req.caller, cx);
             // Mirror a SUCCESSFUL ai.* lifecycle frame to event-
             // bus subscribers. Broadcast after the handler so the looked-up
             // session carries the just-applied state.
@@ -1745,8 +1726,6 @@ impl SplitlaneApp {
             // toast; fire a one-time `telemetry_reenabled` breadcrumb on an
             // explicit opted-out → opted-in transition (ROPA audit trail).
             self.reconcile_telemetry_consent(&config, cx);
-            // A file edit may close free access but never open it.
-            self.observe_free_access_file(&config, cx);
             // Render cache: refresh the cached config so render paths
             // pick up the reload without a per-frame `load_config()`. Last use
             // of `config` - move it in.
@@ -2778,9 +2757,6 @@ impl SplitlaneApp {
         &mut self,
         method: &str,
         params: &serde_json::Value,
-        // Socket peer PID for the
-        // free-access write trace; None on macOS/Windows. Advisory only.
-        caller_pid: Option<i64>,
         // Which pane the call came from, for the methods that ask.
         caller: &crate::caller::CallerLineage,
         cx: &mut Context<Self>,
@@ -3274,28 +3250,21 @@ impl SplitlaneApp {
             }
             "surface.send_text" => {
                 // Same-UID RCE primitive gate. See ipc.rs module doc for the
-                // blast-radius rationale. Default off. There is a SECOND way
-                // through: AI free-access mode, which counts only once it is
-                // confirmed in Settings -> Agents (`app::free_access`), never
-                // because `splitlane.json` says so.
-                let unrestricted = self.free_access_open();
-                let gate_open = send_text_gate_open(ipc_scripting_enabled(), unrestricted);
-                // A THIRD way through, and the only one that needs nothing
+                // blast-radius rationale. Default off.
+                let gate_open = ipc_scripting_enabled();
+                // A second way through, and the one that needs nothing
                 // switched on: a session writing into a session it opened.
                 // Whether this is that is known once the target is; a caller
                 // in no pane has only the gate, and is answered here as it
                 // always was.
                 let who = self.caller_of(caller, cx);
                 if !gate_open && who == crate::app::orchestration::Caller::Outside {
-                    return write_gate_refusal(
-                        "surface.send_text",
-                        self.free_access_awaiting_confirmation(),
-                    );
+                    return write_gate_refusal("surface.send_text");
                 }
                 let text = params.get("text").and_then(|t| t.as_str()).unwrap_or("");
                 // `submit: true` is the ONLY
-                // sanctioned submission path. It is unreachable unless the gate
-                // above passed (env OR free-access), so a CR can never be sent
+                // sanctioned submission path. It is reached only by a caller
+                // the rules below let write, so a CR can never be sent
                 // silently; the default stays strict inject-without-CR.
                 let submit = params
                     .get("submit")
@@ -3348,10 +3317,7 @@ impl SplitlaneApp {
                             return refusal.into_value("surface.send_text");
                         }
                         Err(crate::app::orchestration::WriteDenied::GateClosed) => {
-                            return write_gate_refusal(
-                                "surface.send_text",
-                                self.free_access_awaiting_confirmation(),
-                            );
+                            return write_gate_refusal("surface.send_text");
                         }
                     };
                 // What the rail said when the text went in. Text sent into a
@@ -3444,22 +3410,6 @@ impl SplitlaneApp {
                         terminal.read(cx).send_text("\r");
                     }
                 }
-                // Trace every write granted by free-access mode
-                // as a per-pane capability grant (vs the process-wide env gate),
-                // so the octroi is never a silent global open. Re-evaluated per
-                // call, so flipping the mode off leaves no residual capability.
-                if unrestricted {
-                    tracing::info!(
-                        target: "splitlane::ipc::unrestricted",
-                        method = "surface.send_text",
-                        surface_id = wrote_sid,
-                        caller_pid = ?caller_pid,
-                        length = text.len() as u64,
-                        submit = submit,
-                        paste = paste,
-                        "ai_unrestricted: authorized PTY write to pane"
-                    );
-                }
                 let submit_mode = if submit && paste && !text.is_empty() {
                     serde_json::Value::String("deferred_paste_cr".to_string())
                 } else if submit {
@@ -3485,14 +3435,10 @@ impl SplitlaneApp {
                 // Same gate as `surface.send_text`. Even when enabled, CRLF
                 // bytes are rejected so a multi-keystroke payload
                 // cannot smuggle a newline-terminated PTY command.
-                let unrestricted = self.free_access_open();
-                let gate_open = send_text_gate_open(ipc_scripting_enabled(), unrestricted);
+                let gate_open = ipc_scripting_enabled();
                 let who = self.caller_of(caller, cx);
                 if !gate_open && who == crate::app::orchestration::Caller::Outside {
-                    return write_gate_refusal(
-                        "surface.send_keystroke",
-                        self.free_access_awaiting_confirmation(),
-                    );
+                    return write_gate_refusal("surface.send_keystroke");
                 }
                 let keystroke = params
                     .get("keystroke")
@@ -3537,10 +3483,7 @@ impl SplitlaneApp {
                                 return refusal.into_value("surface.send_keystroke");
                             }
                             Err(crate::app::orchestration::WriteDenied::GateClosed) => {
-                                return write_gate_refusal(
-                                    "surface.send_keystroke",
-                                    self.free_access_awaiting_confirmation(),
-                                );
+                                return write_gate_refusal("surface.send_keystroke");
                             }
                         }
                         // Same as `surface.send_text` - an explicit write
@@ -5222,7 +5165,6 @@ mod tests {
             response_tx,
             cancelled: Arc::new(AtomicBool::new(cancelled)),
             started: Arc::new(AtomicBool::new(false)),
-            caller_pid: None,
             caller: crate::caller::CallerLineage::NotAsked,
         }
     }
@@ -5637,60 +5579,16 @@ mod tests {
     }
 
     #[test]
-    fn send_text_gate_opens_for_env_or_free_access() {
-        // With free-access OFF the gate matches the legacy
-        // env-only rule exactly - closed unless SPLITLANE_IPC_SCRIPTING=1.
-        assert!(
-            !super::send_text_gate_open(false, false),
-            "both off must stay closed (unchanged legacy behavior)"
-        );
-        assert!(
-            super::send_text_gate_open(true, false),
-            "the env gate alone still opens it"
-        );
-        // Free-access opens the write gate without the env var.
-        assert!(
-            super::send_text_gate_open(false, true),
-            "free-access mode opens it without the env gate"
-        );
-        assert!(super::send_text_gate_open(true, true));
-    }
-
-    #[test]
-    fn write_gate_ignores_free_access_the_file_turned_on() {
-        use crate::app::free_access::FreeAccess;
-        let mut access = FreeAccess::default();
-        // An agent writes `"ai_unrestricted": true`; the watcher reloads it.
-        access.observe_file(false, true);
-        assert!(!super::send_text_gate_open(false, access.is_open(true)));
-        // The environment gate is untouched by any of this.
-        assert!(super::send_text_gate_open(true, access.is_open(true)));
-        // The Settings switch is what opens it.
-        access.set_from_settings(true);
-        assert!(super::send_text_gate_open(false, access.is_open(true)));
-        // And a `false` from the file closes it again at once.
-        access.observe_file(true, false);
-        assert!(!super::send_text_gate_open(false, access.is_open(false)));
-    }
-
-    #[test]
-    fn write_gate_refusal_names_a_pending_free_access_request() {
+    fn a_closed_write_gate_names_the_variable_that_opens_it() {
         for method in ["surface.send_text", "surface.send_keystroke"] {
-            let plain = super::write_gate_refusal(method, false);
-            let pending = super::write_gate_refusal(method, true);
-            for refusal in [&plain, &pending] {
-                assert_eq!(refusal[super::JSONRPC_ERROR_KEY]["code"], -32601);
-                let message = refusal[super::JSONRPC_ERROR_KEY]["message"]
-                    .as_str()
-                    .unwrap();
-                // The CLI keys its hint on "<method> disabled".
-                assert!(message.starts_with(&format!("{method} disabled")));
-                assert!(message.contains("SPLITLANE_IPC_SCRIPTING=1"));
-            }
-            let pending = pending[super::JSONRPC_ERROR_KEY]["message"]
+            let refusal = super::write_gate_refusal(method);
+            assert_eq!(refusal[super::JSONRPC_ERROR_KEY]["code"], -32601);
+            let message = refusal[super::JSONRPC_ERROR_KEY]["message"]
                 .as_str()
                 .unwrap();
-            assert!(pending.contains("Settings -> Agents"));
+            // The CLI keys its hint on "<method> disabled".
+            assert!(message.starts_with(&format!("{method} disabled")));
+            assert!(message.contains("SPLITLANE_IPC_SCRIPTING=1"));
         }
     }
 

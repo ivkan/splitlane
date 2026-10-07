@@ -199,29 +199,14 @@ pub struct SplitlaneConfig {
     /// build with the upstream release**. Anyone running a personal build
     /// wants this off.
     pub check_for_updates: Option<bool>,
-    /// "AI free access" master switch.
-    /// `Some(true)` debrays the *bridling* guardrails so a lead agent (a CLI
-    /// agent or external orchestrator) can drive its peers without friction:
-    /// `surface.send_text submit:true` is authorized without the
-    /// `SPLITLANE_IPC_SCRIPTING` env gate, and every such write is traced.
-    /// `Some(false)` / `None` (the default) keeps the current behavior
-    /// strictly unchanged (prefill-not-submitted + env-gated writes).
-    /// `Some(true)` read from the file is only a request: the app opens the
-    /// gate once the Settings switch confirms it in the running process, since
-    /// an agent that can edit files can edit this one. `Some(false)` revokes at
-    /// once, with no residual capability. A non-boolean value resolves to
-    /// `None` (false) with a warn, never an accidentally-open state.
-    #[serde(default, deserialize_with = "lenient_opt_bool")]
-    pub ai_unrestricted: Option<bool>,
-    /// Anti-injection fence on
-    /// the `surface.read` CLI/IPC path, INDEPENDENT of `ai_unrestricted`.
+    /// Anti-injection fence on the `surface.read` CLI/IPC path.
     /// `Some(true)` / `None` (the default) wraps returned terminal text in
     /// the `<untrusted_terminal_output id="…">` marker (parity with the MCP
     /// bridge) so a malicious peer pane cannot hijack a lead agent reading it.
     /// `Some(false)` returns raw text (historical behavior), a risk the user
     /// assumes. The fence PROTECTS the AI from being redirected; it does not
-    /// bridle it, so it stays ON by default even in free-access mode. A
-    /// non-boolean value resolves to `None` (fence ON) with a warn.
+    /// bridle it. A non-boolean value resolves to `None` (fence ON) with a
+    /// warn.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub ai_injection_fence: Option<bool>,
     /// Show the built-in "Claude Code" command button in the tab bar.
@@ -463,16 +448,9 @@ impl SplitlaneConfig {
         clamped
     }
 
-    /// Resolve the AI free-access master
-    /// switch. Default OFF (`false`) so a fresh config never opens the mode.
-    pub fn ai_unrestricted_enabled(&self) -> bool {
-        self.ai_unrestricted.unwrap_or(false)
-    }
-
     /// Resolve the anti-injection
     /// fence. Default ON (`true`): a missing or malformed value fails closed
-    /// to fenced, even when free-access mode is on (the fence protects the
-    /// lead agent, it does not bridle it).
+    /// to fenced.
     pub fn ai_injection_fence_enabled(&self) -> bool {
         self.ai_injection_fence.unwrap_or(true)
     }
@@ -2223,7 +2201,6 @@ mod tests {
             external_editor: Some("auto".to_string()),
             claude_code_bypass_permissions: Some(false),
             check_for_updates: Some(false),
-            ai_unrestricted: Some(true),
             ai_injection_fence: Some(false),
             claude_code_button_visible: Some(true),
             codex_button_visible: Some(true),
@@ -2615,31 +2592,21 @@ mod tests {
     }
 
     #[test]
-    fn ai_access_toggles_default_safe_and_tolerate_garbage() {
-        // A fresh config never opens free-access and
-        // always fences.
+    fn the_injection_fence_defaults_on_and_tolerates_garbage() {
+        // A fresh config always fences.
         let cfg = SplitlaneConfig::default();
-        assert!(!cfg.ai_unrestricted_enabled(), "unrestricted defaults OFF");
         assert!(cfg.ai_injection_fence_enabled(), "fence defaults ON");
 
-        // Explicit booleans round-trip through the lenient deserializer.
+        // An explicit boolean round-trips through the lenient deserializer.
         let cfg: SplitlaneConfig =
-            serde_json::from_str(r#"{"ai_unrestricted": true, "ai_injection_fence": false}"#)
-                .unwrap();
-        assert!(cfg.ai_unrestricted_enabled());
+            serde_json::from_str(r#"{"ai_injection_fence": false}"#).unwrap();
         assert!(!cfg.ai_injection_fence_enabled());
 
-        // A non-boolean value fails CLOSED (unrestricted -> false, fence
-        // -> true) instead of erroring the whole parse, and does NOT wipe the
-        // sibling settings the all-or-nothing loader fallback would have lost.
-        let cfg: SplitlaneConfig = serde_json::from_str(
-            r#"{"theme": "One Dark", "ai_unrestricted": "yes", "ai_injection_fence": 0}"#,
-        )
-        .unwrap();
-        assert!(
-            !cfg.ai_unrestricted_enabled(),
-            "a garbage value must never open the mode"
-        );
+        // A non-boolean value fails CLOSED (fence -> true) instead of
+        // erroring the whole parse, and does NOT wipe the sibling settings
+        // the all-or-nothing loader fallback would have lost.
+        let cfg: SplitlaneConfig =
+            serde_json::from_str(r#"{"theme": "One Dark", "ai_injection_fence": 0}"#).unwrap();
         assert!(
             cfg.ai_injection_fence_enabled(),
             "a garbage value must never drop the fence"
@@ -2647,8 +2614,19 @@ mod tests {
         assert_eq!(
             cfg.theme.as_deref(),
             Some("One Dark"),
-            "siblings survive a malformed AI-access toggle"
+            "siblings survive a malformed fence value"
         );
+    }
+
+    /// `ai_unrestricted` was a key in this file once. A file that still has
+    /// it must load as if it did not: the key opens nothing, and it must not
+    /// cost the person the rest of their settings.
+    #[test]
+    fn a_file_with_the_removed_free_access_key_still_loads() {
+        let cfg: SplitlaneConfig =
+            serde_json::from_str(r#"{"theme": "One Dark", "ai_unrestricted": true}"#).unwrap();
+        assert_eq!(cfg.theme.as_deref(), Some("One Dark"));
+        assert!(cfg.ai_injection_fence_enabled());
     }
 
     /// The ladder answers what the person had, and only then what we would

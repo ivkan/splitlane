@@ -6,6 +6,48 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An agent in a pane can open agent sessions and work through them, with
+  nothing switched on: `splitlane add` opens one in the caller's project,
+  `send` and `key` write into it, `park` and `show` take it out of a pane and
+  put it back, `close` stops it. Each of these works only on sessions the
+  caller opened. One session may have eight it opened running, and a session
+  that was opened by another cannot open any. Splitlane works out which pane
+  a call comes from by itself, from the calling process.
+- Text one session sends into another starts with a line naming the sender:
+  `[Splitlane] Sent by the agent session "<name>", not typed by a person.`
+- `send` reports `rail_status_at_send`, the target's status when the text
+  went in.
+- Exit code `8` (JSON-RPC `-32004`): a rule refused the request and nothing
+  was done. The reason is in the message and under `error.data.reason`.
+
+### Changed
+
+- A session that is waiting for a person is not typed into by a caller in a
+  pane, with `send` or with `key`, also when `SPLITLANE_IPC_SCRIPTING=1` is
+  set. A script outside a pane is not affected.
+- The injection fence has its row in Settings -> Agents at all times. It was
+  shown only while Free access was on, though it acted regardless.
+
+### Removed
+
+- **Free access**: the switch in Settings -> Agents, the notice about it at
+  launch, and the `ai_unrestricted` key in `splitlane.json`. It let any
+  caller type into any pane and had to be turned on again after every
+  restart. A file that still has the key loads as before; the key does
+  nothing. If you relied on it for a lead agent, have the agent open its
+  sessions with `splitlane add`; for your own scripts, launch Splitlane with
+  `SPLITLANE_IPC_SCRIPTING=1`.
+
+### Fixed
+
+- Deleting a session stops its agent. On macOS the agent process kept
+  running after its row and pane were gone, and a turn in flight ran to its
+  end unseen.
+- A prompt given when opening a session is not written into a pane whose
+  agent did not start.
+
 ## [0.1.4] - 2026-10-04
 
 ### Changed

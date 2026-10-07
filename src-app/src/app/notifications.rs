@@ -44,9 +44,6 @@ pub(crate) enum ToastAction {
     /// Used for the 4th-attempt fallback (AC: "Download manually from the
     /// releases page").
     OpenReleasesPage(String),
-    /// "Open Settings" - opens Settings on the Agents page, where free access
-    /// that `splitlane.json` asks for is confirmed.
-    ReviewFreeAccess,
 }
 
 impl SplitlaneApp {
@@ -124,9 +121,8 @@ impl SplitlaneApp {
         &self,
         toast: &Toast,
         ui: UiColors,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> AnyElement {
-        let app = cx.entity().downgrade();
         let has_actions = !toast.actions.is_empty();
         let is_error = has_actions || toast_message_reads_like_error(&toast.message);
         let (icon, icon_color, max_w) = if is_error {
@@ -172,12 +168,8 @@ impl SplitlaneApp {
                     ToastAction::OpenReleasesPage(_) => {
                         ("Open releases", format!("toast-releases-{idx}"))
                     }
-                    ToastAction::ReviewFreeAccess => {
-                        ("Open Settings", format!("toast-free-access-{idx}"))
-                    }
                 };
                 let action_clone = action.clone();
-                let app = app.clone();
                 let resting_background = with_alpha(ui.text, 0.08);
                 let hover_background = with_alpha(ui.text, 0.12);
                 let btn = div()
@@ -204,16 +196,6 @@ impl SplitlaneApp {
                             if let Err(err) = crate::external_open::open_url(url) {
                                 log::warn!("toast: open releases URL failed: {err}");
                             }
-                        }
-                        ToastAction::ReviewFreeAccess => {
-                            let _ = app.update(cx, |app, cx| {
-                                app.open_settings_window(window, cx);
-                                app.select_settings_section(
-                                    crate::SettingsSection::AiAgent,
-                                    window,
-                                    cx,
-                                );
-                            });
                         }
                     });
                 row = row.child(btn);

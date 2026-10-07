@@ -52,13 +52,7 @@ impl SplitlaneApp {
         // `TerminalAgent::is_visible`). Toggling writes an explicit `Some(..)`
         // that pins the choice regardless of install state.
         let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
-        // AI free-access mode + the
-        // independent injection fence. Defaults: unrestricted OFF, fence ON.
-        // What the gate does, not what the file says: a file edit alone never
-        // opens free access (`app::free_access`), so the switch reads off
-        // until it has been turned on here.
-        let unrestricted = self.free_access_open();
-        let awaiting_confirmation = self.free_access_awaiting_confirmation();
+        // The injection fence. Default ON.
         let fence = config.ai_injection_fence_enabled();
 
         let mut agents = div().flex().flex_col();
@@ -104,38 +98,9 @@ impl SplitlaneApp {
                     );
                 }),
             ))
+            // The fence acts on every read whatever else is set, so its row is
+            // always here.
             .child(setting_toggle_row(
-                ui,
-                "agents-free-access",
-                "Free access",
-                Some(SharedString::from(
-                    "without the SPLITLANE_IPC_SCRIPTING gate",
-                )),
-                unrestricted,
-                cx.listener(move |this, _: &ClickEvent, _w, cx| {
-                    this.set_free_access_from_settings(!unrestricted, cx);
-                }),
-            ));
-
-        if awaiting_confirmation {
-            access = access.child(
-                div()
-                    .max_w(px(SETTING_ROW_MAX_WIDTH))
-                    .pt(tok::space::MD)
-                    .text_size(tok::text::CAPTION)
-                    .text_color(ui.agent_stalled)
-                    .child(
-                        "splitlane.json asks for free access. It stays off until you turn it on \
-                         here: any agent that can edit files can edit that file too. Splitlane \
-                         asks again after each restart.",
-                    ),
-            );
-        }
-
-        // The fence sub-row only appears once free access is on: with the mode
-        // off, surface.read is always fenced and there is nothing to relax.
-        if unrestricted {
-            access = access.child(setting_toggle_row(
                 ui,
                 "agents-injection-fence",
                 "Injection fence",
@@ -150,21 +115,18 @@ impl SplitlaneApp {
                     );
                 }),
             ));
-        }
 
         access = access.child(caption(
             ui,
             "Bypass permissions launches Claude Code with no protection against prompt \
-             injection \u{2014} only on machines you trust. Free access lets a lead agent \
-             auto-submit prompts to your other panes: best on a throwaway branch, and every \
-             write it makes is logged. The fence keeps what a lead agent reads out of a peer \
-             pane wrapped as untrusted; it protects the agent rather than restricting it, \
-             which is why it stays on even here.",
+             injection \u{2014} only on machines you trust. The fence keeps what an agent \
+             reads out of another pane wrapped as untrusted; it protects the agent rather \
+             than restricting it.",
         ));
 
         // AC #3: once the fence is OFF, surface the active risk in the danger
         // role so the trade-off is explicit and impossible to miss.
-        if unrestricted && !fence {
+        if !fence {
             access = access.child(
                 div()
                     .max_w(px(SETTING_ROW_MAX_WIDTH))
@@ -172,8 +134,8 @@ impl SplitlaneApp {
                     .text_size(tok::text::CAPTION)
                     .text_color(ui.agent_error)
                     .child(
-                        "Fence disabled: a malicious pane can redirect your lead agent, and \
-                         resuming control by hand will not undo a fast, silent injection.",
+                        "Fence disabled: what a pane prints can redirect an agent that reads \
+                         it, and resuming control by hand will not undo a fast, silent injection.",
                     ),
             );
         }
