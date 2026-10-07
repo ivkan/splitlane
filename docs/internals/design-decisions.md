@@ -850,7 +850,11 @@ or changes which project is on screen.
 is typed into the pane's shell, so for the first moments the shell is what
 reads input. The prompt is written once something speaks for the agent - its
 own file, read by the state pass, or a hook frame - and the screen has
-settled. When the opener is a session, the text is preceded by one line,
+settled. If nothing speaks for it within half a minute the prompt is dropped
+and a warning is logged: an agent that did not start leaves a shell at the
+other end, and text written to a shell is a command. The caller is not told,
+because its request was answered when the session was created; what it sees
+is a wait for the first turn that does not return a turn. When the opener is a session, the text is preceded by one line,
 `[Splitlane] Sent by the agent session "<name>", not typed by a person.` It
 is plain text in the receiving agent's own transcript, so the agent, a person
 watching the pane and anyone reading the conversation later all learn the same

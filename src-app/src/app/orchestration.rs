@@ -39,7 +39,7 @@ pub(crate) fn provenance_line(sender_title: &str) -> String {
 }
 
 /// How long an opening prompt waits for the new session's agent to be spoken
-/// for, by its own file or by a hook frame, before it is written anyway.
+/// for, by its own file or by a hook frame, before it is given up on.
 const OPENING_PROMPT_AGENT_MAX: Duration = Duration::from_secs(30);
 const OPENING_PROMPT_POLL: Duration = Duration::from_millis(200);
 /// And then for its screen to stop changing.
@@ -470,6 +470,9 @@ impl SplitlaneApp {
         };
         let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
         let Some(view) = self.mount_agents_terminal_for_target(target, cx) else {
+            // An error must not leave a row behind that the caller was told
+            // does not exist.
+            let _ = self.remove_thread(ws_idx, thread_idx, cx);
             return JsonRpcError::invalid_params("The session could not be started").into_value();
         };
         // Neither arm moves the keyboard or changes which project is on
@@ -535,6 +538,9 @@ impl SplitlaneApp {
     /// moments the thing reading input is the shell and not the agent. The
     /// prompt waits until something speaks for the agent - its own file read
     /// by the detector, or a hook frame - and then for the screen to settle.
+    /// If nothing ever does, the prompt is dropped: an agent that did not
+    /// start leaves a shell at the other end, and text sent to a shell is a
+    /// command.
     /// It goes through the same write as `surface.send_text`: a paste, and
     /// when it is to be submitted, a carriage return of its own afterwards.
     fn schedule_opening_prompt(
@@ -565,11 +571,15 @@ impl SplitlaneApp {
                         Ok(None) | Err(_) => return,
                     }
                     if waited >= OPENING_PROMPT_AGENT_MAX {
+                        // Not written. With no agent there, the thing reading
+                        // the pane's input is a shell, and the prompt would be
+                        // run as a command.
                         log::warn!(
                             "opening prompt: nothing spoke for the agent of surface record \
-                             {thread_id} within {OPENING_PROMPT_AGENT_MAX:?}; written best-effort"
+                             {thread_id} within {OPENING_PROMPT_AGENT_MAX:?}; the prompt was \
+                             not written"
                         );
-                        break;
+                        return;
                     }
                     smol::Timer::after(OPENING_PROMPT_POLL).await;
                     waited += OPENING_PROMPT_POLL;
