@@ -65,6 +65,8 @@ pub(crate) fn method_asks_who_calls(method: &str) -> bool {
             | "surface.show"
             | "surface.close"
             | "surface.interrupt"
+            // Its `drive` field is an answer about the caller and the target.
+            | "surface.status"
     )
 }
 

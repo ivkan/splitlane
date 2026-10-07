@@ -346,6 +346,9 @@ impl SplitlaneApp {
                         status,
                         branch: branch.clone(),
                         context: context.filter(|_| is_agent),
+                        drive_questions: thread_id
+                            .map(|asker| self.drive_questions_of(asker))
+                            .unwrap_or_default(),
                     },
                 );
             }

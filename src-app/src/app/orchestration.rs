@@ -14,6 +14,7 @@ use std::time::Duration;
 use gpui::{App, Context, Entity};
 
 use crate::SplitlaneApp;
+use crate::app::drive::{Drive, Standing};
 use crate::app::ipc_handler::{JSONRPC_ERROR_KEY, JsonRpcError};
 use crate::app::targeting::PaneRefusal;
 use crate::caller::CallerLineage;
@@ -78,6 +79,9 @@ pub(crate) enum Refusal {
     /// The target finished a turn a person started, and the person has not
     /// looked at it yet.
     UnseenByPerson,
+    /// A person was asked whether the caller may write into the target, and
+    /// said no.
+    PersonDeclined,
 }
 
 impl Refusal {
@@ -98,6 +102,7 @@ impl Refusal {
             Refusal::TurnInFlight => "turn_in_flight",
             Refusal::NoInterrupt => "no_interrupt",
             Refusal::UnseenByPerson => "unseen_by_person",
+            Refusal::PersonDeclined => "person_declined",
         }
     }
 
@@ -137,6 +142,10 @@ impl Refusal {
             Refusal::UnseenByPerson => "the target finished a turn a person started, and the \
                  person has not looked at it yet; closing it would take the result away \
                  from them"
+                .to_string(),
+            Refusal::PersonDeclined => "a person was asked whether the calling session may \
+                 send messages to the target, and said no; they are not asked again until \
+                 Splitlane restarts"
                 .to_string(),
         }
     }
@@ -233,6 +242,8 @@ pub(crate) struct WriteTarget {
     pub opened_by: Option<u64>,
     /// The rail says it is waiting for a person.
     pub waiting: bool,
+    /// Where a person's leave for this caller to drive it stands.
+    pub drive: Drive,
 }
 
 /// On what ground a write is let through.
@@ -240,6 +251,9 @@ pub(crate) struct WriteTarget {
 pub(crate) enum WriteLeave {
     /// The caller opened the target. The text is marked as sent by it.
     Opener,
+    /// A person opened the target and let the caller drive it. The text is
+    /// marked the same way.
+    Driver,
     /// The app was launched with the variable that opens writes, which is
     /// what let a write through before sessions could own sessions. Nothing
     /// about such a write changes.
@@ -253,6 +267,32 @@ pub(crate) enum WriteDenied {
     /// A caller outside a pane, and the launch variable is not set: the
     /// answer such a caller has always had.
     GateClosed,
+    /// The target is a session a person opened, and the person has not said
+    /// whether the caller may write into it. They are asked; nothing is
+    /// written.
+    AskPerson,
+}
+
+/// The JSON-RPC code a write travels under when it put a question to a person
+/// instead of being done. Not [`Refusal::CODE`]: a refusal is final, and this
+/// is not an answer yet.
+pub(crate) const ASKED_PERSON_CODE: i32 = -32005;
+
+/// The response to a write that asked a person. The call does not wait for
+/// the answer: a person can take any time to give one, and the caller has a
+/// turn of its own to get on with.
+pub(crate) fn asked_person_value(method: &str) -> serde_json::Value {
+    serde_json::json!({
+        JSONRPC_ERROR_KEY: {
+            "code": ASKED_PERSON_CODE,
+            "message": format!(
+                "{method} asked a person (asked_person): the target is a session a person \
+                 opened, and they are being asked whether the calling session may send it \
+                 messages; nothing was written. Wait for their answer and send again"
+            ),
+            "data": { "reason": "asked_person" },
+        }
+    })
 }
 
 /// Whether `caller` may type into `target`.
@@ -288,10 +328,18 @@ pub(crate) fn may_write(
     if target.opened_by == Some(pane.thread_id) {
         return Ok(WriteLeave::Opener);
     }
+    if target.drive == Drive::Standing(Standing::Allowed) {
+        return Ok(WriteLeave::Driver);
+    }
     if gate_open {
-        Ok(WriteLeave::LaunchVariable)
-    } else {
-        Err(WriteDenied::Refused(Refusal::NotYours))
+        return Ok(WriteLeave::LaunchVariable);
+    }
+    match target.drive {
+        Drive::Standing(Standing::Declined) => Err(WriteDenied::Refused(Refusal::PersonDeclined)),
+        Drive::Standing(Standing::Asked) | Drive::NotAsked => Err(WriteDenied::AskPerson),
+        Drive::NotOffered | Drive::Standing(Standing::Allowed) => {
+            Err(WriteDenied::Refused(Refusal::NotYours))
+        }
     }
 }
 
@@ -635,7 +683,182 @@ impl SplitlaneApp {
             waiting: self
                 .rail_snapshot_for(terminal, thread_id, cx)
                 .is_some_and(|rail| rail.status == crate::project::ThreadStatus::WaitingForInput),
+            drive: Drive::NotOffered,
         }
+    }
+
+    /// [`Self::write_target`] for a call from `caller`: the same facts, and
+    /// where a person's leave for this caller stands.
+    pub(crate) fn write_target_for(
+        &self,
+        caller: &Caller,
+        terminal: &Entity<TerminalView>,
+        cx: &App,
+    ) -> WriteTarget {
+        let target = self.write_target(terminal, cx);
+        WriteTarget {
+            drive: self.drive_between(caller, target),
+            ..target
+        }
+    }
+
+    /// Whether a person can be asked about this caller and this target, and
+    /// what they said if they were.
+    ///
+    /// Only an agent session a person opened, in the caller's own project,
+    /// is something to ask about. A shell is not: text written to a shell is
+    /// a command. And a session that was itself opened by one asks for
+    /// nothing - it has a task, not a plan of its own.
+    fn drive_between(&self, caller: &Caller, target: WriteTarget) -> Drive {
+        let (Caller::Pane(pane), Some(thread_id)) = (caller, target.thread_id) else {
+            return Drive::NotOffered;
+        };
+        if pane.opened || target.opened_by.is_some() || thread_id == pane.thread_id {
+            return Drive::NotOffered;
+        }
+        let in_callers_project = self.workspaces.get(pane.ws_idx).is_some_and(|container| {
+            container.threads.iter().any(|thread| {
+                thread.id == thread_id
+                    && thread.terminal_agent.is_some()
+                    && !crate::app::agents_sidebar::is_shell_surface(thread)
+            })
+        });
+        if !in_callers_project {
+            return Drive::NotOffered;
+        }
+        match self.drive.standing(pane.thread_id, thread_id) {
+            Some(standing) => Drive::Standing(standing),
+            None => Drive::NotAsked,
+        }
+    }
+
+    /// The response to a write the rules did not let through, having done
+    /// what the denial calls for: a question to a person is put here.
+    pub(crate) fn deny_write(
+        &mut self,
+        denied: WriteDenied,
+        caller: &Caller,
+        target: WriteTarget,
+        method: &str,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        match denied {
+            WriteDenied::Refused(refusal) => refusal.into_value(method),
+            WriteDenied::GateClosed => crate::app::ipc_handler::write_gate_refusal(method),
+            WriteDenied::AskPerson => {
+                if let (Caller::Pane(pane), Some(thread_id)) = (caller, target.thread_id)
+                    && self.drive.ask(pane.thread_id, thread_id)
+                {
+                    self.show_drive_questions(pane.thread_id, cx);
+                }
+                asked_person_value(method)
+            }
+        }
+    }
+
+    /// The questions `asker` has standing, as its pane draws them.
+    pub(crate) fn drive_questions_of(&self, asker: u64) -> Vec<crate::pane::DriveQuestion> {
+        let name = |thread: &crate::project::Thread| {
+            gpui::SharedString::from(
+                crate::project::clean_sidebar_title(&thread.title)
+                    .unwrap_or_else(|| thread.title.clone()),
+            )
+        };
+        let Some(asker_name) = self.thread_by_id(asker).map(name) else {
+            return Vec::new();
+        };
+        self.drive
+            .asked_by(asker)
+            .into_iter()
+            .filter_map(|target| {
+                Some(crate::pane::DriveQuestion {
+                    asker,
+                    target,
+                    asker_name: asker_name.clone(),
+                    target_name: name(self.thread_by_id(target)?),
+                })
+            })
+            .collect()
+    }
+
+    /// The person answered the question about `asker` and `target`.
+    pub(crate) fn answer_drive(
+        &mut self,
+        asker: u64,
+        target: u64,
+        allow: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.drive.answer(asker, target, allow) {
+            self.show_drive_questions(asker, cx);
+        }
+    }
+
+    /// Make `asker`'s row say what its questions say: waiting for a person
+    /// while one stands, and what it said before once none does.
+    ///
+    /// The question is the app's and not the agent's, so the agent's own
+    /// state knows nothing of it. For a session the state pass reads, the
+    /// pass keeps the word up on every reading; for one only a hook speaks
+    /// for, the word is put here and what it replaced is remembered.
+    pub(crate) fn show_drive_questions(&mut self, asker: u64, cx: &mut Context<Self>) {
+        use crate::project::ThreadStatus;
+        const OURS: &str = "wants to send messages to ";
+        let names: Vec<String> = self
+            .drive
+            .asked_by(asker)
+            .into_iter()
+            .filter_map(|id| self.thread_by_id(id))
+            .map(|thread| {
+                crate::project::clean_sidebar_title(&thread.title)
+                    .unwrap_or_else(|| thread.title.clone())
+            })
+            .collect();
+        let before = self.drive_status_before.get(&asker).copied();
+        let Some(thread) = self.thread_by_id_mut(asker) else {
+            return;
+        };
+        let mut remember = None;
+        let mut forget = false;
+        if names.is_empty() {
+            if thread.status == ThreadStatus::WaitingForInput
+                && let Some(before) = before
+            {
+                thread.status = before;
+            }
+            // Only our own text: a question the agent itself was asking when
+            // ours was put beside it is still being asked.
+            if thread
+                .rail
+                .waiting_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with(OURS))
+            {
+                thread.rail.waiting_message = None;
+            }
+            forget = true;
+        } else {
+            if thread.status != ThreadStatus::WaitingForInput {
+                remember = Some(thread.status);
+                thread.status = ThreadStatus::WaitingForInput;
+            }
+            if thread
+                .rail
+                .waiting_message
+                .as_deref()
+                .is_none_or(|message| message.starts_with(OURS))
+            {
+                thread.rail.waiting_message = Some(crate::app::drive::question_summary(&names));
+            }
+        }
+        if forget {
+            self.drive_status_before.remove(&asker);
+        } else if let Some(status) = remember {
+            self.drive_status_before.entry(asker).or_insert(status);
+        }
+        self.sync_attention(cx);
+        self.publish_rail_changes(cx);
+        cx.notify();
     }
 
     /// The target of a call that names one, with the project and position of
@@ -795,12 +1018,12 @@ impl SplitlaneApp {
             Err(response) => return response,
         };
         let caller = self.caller_of(lineage, cx);
-        match may_interrupt(&caller, target, LaunchGates::read().scripting) {
-            Ok(_) => {}
-            Err(WriteDenied::Refused(refusal)) => return refusal.into_value(METHOD),
-            Err(WriteDenied::GateClosed) => {
-                return crate::app::ipc_handler::write_gate_refusal(METHOD);
-            }
+        let target = WriteTarget {
+            drive: self.drive_between(&caller, target),
+            ..target
+        };
+        if let Err(denied) = may_interrupt(&caller, target, LaunchGates::read().scripting) {
+            return self.deny_write(denied, &caller, target, METHOD, cx);
         }
         let rail = self.rail_snapshot_for(&terminal, target.thread_id, cx);
         // The agent of the session's record. A terminal with no record has
@@ -1057,7 +1280,7 @@ impl SplitlaneApp {
     }
 
     /// The terminal holding the session `thread_id`, on screen or not.
-    fn terminal_of(&self, thread_id: u64, cx: &App) -> Option<Entity<TerminalView>> {
+    pub(crate) fn terminal_of(&self, thread_id: u64, cx: &App) -> Option<Entity<TerminalView>> {
         self.held_terminals(cx)
             .into_iter()
             .find(|(_, held)| *held == Some(thread_id))
@@ -1086,10 +1309,17 @@ impl SplitlaneApp {
         let Some(thread) = self.thread_by_id(thread_id) else {
             return false;
         };
-        let Some(opener) = thread.opened_by.as_ref() else {
+        // The session that hands this one its tasks: the one that opened
+        // it, or the one a person let drive it.
+        let Some(opener) = thread
+            .opened_by
+            .as_ref()
+            .map(|by| by.id)
+            .or_else(|| self.drive.driver_of(thread_id))
+        else {
             return false;
         };
-        if self.thread_by_id(opener.id).is_none() {
+        if self.thread_by_id(opener).is_none() {
             return false;
         }
         let Some(wrote_at) = thread.opener_wrote_at else {
@@ -1497,11 +1727,13 @@ mod tests {
         thread_id: Some(9),
         opened_by: Some(3),
         waiting: false,
+        drive: Drive::NotOffered,
     };
     const A_PERSONS: WriteTarget = WriteTarget {
         thread_id: Some(10),
         opened_by: None,
         waiting: false,
+        drive: Drive::NotOffered,
     };
 
     #[test]
@@ -1531,6 +1763,7 @@ mod tests {
             thread_id: Some(1),
             opened_by: None,
             waiting: false,
+            drive: Drive::NotOffered,
         };
         assert_eq!(
             may_write(&pane(true), opener, false),
@@ -1594,6 +1827,7 @@ mod tests {
             thread_id: Some(3),
             opened_by: None,
             waiting: false,
+            drive: Drive::NotOffered,
         };
         assert_eq!(
             may_write(&pane(false), itself, false),
@@ -1603,6 +1837,116 @@ mod tests {
             may_write(&pane(false), itself, true),
             Ok(WriteLeave::LaunchVariable)
         );
+    }
+
+    fn persons(drive: Drive) -> WriteTarget {
+        WriteTarget { drive, ..A_PERSONS }
+    }
+
+    /// Into a session a person opened, a session writes once the person has
+    /// said it may; until they have, the write asks and does nothing.
+    #[test]
+    fn a_persons_session_is_written_into_only_with_their_leave() {
+        for not_answered in [Drive::NotAsked, Drive::Standing(Standing::Asked)] {
+            assert_eq!(
+                may_write(&pane(false), persons(not_answered), false),
+                Err(WriteDenied::AskPerson)
+            );
+        }
+        assert_eq!(
+            may_write(
+                &pane(false),
+                persons(Drive::Standing(Standing::Allowed)),
+                false
+            ),
+            Ok(WriteLeave::Driver)
+        );
+        assert_eq!(
+            may_write(
+                &pane(false),
+                persons(Drive::Standing(Standing::Declined)),
+                false
+            ),
+            Err(WriteDenied::Refused(Refusal::PersonDeclined))
+        );
+        // A pair nobody can be asked about is what it always was.
+        assert_eq!(
+            may_write(&pane(false), persons(Drive::NotOffered), false),
+            Err(WriteDenied::Refused(Refusal::NotYours))
+        );
+    }
+
+    /// A leave does not reach past the question on the session's own screen,
+    /// and a person is not asked about a session that is asking them
+    /// something itself.
+    #[test]
+    fn a_leave_does_not_answer_the_sessions_own_question() {
+        for drive in [Drive::NotAsked, Drive::Standing(Standing::Allowed)] {
+            let waiting = WriteTarget {
+                waiting: true,
+                ..persons(drive)
+            };
+            assert_eq!(
+                may_write(&pane(false), waiting, false),
+                Err(WriteDenied::Refused(Refusal::Waiting))
+            );
+            assert_eq!(
+                may_interrupt(&pane(false), waiting, false),
+                Err(WriteDenied::Refused(Refusal::Waiting))
+            );
+        }
+    }
+
+    /// The launch variable is the person's own choice, made before any
+    /// question could be put: with it set nobody is asked, and a no given
+    /// earlier in the run does not stand against it. A leave still marks the
+    /// text as sent by a session.
+    #[test]
+    fn the_launch_variable_asks_nobody() {
+        for drive in [
+            Drive::NotAsked,
+            Drive::Standing(Standing::Asked),
+            Drive::Standing(Standing::Declined),
+        ] {
+            assert_eq!(
+                may_write(&pane(false), persons(drive), true),
+                Ok(WriteLeave::LaunchVariable)
+            );
+        }
+        assert_eq!(
+            may_write(
+                &pane(false),
+                persons(Drive::Standing(Standing::Allowed)),
+                true
+            ),
+            Ok(WriteLeave::Driver)
+        );
+    }
+
+    /// Stopping a turn is a key, so a leave covers it and its absence asks.
+    #[test]
+    fn a_driven_sessions_turn_is_stopped_on_the_same_leave() {
+        assert_eq!(
+            may_interrupt(
+                &pane(false),
+                persons(Drive::Standing(Standing::Allowed)),
+                false
+            ),
+            Ok(WriteLeave::Driver)
+        );
+        assert_eq!(
+            may_interrupt(&pane(false), persons(Drive::NotAsked), false),
+            Err(WriteDenied::AskPerson)
+        );
+    }
+
+    #[test]
+    fn asking_a_person_is_not_a_refusal_on_the_wire() {
+        let value = asked_person_value("surface.send_text");
+        let error = &value[JSONRPC_ERROR_KEY];
+        assert_eq!(error["code"], -32005);
+        assert_ne!(error["code"], Refusal::CODE);
+        assert_eq!(error["data"]["reason"], "asked_person");
     }
 
     /// The grounds are those of a key, because it is one.
@@ -1650,6 +1994,7 @@ mod tests {
             thread_id: Some(3),
             opened_by: None,
             waiting: false,
+            drive: Drive::NotOffered,
         };
         for gate_open in [false, true] {
             assert_eq!(
@@ -1680,6 +2025,7 @@ mod tests {
             thread_id: Some(3),
             opened_by: None,
             waiting: false,
+            drive: Drive::NotOffered,
         };
         assert_eq!(
             may_arrange(&pane(false), itself, NO_GATES),

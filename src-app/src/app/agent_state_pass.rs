@@ -553,12 +553,20 @@ impl SplitlaneApp {
                         changed = true;
                         adopted_any = true;
                     }
-                    let state = confirm_run_end(
-                        &mut self.run_end_seen_at,
-                        thread,
-                        read_at,
-                        reading.state.clone(),
-                    );
+                    // A question this app put to a person on the session's
+                    // behalf is not in the agent's own state, which goes on
+                    // saying working or idle. While it stands the reading is
+                    // taken as a wait, here and not over the status afterwards:
+                    // a word rewritten after the fact would be read back next
+                    // pass as a run that started and ended.
+                    let reading_state =
+                        if reading.state.is_some() && self.drive.has_questions(reading.thread_id) {
+                            Some(AgentState::WaitingForInput)
+                        } else {
+                            reading.state.clone()
+                        };
+                    let state =
+                        confirm_run_end(&mut self.run_end_seen_at, thread, read_at, reading_state);
                     changed |= deposit(thread, read_at, state);
                     let watch = self.turn_ends.entry(reading.thread_id).or_default();
                     if let Some((len, end)) = reading.turn_end.clone() {
@@ -704,6 +712,22 @@ impl SplitlaneApp {
         self.interrupts_asked.retain(|thread_id, _| {
             crate::project::find_surface(&self.workspaces, *thread_id).is_some()
         });
+        // A session that was closed drives nothing and is driven by nobody.
+        {
+            let workspaces = &self.workspaces;
+            self.drive
+                .keep_only(|id| crate::project::find_surface(workspaces, id).is_some());
+        }
+        // A question whose session was closed took its row's wait with it.
+        let answered_by_closing: Vec<u64> = self
+            .drive_status_before
+            .keys()
+            .filter(|asker| !self.drive.has_questions(**asker))
+            .copied()
+            .collect();
+        for asker in answered_by_closing {
+            self.show_drive_questions(asker, cx);
+        }
         if adopted_any {
             // Debounced and coalesced by `save_session` itself, and reached
             // only when an id actually moved - which is once per `/clear`, not

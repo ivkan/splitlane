@@ -19,6 +19,7 @@ pub mod diff_sidebar;
 pub mod diff_view_actions;
 pub mod diff_view_helpers;
 pub mod drag;
+pub mod drive;
 pub mod event_handlers;
 pub mod exit_guard;
 pub mod files_sidebar;

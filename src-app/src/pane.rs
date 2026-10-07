@@ -102,6 +102,49 @@ pub struct SurfaceFacts {
     /// at when that has been observed. `None` for a shell and for a session
     /// that has not replied once.
     pub context: Option<ContextFact>,
+    /// What this session is asking a person for: the sessions they opened
+    /// that it wants to send messages to. Empty for nearly every surface.
+    pub drive_questions: Vec<DriveQuestion>,
+}
+
+/// One question a session put to a person: may it send messages to a session
+/// they opened. Answered in the asking session's own pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DriveQuestion {
+    /// The surface records of the session asking and the session asked for.
+    pub asker: u64,
+    pub target: u64,
+    pub asker_name: SharedString,
+    pub target_name: SharedString,
+}
+
+/// The two lines above the buttons of a question to a person.
+///
+/// One session is named in both; several are counted in the first, because
+/// each then has a row of its own under it and the heading must not grow
+/// with them.
+pub(crate) fn drive_question_text(questions: &[DriveQuestion]) -> Option<(String, String)> {
+    match questions {
+        [] => None,
+        [one] => Some((
+            format!(
+                "{} wants to send messages to {}",
+                one.asker_name, one.target_name
+            ),
+            format!(
+                "It could type into {} and stop its turns, until you quit Splitlane.",
+                one.target_name
+            ),
+        )),
+        [first, ..] => Some((
+            format!(
+                "{} wants to send messages to {} sessions",
+                first.asker_name,
+                questions.len()
+            ),
+            "It could type into each and stop its turns, until you quit Splitlane.".to_string(),
+        )),
+    }
 }
 
 /// The context meter's two numbers, in the two phases the design gives it.
@@ -455,6 +498,13 @@ pub enum PaneEvent {
     /// PTY mount belong to `SplitlaneApp`, and emitting defers them out of the
     /// drop callback (entity re-entrancy, as with every other drop here).
     DropRailSurface { ws_idx: usize, thread_id: u64 },
+    /// The person answered a question in this pane: whether the session
+    /// `asker` may send messages to the session `target`, by record id.
+    AnswerDrive {
+        asker: u64,
+        target: u64,
+        allow: bool,
+    },
     /// A tile of the launcher was picked. The pane cannot create a session -
     /// it knows its `workspace_id` and not its directory, and the thread record
     /// belongs to the container - so it names the agent and `SplitlaneApp`
@@ -899,6 +949,112 @@ impl Pane {
         }
         self.surface_facts = facts;
         cx.notify();
+    }
+
+    /// The question this pane's session is putting to a person, when it has
+    /// one: a strip between the header and the terminal.
+    ///
+    /// Between, not over: it pushes the terminal down, so nothing the agent
+    /// printed is hidden behind it, and it is in this pane and no other - a
+    /// wait is answered by going to the session that waits.
+    fn render_drive_questions(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let id = self.tabs.get(self.selected_idx)?.as_terminal()?.entity_id();
+        let questions = &self.surface_facts.get(&id)?.drive_questions;
+        let (heading, consequence) = drive_question_text(questions)?;
+        let ui = tab_colors();
+        let several = questions.len() > 1;
+        let button = |cx: &mut Context<Self>, row: usize, question: &DriveQuestion, allow: bool| {
+            let (asker, target) = (question.asker, question.target);
+            let base = div()
+                .id((
+                    if allow {
+                        "drive-allow"
+                    } else {
+                        "drive-decline"
+                    },
+                    row,
+                ))
+                .flex_none()
+                .px(tok::space::LG)
+                .py(tok::space::XS)
+                .rounded(tok::radius::CONTROL)
+                .text_size(tok::text::CONTROL)
+                .text_color(ui.text)
+                .border_1()
+                .cursor_pointer()
+                .child(if allow { "Allow" } else { "Don\u{2019}t allow" })
+                .on_click(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
+                    cx.emit(PaneEvent::AnswerDrive {
+                        asker,
+                        target,
+                        allow,
+                    });
+                }));
+            // The one that grants is filled and the one that refuses is
+            // only outlined. Neither takes the accent: the row's dot and
+            // word already say this session is waiting.
+            if allow {
+                base.border_color(ui.subtle)
+                    .bg(ui.subtle)
+                    .animated_hover_bg(ui.subtle, lerp_color(ui.subtle, ui.text, 0.06))
+                    .into_any_element()
+            } else {
+                base.border_color(ui.border)
+                    .hover(|style| style.border_color(ui.border_hover))
+                    .into_any_element()
+            }
+        };
+        let rows: Vec<gpui::AnyElement> = questions
+            .iter()
+            .enumerate()
+            .map(|(row, question)| {
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(tok::space::MD)
+                    .when(several, |el| {
+                        el.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(tok::text::ROW)
+                                .text_color(ui.text)
+                                .child(question.target_name.clone()),
+                        )
+                    })
+                    .child(button(cx, row, question, true))
+                    .child(button(cx, row, question, false))
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(tok::space::SM)
+                .px(tok::space::LG)
+                .py(tok::space::MD)
+                .bg(ui.surface)
+                .border_b_1()
+                .border_color(ui.border)
+                .child(
+                    div()
+                        .text_size(tok::text::ROW)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(ui.text)
+                        .child(heading),
+                )
+                .child(
+                    div()
+                        .text_size(tok::text::CAPTION)
+                        .text_color(ui.muted)
+                        .child(consequence),
+                )
+                .children(rows)
+                .into_any_element(),
+        )
     }
 
     /// Tell this pane that a context menu is open somewhere in the window.
@@ -3515,6 +3671,7 @@ impl Render for Pane {
             .border_color(gpui::transparent_black())
             .rounded(tok::radius::PANEL)
             .child(self.render_tab_bar(is_focused, window, cx))
+            .children(self.render_drive_questions(cx))
             .child(content)
             .children(self.render_corner_masks())
             .child(
@@ -3586,9 +3743,40 @@ impl Render for Pane {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextFact, MAX_TAB_TITLE_LEN, pane_content_background, peek_badge_line,
-        tab_bar_background, truncate_tab_title,
+        ContextFact, DriveQuestion, MAX_TAB_TITLE_LEN, drive_question_text,
+        pane_content_background, peek_badge_line, tab_bar_background, truncate_tab_title,
     };
+    use gpui::SharedString;
+
+    fn question(target: &str) -> DriveQuestion {
+        DriveQuestion {
+            asker: 3,
+            target: 10,
+            asker_name: "plan".into(),
+            target_name: SharedString::from(target.to_string()),
+        }
+    }
+
+    /// One session is named in both lines; several are counted in the first
+    /// and each gets a row, so the heading does not grow with them.
+    #[test]
+    fn a_question_to_a_person_names_one_session_and_counts_several() {
+        assert_eq!(drive_question_text(&[]), None);
+        let (heading, consequence) = drive_question_text(&[question("api")]).expect("text");
+        assert_eq!(heading, "plan wants to send messages to api");
+        assert_eq!(
+            consequence,
+            "It could type into api and stop its turns, until you quit Splitlane."
+        );
+        let (heading, consequence) =
+            drive_question_text(&[question("api"), question("web"), question("docs")])
+                .expect("text");
+        assert_eq!(heading, "plan wants to send messages to 3 sessions");
+        assert_eq!(
+            consequence,
+            "It could type into each and stop its turns, until you quit Splitlane."
+        );
+    }
 
     #[test]
     fn a_count_looks_like_a_count_at_every_size() {

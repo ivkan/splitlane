@@ -239,6 +239,7 @@ fn opening_a_session_keeps_its_published_names() {
         "\"turn_in_flight\"",
         "\"no_interrupt\"",
         "\"unseen_by_person\"",
+        "\"person_declined\"",
     ] {
         assert!(rules.contains(word), "the refusal word {word} is published");
     }
@@ -266,6 +267,35 @@ fn opening_a_session_keeps_its_published_names() {
     assert!(
         cli.contains("pub const EXIT_REFUSED: i32 = 8;"),
         "a refusal is exit code 8"
+    );
+    // A write into a session a person opened asks the person. That is its
+    // own code on the wire and its own exit code, and the answer is read
+    // under `drive`.
+    assert!(
+        rules.contains("pub(crate) const ASKED_PERSON_CODE: i32 = -32005;"),
+        "a write that asked a person travels under JSON-RPC code -32005"
+    );
+    assert!(
+        rules.contains("\"data\": { \"reason\": \"asked_person\" }"),
+        "a write that asked a person names the reason `asked_person`"
+    );
+    assert!(
+        cli.contains("pub const EXIT_ASKED_PERSON: i32 = 9;"),
+        "a write that asked a person is exit code 9"
+    );
+    for field in ["value[\"drive\"]", "value[\"driven_by\"]"] {
+        assert!(
+            handler.contains(field),
+            "`surface.status` lost its field {field}"
+        );
+    }
+    let drive = read("src-app/src/app/drive.rs");
+    for word in ["\"asked\"", "\"allowed\"", "\"declined\""] {
+        assert!(drive.contains(word), "the `drive` word {word} is published");
+    }
+    assert!(
+        drive.contains("wants to send messages to"),
+        "the text of a question under `rail.message` is published"
     );
     // Which session opened which is written to `session.json` under this key.
     let schema = read("crates/splitlane-config/src/schema.rs");

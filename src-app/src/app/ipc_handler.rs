@@ -3061,13 +3061,27 @@ impl SplitlaneApp {
                     .flat_map(|ws| ws.agent_sessions.values())
                     .find(|s| s.surface_id == Some(sid));
                 let rail = self.rail_snapshot_for(&terminal, None, cx);
-                surface_status_value(
+                let mut value = surface_status_value(
                     sid,
                     session,
                     output_generation,
                     std::time::Instant::now(),
                     rail.as_ref(),
-                )
+                );
+                // Where a person's leave for the caller to drive this session
+                // stands, and which session drives it now. The first is about
+                // the caller, so it is `null` for everybody else.
+                let who = self.caller_of(caller, cx);
+                let target = self.write_target_for(&who, &terminal, cx);
+                value["drive"] = serde_json::json!(target.drive.word());
+                value["driven_by"] = serde_json::json!(
+                    target
+                        .thread_id
+                        .and_then(|id| self.drive.driver_of(id))
+                        .and_then(|driver| self.terminal_of(driver, cx))
+                        .map(|driver| driver.entity_id().as_u64())
+                );
+                value
             }
             "surface.search" => {
                 // Locate a pattern in a surface's scrollback without
@@ -3322,15 +3336,18 @@ impl SplitlaneApp {
                 let Some(terminal) = target else {
                     return JsonRpcError::invalid_params("No active terminal").into_value();
                 };
-                let write_target = self.write_target(&terminal, cx);
+                let write_target = self.write_target_for(&who, &terminal, cx);
                 let leave =
                     match crate::app::orchestration::may_write(&who, write_target, gate_open) {
                         Ok(leave) => leave,
-                        Err(crate::app::orchestration::WriteDenied::Refused(refusal)) => {
-                            return refusal.into_value("surface.send_text");
-                        }
-                        Err(crate::app::orchestration::WriteDenied::GateClosed) => {
-                            return write_gate_refusal("surface.send_text");
+                        Err(denied) => {
+                            return self.deny_write(
+                                denied,
+                                &who,
+                                write_target,
+                                "surface.send_text",
+                                cx,
+                            );
                         }
                     };
                 // What the rail said when the text went in. Text sent into a
@@ -3345,7 +3362,8 @@ impl SplitlaneApp {
                 let marked = match (&who, leave) {
                     (
                         crate::app::orchestration::Caller::Pane(sender),
-                        crate::app::orchestration::WriteLeave::Opener,
+                        crate::app::orchestration::WriteLeave::Opener
+                        | crate::app::orchestration::WriteLeave::Driver,
                     ) if !text.is_empty() => Some(format!(
                         "{}\n\n{text}",
                         crate::app::orchestration::provenance_line(&sender.title)
@@ -3493,18 +3511,17 @@ impl SplitlaneApp {
                     Some(t) => {
                         // A key is typing like any other: Esc on a question
                         // is an answer to it, so the same rules decide.
-                        match crate::app::orchestration::may_write(
-                            &who,
-                            self.write_target(&t, cx),
-                            gate_open,
-                        ) {
-                            Ok(_) => {}
-                            Err(crate::app::orchestration::WriteDenied::Refused(refusal)) => {
-                                return refusal.into_value("surface.send_keystroke");
-                            }
-                            Err(crate::app::orchestration::WriteDenied::GateClosed) => {
-                                return write_gate_refusal("surface.send_keystroke");
-                            }
+                        let write_target = self.write_target_for(&who, &t, cx);
+                        if let Err(denied) =
+                            crate::app::orchestration::may_write(&who, write_target, gate_open)
+                        {
+                            return self.deny_write(
+                                denied,
+                                &who,
+                                write_target,
+                                "surface.send_keystroke",
+                                cx,
+                            );
                         }
                         // Same as `surface.send_text` - an explicit write
                         // mounts a surface that has not been shown yet.

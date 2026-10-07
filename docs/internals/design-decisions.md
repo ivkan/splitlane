@@ -864,10 +864,11 @@ intervention in a format this app does not own.
 **Writing follows the same line.** `surface.send_text` and
 `surface.send_keystroke` let a session type into the sessions it opened, with
 nothing switched on (`orchestration::may_write`). Text sent that way carries
-the line above; a key carries nothing, having nowhere to put it. Into any
-other session - one a person opened, one another session opened, its own
-opener - a session does not write: there is no correspondence between
-sessions, only a task handed down. The case that forced this is the plainest
+the line above; a key carries nothing, having nowhere to put it. Into a
+session another session opened, or its own opener, a session does not write:
+there is no correspondence between sessions, only a task handed down. Into
+one a person opened it writes only with that person's leave, which has a
+section of its own below. The case that forced this is the plainest
 complaint about agents sharing a window: a session answering a question that
 was asked in another.
 
@@ -1020,8 +1021,10 @@ and has not been run against a live pipe.
 `ai_unrestricted` in `splitlane.json` - is gone. Nothing replaces it as a
 setting. An agent in a pane writes into the sessions it opened, by default
 ("A session works through the sessions it opened", above); into a session a
-person opened, an agent does not write. A person's own script outside a pane
-is let in by the variables the app is launched with, as it always was.
+person opened, an agent writes only after the person was asked and said yes
+("A session a person opened is driven only with their leave", below). A
+person's own script outside a pane is let in by the variables the app is
+launched with, as it always was.
 
 **What the switch was, and what it protected.** One right: any caller on the
 socket may type into any pane without the launch variable. It could not be
@@ -1047,4 +1050,67 @@ and a file containing it loads as before; unknown keys are ignored.
 
 **What would re-open it.** A need for agents to write into sessions a person
 opened. The answer to that is not a switch set ahead of time but a question
-put to the person at the moment it matters, for that one session.
+put to the person at the moment it matters, for that one session - the next
+section.
+
+## A session a person opened is driven only with their leave
+
+**The rule.** When a session writes into an agent session a person opened, in
+its own project, nothing is written and the person is asked: may this session
+send messages to that one. The answer is for the pair and lasts until the app
+is quit. With a yes the session writes into it as it does into one it opened -
+text, keys and the key that stops a turn - and the text carries the same line
+saying an agent sent it. It never closes it and never moves it: those stay
+with what a session opened itself. With a no it is refused
+(`person_declined`) and the person is not asked again.
+
+A shell is never asked about, because text written to a shell is a command. A
+session that was itself opened by a session asks for nothing: it was given a
+task, not a plan. A session waiting for a person is refused as before, leave
+or no leave, and nobody is asked about it while it waits.
+
+**The call does not wait for the answer.** A person can take any time to
+give one, the server has no call that waits on a person, and the session
+that asked has a turn of its own to get on with. The write comes back at once
+with its own code - JSON-RPC `-32005`, reason `asked_person`, exit 9 - which
+is neither done nor refused. `surface.status` answers `drive` for the caller
+and the target (`asked`, `allowed`, `declined`), and `splitlane wait --until
+allowed` waits on that word. A write repeated while the question stands asks
+nothing new.
+
+**The question is an ordinary wait, on the session that asked.** While it
+stands that session's row says `waiting`, with what it wants as the message,
+so it is in the rail, the attention queue and `Activity` like any session
+that needs a person. It is answered where every wait is answered, in the
+waiting session's own pane: a strip between the header and the terminal,
+`Allow` and `Don't allow`, one row for each session asked about and no
+button that answers them all - the point of asking per pair is that nobody
+says yes without looking. It is not in the target's pane, which may not be on
+screen and is not the one waiting.
+
+The agent's own state knows nothing of the question; it goes on saying
+working or idle. So the state pass takes the reading as a wait for as long
+as a question stands (`apply_agent_states`), rather than writing the word
+over the status afterwards: a word rewritten after the fact is read back on
+the next pass as a run that started and ended, and was announced as one.
+For a session only a hook speaks for, the word is put when the question is
+and what it replaced is put back with the answer.
+
+**Nothing is printed into the asking session.** The designs show a line in
+its terminal saying what the person answered. With no call in flight that
+would be the app typing into an agent's session on its own, so it is not
+done: the session learns the answer from the wait, or from its next write.
+
+**Why it is kept in memory only.** The same reason the switch was removed:
+every place an answer could be saved is written with the rights of the agent
+that would benefit. A pair goes when either session is closed - a closed
+session drives nothing - and all of them go when the app is quit.
+
+**With the launch variable set, nobody is asked.** `SPLITLANE_IPC_SCRIPTING=1`
+is the person's own choice at launch and opens what it always opened, so a
+write it lets through neither asks nor is stopped by an earlier no.
+
+**What it does not claim.** The word a refusal is made from is the rail's, and
+the rail is sampled: a session that began waiting for a person within the
+last two seconds can still be written into. That is true of every write this
+app lets through and is not new here.

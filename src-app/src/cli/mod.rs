@@ -51,6 +51,11 @@ pub const EXIT_NO_TURN_SIGNAL: i32 = 7;
 /// session the caller opened, a limit is reached, a person is being waited
 /// on. Retrying the same call gets the same answer.
 pub const EXIT_REFUSED: i32 = 8;
+/// The target is a session a person opened, and the person is being asked
+/// whether the caller may send it messages. Nothing was written. Not a
+/// refusal: the answer is still to come, and `wait --until allowed` waits
+/// for it.
+pub const EXIT_ASKED_PERSON: i32 = 9;
 
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
@@ -522,6 +527,10 @@ impl SplitDir {
 pub enum WaitUntil {
     /// The agent's turn is over.
     TurnEnd,
+    /// A person has answered whether the caller may send messages to the
+    /// session: 0 when they allowed it, 8 when they did not, 4 when the time
+    /// ran out with the question still standing.
+    Allowed,
 }
 
 /// A CLI failure carrying the process exit code to surface for it.
@@ -738,7 +747,17 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             } else {
                 wait_cmd::MatchMode::Single
             };
+            if until == Some(WaitUntil::Allowed) {
+                if after.is_some() || through_waiting || start_grace.is_some() || any || all {
+                    return Err(CliError::runtime(
+                        "--until allowed waits on one session and takes only --timeout",
+                    ));
+                }
+                let (timeout, _) = wait_rail::durations(timeout, None);
+                return session_cmds::wait_allowed(client, &selector, timeout);
+            }
             let rail_wait = match (until, state.as_deref()) {
+                (Some(WaitUntil::Allowed), _) => None,
                 (Some(WaitUntil::TurnEnd), _) => Some(wait_rail::RailWait::TurnEnd),
                 (None, Some(words)) => Some(wait_rail::RailWait::State(
                     wait_rail::parse_state_words(words)?,
@@ -747,7 +766,9 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             };
             // clap drops `requires = "until"` when `--state` is present,
             // because the two conflict; so the pairing is checked here.
-            if until.is_none() && (after.is_some() || through_waiting || start_grace.is_some()) {
+            if until != Some(WaitUntil::TurnEnd)
+                && (after.is_some() || through_waiting || start_grace.is_some())
+            {
                 return Err(CliError::runtime(
                     "--after, --through-waiting and --start-grace apply to --until turn-end only",
                 ));

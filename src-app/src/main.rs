@@ -1430,6 +1430,12 @@ struct SplitlaneApp {
     /// put back on its input line because of our key from one a person
     /// withdrew by hand and wants to keep.
     interrupts_asked: std::collections::HashMap<u64, std::time::Instant>,
+    /// Which session a person has let drive which, and what is still being
+    /// asked. In memory only; see `app::drive`.
+    drive: app::drive::DriveBook,
+    /// What a session's row said before a question to a person was put on
+    /// it, for a session nothing re-reads the status of.
+    drive_status_before: std::collections::HashMap<u64, project::ThreadStatus>,
     /// Each surface's turn-end marker and how much of it is already counted in
     /// `Thread::rail`. Freed with its surface, beside the maps above.
     turn_ends: std::collections::HashMap<u64, rail_state::TurnEndWatch>,

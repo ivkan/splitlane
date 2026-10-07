@@ -655,6 +655,13 @@ impl SplitlaneApp {
                 // because a pane knows a `workspace_id` and not a directory.
                 self.launcher_pick(&pane, action.clone(), cx);
             }
+            pane::PaneEvent::AnswerDrive {
+                asker,
+                target,
+                allow,
+            } => {
+                self.answer_drive(*asker, *target, *allow, cx);
+            }
             pane::PaneEvent::DropRailSurface { ws_idx, thread_id } => {
                 // Resolved from the id, not from the index the drag started
                 // with: the rail can be reordered while the pointer is down.

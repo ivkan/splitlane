@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 use splitlane_ipc_client::IpcTransport;
 
 use super::selector::resolve_target;
-use super::{CliError, EXIT_NO_TURN_SIGNAL, EXIT_OK, EXIT_REFUSED, EXIT_RUNTIME, EXIT_TIMEOUT};
+use super::{
+    CliError, EXIT_ASKED_PERSON, EXIT_NO_TURN_SIGNAL, EXIT_OK, EXIT_REFUSED, EXIT_RUNTIME,
+    EXIT_TIMEOUT,
+};
 
 /// What `splitlane add` was asked for.
 pub struct AddOptions {
@@ -26,6 +29,13 @@ pub struct AddOptions {
 /// Turn a server error into the exit code it stands for: a refusal by a rule
 /// is not a failure of the instance, and a script must be able to tell.
 pub(super) fn call_error(message: String) -> CliError {
+    // A question put to a person is neither done nor refused.
+    if message.contains("splitlane error -32005:") {
+        return CliError {
+            code: EXIT_ASKED_PERSON,
+            message,
+        };
+    }
     if message.contains("splitlane error -32004:") {
         CliError {
             // Not a rule the caller ran into but a thing this build cannot
@@ -178,6 +188,43 @@ pub fn close(
         println!("{surface_id}\tclosed");
     }
     Ok(EXIT_OK)
+}
+
+/// `splitlane wait --match <target> --until allowed [--timeout S]`: wait for
+/// a person to answer whether the caller may send messages to a session they
+/// opened.
+///
+/// Reads `drive` in `surface.status`, which is the server's answer about
+/// this caller and that session. A session nobody was asked about has no
+/// answer coming, and is waited on all the same: the question may be put by
+/// a `send` that has not been made yet.
+pub fn wait_allowed(
+    client: &impl IpcTransport,
+    target: &str,
+    timeout: std::time::Duration,
+) -> Result<i32, CliError> {
+    let surface_id = resolve_target(client, target)?;
+    let started = std::time::Instant::now();
+    loop {
+        let status = client
+            .call("surface.status", json!({ "surface_id": surface_id }))
+            .map_err(CliError::runtime)?;
+        match status.get("drive").and_then(Value::as_str) {
+            Some("allowed") => {
+                println!("{surface_id}\tallowed");
+                return Ok(EXIT_OK);
+            }
+            Some("declined") => {
+                println!("{surface_id}\tdeclined");
+                return Ok(EXIT_REFUSED);
+            }
+            _ if started.elapsed() >= timeout => {
+                println!("{surface_id}\ttimeout");
+                return Ok(EXIT_TIMEOUT);
+            }
+            _ => std::thread::sleep(INTERRUPT_POLL),
+        }
+    }
 }
 
 /// How often the rail is read while a stop is being confirmed.
@@ -564,6 +611,71 @@ mod tests {
             ["surface.list", "surface.interrupt"],
             "the rail is not read"
         );
+    }
+
+    /// Answers `surface.status` with a scripted run of `drive` words.
+    struct Driving {
+        words: RefCell<Vec<Value>>,
+    }
+    impl IpcTransport for Driving {
+        fn call(&self, method: &str, _params: Value) -> Result<Value, String> {
+            if method == "surface.list" {
+                return Ok(json!({ "surfaces": [{ "surface_id": 12, "name": "api" }] }));
+            }
+            let mut words = self.words.borrow_mut();
+            let word = if words.len() > 1 {
+                words.remove(0)
+            } else {
+                words.first().cloned().unwrap_or(Value::Null)
+            };
+            Ok(json!({ "surface_id": 12, "drive": word }))
+        }
+    }
+
+    #[test]
+    fn waiting_for_a_persons_answer_ends_on_the_answer() {
+        let yes = Driving {
+            words: RefCell::new(vec![json!("asked"), json!("asked"), json!("allowed")]),
+        };
+        assert_eq!(wait_allowed(&yes, "api", SOON).expect("ok"), EXIT_OK);
+        let no = Driving {
+            words: RefCell::new(vec![json!("asked"), json!("declined")]),
+        };
+        assert_eq!(wait_allowed(&no, "api", SOON).expect("ok"), EXIT_REFUSED);
+        // A question still standing, or never put, when the time is up.
+        for word in [json!("asked"), Value::Null] {
+            let pending = Driving {
+                words: RefCell::new(vec![word]),
+            };
+            assert_eq!(
+                wait_allowed(&pending, "api", std::time::Duration::ZERO).expect("ok"),
+                EXIT_TIMEOUT
+            );
+        }
+    }
+
+    /// Asking a person is its own exit code: the caller neither succeeded nor
+    /// was refused, and has to wait.
+    #[test]
+    fn a_write_that_asked_a_person_is_exit_9() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Err(
+                "splitlane error -32005: surface.interrupt asked a person (asked_person): wait"
+                    .to_string(),
+            ),
+        };
+        let err = interrupt(&fake, "api-docs", SOON, false).expect_err("asked");
+        assert_eq!(err.code, EXIT_ASKED_PERSON);
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Err(
+                "splitlane error -32004: surface.interrupt refused (person_declined): no"
+                    .to_string(),
+            ),
+        };
+        let err = interrupt(&fake, "api-docs", SOON, false).expect_err("refused");
+        assert_eq!(err.code, EXIT_REFUSED);
     }
 
     /// An agent with no known key is "use another method", not a rule the
