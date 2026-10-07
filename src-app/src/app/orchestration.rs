@@ -58,6 +58,12 @@ pub(crate) enum Refusal {
     OpenedSessionCannotOpen,
     /// A pane was required and there is none to give.
     NoRoom,
+    /// The target is not a session the caller opened.
+    NotYours,
+    /// The target is the caller's own session.
+    Itself,
+    /// The target is waiting for a person.
+    Waiting,
 }
 
 impl Refusal {
@@ -71,6 +77,9 @@ impl Refusal {
             Refusal::WorkerCeiling => "worker_ceiling",
             Refusal::OpenedSessionCannotOpen => "opened_session_cannot_open",
             Refusal::NoRoom => "no_room",
+            Refusal::NotYours => "not_yours",
+            Refusal::Itself => "self",
+            Refusal::Waiting => "waiting",
         }
     }
 
@@ -89,6 +98,13 @@ impl Refusal {
                 .to_string(),
             Refusal::NoRoom => "no pane is empty and another would not fit; ask without \
                  requiring a pane to open the session in the rail"
+                .to_string(),
+            Refusal::NotYours => "the target is not a session the calling session opened; a \
+                 session writes only into the sessions it opened"
+                .to_string(),
+            Refusal::Itself => "the target is the calling session itself".to_string(),
+            Refusal::Waiting => "the target is waiting for a person, and only a person \
+                 answers that"
                 .to_string(),
         }
     }
@@ -173,6 +189,77 @@ pub(crate) fn may_open(
                 Err(Refusal::NotFromAPane)
             }
         }
+    }
+}
+
+/// The session a write is aimed at, as the rules see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WriteTarget {
+    /// Its surface record, when it has one.
+    pub thread_id: Option<u64>,
+    /// The record id of the session that opened it, if a session did.
+    pub opened_by: Option<u64>,
+    /// The rail says it is waiting for a person.
+    pub waiting: bool,
+}
+
+/// On what ground a write is let through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteLeave {
+    /// The caller opened the target. The text is marked as sent by it.
+    Opener,
+    /// The app was launched with the variable that opens writes, which is
+    /// what let a write through before sessions could own sessions. Nothing
+    /// about such a write changes.
+    LaunchVariable,
+}
+
+/// Why a write is not let through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteDenied {
+    Refused(Refusal),
+    /// A caller outside a pane, and the launch variable is not set: the
+    /// answer such a caller has always had.
+    GateClosed,
+}
+
+/// Whether `caller` may type into `target`.
+///
+/// Typing covers text and keys alike. `gate_open` is whether the app was
+/// launched with the variable that opens writes.
+///
+/// A session that is waiting for a person is refused to every caller in a
+/// pane, whatever else holds: the question on its screen was put to a person,
+/// and a key from another agent would be an answer to it.
+pub(crate) fn may_write(
+    caller: &Caller,
+    target: WriteTarget,
+    gate_open: bool,
+) -> Result<WriteLeave, WriteDenied> {
+    let Caller::Pane(pane) = caller else {
+        return if gate_open {
+            Ok(WriteLeave::LaunchVariable)
+        } else {
+            Err(WriteDenied::GateClosed)
+        };
+    };
+    if target.thread_id == Some(pane.thread_id) {
+        return if gate_open {
+            Ok(WriteLeave::LaunchVariable)
+        } else {
+            Err(WriteDenied::Refused(Refusal::Itself))
+        };
+    }
+    if target.waiting {
+        return Err(WriteDenied::Refused(Refusal::Waiting));
+    }
+    if target.opened_by == Some(pane.thread_id) {
+        return Ok(WriteLeave::Opener);
+    }
+    if gate_open {
+        Ok(WriteLeave::LaunchVariable)
+    } else {
+        Err(WriteDenied::Refused(Refusal::NotYours))
     }
 }
 
@@ -321,6 +408,27 @@ impl SplitlaneApp {
                 })
             });
         found.map_or(Caller::Outside, Caller::Pane)
+    }
+
+    /// What the rules need to know about the surface a write is aimed at.
+    pub(crate) fn write_target(&self, terminal: &Entity<TerminalView>, cx: &App) -> WriteTarget {
+        let thread_id = terminal.read(cx).agent_thread_id.or_else(|| {
+            self.agents_view
+                .agents_terminal_view_cache
+                .iter()
+                .find(|(_, held)| *held == terminal)
+                .map(|(thread_id, _)| *thread_id)
+        });
+        WriteTarget {
+            thread_id,
+            opened_by: thread_id
+                .and_then(|id| self.thread_by_id(id))
+                .and_then(|thread| thread.opened_by.as_ref())
+                .map(|by| by.id),
+            waiting: self
+                .rail_snapshot_for(terminal, thread_id, cx)
+                .is_some_and(|rail| rail.status == crate::project::ThreadStatus::WaitingForInput),
+        }
     }
 
     /// How many of the sessions `opener` opened still have a process.
@@ -712,6 +820,118 @@ mod tests {
             Err(Refusal::NotFromAPane)
         );
         assert_eq!(may_open(&Caller::Outside, 0, scripting, true), Ok(()));
+    }
+
+    const MINE: WriteTarget = WriteTarget {
+        thread_id: Some(9),
+        opened_by: Some(3),
+        waiting: false,
+    };
+    const A_PERSONS: WriteTarget = WriteTarget {
+        thread_id: Some(10),
+        opened_by: None,
+        waiting: false,
+    };
+
+    #[test]
+    fn a_session_writes_into_what_it_opened_with_nothing_switched_on() {
+        assert_eq!(may_write(&pane(false), MINE, false), Ok(WriteLeave::Opener));
+        // The variable does not change the ground: the text is still marked.
+        assert_eq!(may_write(&pane(false), MINE, true), Ok(WriteLeave::Opener));
+    }
+
+    #[test]
+    fn a_session_does_not_write_into_one_it_did_not_open() {
+        assert_eq!(
+            may_write(&pane(false), A_PERSONS, false),
+            Err(WriteDenied::Refused(Refusal::NotYours))
+        );
+        // Opened by some other session.
+        let anothers = WriteTarget {
+            opened_by: Some(77),
+            ..MINE
+        };
+        assert_eq!(
+            may_write(&pane(false), anothers, false),
+            Err(WriteDenied::Refused(Refusal::NotYours))
+        );
+        // A session that was opened does not write upwards to its opener.
+        let opener = WriteTarget {
+            thread_id: Some(1),
+            opened_by: None,
+            waiting: false,
+        };
+        assert_eq!(
+            may_write(&pane(true), opener, false),
+            Err(WriteDenied::Refused(Refusal::NotYours))
+        );
+    }
+
+    /// The question on a waiting session's screen was put to a person.
+    #[test]
+    fn nobody_in_a_pane_types_into_a_session_that_waits_for_a_person() {
+        let mine_waiting = WriteTarget {
+            waiting: true,
+            ..MINE
+        };
+        let persons_waiting = WriteTarget {
+            waiting: true,
+            ..A_PERSONS
+        };
+        for gate_open in [false, true] {
+            assert_eq!(
+                may_write(&pane(false), mine_waiting, gate_open),
+                Err(WriteDenied::Refused(Refusal::Waiting))
+            );
+            assert_eq!(
+                may_write(&pane(false), persons_waiting, gate_open),
+                Err(WriteDenied::Refused(Refusal::Waiting))
+            );
+        }
+    }
+
+    /// What the launch variable opened before, it opens still.
+    #[test]
+    fn the_launch_variable_opens_what_it_always_opened() {
+        assert_eq!(
+            may_write(&Caller::Outside, A_PERSONS, true),
+            Ok(WriteLeave::LaunchVariable)
+        );
+        assert_eq!(
+            may_write(&Caller::Outside, A_PERSONS, false),
+            Err(WriteDenied::GateClosed)
+        );
+        // A person's script outside a pane is not held to the waiting rule:
+        // it is the person's own hand, by the person's own choice at launch.
+        let waiting = WriteTarget {
+            waiting: true,
+            ..A_PERSONS
+        };
+        assert_eq!(
+            may_write(&Caller::Outside, waiting, true),
+            Ok(WriteLeave::LaunchVariable)
+        );
+        assert_eq!(
+            may_write(&pane(false), A_PERSONS, true),
+            Ok(WriteLeave::LaunchVariable)
+        );
+    }
+
+    #[test]
+    fn a_session_typing_into_itself_is_named_as_that() {
+        let itself = WriteTarget {
+            thread_id: Some(3),
+            opened_by: None,
+            waiting: false,
+        };
+        assert_eq!(
+            may_write(&pane(false), itself, false),
+            Err(WriteDenied::Refused(Refusal::Itself))
+        );
+        assert_eq!(
+            may_write(&pane(false), itself, true),
+            Ok(WriteLeave::LaunchVariable)
+        );
     }
 
     #[test]

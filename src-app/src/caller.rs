@@ -56,7 +56,10 @@ pub(crate) enum CallerLineage {
 /// Kept as a list so the process table is read only for these: an agent's hook
 /// sends a frame per tool call, and none of those needs it.
 pub(crate) fn method_asks_who_calls(method: &str) -> bool {
-    matches!(method, "surface.add_agent")
+    matches!(
+        method,
+        "surface.add_agent" | "surface.send_text" | "surface.send_keystroke"
+    )
 }
 
 /// Read the caller's ancestors now. Blocking; call it off the render thread.

@@ -861,6 +861,36 @@ watching the pane and anyone reading the conversation later all learn the same
 thing from it. It is not markup: a tag shaped like a vendor's own would be an
 intervention in a format this app does not own.
 
+**Writing follows the same line.** `surface.send_text` and
+`surface.send_keystroke` let a session type into the sessions it opened, with
+nothing switched on (`orchestration::may_write`). Text sent that way carries
+the line above; a key carries nothing, having nowhere to put it. Into any
+other session - one a person opened, one another session opened, its own
+opener - a session does not write: there is no correspondence between
+sessions, only a task handed down. The case that forced this is the plainest
+complaint about agents sharing a window: a session answering a question that
+was asked in another.
+
+**A session that is waiting for a person is not typed into by any caller in a
+pane.** Not by its opener either, and not when the launch variable is set. The
+question on its screen was put to a person, and Esc on a permission ask is the
+answer "no". A rule that stopped text and let keys through would leave exactly
+that door open.
+
+**The launch variable still opens what it opened.** `SPLITLANE_IPC_SCRIPTING=1`
+is set by the person who starts the app and cannot be changed from a pane, and
+scripts and flows are written against it. A write it lets through is
+unchanged, byte for byte: no line is added, because the line needs a paste and
+a shell in the middle of a command does not take one. The one thing that
+changed under it is the waiting rule above.
+
+`surface.send_text` also answers with `rail_status_at_send`, the rail's word
+for the target at the moment the text went in. Measured on Claude Code
+2.1.289: text sent while a tool runs is taken into the turn in flight, and
+text sent while the model is generating becomes a second turn straight after
+the first, whose answer is then the only one a later read returns. A caller
+that wrote into `running` has to know it did.
+
 **What it does not claim.** A process of the same user that runs code inside a
 pane is, as far as the process table can tell, that pane - and it is: that is
 what the agent in the pane does. The rule places a call; it does not vouch for

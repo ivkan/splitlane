@@ -3279,7 +3279,14 @@ impl SplitlaneApp {
                 // confirmed in Settings -> Agents (`app::free_access`), never
                 // because `splitlane.json` says so.
                 let unrestricted = self.free_access_open();
-                if !send_text_gate_open(ipc_scripting_enabled(), unrestricted) {
+                let gate_open = send_text_gate_open(ipc_scripting_enabled(), unrestricted);
+                // A THIRD way through, and the only one that needs nothing
+                // switched on: a session writing into a session it opened.
+                // Whether this is that is known once the target is; a caller
+                // in no pane has only the gate, and is answered here as it
+                // always was.
+                let who = self.caller_of(caller, cx);
+                if !gate_open && who == crate::app::orchestration::Caller::Outside {
                     return write_gate_refusal(
                         "surface.send_text",
                         self.free_access_awaiting_confirmation(),
@@ -3333,6 +3340,41 @@ impl SplitlaneApp {
                 let Some(terminal) = target else {
                     return JsonRpcError::invalid_params("No active terminal").into_value();
                 };
+                let write_target = self.write_target(&terminal, cx);
+                let leave =
+                    match crate::app::orchestration::may_write(&who, write_target, gate_open) {
+                        Ok(leave) => leave,
+                        Err(crate::app::orchestration::WriteDenied::Refused(refusal)) => {
+                            return refusal.into_value("surface.send_text");
+                        }
+                        Err(crate::app::orchestration::WriteDenied::GateClosed) => {
+                            return write_gate_refusal(
+                                "surface.send_text",
+                                self.free_access_awaiting_confirmation(),
+                            );
+                        }
+                    };
+                // What the rail said when the text went in. Text sent into a
+                // turn in flight is taken into that turn or queued behind it,
+                // as the agent decides, and the caller has to know which of
+                // the two situations it wrote into.
+                let rail_status_at_send = self
+                    .rail_snapshot_for(&terminal, write_target.thread_id, cx)
+                    .map(|rail| crate::rail_state::status_word(rail.status));
+                // Text one session writes into another says so. A bare submit
+                // writes nothing, so it carries nothing.
+                let marked = match (&who, leave) {
+                    (
+                        crate::app::orchestration::Caller::Pane(sender),
+                        crate::app::orchestration::WriteLeave::Opener,
+                    ) if !text.is_empty() => Some(format!(
+                        "{}\n\n{text}",
+                        crate::app::orchestration::provenance_line(&sender.title)
+                    )),
+                    _ => None,
+                };
+                let sent_length = text.len();
+                let text = marked.as_deref().unwrap_or(text);
                 // A surface restored from `session.json` only forks its
                 // shell when it is first shown. An IPC write is an explicit
                 // demand for a live surface, so mount it here rather than let
@@ -3427,7 +3469,10 @@ impl SplitlaneApp {
                 };
                 serde_json::json!({
                     "sent": true,
-                    "length": text.len(),
+                    // The caller's own text; the line saying who sent it is
+                    // not counted.
+                    "length": sent_length,
+                    "rail_status_at_send": rail_status_at_send,
                     "submitted": submit,
                     "paste": paste,
                     "submit_mode": submit_mode,
@@ -3441,7 +3486,9 @@ impl SplitlaneApp {
                 // bytes are rejected so a multi-keystroke payload
                 // cannot smuggle a newline-terminated PTY command.
                 let unrestricted = self.free_access_open();
-                if !send_text_gate_open(ipc_scripting_enabled(), unrestricted) {
+                let gate_open = send_text_gate_open(ipc_scripting_enabled(), unrestricted);
+                let who = self.caller_of(caller, cx);
+                if !gate_open && who == crate::app::orchestration::Caller::Outside {
                     return write_gate_refusal(
                         "surface.send_keystroke",
                         self.free_access_awaiting_confirmation(),
@@ -3478,6 +3525,24 @@ impl SplitlaneApp {
                 };
                 match terminal {
                     Some(t) => {
+                        // A key is typing like any other: Esc on a question
+                        // is an answer to it, so the same rules decide.
+                        match crate::app::orchestration::may_write(
+                            &who,
+                            self.write_target(&t, cx),
+                            gate_open,
+                        ) {
+                            Ok(_) => {}
+                            Err(crate::app::orchestration::WriteDenied::Refused(refusal)) => {
+                                return refusal.into_value("surface.send_keystroke");
+                            }
+                            Err(crate::app::orchestration::WriteDenied::GateClosed) => {
+                                return write_gate_refusal(
+                                    "surface.send_keystroke",
+                                    self.free_access_awaiting_confirmation(),
+                                );
+                            }
+                        }
                         // Same as `surface.send_text` - an explicit write
                         // mounts a surface that has not been shown yet.
                         t.update(cx, |view, cx| view.ensure_backend_started(cx));

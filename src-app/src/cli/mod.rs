@@ -269,9 +269,12 @@ enum Commands {
     },
     /// Inject text into a pane WITHOUT submitting it (human-in-loop).
     ///
-    /// Requires `SPLITLANE_IPC_SCRIPTING=1` on the running instance; the text is
-    /// written verbatim with no trailing newline so the user/agent reviews and
-    /// presses Enter themselves - unless `--submit` is passed explicitly.
+    /// A session writes into the sessions it opened with `add` with nothing
+    /// switched on, and the text is preceded by a line naming the sender. Any
+    /// other target requires `SPLITLANE_IPC_SCRIPTING=1` on the running
+    /// instance. A session that is waiting for a person is refused (exit 8).
+    /// The text is written with no trailing newline so the user/agent reviews
+    /// and presses Enter themselves - unless `--submit` is passed explicitly.
     Send {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
@@ -307,9 +310,9 @@ enum Commands {
     },
     /// Send a named keystroke (e.g. `escape`, `ctrl-c`, `tab`) to a pane.
     ///
-    /// Requires `SPLITLANE_IPC_SCRIPTING=1` on the running instance. Keystrokes
-    /// that would submit a line (`enter`, `ctrl-m`, `ctrl-j`) are refused -
-    /// submission is exclusive to `send --submit`.
+    /// Allowed and refused on the same terms as `send`. Keystrokes that would
+    /// submit a line (`enter`, `ctrl-m`, `ctrl-j`) are refused - submission is
+    /// exclusive to `send --submit`.
     Key {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,

@@ -205,11 +205,18 @@ fn opening_a_session_keeps_its_published_names() {
         rules.contains("\"data\": { \"reason\": self.word() }"),
         "a refusal names its reason under `error.data.reason`"
     );
+    assert!(
+        handler.contains("\"rail_status_at_send\""),
+        "`surface.send_text` says what the rail said when the text went in"
+    );
     for word in [
         "\"not_from_a_pane\"",
         "\"worker_ceiling\"",
         "\"opened_session_cannot_open\"",
         "\"no_room\"",
+        "\"not_yours\"",
+        "\"self\"",
+        "\"waiting\"",
     ] {
         assert!(rules.contains(word), "the refusal word {word} is published");
     }

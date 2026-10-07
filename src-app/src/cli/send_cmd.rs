@@ -161,7 +161,9 @@ fn send_to(
             "send is disabled on the running Splitlane instance; relaunch it with \
              SPLITLANE_IPC_SCRIPTING=1 to enable text injection (server said: {e})"
         ))),
-        Err(e) => Err(CliError::runtime(e)),
+        // A rule refused it (exit 8): not a session the caller opened, or one
+        // that is waiting for a person.
+        Err(e) => Err(super::session_cmds::call_error(e)),
     }
 }
 
@@ -300,7 +302,7 @@ pub fn key(client: &impl IpcTransport, target: &str, keystroke: &str) -> Result<
             "key is disabled on the running Splitlane instance; relaunch it with \
              SPLITLANE_IPC_SCRIPTING=1 to enable keystroke injection (server said: {e})"
         ))),
-        Err(e) => Err(CliError::runtime(e)),
+        Err(e) => Err(super::session_cmds::call_error(e)),
     }
 }
 
@@ -627,6 +629,22 @@ mod tests {
         let calls = fake.calls.borrow();
         assert_eq!(calls[0].0, "surface.send_keystroke");
         assert_eq!(calls[0].1["keystroke"], "escape");
+    }
+
+    /// A rule saying no is not the instance being unreachable, and a script
+    /// has to be able to tell the two apart.
+    #[test]
+    fn a_refused_write_has_the_refusal_exit_code() {
+        let refusal = "splitlane error -32004: surface.send_text refused (not_yours): no";
+        let fake = ScriptedTransport::new(vec![Err(refusal.to_string())]);
+        let err = send(&fake, "shard-api", "x", false, false, false, None).expect_err("refused");
+        assert_eq!(err.code, crate::cli::EXIT_REFUSED);
+        assert!(err.message.contains("not_yours"));
+
+        let refusal = "splitlane error -32004: surface.send_keystroke refused (waiting): no";
+        let fake = ScriptedTransport::new(vec![Err(refusal.to_string())]);
+        let err = key(&fake, "shard-api", "escape").expect_err("refused");
+        assert_eq!(err.code, crate::cli::EXIT_REFUSED);
     }
 
     #[test]
