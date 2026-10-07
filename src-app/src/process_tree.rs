@@ -364,6 +364,91 @@ impl ProcessSnapshot {
     }
 }
 
+/// The process groups running under a pane's PTY child, other than the
+/// child's own.
+///
+/// Closing a pane's PTY signals the group of its child, the shell. That does
+/// not reach an agent: an interactive shell runs each foreground job in a
+/// process group of its own, so the launch command typed into the pane becomes
+/// a group the shell's does not contain. Measured on macOS with Claude Code
+/// 2.1.292: a session deleted from the rail left its shim and its agent
+/// running for as long as anybody looked, the shell stuck exiting above them,
+/// and a turn that was in flight went on to its end with no pane to show it.
+///
+/// So the groups are read while the tree still says whose they are - once the
+/// shell is gone its children hang off init and nothing names them - and
+/// signalled after the PTY has been closed.
+#[cfg(unix)]
+pub(crate) struct JobGroups {
+    /// A group id, with one of its members to recognise it by later.
+    groups: Vec<(i32, ProcId)>,
+}
+
+#[cfg(unix)]
+impl JobGroups {
+    /// Read them now. Blocking; call it off the render thread.
+    pub(crate) fn under(pty_child: u32) -> Self {
+        match ProcessSnapshot::capture() {
+            Some(snapshot) => Self::under_in(&snapshot, pty_child),
+            None => Self { groups: Vec::new() },
+        }
+    }
+
+    fn under_in(snapshot: &ProcessSnapshot, pty_child: u32) -> Self {
+        // SAFETY: `getpgrp` takes nothing and cannot fail.
+        let own = unsafe { libc::getpgrp() };
+        let mut groups: Vec<(i32, ProcId)> = Vec::new();
+        for member in snapshot.descendants_of(pty_child).unwrap_or_default() {
+            let Ok(pid) = i32::try_from(member.0) else {
+                continue;
+            };
+            // SAFETY: `getpgid` is a query; it answers -1 for a process that
+            // is gone.
+            let group = unsafe { libc::getpgid(pid) };
+            // The shell's own group is the PTY teardown's to end, and this
+            // app's own must never be signalled from here.
+            if group <= 1 || i64::from(group) == i64::from(pty_child) || group == own {
+                continue;
+            }
+            match groups.iter_mut().find(|(known, _)| *known == group) {
+                // The leader is the member that keeps the group's id alive,
+                // so it is the better one to recognise the group by.
+                Some(entry) if pid == group => entry.1 = member,
+                Some(_) => {}
+                None => groups.push((group, member)),
+            }
+        }
+        Self { groups }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    /// Send `signal` to every group that is still the one that was read.
+    ///
+    /// A group id is a pid, and a pid is reused: the member noted with each
+    /// group has to be the same process, still in that group, or the signal
+    /// would go to whoever inherited the number. Returns how many groups were
+    /// signalled.
+    pub(crate) fn signal(&self, signal: i32) -> usize {
+        self.groups
+            .iter()
+            .filter(|(group, (pid, start))| {
+                let Ok(member) = i32::try_from(*pid) else {
+                    return false;
+                };
+                if start_token(*pid) != Some(*start) {
+                    return false;
+                }
+                // SAFETY: a query, then a signal to a group this function has
+                // just confirmed still holds the process it was read with.
+                unsafe { libc::getpgid(member) == *group && libc::kill(-*group, signal) == 0 }
+            })
+            .count()
+    }
+}
+
 /// The pid of the agent itself under a pane's PTY child, stepping over our own
 /// shim.
 ///
@@ -1358,6 +1443,76 @@ mod tests {
     /// one process, so a test that spawns would otherwise be visible to a test
     /// that counts.
     static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A job the shell put in a group of its own is found under the shell, and
+    /// a signal to that group ends it. This is the agent's position under a
+    /// pane: reachable through the tree, not through the shell's group.
+    #[test]
+    #[cfg(unix)]
+    fn a_job_in_its_own_group_is_found_and_ended() {
+        // `set -m` turns job control on, which is what gives a background job
+        // its own process group in a shell that is not interactive.
+        let shell = Spawned(
+            std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("set -m; sleep 30 & wait; true")
+                .spawn()
+                .expect("spawn the shell"),
+        );
+        let shell_pid = shell.0.id();
+        let mut jobs = JobGroups { groups: Vec::new() };
+        for _ in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            jobs = JobGroups::under(shell_pid);
+            if !jobs.is_empty() {
+                break;
+            }
+        }
+        assert!(!jobs.is_empty(), "the job's group never appeared");
+        let (group, (member, _)) = jobs.groups[0];
+        // SAFETY: a query about a process this test started.
+        let shell_group = unsafe { libc::getpgid(shell_pid as i32) };
+        assert_ne!(group, shell_group, "the job is in the shell's own group");
+
+        assert_eq!(jobs.signal(libc::SIGTERM), 1);
+        let mut gone = false;
+        for _ in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            if start_token(member).is_none() {
+                gone = true;
+                break;
+            }
+        }
+        assert!(gone, "the job outlived the signal to its group");
+        // And once it is gone there is nothing left to signal by that number.
+        assert_eq!(jobs.signal(libc::SIGTERM), 0);
+    }
+
+    /// A group is signalled only while the member it was read with is still
+    /// that process.
+    #[test]
+    #[cfg(unix)]
+    fn a_group_whose_member_changed_is_not_signalled() {
+        let me = std::process::id();
+        let Some(start) = start_token(me) else {
+            return;
+        };
+        // SAFETY: `getpgrp` takes nothing and cannot fail.
+        let group = unsafe { libc::getpgrp() };
+        // Signal 0 only probes, so a mistake here cannot end the test run.
+        let stale = JobGroups {
+            groups: vec![(group, (me, start + 1))],
+        };
+        assert_eq!(stale.signal(0), 0);
+        let wrong_group = JobGroups {
+            groups: vec![(group + 1, (me, start))],
+        };
+        assert_eq!(wrong_group.signal(0), 0);
+        let current = JobGroups {
+            groups: vec![(group, (me, start))],
+        };
+        assert_eq!(current.signal(0), 1);
+    }
 
     /// A chain of ancestors is the pid, then whoever is above it, to the top.
     #[test]

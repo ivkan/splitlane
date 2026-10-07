@@ -188,10 +188,15 @@ impl SplitlaneApp {
         self.remove_agent_from_slots(ws_idx, removed.id, cx);
         // Drop the cached Terminal Thread entity so its PTY is torn down
         // (the alacritty event loop sends `Msg::Shutdown` in `Drop`, see
-        // `src/terminal/pty_session.rs`).
-        self.agents_view
+        // `src/terminal/pty_session.rs`) - and end what was running under it,
+        // which the teardown alone does not.
+        if let Some(view) = self
+            .agents_view
             .agents_terminal_view_cache
-            .remove(&removed.id);
+            .remove(&removed.id)
+        {
+            Self::end_session_processes(view, cx);
+        }
         // Keep the unified target in range. Only a target pointing
         // into THIS project's thread list is affected; a different
         // container's target is left untouched. Removing the
@@ -199,6 +204,61 @@ impl SplitlaneApp {
         // removing an earlier sibling shifts the index down.
         cx.notify();
         Ok(removed)
+    }
+}
+
+/// How long a session's jobs are given to exit on their own before they are
+/// killed. An agent uses it to close its transcript.
+#[cfg(unix)]
+const JOB_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+impl SplitlaneApp {
+    /// Drop a deleted session's terminal and end the processes under it.
+    ///
+    /// Dropping the terminal closes the PTY, and the teardown signals the
+    /// shell's process group. An agent is not in that group
+    /// ([`crate::process_tree::JobGroups`]), so without this a deleted
+    /// session's agent went on running with no row and no pane: the dialog
+    /// that says the session is stopped was not telling the truth, and an
+    /// opener that closed a session to stop it spending had not stopped it.
+    ///
+    /// The view is kept alive across the read, because the read needs the
+    /// tree as it is while the shell is still there to be the parent.
+    fn end_session_processes(
+        view: gpui::Entity<crate::terminal::view::TerminalView>,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(unix)]
+        {
+            let (pty_child, exited) = {
+                let terminal = &view.read(cx).terminal;
+                (terminal.child_pid, terminal.exited.is_some())
+            };
+            // Nothing spawned, or the shell is gone and its pid with it.
+            if pty_child == 0 || exited {
+                return;
+            }
+            cx.spawn(async move |_, _cx: &mut gpui::AsyncApp| {
+                let jobs =
+                    smol::unblock(move || crate::process_tree::JobGroups::under(pty_child)).await;
+                drop(view);
+                if jobs.is_empty() {
+                    return;
+                }
+                jobs.signal(libc::SIGTERM);
+                smol::Timer::after(JOB_EXIT_GRACE).await;
+                jobs.signal(libc::SIGKILL);
+            })
+            .detach();
+        }
+        // Windows closes the pseudoconsole with the terminal, which ends the
+        // processes attached to it. That it reaches an agent's whole tree
+        // there has not been checked on a machine.
+        #[cfg(not(unix))]
+        {
+            let _ = cx;
+            drop(view);
+        }
     }
 }
 
