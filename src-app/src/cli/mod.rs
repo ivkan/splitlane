@@ -74,6 +74,7 @@ const VERBS: &[&str] = &[
     "park",
     "show",
     "close",
+    "interrupt",
     "send",
     "up",
     "wait",
@@ -318,6 +319,32 @@ enum Commands {
         #[arg(long)]
         stop_turn: bool,
         /// Emit `{closed, surface_id, thread_id}` as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop the turn a session is in. The session stays open and can be
+    /// sent a new task.
+    ///
+    /// For a session the caller opened with `add`, on the same terms as
+    /// `key`: it writes the agent's own interrupt key, not Ctrl-C. A session
+    /// that is waiting for a person is refused (exit 8) - on a permission
+    /// question that key is the answer "no". An agent with no known
+    /// interrupt key is refused with exit 7.
+    ///
+    /// Exits 0 when the agent's own record shows the turn was stopped, 1
+    /// when no turn was running (nothing is sent), and 4 when the key was
+    /// sent and no such record followed. After a 4 the session's input line
+    /// may hold the prompt it was working on: Claude Code puts a prompt back
+    /// when it is stopped before the first token, and text sent next is
+    /// appended to it.
+    Interrupt {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+        /// Seconds to wait for the stop to be confirmed.
+        #[arg(long, value_name = "SECONDS", default_value_t = 10)]
+        timeout: u64,
+        /// Emit `{outcome, surface_id, status, runs_ended, last_outcome}` as
+        /// JSON.
         #[arg(long)]
         json: bool,
     },
@@ -646,6 +673,16 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             stop_turn,
             json,
         } => session_cmds::close(client, &target, stop_turn, json),
+        Commands::Interrupt {
+            target,
+            timeout,
+            json,
+        } => session_cmds::interrupt(
+            client,
+            &target,
+            std::time::Duration::from_secs(timeout),
+            json,
+        ),
         Commands::Show {
             target,
             beside,

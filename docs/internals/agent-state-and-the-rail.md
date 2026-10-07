@@ -521,8 +521,15 @@ and the notification are for a person, the count is for whoever is waiting.
   instant it happens, three seconds before the held end is confirmed, so it is
   there to read by then. For Claude Code the marker itself stays on the last
   turn that finished; only the flag is about the newest one. A session whose
-  very first turn is stopped has no finished turn to carry the flag, and that
-  one stop is still announced.
+  very first turn is stopped has no finished turn to carry the flag, so the
+  interrupt record is the end it reports: that is the ordinary case for a
+  session opened with a task and then redirected, and it used to be announced
+  as finished. The flag is dropped as soon as another turn opens, because it
+  is about the newest turn and the next one can end with no record at all -
+  Esc before the first token writes nothing and puts the prompt back on the
+  input line. Such a turn is still reported as finished; nothing in the file
+  says otherwise yet. The same record gives the run its `last_outcome`,
+  `interrupted`, which is what a caller that asked for the stop waits for.
 - **News of a finished run belongs to whoever sent the last message.** A
   session opened by another session ends a run its opener started, and the
   opener reads the result. Telling the person as well would put eight marks

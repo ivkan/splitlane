@@ -586,6 +586,12 @@ impl SplitlaneApp {
                             crate::project::ThreadStatus::Idle if file_says_failed => {
                                 Some(crate::rail_state::RunOutcome::Failed)
                             }
+                            // Read from the same record that keeps the run
+                            // from being announced: a turn somebody stopped
+                            // is over, and it is not an answer.
+                            crate::project::ThreadStatus::Idle if file_says_interrupted => {
+                                Some(crate::rail_state::RunOutcome::Interrupted)
+                            }
                             crate::project::ThreadStatus::Idle => {
                                 Some(crate::rail_state::RunOutcome::Finished)
                             }

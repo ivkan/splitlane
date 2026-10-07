@@ -68,6 +68,8 @@ pub(crate) enum Refusal {
     OtherProject,
     /// The target is in the middle of a turn, and closing it would lose it.
     TurnInFlight,
+    /// No key is known that stops a turn of the target's agent.
+    NoInterrupt,
 }
 
 impl Refusal {
@@ -86,6 +88,7 @@ impl Refusal {
             Refusal::Waiting => "waiting",
             Refusal::OtherProject => "other_project",
             Refusal::TurnInFlight => "turn_in_flight",
+            Refusal::NoInterrupt => "no_interrupt",
         }
     }
 
@@ -118,6 +121,9 @@ impl Refusal {
             Refusal::TurnInFlight => "the target is in the middle of a turn or is waiting for \
                  a person, and closing it loses that turn; wait for it to end, or ask to stop \
                  the turn as well"
+                .to_string(),
+            Refusal::NoInterrupt => "no key is known that stops a turn of the target's agent \
+                 and leaves the agent running"
                 .to_string(),
         }
     }
@@ -274,6 +280,29 @@ pub(crate) fn may_write(
     } else {
         Err(WriteDenied::Refused(Refusal::NotYours))
     }
+}
+
+/// Whether `caller` may stop the turn `target` is in.
+///
+/// Stopping a turn is a key written into the session, so the grounds are
+/// those of [`may_write`], with one difference: a session never stops its own
+/// turn, whatever the app was launched with. The call that asked would be
+/// part of the turn it stopped.
+///
+/// A session that is waiting for a person is refused for the reason it is
+/// refused a key: the key that stops a turn is, on a permission question, the
+/// answer "no".
+pub(crate) fn may_interrupt(
+    caller: &Caller,
+    target: WriteTarget,
+    gate_open: bool,
+) -> Result<WriteLeave, WriteDenied> {
+    if let Caller::Pane(pane) = caller
+        && target.thread_id == Some(pane.thread_id)
+    {
+        return Err(WriteDenied::Refused(Refusal::Itself));
+    }
+    may_write(caller, target, gate_open)
 }
 
 /// Whether `caller` may take `target` out of its pane or put it in one.
@@ -714,6 +743,84 @@ impl SplitlaneApp {
         self.save_session(cx);
         cx.notify();
         serde_json::json!({ "closed": true, "surface_id": surface_id, "thread_id": thread_id })
+    }
+
+    /// `surface.interrupt`: stop the turn a session is in and leave the
+    /// session running.
+    ///
+    /// Answers as soon as the key is written. Whether the turn stopped is
+    /// read afterwards from the rail, by whoever asked: the agent's own file
+    /// records the stop, and the state pass holds the end of a run for a few
+    /// seconds before it believes it, which is longer than a handler on the
+    /// thread that draws the window may take.
+    pub(crate) fn handle_interrupt(
+        &mut self,
+        params: &serde_json::Value,
+        lineage: &CallerLineage,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        const METHOD: &str = "surface.interrupt";
+        let ArrangedTarget {
+            terminal, target, ..
+        } = match self.arranged_target(params, cx) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        let caller = self.caller_of(lineage, cx);
+        match may_interrupt(&caller, target, LaunchGates::read().scripting) {
+            Ok(_) => {}
+            Err(WriteDenied::Refused(refusal)) => return refusal.into_value(METHOD),
+            Err(WriteDenied::GateClosed) => {
+                return crate::app::ipc_handler::write_gate_refusal(METHOD);
+            }
+        }
+        let rail = self.rail_snapshot_for(&terminal, target.thread_id, cx);
+        // The agent of the session's record. A terminal with no record has
+        // only what a hook said about it, and a hook does not say which key
+        // stops the agent it reports for.
+        let key = target
+            .thread_id
+            .and_then(|id| self.thread_by_id(id))
+            .and_then(|thread| thread.terminal_agent)
+            .and_then(crate::agent_launcher::TerminalAgent::interrupt_key);
+        let Some(key) = key else {
+            return Refusal::NoInterrupt.into_value(METHOD);
+        };
+        let surface_id = terminal.entity_id().as_u64();
+        let status = rail.as_ref().map(|rail| rail.status);
+        let answer = |sent: bool| {
+            serde_json::json!({
+                "sent": sent,
+                "surface_id": surface_id,
+                "rail_status_at_send": status.map(crate::rail_state::status_word),
+                // The line the stop is confirmed against: a run past this
+                // one has ended.
+                "runs_ended": rail.as_ref().map_or(0, |rail| rail.runs_ended),
+                "last_outcome": rail
+                    .as_ref()
+                    .and_then(|rail| rail.last_outcome)
+                    .map(crate::rail_state::RunOutcome::wire_str),
+            })
+        };
+        // Nothing to stop, so nothing is written: the same key on an idle
+        // input line is a keypress the agent reads as something else.
+        if status != Some(crate::project::ThreadStatus::Thinking) {
+            return answer(false);
+        }
+        if let Err(e) = crate::app::ipc_handler::pane_takes_input(&terminal, cx) {
+            return e.into_value();
+        }
+        let refused_before = terminal.read(cx).terminal.refused_input_count();
+        match terminal.read(cx).send_keystroke(key) {
+            Ok(()) if terminal.read(cx).terminal.refused_input_count() != refused_before => {
+                JsonRpcError::input_not_taken(
+                    "The pane's input queue is full; the key was not sent",
+                )
+                .into_value()
+            }
+            Ok(()) => answer(true),
+            Err(e) => JsonRpcError::invalid_params(e).into_value(),
+        }
     }
 
     /// `surface.show`: put a session that is in no pane into one.
@@ -1435,6 +1542,60 @@ mod tests {
             may_write(&pane(false), itself, true),
             Ok(WriteLeave::LaunchVariable)
         );
+    }
+
+    /// The grounds are those of a key, because it is one.
+    #[test]
+    fn a_session_stops_the_turn_of_what_it_opened_and_of_nothing_else() {
+        assert_eq!(
+            may_interrupt(&pane(false), MINE, false),
+            Ok(WriteLeave::Opener)
+        );
+        assert_eq!(
+            may_interrupt(&pane(false), A_PERSONS, false),
+            Err(WriteDenied::Refused(Refusal::NotYours))
+        );
+        assert_eq!(
+            may_interrupt(&Caller::Outside, A_PERSONS, false),
+            Err(WriteDenied::GateClosed)
+        );
+        assert_eq!(
+            may_interrupt(&Caller::Outside, A_PERSONS, true),
+            Ok(WriteLeave::LaunchVariable)
+        );
+    }
+
+    /// The key that stops a turn is, on a permission question, the answer
+    /// "no". Not for its opener and not with the variable set.
+    #[test]
+    fn a_session_that_waits_for_a_person_is_not_interrupted() {
+        let mine_waiting = WriteTarget {
+            waiting: true,
+            ..MINE
+        };
+        for gate_open in [false, true] {
+            assert_eq!(
+                may_interrupt(&pane(false), mine_waiting, gate_open),
+                Err(WriteDenied::Refused(Refusal::Waiting))
+            );
+        }
+    }
+
+    /// Where a key into its own pane is let through by the launch variable,
+    /// stopping its own turn is not: the call would be part of that turn.
+    #[test]
+    fn a_session_never_interrupts_itself() {
+        let itself = WriteTarget {
+            thread_id: Some(3),
+            opened_by: None,
+            waiting: false,
+        };
+        for gate_open in [false, true] {
+            assert_eq!(
+                may_interrupt(&pane(false), itself, gate_open),
+                Err(WriteDenied::Refused(Refusal::Itself))
+            );
+        }
     }
 
     const ALL_GATES: LaunchGates = LaunchGates {

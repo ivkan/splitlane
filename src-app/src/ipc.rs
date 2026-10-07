@@ -1180,7 +1180,7 @@ fn handle_connection(
                                         "surface.list", "surface.read", "surface.search", "surface.rename",
                                         "surface.send_text", "surface.send_keystroke", "surface.split",
                                         "surface.add_agent", "surface.park", "surface.show",
-                                        "surface.close",
+                                        "surface.close", "surface.interrupt",
                                         "surface.focus", "surface.status",
                                         "surface.send_answer", "app.dispatch_action",
                                         "fleet.list",

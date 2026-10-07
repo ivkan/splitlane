@@ -499,6 +499,36 @@ impl TerminalAgent {
         matches!(self, TerminalAgent::ClaudeCode | TerminalAgent::Codex)
     }
 
+    /// The key that stops this agent's turn and leaves the agent running, as
+    /// [`gpui::Keystroke::parse`] reads it. `None` until it has been measured.
+    ///
+    /// **Filled in from a measurement, never from memory.** The key that looks
+    /// obvious is the wrong one: Ctrl-C stops a turn in some agents and ends
+    /// the process in others, and which it is can change with a second press.
+    /// What a measurement has to show is the agent's own file recording the
+    /// stop while the process stays alive, because that record is the only
+    /// thing an interrupt is confirmed by.
+    ///
+    /// Claude Code, measured on 2.1.289 and 2.1.292: Esc during generation
+    /// leaves `[Request interrupted by user]` in the transcript, Esc during a
+    /// tool call kills the tool's child and leaves `... for tool use`; the
+    /// process lives through both and the input line is left empty.
+    ///
+    /// **Esc before the first token is a different thing**, measured on
+    /// 2.1.292: nothing is written to the transcript, and the prompt is put
+    /// back on the input line, where the next text sent is appended to it.
+    /// Such a stop is not confirmed by anything, and is reported as not
+    /// confirmed.
+    ///
+    /// Codex has not been measured, so it has no key here even though its
+    /// reader knows the record an abort leaves.
+    pub fn interrupt_key(self) -> Option<&'static str> {
+        match self {
+            TerminalAgent::ClaudeCode => Some("escape"),
+            _ => None,
+        }
+    }
+
     /// Whether this build can parse this agent's **conversation** - the answers
     /// it wrote, and the model it wrote them with.
     ///
@@ -846,6 +876,22 @@ mod capability_tests {
             CapabilityTier::ResumeByName,
             "the rung an agent with neither half but a readable history lands on"
         );
+    }
+
+    /// An interrupt is confirmed by the agent's own file saying the turn was
+    /// stopped. A key for an agent whose file this build does not read would
+    /// be a key whose effect nobody can report.
+    #[test]
+    fn an_interrupt_key_is_only_given_to_an_agent_whose_file_is_read() {
+        for agent in TerminalAgent::ALL {
+            let Some(key) = agent.interrupt_key() else {
+                continue;
+            };
+            assert!(agent.reports_state(), "{agent:?} has a key and no reader");
+            assert!(gpui::Keystroke::parse(key).is_ok(), "{key} does not parse");
+        }
+        assert_eq!(TerminalAgent::ClaudeCode.interrupt_key(), Some("escape"));
+        assert_eq!(TerminalAgent::Codex.interrupt_key(), None);
     }
 
     /// The top rung is about following an agent, not about holding its asks:

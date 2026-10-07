@@ -78,7 +78,7 @@ configuration files:
   | --- | --- | --- |
   | The surface closed | `closed` | `1` |
   | The surface has no `rail` | `no_rail` | `7` |
-  | A run past the baseline has ended and the status is `idle` | `finished`, or `failed` when that run's `last_outcome` is `failed` | `0`, or `6` |
+  | A run past the baseline has ended and the status is `idle` | `finished`, or `failed` when that run's `last_outcome` is `failed`. A run that was stopped is reported `finished` here too; `last_outcome` says `interrupted` | `0`, or `6` |
   | `rail.exited`, or the status is `failed` | `failed` | `6` |
   | The tier is `T3` | `no_turn_signal` after `--start-grace`, or `degraded` at once if the surface was on a higher tier earlier in this wait | `7` |
   | The status is `waiting` | `waiting`, with the question in `message` when known | `5` |
@@ -290,7 +290,7 @@ Prefer `rail` when deciding whether a turn is over.
 | `source` | Who decided the status: `detector` (the agent's own status file or transcript), `hook`, `pty_flow` (output arriving from the pane) or `none` |
 | `tier` | `T1` for `detector`, `T2` for `hook`, `T3` for `pty_flow` and `none`. See below |
 | `runs_ended` | How many runs have ended on this surface since it was opened. Only grows; resets when Splitlane restarts |
-| `last_outcome` | `finished` or `failed` for the last ended run, `null` before the first |
+| `last_outcome` | `finished`, `failed` or `interrupted` for the last ended run, `null` before the first. `interrupted` is a turn somebody stopped: the run ended and is counted, and no answer was finished |
 | `turn_marker` | An id of the newest turn end in the agent's own file (Claude Code and Codex), otherwise `null` |
 | `agent` | The agent's binary name (`claude`, `codex`, ...), when known |
 | `session_id` | The id of the agent's own session, when Splitlane knows it. `null` for a terminal that is not an agent session |

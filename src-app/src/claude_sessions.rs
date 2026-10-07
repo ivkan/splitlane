@@ -777,6 +777,15 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
         if let Some(open_now) = turn_signal(&value, text) {
             turn_open = open_now;
             turn_at = open_now.then_some(secs).flatten();
+            // "Stopped by a person" is about the newest turn. Once another
+            // has opened it is no longer the newest, and that one may end
+            // with no record at all: Esc before the first token writes
+            // nothing and puts the prompt back on the input line (measured
+            // on 2.1.292). Left standing, the flag would say that such a
+            // turn was confirmed stopped on the strength of the one before.
+            if open_now && let Some(end) = last_turn_end.as_mut() {
+                end.interrupted = false;
+            }
             // The closing `assistant` record is the turn's own end mark, and
             // its `uuid` differs between turns. Only that record: an interrupt
             // also closes the turn, but it is a `user` record the person
@@ -791,16 +800,23 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
                         });
                     }
                     // The one `user` record that closes a turn is the
-                    // interrupt. It makes no marker of its own - it is not
-                    // the agent finishing an answer - and says how the newest
-                    // turn ended on the one that is standing. With no
-                    // finished turn in the window there is nothing to say it
-                    // on, and such a turn is reported as before.
-                    Some("user") => {
-                        if let Some(end) = last_turn_end.as_mut() {
-                            end.interrupted = true;
+                    // interrupt. Beside a turn that finished it makes no
+                    // marker of its own - it is not the agent finishing an
+                    // answer - and says how the newest turn ended on the one
+                    // that is standing. With no finished turn to say it on,
+                    // it is the only end the file has: a session whose first
+                    // turn was stopped, which is the ordinary case for one
+                    // that was opened with a task and then redirected.
+                    Some("user") => match last_turn_end.as_mut() {
+                        Some(end) => end.interrupted = true,
+                        None => {
+                            last_turn_end = Some(crate::rail_state::TurnEnd {
+                                marker: uuid.to_string(),
+                                failed: false,
+                                interrupted: true,
+                            });
                         }
-                    }
+                    },
                     _ => {}
                 }
             }
@@ -2532,9 +2548,42 @@ mod tests {
         assert_eq!(end.marker, "9f000000-0000-4000-8000-000000000001");
         assert!(!end.interrupted);
 
-        // An interrupt makes no marker of its own: a session whose only turn
-        // was stopped has no turn end to report.
-        assert!(probe_lines(&[&stopped], now).last_turn_end.is_none());
+        // A session whose only turn was stopped has no finished turn to
+        // carry the flag, so the interrupt is the end it reports - and a
+        // second stop moves nothing, like any other.
+        for lines in [
+            vec![stopped.as_str()],
+            vec![stopped.as_str(), stopped.as_str()],
+        ] {
+            let end = probe_lines(&lines, now).last_turn_end.expect("end");
+            assert_eq!(end.marker, "55555555-5555-4555-8555-555555555555");
+            assert!(end.interrupted);
+        }
+        let end = probe_lines(&[&stopped, &finished], now)
+            .last_turn_end
+            .expect("end");
+        assert_eq!(end.marker, "35c89ced-9c42-4286-a1bf-8283abdcffa5");
+        assert!(!end.interrupted);
+
+        // A prompt after the stop opens another turn, and the flag is not
+        // about that one. Esc before the first token ends it with no record,
+        // so this is also what the file looks like after such a stop.
+        let prompt = format!(
+            r#"{{"type":"user","uuid":"66666666-6666-4666-8666-666666666666","timestamp":"{}","message":{{"role":"user","content":"go on"}}}}"#,
+            at("30")
+        );
+        let end = probe_lines(&[&finished, &stopped, &prompt], now)
+            .last_turn_end
+            .expect("end");
+        assert_eq!(end.marker, "35c89ced-9c42-4286-a1bf-8283abdcffa5");
+        assert!(
+            !end.interrupted,
+            "the turn that was stopped is not the newest"
+        );
+        let end = probe_lines(&[&finished, &stopped, &prompt, &stopped], now)
+            .last_turn_end
+            .expect("end");
+        assert!(end.interrupted);
     }
 
     /// The turn's end mark is the closing record's own `uuid`, and the newest
@@ -2615,7 +2664,6 @@ mod tests {
             ("synthetic", &synthetic),
             ("max_tokens", &max_tokens),
             ("tool_use", &tool_use),
-            ("interrupt", &interrupt),
         ] {
             assert_eq!(turn_end_marker(&[line]), None, "{what} alone");
             assert_eq!(
@@ -2624,6 +2672,13 @@ mod tests {
                 "{what} after a real end"
             );
         }
+        // An interrupt ends a turn without finishing one, so it leaves the
+        // marker of a turn that finished where it was.
+        assert_eq!(
+            turn_end_marker(&[&closed, &interrupt]).as_deref(),
+            standing,
+            "interrupt after a real end"
+        );
     }
 
     /// `stop_reason` is not a two-value field, and reading everything but

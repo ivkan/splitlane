@@ -237,8 +237,29 @@ fn opening_a_session_keeps_its_published_names() {
         "\"waiting\"",
         "\"other_project\"",
         "\"turn_in_flight\"",
+        "\"no_interrupt\"",
     ] {
         assert!(rules.contains(word), "the refusal word {word} is published");
+    }
+    // Stopping a turn: the method, how the stop is reported to the caller,
+    // and the word the rail keeps for a run that ended that way.
+    assert!(
+        handler.contains("\"surface.interrupt\""),
+        "IPC method `surface.interrupt` disappeared"
+    );
+    let verbs = read("src-app/src/cli/session_cmds.rs");
+    for word in ["\"interrupted\"", "\"not_running\"", "\"not_confirmed\""] {
+        assert!(
+            verbs.contains(word),
+            "`splitlane interrupt` reports the outcome {word}"
+        );
+    }
+    let rail = read("src-app/src/rail_state.rs");
+    for word in ["\"finished\"", "\"failed\"", "\"interrupted\""] {
+        assert!(
+            rail.contains(word),
+            "`rail.last_outcome` lost its word {word}"
+        );
     }
     let cli = read("src-app/src/cli/mod.rs");
     assert!(

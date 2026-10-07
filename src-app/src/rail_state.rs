@@ -79,6 +79,10 @@ impl RailSource {
 pub enum RunOutcome {
     Finished,
     Failed,
+    /// Somebody stopped the turn: a person pressing the agent's interrupt
+    /// key, or a session doing so to one it opened. The run ended, and it is
+    /// counted, but the agent did not finish an answer.
+    Interrupted,
 }
 
 impl RunOutcome {
@@ -86,6 +90,7 @@ impl RunOutcome {
         match self {
             RunOutcome::Finished => "finished",
             RunOutcome::Failed => "failed",
+            RunOutcome::Interrupted => "interrupted",
         }
     }
 }

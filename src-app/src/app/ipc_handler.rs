@@ -745,7 +745,7 @@ fn orchestration_disabled_error(method: &str) -> JsonRpcError {
 
 /// The refusal for a write from a caller in no pane when the app was not
 /// launched with the variable that opens writes.
-fn write_gate_refusal(method: &str) -> serde_json::Value {
+pub(crate) fn write_gate_refusal(method: &str) -> serde_json::Value {
     JsonRpcError {
         code: -32601,
         message: format!("{method} disabled; set SPLITLANE_IPC_SCRIPTING=1 to enable"),
@@ -3673,6 +3673,7 @@ impl SplitlaneApp {
             "surface.park" => self.handle_park(params, caller, cx),
             "surface.show" => self.handle_show(params, caller, cx),
             "surface.close" => self.handle_close(params, caller, cx),
+            "surface.interrupt" => self.handle_interrupt(params, caller, cx),
             "workspace.restore_layout" => {
                 let Some(layout_value) = params.get("layout") else {
                     return serde_json::json!({"error": "Missing 'layout' parameter"});
@@ -4657,7 +4658,10 @@ fn required_id_param(params: &serde_json::Value, key: &str) -> Result<u64, JsonR
 
 /// Refuse a write to a pane whose process has ended: the bytes would go
 /// nowhere, and answering `sent` would tell a script its prompt arrived.
-fn pane_takes_input(terminal: &Entity<TerminalView>, cx: &App) -> Result<(), JsonRpcError> {
+pub(crate) fn pane_takes_input(
+    terminal: &Entity<TerminalView>,
+    cx: &App,
+) -> Result<(), JsonRpcError> {
     match terminal.read(cx).terminal.exited {
         Some(_) => Err(JsonRpcError::input_not_taken(
             "The pane's process has exited; nothing was sent",

@@ -1,5 +1,5 @@
 //! The verbs a session uses on the sessions it opened: `add`, `park`, `show`,
-//! `close`.
+//! `close`, `interrupt`.
 //!
 //! Thin wrappers over the `surface.*` methods of the same names. What a caller
 //! may do is decided by the server, which knows which pane the call came from;
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use splitlane_ipc_client::IpcTransport;
 
 use super::selector::resolve_target;
-use super::{CliError, EXIT_OK, EXIT_REFUSED};
+use super::{CliError, EXIT_NO_TURN_SIGNAL, EXIT_OK, EXIT_REFUSED, EXIT_RUNTIME, EXIT_TIMEOUT};
 
 /// What `splitlane add` was asked for.
 pub struct AddOptions {
@@ -28,7 +28,13 @@ pub struct AddOptions {
 pub(super) fn call_error(message: String) -> CliError {
     if message.contains("splitlane error -32004:") {
         CliError {
-            code: EXIT_REFUSED,
+            // Not a rule the caller ran into but a thing this build cannot
+            // do for that agent: the code that says "use another method".
+            code: if message.contains("refused (no_interrupt)") {
+                EXIT_NO_TURN_SIGNAL
+            } else {
+                EXIT_REFUSED
+            },
             message,
         }
     } else {
@@ -172,6 +178,103 @@ pub fn close(
         println!("{surface_id}\tclosed");
     }
     Ok(EXIT_OK)
+}
+
+/// How often the rail is read while a stop is being confirmed.
+const INTERRUPT_POLL: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// How an interrupt ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Interrupt {
+    /// The agent's own record says the turn was stopped.
+    Interrupted,
+    /// No turn was running. Nothing was sent.
+    NotRunning,
+    /// The key was sent and no record of a stop was seen in time.
+    NotConfirmed,
+}
+
+impl Interrupt {
+    fn word(self) -> &'static str {
+        match self {
+            Interrupt::Interrupted => "interrupted",
+            Interrupt::NotRunning => "not_running",
+            Interrupt::NotConfirmed => "not_confirmed",
+        }
+    }
+
+    fn exit_code(self) -> i32 {
+        match self {
+            Interrupt::Interrupted => EXIT_OK,
+            Interrupt::NotRunning => EXIT_RUNTIME,
+            Interrupt::NotConfirmed => EXIT_TIMEOUT,
+        }
+    }
+}
+
+/// Whether the rail shows that the run standing at `baseline` was stopped.
+///
+/// `Some(true)` is the stop confirmed. `Some(false)` is a run that ended some
+/// other way after the key went in - it finished on its own a moment before
+/// the key arrived - and waiting longer will not change that. `None` is "not
+/// yet".
+fn stop_confirmed(rail: &Value, baseline: u64) -> Option<bool> {
+    let runs_ended = rail.get("runs_ended").and_then(Value::as_u64).unwrap_or(0);
+    if runs_ended <= baseline {
+        return None;
+    }
+    Some(rail.get("last_outcome").and_then(Value::as_str) == Some("interrupted"))
+}
+
+/// `splitlane interrupt <target> [--timeout S] [--json]`: stop the turn a
+/// session is in and leave the session open.
+///
+/// The stop is confirmed from the rail and not from the pane going quiet:
+/// the agent's own file records it, and silence is what an agent that is
+/// still generating looks like too.
+pub fn interrupt(
+    client: &impl IpcTransport,
+    target: &str,
+    timeout: std::time::Duration,
+    json: bool,
+) -> Result<i32, CliError> {
+    let surface_id = resolve_target(client, target)?;
+    let sent = super::reject_legacy_error(
+        client
+            .call("surface.interrupt", json!({ "surface_id": surface_id }))
+            .map_err(call_error)?,
+    )?;
+    let baseline = sent.get("runs_ended").and_then(Value::as_u64).unwrap_or(0);
+    let mut rail = Value::Null;
+    let outcome = if sent.get("sent").and_then(Value::as_bool) != Some(true) {
+        Interrupt::NotRunning
+    } else {
+        let started = std::time::Instant::now();
+        loop {
+            let status = client
+                .call("surface.status", json!({ "surface_id": surface_id }))
+                .map_err(CliError::runtime)?;
+            rail = status.get("rail").cloned().unwrap_or(Value::Null);
+            match stop_confirmed(&rail, baseline) {
+                Some(true) => break Interrupt::Interrupted,
+                Some(false) => break Interrupt::NotConfirmed,
+                None if started.elapsed() >= timeout => break Interrupt::NotConfirmed,
+                None => std::thread::sleep(INTERRUPT_POLL),
+            }
+        }
+    };
+    if json {
+        super::print_json(&json!({
+            "outcome": outcome.word(),
+            "surface_id": surface_id,
+            "status": rail.get("status").or_else(|| sent.get("rail_status_at_send")),
+            "runs_ended": rail.get("runs_ended").or_else(|| sent.get("runs_ended")),
+            "last_outcome": rail.get("last_outcome").or_else(|| sent.get("last_outcome")),
+        }))?;
+    } else {
+        println!("{surface_id}\t{}", outcome.word());
+    }
+    Ok(outcome.exit_code())
 }
 
 #[cfg(test)]
@@ -360,6 +463,129 @@ mod tests {
         let err = close(&fake, "api-docs", false, false).expect_err("refused");
         assert_eq!(err.code, EXIT_REFUSED);
         assert!(err.message.contains("turn_in_flight"));
+    }
+
+    /// Answers the interrupt once and then a scripted run of rail readings.
+    struct Interrupted {
+        sent: Value,
+        rails: RefCell<Vec<Value>>,
+        calls: RefCell<Vec<String>>,
+    }
+    impl Interrupted {
+        fn new(sent: Value, rails: Vec<Value>) -> Self {
+            Self {
+                sent,
+                rails: RefCell::new(rails),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+    impl IpcTransport for Interrupted {
+        fn call(&self, method: &str, _params: Value) -> Result<Value, String> {
+            self.calls.borrow_mut().push(method.to_string());
+            match method {
+                "surface.list" => Ok(json!({ "surfaces": [
+                    { "surface_id": 12, "name": "api-docs" },
+                ]})),
+                "surface.interrupt" => Ok(self.sent.clone()),
+                _ => {
+                    let mut rails = self.rails.borrow_mut();
+                    let rail = if rails.len() > 1 {
+                        rails.remove(0)
+                    } else {
+                        rails.first().cloned().unwrap_or(Value::Null)
+                    };
+                    Ok(json!({ "rail": rail }))
+                }
+            }
+        }
+    }
+
+    const SOON: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[test]
+    fn a_stop_is_confirmed_by_the_run_ending_as_interrupted() {
+        let fake = Interrupted::new(
+            json!({ "sent": true, "runs_ended": 2, "rail_status_at_send": "running" }),
+            vec![
+                json!({ "status": "running", "runs_ended": 2, "last_outcome": "finished" }),
+                json!({ "status": "idle", "runs_ended": 3, "last_outcome": "interrupted" }),
+            ],
+        );
+        assert_eq!(
+            interrupt(&fake, "api-docs", SOON, true).expect("ok"),
+            EXIT_OK
+        );
+    }
+
+    /// The outcome standing from the run before is not this run's.
+    #[test]
+    fn an_earlier_interrupt_does_not_confirm_this_one() {
+        let earlier =
+            json!({ "status": "running", "runs_ended": 2, "last_outcome": "interrupted" });
+        assert_eq!(stop_confirmed(&earlier, 2), None);
+        let fake = Interrupted::new(
+            json!({ "sent": true, "runs_ended": 2, "rail_status_at_send": "running" }),
+            vec![earlier],
+        );
+        assert_eq!(
+            interrupt(&fake, "api-docs", std::time::Duration::ZERO, true).expect("ok"),
+            EXIT_TIMEOUT
+        );
+    }
+
+    /// The turn finished on its own a moment before the key arrived. That is
+    /// said at once, not after the timeout: nothing more is coming.
+    #[test]
+    fn a_run_that_finished_by_itself_is_not_a_confirmed_stop() {
+        let fake = Interrupted::new(
+            json!({ "sent": true, "runs_ended": 2, "rail_status_at_send": "running" }),
+            vec![json!({ "status": "idle", "runs_ended": 3, "last_outcome": "finished" })],
+        );
+        assert_eq!(
+            interrupt(&fake, "api-docs", SOON, true).expect("ok"),
+            EXIT_TIMEOUT
+        );
+        assert_eq!(fake.calls.borrow().len(), 3, "one reading was enough");
+    }
+
+    #[test]
+    fn with_no_turn_running_nothing_is_waited_for() {
+        let fake = Interrupted::new(
+            json!({ "sent": false, "runs_ended": 2, "rail_status_at_send": "idle" }),
+            Vec::new(),
+        );
+        assert_eq!(
+            interrupt(&fake, "api-docs", SOON, true).expect("ok"),
+            EXIT_RUNTIME
+        );
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["surface.list", "surface.interrupt"],
+            "the rail is not read"
+        );
+    }
+
+    /// An agent with no known key is "use another method", not a rule the
+    /// caller broke.
+    #[test]
+    fn an_agent_with_no_interrupt_key_is_exit_7() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Err(
+                "splitlane error -32004: surface.interrupt refused (no_interrupt): no".to_string(),
+            ),
+        };
+        let err = interrupt(&fake, "api-docs", SOON, false).expect_err("refused");
+        assert_eq!(err.code, EXIT_NO_TURN_SIGNAL);
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Err(
+                "splitlane error -32004: surface.interrupt refused (waiting): no".to_string(),
+            ),
+        };
+        let err = interrupt(&fake, "api-docs", SOON, false).expect_err("refused");
+        assert_eq!(err.code, EXIT_REFUSED);
     }
 
     #[test]

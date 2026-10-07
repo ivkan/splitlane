@@ -891,6 +891,44 @@ text sent while the model is generating becomes a second turn straight after
 the first, whose answer is then the only one a later read returns. A caller
 that wrote into `running` has to know it did.
 
+**Stopping a turn is a key, and it is confirmed by the agent's own record.**
+`surface.interrupt` writes the key that stops a turn of that agent and leaves
+the agent running - Esc for Claude Code, and not Ctrl-C, which in some agents
+ends the process on a second press. The key is a property of the agent
+(`TerminalAgent::interrupt_key`), filled in only from a measurement; an agent
+with none is refused with `no_interrupt`. The grounds are those of any key
+(`orchestration::may_interrupt`), with one difference: a session never stops
+its own turn, whatever the app was launched with, because the call would be
+part of the turn it stopped. A session waiting for a person is refused for
+the reason a key is: on a permission question, the key that stops a turn is
+the answer "no". With no turn running nothing is written, since the same key
+on an idle input line means something else to the agent.
+
+The call answers as soon as the key is written. Whether the turn stopped is
+read afterwards from the rail by whoever asked (`splitlane interrupt` does
+it): the state pass holds the end of a run for three seconds before it
+believes it, which is longer than a handler on the thread that draws the
+window may take. The run ends with `last_outcome: "interrupted"`, taken from
+the record the agent wrote, and that word past the baseline is the
+confirmation. Silence is not one: an agent still generating is silent too.
+
+Measured on Claude Code 2.1.292, through this call: a first turn stopped
+during generation and a later turn stopped during a tool call were both
+confirmed in five to six seconds, the tool's child was gone, the agent
+stayed, and text sent afterwards reached the transcript as itself.
+
+**A stop before the first token is not confirmed, and it leaves the prompt
+behind.** Asked the moment the rail first said `running`, the key landed
+before the model had answered. Claude Code wrote nothing to the transcript
+and put the prompt back on the input line; the next text sent was appended
+to it and submitted as one prompt. The run still ended, as `finished`, so
+the caller is told `not_confirmed` and nothing claims the turn was stopped.
+Ctrl-U removes one line of such a prompt and Ctrl-C removes all of it, but
+Ctrl-C on an empty line is the first half of quitting, so the app does not
+press either on a guess. What would close this is telling that case apart
+in the agent's own file - a prompt with nothing after it, under a status
+that says idle - and clearing the line only then.
+
 **A session arranges the panes of what it opened, and no others.** With eight
 sessions and four panes, opening and closing are not enough: a session has to
 be able to free a pane without ending the work in it, and to bring a session

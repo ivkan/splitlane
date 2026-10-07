@@ -64,6 +64,7 @@ pub(crate) fn method_asks_who_calls(method: &str) -> bool {
             | "surface.park"
             | "surface.show"
             | "surface.close"
+            | "surface.interrupt"
     )
 }
 
