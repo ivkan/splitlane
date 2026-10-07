@@ -718,6 +718,9 @@ impl SplitlaneApp {
             self.drive
                 .keep_only(|id| crate::project::find_surface(workspaces, id).is_some());
         }
+        self.drive_status_before.retain(|thread_id, _| {
+            crate::project::find_surface(&self.workspaces, *thread_id).is_some()
+        });
         // A question whose session was closed took its row's wait with it.
         let answered_by_closing: Vec<u64> = self
             .drive_status_before

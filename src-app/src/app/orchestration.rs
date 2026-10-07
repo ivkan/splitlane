@@ -749,11 +749,52 @@ impl SplitlaneApp {
                 if let (Caller::Pane(pane), Some(thread_id)) = (caller, target.thread_id)
                     && self.drive.ask(pane.thread_id, thread_id)
                 {
+                    // Told once, when the wait begins: a second question put
+                    // while the first stands adds a row, not a second
+                    // notification.
+                    let first = self.drive.asked_by(pane.thread_id).len() == 1;
                     self.show_drive_questions(pane.thread_id, cx);
+                    if first {
+                        self.notify_drive_question(pane.thread_id, cx);
+                    }
                 }
                 asked_person_value(method)
             }
         }
+    }
+
+    /// Tell the person `asker` is waiting for them, and for what: the title
+    /// every wait has, and a body that says the answer is theirs to give and
+    /// not the agent's.
+    fn notify_drive_question(&mut self, asker: u64, cx: &mut Context<Self>) {
+        let Some(thread) = self.thread_by_id(asker) else {
+            return;
+        };
+        let Some(agent) = thread.terminal_agent else {
+            return;
+        };
+        let title = crate::project::clean_sidebar_title(&thread.title)
+            .unwrap_or_else(|| thread.title.clone());
+        let Some(message) = thread.rail.waiting_message.clone() else {
+            return;
+        };
+        let Some(ws_id) = self
+            .workspaces
+            .iter()
+            .find(|container| container.threads.iter().any(|t| t.id == asker))
+            .map(|container| container.id)
+        else {
+            return;
+        };
+        let seen = self.thread_is_seen(asker, cx);
+        crate::app::ipc_handler::fire_attention_notification(
+            agent,
+            self.notification_subject(ws_id, title, cx),
+            Some(&format!("It {message}.")),
+            &self.cached_config,
+            seen,
+            cx.background_executor().clone(),
+        );
     }
 
     /// The questions `asker` has standing, as its pane draws them.
@@ -777,6 +818,69 @@ impl SplitlaneApp {
                     asker_name: asker_name.clone(),
                     target_name: name(self.thread_by_id(target)?),
                 })
+            })
+            .collect()
+    }
+
+    /// The person handed `target` to `asker` from the menu, without being
+    /// asked: the same as answering yes, and it lifts an earlier no.
+    pub(crate) fn give_drive(&mut self, asker: u64, target: u64, cx: &mut Context<Self>) {
+        self.drive.give(asker, target);
+        // A question about this pair that was standing is answered by it.
+        self.show_drive_questions(asker, cx);
+    }
+
+    /// The person took `target` back. Its turn is not stopped; the session
+    /// that drove it can no longer write into it, and may ask again.
+    pub(crate) fn stop_drive(&mut self, target: u64, cx: &mut Context<Self>) {
+        if self.drive.take_back(target).is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The name of the session that drives `target`, when one does.
+    pub(crate) fn driver_name(&self, target: u64) -> Option<String> {
+        let driver = self.thread_by_id(self.drive.driver_of(target)?)?;
+        Some(
+            crate::project::clean_sidebar_title(&driver.title)
+                .unwrap_or_else(|| driver.title.clone()),
+        )
+    }
+
+    /// The sessions a person could hand `target` to: the agent sessions of
+    /// its project that a person opened, which are the only ones that can
+    /// ask. Empty when `target` is not something that can be handed over - a
+    /// shell, or a session another session opened, which its opener drives.
+    pub(crate) fn drive_candidates(&self, target: u64) -> Vec<(u64, String)> {
+        let is_agent = |thread: &crate::project::Thread| {
+            thread.terminal_agent.is_some()
+                && !crate::app::agents_sidebar::is_shell_surface(thread)
+                && thread.opened_by.is_none()
+        };
+        let Some(container) = self
+            .workspaces
+            .iter()
+            .find(|container| container.threads.iter().any(|t| t.id == target))
+        else {
+            return Vec::new();
+        };
+        if !container
+            .threads
+            .iter()
+            .any(|thread| thread.id == target && is_agent(thread))
+        {
+            return Vec::new();
+        }
+        container
+            .threads
+            .iter()
+            .filter(|thread| thread.id != target && is_agent(thread))
+            .map(|thread| {
+                (
+                    thread.id,
+                    crate::project::clean_sidebar_title(&thread.title)
+                        .unwrap_or_else(|| thread.title.clone()),
+                )
             })
             .collect()
     }

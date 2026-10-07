@@ -58,7 +58,17 @@ impl SplitlaneApp {
         // 6 items (Pin, Rename, Duplicate, Restart, Reveal, Delete) +
         // 1 separator + 8px padding => ~225px; one more when the answer can be
         // copied out, and one per pane it can be sent to.
-        let menu_height = px(if can_copy { 256. } else { 228. } + send_to.len() as f32 * 28.);
+        // Handing the session to another to drive, or taking it back: one
+        // entry for the session that drives it now, otherwise one for each
+        // session that could.
+        let driver = source_thread_id.and_then(|id| self.driver_name(id));
+        let drive_candidates = match (source_thread_id, &driver) {
+            (Some(id), None) => self.drive_candidates(id),
+            _ => Vec::new(),
+        };
+        let drive_rows = drive_candidates.len() + usize::from(driver.is_some());
+        let menu_height =
+            px(if can_copy { 256. } else { 228. } + (send_to.len() + drive_rows) as f32 * 28.);
         let menu_pos = clamped_context_menu_position(position, px(220.), menu_height, window);
         let rename_label = "Rename session";
         // The Pin entry's label flips with the target's current
@@ -194,6 +204,35 @@ impl SplitlaneApp {
                 cx.stop_propagation();
             }),
         ));
+
+        if let Some(source_thread_id) = source_thread_id {
+            if let Some(driver) = driver {
+                menu = menu.child(self.render_select_menu_item(
+                    "agents-thread-stop-driving".into(),
+                    &format!("Stop {driver} driving"),
+                    None,
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.close_agents_menu(cx);
+                        this.stop_drive(source_thread_id, cx);
+                        cx.stop_propagation();
+                    }),
+                ));
+            }
+            for (idx, (candidate, name)) in drive_candidates.into_iter().enumerate() {
+                menu = menu.child(self.render_select_menu_item(
+                    SharedString::from(format!("agents-thread-let-drive-{idx}")),
+                    &format!("Let {name} drive"),
+                    None,
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                        this.close_agents_menu(cx);
+                        this.give_drive(candidate, source_thread_id, cx);
+                        cx.stop_propagation();
+                    }),
+                ));
+            }
+        }
 
         menu = menu.child(self.render_select_menu_item(
             "agents-thread-duplicate".into(),

@@ -474,6 +474,10 @@ impl SplitlaneApp {
                 // word "shell".
                 meta: if is_shell {
                     SharedString::from("shell")
+                } else if let Some(driver) = self.driver_name(thread.id) {
+                    // A session a person let another drive says so where its
+                    // agent's name was; the icon still names the agent.
+                    SharedString::from(format!("by {driver}"))
                 } else {
                     SharedString::from(
                         thread

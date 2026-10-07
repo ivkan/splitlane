@@ -349,6 +349,9 @@ impl SplitlaneApp {
                         drive_questions: thread_id
                             .map(|asker| self.drive_questions_of(asker))
                             .unwrap_or_default(),
+                        driven_by: thread_id
+                            .and_then(|id| self.driver_name(id))
+                            .map(gpui::SharedString::from),
                     },
                 );
             }

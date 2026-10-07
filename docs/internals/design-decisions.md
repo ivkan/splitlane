@@ -1096,6 +1096,24 @@ the next pass as a run that started and ended, and was announced as one.
 For a session only a hook speaks for, the word is put when the question is
 and what it replaced is put back with the answer.
 
+**A person can hand a session over without being asked, and take it back.**
+The row's menu offers `Let ‹name› drive` for each session that could ask -
+the agent sessions of the same project that a person opened - and, for a
+session that is driven, `Stop ‹name› driving`. Handing over is the same as
+answering yes, and it is the one thing that lifts an earlier no: the person
+can change their mind, the agent cannot change it for them by asking again.
+Taking back is not a no. The pair is forgotten, the session's turn is not
+stopped, and the other session may ask again. A session is driven by one at
+a time. There is no dragging a row onto another to do this: a drop already
+means "show it in that pane", and a third meaning told apart only by where
+the pointer was let go would hand a session to an agent by a slip of the
+hand.
+
+A driven session stays where it is in the rail. It says `by ‹name›` where
+its agent's name was and `driven by ‹name›` in its pane's header, so a
+person looking at it can tell that what is typed there may not be theirs.
+`surface.list` and `surface.status` carry the same fact as `driven_by`.
+
 **Nothing is printed into the asking session.** The designs show a line in
 its terminal saying what the person answered. With no call in flight that
 would be the app typing into an agent's session on its own, so it is not

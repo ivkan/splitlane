@@ -105,6 +105,8 @@ pub struct SurfaceFacts {
     /// What this session is asking a person for: the sessions they opened
     /// that it wants to send messages to. Empty for nearly every surface.
     pub drive_questions: Vec<DriveQuestion>,
+    /// The name of the session a person let drive this one.
+    pub driven_by: Option<SharedString>,
 }
 
 /// One question a session put to a person: may it send messages to a session
@@ -2455,7 +2457,8 @@ impl Pane {
                 .children(match self.render_surface_stop(ui, cx) {
                     Some(stop) => Some(stop),
                     None => self.render_surface_status(ui),
-                });
+                })
+                .children(self.render_surface_driver(ui));
         }
         let tabs_area = tabs_area.child(tabs_row);
 
@@ -2781,6 +2784,27 @@ impl Pane {
                 .text_size(tok::mono::HINT)
                 .text_color(color)
                 .child(label)
+                .into_any_element(),
+        )
+    }
+
+    /// `driven by ‹name›`, for a session a person let another one drive.
+    /// A person looking at this pane has to be able to tell that what is
+    /// typed into it may not be theirs.
+    fn render_surface_driver(&self, ui: crate::theme::UiColors) -> Option<gpui::AnyElement> {
+        if self.tabs.len() != 1 {
+            return None;
+        }
+        let driver = self.active_surface_facts()?.driven_by.clone()?;
+        Some(
+            div()
+                .flex_none()
+                .ml(tok::space::SM)
+                .whitespace_nowrap()
+                .font_family(tok::font::MONO)
+                .text_size(tok::mono::HINT)
+                .text_color(ui.muted)
+                .child(SharedString::from(format!("driven by {driver}")))
                 .into_any_element(),
         )
     }

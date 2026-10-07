@@ -286,7 +286,7 @@ pub(crate) fn fire_turn_end_notification(
     );
 }
 
-fn fire_attention_notification(
+pub(crate) fn fire_attention_notification(
     agent: TerminalAgent,
     subject: desktop_notifications::NotificationSubject,
     message: Option<&str>,
@@ -2941,7 +2941,17 @@ impl SplitlaneApp {
                 let surfaces: Vec<_> = self
                     .collect_surface_meta(cx)
                     .into_iter()
-                    .map(surface_meta_value)
+                    .map(|meta| {
+                        // The session a person let drive this one, if any.
+                        let driven_by = meta
+                            .thread_id
+                            .and_then(|id| self.drive.driver_of(id))
+                            .and_then(|driver| self.terminal_of(driver, cx))
+                            .map(|driver| driver.entity_id().as_u64());
+                        let mut value = surface_meta_value(meta);
+                        value["driven_by"] = serde_json::json!(driven_by);
+                        value
+                    })
                     .collect();
                 let count = self.active_workspace().map_or(0, |ws| ws.pane_count());
                 serde_json::json!({

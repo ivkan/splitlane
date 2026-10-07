@@ -20,7 +20,8 @@ pub(crate) enum Standing {
     /// The person has been asked and has not answered.
     Asked,
     Allowed,
-    /// The person said no. Not asked again until the app restarts.
+    /// The person said no. Not asked again until the app restarts, or until
+    /// the person hands the session over themselves.
     Declined,
 }
 
@@ -85,6 +86,23 @@ impl DriveBook {
             }
             _ => false,
         }
+    }
+
+    /// The person handed `target` to `asker` without being asked. It lifts an
+    /// earlier no, and takes the session from whoever drove it before: one
+    /// session is driven by one.
+    pub(crate) fn give(&mut self, asker: u64, target: u64) {
+        self.pairs
+            .retain(|(_, of), standing| *of != target || *standing != Standing::Allowed);
+        self.pairs.insert((asker, target), Standing::Allowed);
+    }
+
+    /// The person took `target` back. Not a no: the pair is forgotten, and
+    /// the session that drove it may ask again.
+    pub(crate) fn take_back(&mut self, target: u64) -> Option<u64> {
+        let driver = self.driver_of(target)?;
+        self.pairs.remove(&(driver, target));
+        Some(driver)
     }
 
     /// The session allowed to drive `target`, if one is.
@@ -175,6 +193,40 @@ mod tests {
         book.answer(PLAN, API, false);
         assert!(!book.ask(PLAN, API));
         assert_eq!(book.standing(PLAN, API), Some(Standing::Declined));
+    }
+
+    /// Taking a session back is not a no.
+    #[test]
+    fn a_session_taken_back_can_be_asked_for_again() {
+        let mut book = DriveBook::default();
+        book.give(PLAN, API);
+        assert_eq!(book.take_back(API), Some(PLAN));
+        assert_eq!(book.standing(PLAN, API), None);
+        assert_eq!(book.take_back(API), None);
+        assert!(book.ask(PLAN, API));
+    }
+
+    #[test]
+    fn a_session_is_driven_by_one() {
+        let mut book = DriveBook::default();
+        book.give(PLAN, API);
+        book.give(WEB, API);
+        assert_eq!(book.driver_of(API), Some(WEB));
+        assert_eq!(book.standing(PLAN, API), None);
+    }
+
+    /// The person can change their mind, and handing a session over is how.
+    #[test]
+    fn a_no_is_lifted_by_the_person_handing_the_session_over() {
+        let mut book = DriveBook::default();
+        book.ask(PLAN, API);
+        book.answer(PLAN, API, false);
+        book.give(PLAN, API);
+        assert_eq!(book.standing(PLAN, API), Some(Standing::Allowed));
+        // And a question still standing is answered by it.
+        book.ask(PLAN, WEB);
+        book.give(PLAN, WEB);
+        assert!(!book.has_questions(PLAN));
     }
 
     #[test]

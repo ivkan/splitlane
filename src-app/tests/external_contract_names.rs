@@ -283,6 +283,10 @@ fn opening_a_session_keeps_its_published_names() {
         cli.contains("pub const EXIT_ASKED_PERSON: i32 = 9;"),
         "a write that asked a person is exit code 9"
     );
+    assert!(
+        handler.matches("value[\"driven_by\"]").count() >= 2,
+        "`surface.list` and `surface.status` both say which session drives one"
+    );
     for field in ["value[\"drive\"]", "value[\"driven_by\"]"] {
         assert!(
             handler.contains(field),
