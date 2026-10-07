@@ -2351,8 +2351,29 @@ pub(crate) fn surface_row_order(threads: &[crate::project::Thread]) -> SurfaceRo
 /// A session whose opener has no row among these - it was closed, or it is a
 /// shell and sits in the other group - stays where it was.
 fn under_their_openers(order: Vec<usize>, threads: &[crate::project::Thread]) -> Vec<usize> {
-    let opener_of = |idx: usize| threads[idx].opened_by.as_ref().map(|by| by.id);
     let shown: std::collections::HashSet<u64> = order.iter().map(|idx| threads[*idx].id).collect();
+    // Rows that keep a place of their own: everything nobody here opened.
+    // Only those have rows put under them. The rules allow no session that
+    // was opened to open another, but a file can say anything, and a row
+    // moved under a row that is itself being moved would be drawn nowhere.
+    let stands_alone = |thread: &crate::project::Thread| {
+        thread
+            .opened_by
+            .as_ref()
+            .is_none_or(|by| by.id == thread.id || !shown.contains(&by.id))
+    };
+    let alone: std::collections::HashSet<u64> = threads
+        .iter()
+        .filter(|thread| stands_alone(thread))
+        .map(|thread| thread.id)
+        .collect();
+    let opener_of = |idx: usize| {
+        threads[idx]
+            .opened_by
+            .as_ref()
+            .map(|by| by.id)
+            .filter(|opener| *opener != threads[idx].id && alone.contains(opener))
+    };
     let mut opened: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
     for idx in &order {
         if let Some(opener) = opener_of(*idx).filter(|opener| shown.contains(opener)) {
@@ -2687,6 +2708,36 @@ mod tests {
             titles(&threads, &order.agents),
             ["plan", "api", "web", "newest", "older"]
         );
+    }
+
+    /// Whatever a session file says about who opened what, every session
+    /// has a row. The rules allow neither a chain nor a session that opened
+    /// itself; a file edited by hand can hold both.
+    #[test]
+    fn no_row_is_lost_to_a_record_the_rules_would_not_have_written() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let agent =
+            |title: &str| Thread::new_terminal(title, "/w", Some(TerminalAgent::ClaudeCode));
+        let by = |thread: &Thread| {
+            Some(splitlane_config::schema::OpenedBy {
+                id: thread.id,
+                title: thread.title.clone(),
+            })
+        };
+        let mut threads = vec![agent("plan"), agent("api"), agent("deeper"), agent("loop")];
+        threads[1].opened_by = by(&threads[0]);
+        threads[2].opened_by = by(&threads[1]);
+        threads[3].opened_by = by(&threads[3]);
+        let order = surface_row_order(&threads);
+        let mut seen = titles(&threads, &order.agents);
+        assert_eq!(seen.len(), threads.len(), "{seen:?}");
+        // The one the rules do allow is still where it belongs.
+        let plan = seen.iter().position(|t| t == "plan").expect("plan");
+        assert_eq!(seen[plan + 1], "api");
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), threads.len());
     }
 
     /// With the opener gone there is nothing to sit under.
