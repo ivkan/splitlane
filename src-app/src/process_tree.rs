@@ -1452,9 +1452,12 @@ mod tests {
     #[cfg(unix)]
     fn a_job_in_its_own_group_is_found_and_ended() {
         // `set -m` turns job control on, which is what gives a background job
-        // its own process group in a shell that is not interactive.
+        // its own process group in a shell that is not interactive. Bash by
+        // name, not `/bin/sh`: where that is dash, job control is refused
+        // without a terminal, the job stays in this test's own group, and
+        // there is nothing to find.
         let shell = Spawned(
-            std::process::Command::new("/bin/sh")
+            std::process::Command::new("/bin/bash")
                 .arg("-c")
                 .arg("set -m; sleep 30 & wait; true")
                 .spawn()
