@@ -155,6 +155,23 @@ start Splitlane from a shell that has them set.
 
 A flow that submits checks `SPLITLANE_IPC_SCRIPTING` only.
 
+These variables are for a caller outside a pane: your own script. An agent
+running **in** a pane needs none of them for the sessions it opens itself.
+It opens agent sessions with `splitlane add`, and those are its own: it may
+send them text and keys, stop their turns, move them in and out of panes
+and close them, with nothing switched on. Splitlane tells which pane a call
+comes from by reading the process table, not by asking the caller. See
+[Coordinating agents from a lead agent](#coordinating-agents-from-a-lead-agent).
+
+Into an agent session **you** opened, an agent does not write until you say
+it may. When it tries, nothing is written and the pane of the agent that
+tried shows a strip under its header - `plan wants to send messages to api`,
+with `Allow` and `Don't allow`. Your answer holds for that pair of sessions
+until you quit Splitlane. You can also decide without being asked: a
+session's row menu has `Let ‹name› drive` for each session that could ask,
+and `Stop ‹name› driving` once one does. A driven session says `by ‹name›`
+in the rail and `driven by ‹name›` in its pane's header.
+
 There is no setting that opens `send` and `key`. The `ai_unrestricted` key
 and the **Free access** switch that used to are gone; a `splitlane.json` that
 still has the key loads as before and the key does nothing.
@@ -291,26 +308,50 @@ the way your agent installs skills, for example by copying the
 `skills/splitlane-fleet` directory into its skills folder, and start a new
 agent session so it is picked up.
 
-The loop is:
+The loop, for an agent working from its own pane:
 
-1. **Discover.** `splitlane ps --json` lists agents; `splitlane ls` lists
-   surfaces. Start agents with `splitlane up` and give panes names, so targets
-   are stable.
-2. **Check tracking.** An agent row with `"hooked": true` reports its turns:
-   `state` is real, `last_result` may carry its last answer, and `ai.*` events
-   fire. A row with `"state": "unknown_running"`, `"hooked": false` and
-   `"reason": "no_hook"` was only seen by a process scan: its pane can be read,
-   but there are no turn events to wait on.
-3. **Dispatch.** `splitlane send <target> "<prompt>"` pre-fills; add `--submit`
-   only where write access is on and the action is safe to take without a
-   human looking.
-4. **Wait.** `splitlane wait --match <target> --until turn-end --after <N>`,
-   with `N` from the `send --submit` output. Exit `5` means the agent is
-   asking a person a question: pass it on, do not answer it. On exit `7` the
-   agent has no turn signal; fall back to
+1. **Open.** `splitlane add --agent claude_code --name reviewer --prompt
+   "<task>" --submit --json` opens a session and hands it its first task.
+   The answer carries `runs_ended`; keep it. The session goes into a pane
+   where one is free or fits and into the rail otherwise - `--parked` asks
+   for the rail. At most eight at a time, and a session opened this way
+   opens none of its own.
+2. **Wait.** `splitlane wait --match reviewer --until turn-end --after <N>`,
+   with `N` the `runs_ended` from before the task was sent. Exit `5` means
+   the session is asking a person a question: pass it on, do not answer it,
+   and nothing can be sent to it until a person has. On exit `7` the agent
+   has no turn signal; fall back to
    `splitlane wait --match <target> --idle --pattern '<sentinel>'`.
-5. **Read.** `splitlane answer <target> --after <N>` for Claude Code and
+3. **Read.** `splitlane answer reviewer --after <N>` for Claude Code and
    Codex; `splitlane read <target>` or a report file for the others.
+4. **Hand over the next task.** `splitlane send reviewer "<task>" --submit`.
+   The text arrives preceded by a line saying which session sent it.
+5. **Close.** `splitlane close reviewer` once its turn is over. A session
+   left running in the rail goes on spending.
+
+When the plan changes, `splitlane interrupt reviewer` stops the turn in
+flight and leaves the session open for a new task. It exits `0` when the
+agent's own record shows the turn was stopped; see the
+[reference](scripting/reference.md#verb-details) for the other outcomes.
+`splitlane park` and `splitlane show` move a session out of its pane and
+back when there are more sessions than panes.
+
+To work through a session **you** opened rather than one it opened itself,
+the agent just sends to it. The first attempt exits `9`: you are being
+asked. `splitlane wait --match <target> --until allowed` waits for your
+answer, after which the send goes through.
+
+What a session opened sits under it in the rail, in the order it was
+opened, and each one's pane says `opened by ‹name›`. The end of a run its
+opener started is not announced to you - the opener reads the result - but
+a session that is waiting for you, or failed, always is.
+
+For agents that were already running, or started by `splitlane up`:
+`splitlane ps --json` lists them. A row with `"hooked": true` reports its
+turns; one with `"state": "unknown_running"` was only seen by a process
+scan, so its pane can be read but there are no turn events to wait on.
+Writing into those from a pane takes your leave, as above, or the
+`SPLITLANE_IPC_SCRIPTING` variable.
 
 ### Peer output is untrusted
 

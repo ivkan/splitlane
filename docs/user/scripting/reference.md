@@ -27,7 +27,12 @@ like a verb but is not one exits with code `2`.
 | `focus <target>` | | `surface.focus` | JSON |
 | `send <target> <text>` | `--submit`, `--paste`, `--broadcast`, `--report-file PATH` | `surface.send_text` | JSON |
 | `key <target> <keystroke>` | | `surface.send_keystroke` | JSON |
-| `wait` | `--match SEL` (required), one of `--pattern REGEX`, `--idle`, `--until turn-end`, `--state WORDS`; `--for MS`, `--timeout SECS`, `--any`, `--all`, `--after N`, `--through-waiting`, `--start-grace SECS` | `surface.read`, `surface.status`, `events.subscribe` | JSON |
+| `add --agent <name>` | `--name NAME`, `--prompt TEXT` or `--prompt-file PATH`, `--submit`, `--parked` or `--pane`, `--json` | `surface.add_agent` | `<surface_id>`, a tab and where the session went (default), or JSON |
+| `park <target>` | `--json` | `surface.park` | A line (default) or JSON |
+| `show <target>` | `--beside TARGET`, `--direction h\|v`, `--json` | `surface.show` | A line (default) or JSON |
+| `close <target>` | `--stop-turn`, `--json` | `surface.close` | A line (default) or JSON |
+| `interrupt <target>` | `--timeout SECS` (default 10), `--json` | `surface.interrupt`, then `surface.status` | `<surface_id>`, a tab and the outcome (default), or JSON |
+| `wait` | `--match SEL` (required), one of `--pattern REGEX`, `--idle`, `--until turn-end`, `--until allowed`, `--state WORDS`; `--for MS`, `--timeout SECS`, `--any`, `--all`, `--after N`, `--through-waiting`, `--start-grace SECS` | `surface.read`, `surface.status`, `events.subscribe` | JSON |
 | `watch` | `--surface SEL`, `--type TYPE` (repeatable), `--events-only` | `events.subscribe` | JSON lines |
 | `up <file>` | `--dry-run` | `workspace.up` | JSON |
 | `flow run <file>` | `--dry-run`, `--json` | `workspace.up`, `surface.split`, `surface.send_text`, `surface.read` | Progress lines, or a JSON report with `--json` |
@@ -45,6 +50,43 @@ configuration files:
 
 ### Verb details
 
+- `add` opens an agent session the way the launcher does, in the project of
+  the pane it is called from. The session goes into an empty pane, or a new
+  pane where one fits, and otherwise into the rail with no pane; it never
+  takes the place of what a pane is showing. `--parked` asks for the rail,
+  `--pane` for a pane or a refusal. A prompt is written once the agent is
+  there to read it and is not submitted without `--submit`. The answer
+  carries `runs_ended`, the number to pass to `wait --after`. One session
+  has at most eight sessions it opened running at a time, and a session
+  that was itself opened by one opens none.
+- `park` takes a session out of its pane and leaves it running in the rail.
+  `show` puts a session that has no pane into one: an empty pane, a new
+  pane, or failing both the pane of another session the caller opened, the
+  one that has gone longest without focus.
+- `close` is "Delete session": it stops the session's process and drops its
+  row. The conversation stays in the agent's own history. A session in the
+  middle of a turn is closed only with `--stop-turn`.
+- `interrupt` stops the turn a session is in and leaves the session open. It
+  writes the agent's own interrupt key, not `Ctrl-C`, and reports one of:
+
+  | Outcome | Exit | Meaning |
+  | --- | --- | --- |
+  | `interrupted` | `0` | The agent's own record shows the turn was stopped. The input line is empty: if the agent put the prompt back on it, Splitlane cleared it |
+  | `not_running` | `1` | No turn was running. Nothing was sent |
+  | `not_confirmed` | `4` | The key was sent and the run did not end as stopped: it finished by itself a moment earlier, or the time ran out |
+
+  Only Claude Code has a known interrupt key; any other agent is refused
+  with `no_interrupt`, exit `7`.
+- `add`, `park`, `show`, `close`, `interrupt`, and `send` or `key` into
+  another session, are decided by which pane the call comes from. Splitlane
+  reads that from the process table - the calling process is a descendant
+  of the pane's shell - and not from anything the caller says.
+
+- `wait --match <target> --until allowed` waits for a person to answer
+  whether the caller may send messages to a session they opened, after a
+  `send` to it exited `9`. It takes one target and only `--timeout`, and
+  exits `0` when they allowed it, `8` when they did not, and `4` when the
+  time ran out with the question still standing - or with no question put.
 - `split h` stacks panes, `split v` puts them side by side. Without `--target`
   the first pane of the active project is split.
 - `read`: `--lines` defaults to 200 and is clamped to 1-4000 by the server;
@@ -170,7 +212,9 @@ No match, or several matches where one is required, exits with code `3`.
 | `4` | `wait` timed out; a flow `ready` barrier timed out |
 | `5` | `wait --until turn-end`: the agent is waiting for a person |
 | `6` | `wait --until turn-end`: the run failed, or the agent exited. `answer`: the turn ended in an error |
-| `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`). `answer`: no reader for that agent's conversation |
+| `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`). `answer`: no reader for that agent's conversation. `interrupt`: no interrupt key is known for that agent |
+| `8` | A rule refused the call and nothing was done. The message names the reason; see [Refusals](#refusals). Repeating the call gets the same answer |
+| `9` | The target is a session a person opened, and the person is being asked whether the caller may send it messages. Nothing was written; `wait --until allowed` waits for the answer |
 | `130` | `wait --idle` interrupted with `Ctrl-C` |
 
 ## Gates
@@ -181,7 +225,9 @@ The environment variables are read from the Splitlane process.
 | --- | --- |
 | Reads: `ls`, `read`, `search`, `ps`, `status`, `watch`, `wait`, `answer` | Always |
 | `new`, `select`, `focus`, `split` without spawn fields | Always |
-| `send`, `key` (`surface.send_text`, `surface.send_keystroke`) | `SPLITLANE_IPC_SCRIPTING=1`, or always when the target is a session the caller opened with `add` |
+| `send`, `key`, `interrupt` (`surface.send_text`, `surface.send_keystroke`, `surface.interrupt`) | `SPLITLANE_IPC_SCRIPTING=1`. From a pane with nothing set: always when the target is a session the caller opened with `add`, and after a person said yes when it is an agent session they opened in the same project |
+| `add` (`surface.add_agent`) | From a pane: always. From outside a pane: `SPLITLANE_IPC_ORCHESTRATION=1`, and `SPLITLANE_IPC_SCRIPTING=1` to submit the prompt |
+| `park`, `show`, `close` | From a pane: for a session the caller opened. From outside a pane: `SPLITLANE_IPC_ORCHESTRATION=1` |
 | `app.dispatch_action`, `surface.send_answer` | `SPLITLANE_IPC_SCRIPTING=1` |
 | `up`, `surface.split`, `workspace.up` with `command`, `prompt`, `context` or `env` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
 | `flow run` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
@@ -193,6 +239,31 @@ Only the value `1` enables a variable. A refused call returns JSON-RPC error
 Always refused: a `surface.send_keystroke` whose keystroke contains CR or LF or
 would produce one (`enter`, `ctrl-m`, `ctrl-j`), and `surface.send_text` longer
 than 64 KiB.
+
+### Refusals
+
+A call a rule refuses returns JSON-RPC error `-32004` with the reason under
+`error.data.reason`, and the CLI exits `8` (`7` for `no_interrupt`).
+
+| Reason | Meaning |
+| --- | --- |
+| `not_from_a_pane` | The caller is in no pane of this app and the launch variable for the call is not set |
+| `not_yours` | The target is not a session the caller opened |
+| `self` | The target is the caller's own session |
+| `waiting` | The target is waiting for a person. Only a person answers that; a key from another session would be an answer |
+| `worker_ceiling` | The caller already has eight sessions it opened running |
+| `opened_session_cannot_open` | The caller was itself opened by a session |
+| `no_room` | A pane was required and there is none to give |
+| `other_project` | `close`: the target is in another project |
+| `turn_in_flight` | `close`: the target is in the middle of a turn or waiting for a person; pass `--stop-turn` to close it anyway |
+| `unseen_by_person` | `close`: the target finished a turn a person started and they have not looked at it. `--stop-turn` does not lift this |
+| `no_interrupt` | `interrupt`: no interrupt key is known for the target's agent |
+| `person_declined` | A person was asked whether the caller may send messages to the target, and said no. They are not asked again until Splitlane restarts, unless they hand the session over from its row's menu |
+
+A write into an agent session a person opened, before they have answered,
+is not a refusal: it returns `-32005` with reason `asked_person` and exit
+`9`. The person is asked in the calling session's own pane, once for the
+pair; repeating the call while the question stands asks nothing new.
 
 ### Related settings
 
@@ -231,6 +302,7 @@ describe the active project. One entry per surface across all projects:
 | `cmd` | Foreground command, when known |
 | `workspace` | Project index, or `null` for an agent session loaded but not in a pane |
 | `scope` | `workspace`, or `agents_thread` for an agent session not in a pane |
+| `driven_by` | The surface id of the session a person let drive this one, otherwise `null` |
 
 ### `surface.read`
 
@@ -268,6 +340,8 @@ An empty fleet is `{"agents": []}`.
 | `waiting_ms` | yes | yes | Milliseconds since it started waiting for input |
 | `idle_ms` | yes | yes | Milliseconds since the last hook activity |
 | `output_generation` | | yes | As in `surface.read` |
+| `drive` | | yes | Where a person's leave for **the caller** to send messages to this session stands: `asked`, `allowed` or `declined`. `null` when nobody was asked, and for every caller but the one that asked |
+| `driven_by` | | yes | The surface id of the session a person let drive this one, otherwise `null` |
 
 `state` values: `thinking`, `waiting_for_input`, `finished`, `errored`,
 `stalled`; `fleet.list` adds `unknown_running` for agents seen only by the
@@ -443,6 +517,11 @@ Leave the key out to get the default.
 | `surface.split` | `direction` (`horizontal` or `vertical`, required), `cwd`, `command`, `prompt`, `env`, `name` or `label`, `context`, `profile` | `{split, direction, panes, surface_id}` |
 | `surface.send_text` | `text`, `submit` (default `false`), `paste` (default: automatic) | `{sent, length, submitted, paste, submit_mode, agent_target, agent_tool, terminal_bracketed_paste}` |
 | `surface.send_keystroke` | `keystroke` (for example `escape`, `ctrl-c`, `alt-f`) | `{sent}` |
+| `surface.add_agent` | `agent` (required), `name`, `prompt`, `submit`, `placement` (`auto`, `parked` or `pane`) | `{surface_id, thread_id, agent, tier, session_id, runs_ended, placement, placement_reason, opened_by}` |
+| `surface.park` | `surface_id` or `name` | `{parked, surface_id}` |
+| `surface.show` | `surface_id` or `name`, `beside_surface_id`, `direction` | `{shown, surface_id, displaced_surface_id}` |
+| `surface.close` | `surface_id` or `name`, `stop_turn` | `{closed, surface_id, thread_id}` |
+| `surface.interrupt` | `surface_id` or `name` | `{sent, surface_id, rail_status_at_send, runs_ended, last_outcome}`. Answers as soon as the key is written; the stop is confirmed by `rail.runs_ended` passing the value given here with `rail.last_outcome` `interrupted` |
 | `app.dispatch_action` | `action`: an action name from [Keybindings](../keybindings.md) (for example `jump_next_waiting`, `toggle_files_sidebar`) | `{dispatched, action}`. The action runs on the next frame, where the same key press would land; the result does not say whether anything answered it |
 | `surface.send_answer` | `surface_id` (an agent session), `to_surface_id` (another agent pane on screen in the same project) | `{sent, surface_id, to_surface_id}`. The same as the pane menu's "Send last answer to": the answer lands on the other agent's input line and is not submitted |
 | `fleet.list` | | See above |
@@ -460,6 +539,8 @@ Leave the key out to get the default.
 | `-32001` | Connecting process belongs to another user |
 | `-32002` | The app did not answer within 5 seconds |
 | `-32003` | The pane did not take the input: its process has exited, or its input queue is full. Nothing was sent |
+| `-32004` | A rule refused the call; `error.data.reason` names it. See [Refusals](#refusals) |
+| `-32005` | A person is being asked whether the caller may write into the target; `error.data.reason` is `asked_person`. Nothing was written |
 | `-32000` | Busy, too many connections or subscriptions, or shutting down |
 
 Some older failures (for example `workspace.select` out of range) come back as

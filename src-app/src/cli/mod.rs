@@ -846,6 +846,52 @@ pub(super) fn reject_legacy_error(result: Value) -> Result<Value, CliError> {
 mod tests {
     use super::*;
 
+    /// The skill shipped with the app teaches an agent this CLI, and an
+    /// agent does what it is taught: a verb or a flag that is not there is
+    /// a command it will run and fail on, every time. Each `splitlane` line
+    /// in the skill's shell blocks is checked against the real definitions.
+    #[test]
+    fn every_command_the_skill_teaches_exists() {
+        use clap::CommandFactory;
+        let skill = include_str!("../../../skills/splitlane-fleet/SKILL.md");
+        let cli = Cli::command();
+        let mut in_shell_block = false;
+        let mut checked = 0;
+        let mut missing = Vec::new();
+        for line in skill.lines() {
+            let line = line.trim();
+            if line.starts_with("```") {
+                in_shell_block = line == "```bash";
+                continue;
+            }
+            let Some(rest) = line.strip_prefix("splitlane ").filter(|_| in_shell_block) else {
+                continue;
+            };
+            let words: Vec<&str> = rest
+                .split_whitespace()
+                .take_while(|word| !matches!(*word, "|" | "#" | ">" | "&&"))
+                .collect();
+            let Some(mut command) = words.first().and_then(|verb| cli.find_subcommand(verb)) else {
+                missing.push(format!("no such verb: {line}"));
+                continue;
+            };
+            if let Some(nested) = words.get(1).and_then(|word| command.find_subcommand(word)) {
+                command = nested;
+            }
+            for flag in words.iter().filter_map(|word| word.strip_prefix("--")) {
+                if !command
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some(flag))
+                {
+                    missing.push(format!("no flag --{flag}: {line}"));
+                }
+            }
+            checked += 1;
+        }
+        assert!(missing.is_empty(), "{missing:#?}");
+        assert!(checked >= 30, "only {checked} commands were found to check");
+    }
+
     #[test]
     fn is_cli_verb_matches_known_verbs() {
         assert!(is_cli_verb(Some("ls")));
