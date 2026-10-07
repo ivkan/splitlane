@@ -102,7 +102,7 @@ pub(crate) fn compose_delivery(
 
 /// A session title as it can safely appear on another agent's input line:
 /// quoted, on one line, with nothing a terminal would act on.
-fn quoted_title(title: &str) -> String {
+pub(crate) fn quoted_title(title: &str) -> String {
     let clean: String = title
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })

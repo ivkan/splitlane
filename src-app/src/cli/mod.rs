@@ -20,6 +20,7 @@ mod flow_spec;
 mod read_cmds;
 mod selector;
 mod send_cmd;
+mod session_cmds;
 mod up_cmd;
 mod wait_cmd;
 mod wait_rail;
@@ -46,6 +47,10 @@ pub const EXIT_AGENT_FAILED: i32 = 6;
 /// no source that can say a turn ended, or no reader for the agent's
 /// conversation. The caller should switch method, not wait longer.
 pub const EXIT_NO_TURN_SIGNAL: i32 = 7;
+/// A rule refused the request and nothing was done: the target is not a
+/// session the caller opened, a limit is reached, a person is being waited
+/// on. Retrying the same call gets the same answer.
+pub const EXIT_REFUSED: i32 = 8;
 
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
@@ -65,6 +70,7 @@ const VERBS: &[&str] = &[
     "new",
     "select",
     "split",
+    "add",
     "send",
     "up",
     "wait",
@@ -221,6 +227,45 @@ enum Commands {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         #[arg(long)]
         target: Option<String>,
+    },
+    /// Open an agent session, the way the launcher does.
+    ///
+    /// Run from a pane, it needs nothing switched on: the session opens in
+    /// that pane's project and belongs to the session that opened it, which
+    /// may then write to it. A session opened this way cannot open sessions
+    /// itself, and one session may have 8 running at a time. From outside a
+    /// pane it requires `SPLITLANE_IPC_ORCHESTRATION=1` on the running
+    /// instance (`SPLITLANE_IPC_SCRIPTING=1` with `--submit`).
+    Add {
+        /// Which agent: `claude_code`, `codex`, ... or the binary name.
+        #[arg(long)]
+        agent: String,
+        /// Name for the session's row and for later targeting.
+        #[arg(long)]
+        name: Option<String>,
+        /// Text to put on the agent's input line once it has started. Not
+        /// submitted unless `--submit` is given.
+        #[arg(long, conflicts_with = "prompt_file")]
+        prompt: Option<String>,
+        /// Read the prompt from this file instead.
+        #[arg(long, value_name = "PATH")]
+        prompt_file: Option<std::path::PathBuf>,
+        /// Submit the prompt.
+        #[arg(long)]
+        submit: bool,
+        /// Open the session in the rail without a pane, leaving the layout
+        /// as it is.
+        #[arg(long, conflicts_with = "pane")]
+        parked: bool,
+        /// Require a pane, and refuse (exit 8) when none is empty and another
+        /// would not fit. Without either flag the session takes a pane when
+        /// there is one and the rail when there is not.
+        #[arg(long)]
+        pane: bool,
+        /// Emit `{surface_id, thread_id, agent, tier, session_id, runs_ended,
+        /// placement, placement_reason, opened_by}` as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Inject text into a pane WITHOUT submitting it (human-in-loop).
     ///
@@ -516,6 +561,28 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
         Commands::Split { direction, target } => {
             control_cmds::split(client, direction.as_ipc(), target.as_deref())
         }
+        Commands::Add {
+            agent,
+            name,
+            prompt,
+            prompt_file,
+            submit,
+            parked,
+            pane,
+            json,
+        } => session_cmds::add(
+            client,
+            session_cmds::AddOptions {
+                agent,
+                name,
+                prompt,
+                prompt_file,
+                submit,
+                parked,
+                pane,
+                json,
+            },
+        ),
         Commands::Send {
             target,
             text,

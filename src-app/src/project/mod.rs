@@ -480,6 +480,14 @@ pub struct Thread {
     /// one ended, the agent's own turn marker. Transient, like the two fields
     /// above it.
     pub rail: crate::rail_state::RailRecord,
+    /// The session that opened this one through `surface.add_agent`, or
+    /// `None` for a session a person opened.
+    ///
+    /// It is what decides whose session this is: the opener may write to it,
+    /// take it out of a pane and close it, and nobody else's agent may. It is
+    /// persisted, because agents come back after a restart and the question
+    /// "where did these eight rows come from" is asked exactly then.
+    pub opened_by: Option<splitlane_config::schema::OpenedBy>,
 }
 
 impl Thread {
@@ -512,6 +520,7 @@ impl Thread {
             detector_read_at: None,
             hook_has_spoken: false,
             rail: crate::rail_state::RailRecord::default(),
+            opened_by: None,
         }
     }
 
@@ -586,6 +595,7 @@ impl Thread {
             detector_read_at: None,
             hook_has_spoken: false,
             rail: crate::rail_state::RailRecord::default(),
+            opened_by: None,
         }
     }
 }
@@ -637,6 +647,7 @@ pub fn thread_to_surface(t: &Thread, slot: Option<usize>) -> ProjectSurface {
             // deliberate title is never re-clobbered after restore.
             session_id: t.session_id.clone(),
             title_user_set: t.title_user_set,
+            opened_by: t.opened_by.clone(),
         }),
     }
 }
@@ -771,6 +782,9 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         detector_read_at: None,
         hook_has_spoken: false,
         rail: crate::rail_state::RailRecord::default(),
+        // An id is all a file can say; whether the opener still exists is
+        // asked of the live records when it matters.
+        opened_by: payload.opened_by.clone(),
     })
 }
 
@@ -1129,6 +1143,7 @@ mod tests {
                 pinned: false,
                 session_id: None,
                 title_user_set: false,
+                opened_by: None,
             }),
         }
     }
@@ -1285,6 +1300,40 @@ mod tests {
         let restored = thread_from_surface(&session).expect("terminal thread restores");
         assert_eq!(restored.session_id, thread.session_id, "forced id persists");
         assert!(restored.title_user_set, "manual-rename lock persists");
+    }
+
+    /// Whose session it is has to survive a restart: the agents come back,
+    /// and the opener goes on working through the ones it opened.
+    #[test]
+    fn who_opened_a_session_round_trips_and_an_older_file_has_nobody() {
+        let mut thread = Thread::new_terminal(
+            "api-docs",
+            "/home/me",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+        );
+        assert!(thread.opened_by.is_none(), "a person opened it");
+        thread.opened_by = Some(splitlane_config::schema::OpenedBy {
+            id: 41,
+            title: "plan".to_string(),
+        });
+        let session = thread_to_surface(&thread, None);
+        let restored = thread_from_surface(&session).expect("restores");
+        assert_eq!(restored.opened_by, thread.opened_by);
+
+        let mut json = serde_json::to_value(&session).expect("serialises");
+        assert_eq!(json["agent"]["opened_by"]["id"], 41);
+        // A file written before the field existed.
+        json["agent"]
+            .as_object_mut()
+            .expect("agent payload")
+            .remove("opened_by");
+        let older: ProjectSurface = serde_json::from_value(json).expect("still loads");
+        let restored = thread_from_surface(&older).expect("restores");
+        assert!(restored.opened_by.is_none());
+        // And a session a person opened writes no key at all.
+        let plain = Thread::new_terminal("T", "/home/me", None);
+        let json = serde_json::to_value(thread_to_surface(&plain, None)).expect("serialises");
+        assert!(json["agent"].get("opened_by").is_none());
     }
 
     #[test]

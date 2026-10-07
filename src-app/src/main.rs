@@ -32,6 +32,7 @@ mod ai_hooks;
 mod ai_types;
 mod app;
 mod assets;
+mod caller;
 mod claude_pid_state;
 mod claude_sessions;
 mod claude_usage;

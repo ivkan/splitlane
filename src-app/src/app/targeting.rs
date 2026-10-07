@@ -350,7 +350,15 @@ impl SplitlaneApp {
     /// used to answer with the ceiling's sentence, so a project showing zero
     /// panes was told that four is the limit.
     pub(crate) fn refuse_another_pane_now(&self, cx: &App) -> Option<PaneRefusal> {
-        let Some(root) = self.active_workspace().and_then(|ws| ws.root.as_ref()) else {
+        self.refuse_another_pane_in(self.active_idx, cx)
+    }
+
+    /// [`Self::refuse_another_pane_now`] for a container named by index, which
+    /// need not be the one on screen: a session opened from a pane lands in
+    /// that pane's own project, whichever project the window is showing. The
+    /// panes area is the window's, and it is the same for every project.
+    pub(crate) fn refuse_another_pane_in(&self, ws_idx: usize, cx: &App) -> Option<PaneRefusal> {
+        let Some(root) = self.workspaces.get(ws_idx).and_then(|ws| ws.root.as_ref()) else {
             return Some(PaneRefusal::NoPanes);
         };
         // First, ahead of every limit: the rule is that a refusal names

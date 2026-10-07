@@ -147,6 +147,10 @@ pub struct IpcRequest {
     /// the local-socket peer PID is not exposed). Used only to trace writes
     /// granted by AI free-access mode; never an authorization input.
     pub caller_pid: Option<i64>,
+    /// The caller's ancestors, for the methods that answer differently
+    /// depending on which pane called. Read on the connection's thread, so
+    /// the handler has it without touching the process table itself.
+    pub caller: crate::caller::CallerLineage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1085,6 +1089,9 @@ fn handle_connection(
     // bare socket (peer_creds is unreachable through the BufReader wrapper
     // below). Threaded into each IpcRequest for the free-access write trace.
     let caller_pid = peer_pid(&stream);
+    // And who that pid is, now: the number alone can change hands between
+    // this line and a request that asks which pane it belongs to.
+    let peer = crate::caller::Peer::connected(caller_pid);
 
     // Drop a peer that opens a connection and then goes mute,
     // so it can't pin this handler thread forever. Unix sockets use the OS
@@ -1178,6 +1185,7 @@ fn handle_connection(
                                         "workspace.restore_layout", "workspace.up",
                                         "surface.list", "surface.read", "surface.search", "surface.rename",
                                         "surface.send_text", "surface.send_keystroke", "surface.split",
+                                        "surface.add_agent",
                                         "surface.focus", "surface.status",
                                         "surface.send_answer", "app.dispatch_action",
                                         "fleet.list",
@@ -1205,6 +1213,7 @@ fn handle_connection(
                                 params,
                                 response_id,
                                 caller_pid,
+                                peer,
                             ),
                         }
                     }
@@ -1636,7 +1645,15 @@ fn dispatch_to_gpui(
     params: Value,
     id: Value,
     caller_pid: Option<i64>,
+    peer: Option<crate::caller::Peer>,
 ) -> Value {
+    // Blocking, and this is the thread it may block: the handler runs on the
+    // one that draws the window.
+    let caller = if crate::caller::method_asks_who_calls(&method) {
+        crate::caller::lineage_now(peer)
+    } else {
+        crate::caller::CallerLineage::NotAsked
+    };
     let (resp_tx, resp_rx) = mpsc::channel();
     // Shared cancel flag - set if we time out below so the GPUI
     // consumer skips a request the client already gave up on.
@@ -1650,6 +1667,7 @@ fn dispatch_to_gpui(
         cancelled: Arc::clone(&cancelled),
         started: Arc::clone(&started),
         caller_pid,
+        caller,
     };
 
     match request_tx.try_send(ipc_req) {
@@ -2003,6 +2021,7 @@ mod dispatch_tests {
             cancelled: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
             caller_pid: None,
+            caller: crate::caller::CallerLineage::NotAsked,
         }
     }
 
@@ -2016,6 +2035,7 @@ mod dispatch_tests {
             "surface.read".to_string(),
             json!({ "surface_id": 1 }),
             json!("req-overload"),
+            None,
             None,
         );
 
@@ -2034,6 +2054,7 @@ mod dispatch_tests {
             "surface.read".to_string(),
             json!({ "surface_id": 1 }),
             json!("req-closed"),
+            None,
             None,
         );
 

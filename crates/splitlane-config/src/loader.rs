@@ -1441,6 +1441,7 @@ mod tests {
                 pinned: false,
                 session_id: None,
                 title_user_set: false,
+                opened_by: None,
             }),
         }
     }

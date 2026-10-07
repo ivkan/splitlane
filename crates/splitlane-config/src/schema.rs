@@ -1773,6 +1773,24 @@ pub struct AgentSurface {
     /// deliberate name is never clobbered by agent activity.
     #[serde(default)]
     pub title_user_set: bool,
+    /// The session that opened this one, when another session did rather than
+    /// a person. Absent for a session a person opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by: Option<OpenedBy>,
+}
+
+/// Which session opened another.
+///
+/// The name is kept beside the id because the opener can be closed while the
+/// sessions it opened are still there, and "opened by" then has nothing left
+/// to read the name from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenedBy {
+    /// The opener's surface record id, which survives a restart.
+    pub id: u64,
+    /// The opener's name as it last was.
+    #[serde(default)]
+    pub title: String,
 }
 
 fn default_true() -> bool {
@@ -1983,6 +2001,7 @@ pub mod legacy_v1 {
                 pinned: t.pinned,
                 session_id: t.session_id,
                 title_user_set: t.title_user_set,
+                opened_by: None,
             }),
         }
     }

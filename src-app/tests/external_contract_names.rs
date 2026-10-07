@@ -158,6 +158,75 @@ fn the_wait_exit_codes_keep_their_numbers() {
 }
 
 #[test]
+fn opening_a_session_keeps_its_published_names() {
+    // What a session calls to open another, what it is told back, and the
+    // words it is refused with. An agent's instructions are written against
+    // all three.
+    let handler = read("src-app/src/app/ipc_handler.rs");
+    assert!(
+        handler.contains("\"surface.add_agent\""),
+        "IPC method `surface.add_agent` disappeared"
+    );
+    let rules = read("src-app/src/app/orchestration.rs");
+    for field in [
+        "\"surface_id\"",
+        "\"thread_id\"",
+        "\"agent\"",
+        "\"tier\"",
+        "\"session_id\"",
+        "\"runs_ended\"",
+        "\"placement\"",
+        "\"placement_reason\"",
+        "\"opened_by\"",
+    ] {
+        assert!(
+            rules.contains(field),
+            "`surface.add_agent` lost its response field {field}"
+        );
+    }
+    for word in [
+        "\"auto\"",
+        "\"parked\"",
+        "\"pane\"",
+        "\"requested\"",
+        "\"ceiling\"",
+        "\"too_narrow\"",
+    ] {
+        assert!(
+            rules.contains(word),
+            "the placement word {word} is published"
+        );
+    }
+    assert!(
+        rules.contains("pub(crate) const CODE: i32 = -32004;"),
+        "a refusal travels under JSON-RPC code -32004"
+    );
+    assert!(
+        rules.contains("\"data\": { \"reason\": self.word() }"),
+        "a refusal names its reason under `error.data.reason`"
+    );
+    for word in [
+        "\"not_from_a_pane\"",
+        "\"worker_ceiling\"",
+        "\"opened_session_cannot_open\"",
+        "\"no_room\"",
+    ] {
+        assert!(rules.contains(word), "the refusal word {word} is published");
+    }
+    let cli = read("src-app/src/cli/mod.rs");
+    assert!(
+        cli.contains("pub const EXIT_REFUSED: i32 = 8;"),
+        "a refusal is exit code 8"
+    );
+    // Which session opened which is written to `session.json` under this key.
+    let schema = read("crates/splitlane-config/src/schema.rs");
+    assert!(
+        schema.contains("pub opened_by: Option<OpenedBy>"),
+        "the session file records who opened a session under `opened_by`"
+    );
+}
+
+#[test]
 fn mcp_bridge_tool_names_keep_reading_pane_as_surface() {
     let tools = read("crates/splitlane-mcp/src/tools.rs");
     for tool in ["list_panes", "read_pane", "search_pane"] {

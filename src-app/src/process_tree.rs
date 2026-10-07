@@ -101,6 +101,25 @@ const MAX_WALK: usize = 128;
 /// than a partial set, because a partial set reads as "fewer workers".
 const MAX_DESCENDANTS: usize = 4096;
 
+/// How many processes a chain of ancestors may name.
+///
+/// A real chain from an agent's tool call up to init is under a dozen. The
+/// bound is there for a table that is wrong, not for one that is deep.
+const MAX_LINEAGE: usize = 64;
+
+/// The start token of `pid` as the platform reports it now, or `None` when it
+/// cannot be read. The same token [`ProcessSnapshot::identity_of`] answers
+/// with, so the two can be compared.
+///
+/// Blocking, but one process's worth: a file read on Linux and a system call
+/// on the other two.
+pub(crate) fn start_token(pid: u32) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    start_token_impl(pid)
+}
+
 /// One reading of the machine's process table, taken once per state pass.
 ///
 /// Per-pass rather than per-question because every platform answers "who are
@@ -251,6 +270,41 @@ impl ProcessSnapshot {
         self.children.get(&pid).map_or(&[], Vec::as_slice)
     }
 
+    /// `pid` followed by each of its ancestors, nearest first, or empty when
+    /// this reading does not list `pid` at all.
+    ///
+    /// Read from one table, so the chain is one consistent picture: no step of
+    /// it can name a parent that had already exited when the step before was
+    /// read. A process that has left its original tree (its parent exited and
+    /// it was handed to init) has a chain that goes straight to init, which is
+    /// the honest answer - nothing in the table still says where it came from.
+    pub(crate) fn lineage_of(&self, pid: u32) -> Vec<u32> {
+        if pid == 0 {
+            return Vec::new();
+        }
+        let mut parents: HashMap<u32, u32> = HashMap::new();
+        for (&parent, children) in &self.children {
+            for &child in children {
+                parents.insert(child, parent);
+            }
+        }
+        if !parents.contains_key(&pid) {
+            return Vec::new();
+        }
+        let mut chain = vec![pid];
+        let mut current = pid;
+        while chain.len() < MAX_LINEAGE {
+            match parents.get(&current) {
+                Some(&parent) if parent != 0 && !chain.contains(&parent) => {
+                    chain.push(parent);
+                    current = parent;
+                }
+                _ => break,
+            }
+        }
+        chain
+    }
+
     /// Whether `pid` currently has any child process.
     ///
     /// **Not a valid input to the detector, and no longer reachable from it.**
@@ -269,6 +323,25 @@ impl ProcessSnapshot {
     /// another user's process going unlisted, which needs a `hidepid` mount or
     /// a kernel that refuses us - so the flag is set by hand and the behaviour
     /// it gates is what gets tested.
+    /// A table made of `(child, parent)` pairs, for tests that are about the
+    /// shape of a tree rather than about reading one. Every pid gets a start
+    /// token of its own.
+    #[cfg(test)]
+    pub(crate) fn from_edges(edges: &[(u32, u32)]) -> Self {
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut starts = HashMap::new();
+        for &(child, parent) in edges {
+            children.entry(parent).or_default().push(child);
+            starts.insert(child, u64::from(child) * 10);
+            starts.insert(parent, u64::from(parent) * 10);
+        }
+        Self {
+            children,
+            starts,
+            complete: true,
+        }
+    }
+
     #[cfg(test)]
     fn into_incomplete(mut self) -> Self {
         self.complete = false;
@@ -1285,6 +1358,40 @@ mod tests {
     /// one process, so a test that spawns would otherwise be visible to a test
     /// that counts.
     static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A chain of ancestors is the pid, then whoever is above it, to the top.
+    #[test]
+    fn a_lineage_runs_from_the_process_up_to_init() {
+        let table = ProcessSnapshot::from_edges(&[(1, 0), (50, 1), (100, 50), (110, 100)]);
+        assert_eq!(table.lineage_of(110), vec![110, 100, 50, 1]);
+        assert_eq!(table.lineage_of(1), vec![1]);
+        // Not in the table: no chain, rather than a chain of one.
+        assert!(table.lineage_of(4242).is_empty());
+        assert!(table.lineage_of(0).is_empty());
+    }
+
+    /// A table that names a process as its own ancestor is wrong, and the walk
+    /// has to end anyway.
+    #[test]
+    fn a_lineage_survives_a_table_with_a_loop_in_it() {
+        let table = ProcessSnapshot::from_edges(&[(10, 20), (20, 10)]);
+        assert_eq!(table.lineage_of(10), vec![10, 20]);
+    }
+
+    /// The token read for one process is the token the table carries for it,
+    /// which is what lets a caller noted at connect time be recognised later.
+    #[test]
+    fn a_start_token_read_alone_matches_the_table() {
+        let me = std::process::id();
+        let Some(table) = ProcessSnapshot::capture() else {
+            return;
+        };
+        let Some(alone) = start_token(me) else {
+            return;
+        };
+        assert_eq!(table.identity_of(me), Some((me, alone)));
+        assert_eq!(table.lineage_of(me).first(), Some(&me));
+    }
 
     /// Pid zero is not a process to ask about, and on some platforms it names a
     /// whole process group - a different question with a different answer.

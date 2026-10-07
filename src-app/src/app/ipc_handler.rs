@@ -690,7 +690,7 @@ fn with_app_window(cx: &mut gpui::App, f: impl FnOnce(&mut gpui::Window, &mut gp
 /// without re-launching Splitlane itself. A one-time warn-log at
 /// first-enable confirmation is emitted on the next first-success
 /// path by the handler.
-fn ipc_scripting_enabled() -> bool {
+pub(crate) fn ipc_scripting_enabled() -> bool {
     scripting_enabled_from(std::env::var("SPLITLANE_IPC_SCRIPTING").ok().as_deref())
 }
 
@@ -702,7 +702,7 @@ fn scripting_enabled_from(value: Option<&str>) -> bool {
     matches!(value, Some("1"))
 }
 
-fn ipc_orchestration_enabled() -> bool {
+pub(crate) fn ipc_orchestration_enabled() -> bool {
     orchestration_enabled_from(
         std::env::var("SPLITLANE_IPC_ORCHESTRATION").ok().as_deref(),
         std::env::var("SPLITLANE_IPC_SCRIPTING").ok().as_deref(),
@@ -1532,7 +1532,7 @@ impl SplitlaneApp {
             }
             req.started
                 .store(true, std::sync::atomic::Ordering::Release);
-            let result = self.handle_ipc(&req.method, &req.params, req.caller_pid, cx);
+            let result = self.handle_ipc(&req.method, &req.params, req.caller_pid, &req.caller, cx);
             // Mirror a SUCCESSFUL ai.* lifecycle frame to event-
             // bus subscribers. Broadcast after the handler so the looked-up
             // session carries the just-applied state.
@@ -1618,7 +1618,7 @@ impl SplitlaneApp {
     ///
     /// `thread_id` overrides the view's own binding for a surface the session
     /// cache holds under a record id.
-    fn rail_snapshot_for(
+    pub(crate) fn rail_snapshot_for(
         &self,
         terminal: &Entity<TerminalView>,
         thread_id: Option<u64>,
@@ -2445,7 +2445,7 @@ impl SplitlaneApp {
         .detach();
     }
 
-    async fn wait_for_terminal_settle(
+    pub(crate) async fn wait_for_terminal_settle(
         weak: &gpui::WeakEntity<TerminalView>,
         floor: Duration,
         max: Duration,
@@ -2781,6 +2781,8 @@ impl SplitlaneApp {
         // Socket peer PID for the
         // free-access write trace; None on macOS/Windows. Advisory only.
         caller_pid: Option<i64>,
+        // Which pane the call came from, for the methods that ask.
+        caller: &crate::caller::CallerLineage,
         cx: &mut Context<Self>,
     ) -> serde_json::Value {
         match method {
@@ -3639,6 +3641,7 @@ impl SplitlaneApp {
                     "surface_id": surface_id
                 })
             }
+            "surface.add_agent" => self.handle_add_agent(params, caller, cx),
             "workspace.restore_layout" => {
                 let Some(layout_value) = params.get("layout") else {
                     return serde_json::json!({"error": "Missing 'layout' parameter"});
@@ -4863,9 +4866,15 @@ pub(crate) fn promote_response(
             .and_then(|m| m.as_str())
             .unwrap_or("Unknown error")
             .to_string();
+        let mut error = serde_json::json!({ "code": code, "message": message });
+        // The part of a refusal a program reads: the message is a sentence
+        // for a person and may be reworded, the word under `data` may not.
+        if let Some(data) = err.get("data") {
+            error["data"] = data.clone();
+        }
         return serde_json::json!({
             "jsonrpc": "2.0",
-            "error": { "code": code, "message": message },
+            "error": error,
             "id": id,
         });
     }
@@ -5143,6 +5152,7 @@ mod tests {
             cancelled: Arc::new(AtomicBool::new(cancelled)),
             started: Arc::new(AtomicBool::new(false)),
             caller_pid: None,
+            caller: crate::caller::CallerLineage::NotAsked,
         }
     }
 

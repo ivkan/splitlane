@@ -28,6 +28,7 @@ pub mod ipc_handler;
 pub mod launch_pad;
 pub mod launcher;
 pub mod notifications;
+pub mod orchestration;
 pub mod pane_drop_strip;
 pub mod pane_header;
 pub mod preset_launch;

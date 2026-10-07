@@ -784,6 +784,89 @@ container. On Windows a GUI-subsystem binary has no console on `stdin` even when
 started from one, so a terminal launch there also opens no project; that is a
 missing convenience, not a wrong project.
 
+## A session works through the sessions it opened
+
+**The rule.** An agent in a pane may open agent sessions (`surface.add_agent`,
+`splitlane add`) with nothing switched on, and what it opens is its own: the
+record of each carries `opened_by`, the id and name of the session that opened
+it. Three limits come with that, all checked on the server:
+
+- a session that was itself opened by a session opens none;
+- one session has at most eight it opened running at a time;
+- a caller that is in no pane is not covered by any of this, and is let in by
+  the variables the app was launched with, as before.
+
+**Who is calling is read, not asked.** Every pane exports its surface id to the
+processes it runs, and a request could repeat it. That would be the caller
+describing itself, and any process of the same user can set a variable. What a
+process cannot choose is whose child it is. The server takes the pid on the
+other end of the connection (`ipc::peer_pid`), reads the process table once,
+and walks that pid's ancestors; the pane is the one whose PTY child is among
+them (`caller::pane_of`). The walk runs on the connection's thread, because it
+blocks and the handlers run on the thread that draws the window.
+
+Two cases are refused rather than guessed at:
+
+- **A process that left its tree.** After a double fork its parent is init,
+  and nothing above it names a pane. It is "in no pane", not "in the pane it
+  started in": the second reading would let anything that was ever started in
+  a pane keep that pane's rights after the pane's agent had finished with it.
+- **A pid that changed hands.** The peer can exit after sending, and the
+  number can be given to another process before the request is looked at. The
+  process's start token is read when it connects and compared against the
+  table at request time; a mismatch places the caller nowhere.
+
+**Why it can be on by default.** The capability this replaces was one right:
+write into any pane. It had to be switched on by a person, and it had nowhere
+safe to be remembered - every place a confirmation could be kept is written
+with the same rights as the file that asked for it. So it reset on every
+launch, and orchestration, which needed it, did not survive a restart.
+
+Narrowing the right removes the need to remember anything. A session that can
+only reach what it opened gains nothing it did not already have: an agent can
+start a second agent by typing its name into its own shell. Doing it through
+the app makes the second one a row in the rail, counts it against a limit, and
+records where it came from. The harm a forged request could do is the harm the
+agent could do anyway, so no confirmation stands in front of it.
+
+**Why depth is one and the count is eight.** Both bound the same failure: an
+agent in a loop that opens sessions. Without a depth limit the bound on eight
+is a bound on eight per level. Eight is as many rows as a person keeps track
+of under one opener; every Claude Code session opened this way also draws on
+the same usage window as the one that opened it.
+
+**A session with no pane to go to is opened without one.** The ordinary ladder
+ends on "the focused pane, replaced", and the focused pane is as a rule the
+caller's own - an agent opening five sessions would push itself and four of
+them off the screen. So opening has a ladder of its own
+(`orchestration::place_opened`): an empty pane, then a new pane where one
+fits, then the rail. A session in the rail is not hidden: it has a row, a
+status, a place in the attention queue, and the state pass reads it like any
+other. It starts its process at once, at the default grid size, because
+nothing will ever draw it to trigger the start. Neither arm takes the keyboard
+or changes which project is on screen.
+
+**The first prompt waits for the agent, not for the pane.** The launch command
+is typed into the pane's shell, so for the first moments the shell is what
+reads input. The prompt is written once something speaks for the agent - its
+own file, read by the state pass, or a hook frame - and the screen has
+settled. When the opener is a session, the text is preceded by one line,
+`[Splitlane] Sent by the agent session "<name>", not typed by a person.` It
+is plain text in the receiving agent's own transcript, so the agent, a person
+watching the pane and anyone reading the conversation later all learn the same
+thing from it. It is not markup: a tag shaped like a vendor's own would be an
+intervention in a format this app does not own.
+
+**What it does not claim.** A process of the same user that runs code inside a
+pane is, as far as the process table can tell, that pane - and it is: that is
+what the agent in the pane does. The rule places a call; it does not vouch for
+what the caller was told to do.
+
+**What would re-open it.** A platform where the peer's pid cannot be read
+leaves every caller "in no pane", which is the launch-variable path and no
+worse than before. The Windows call (`GetNamedPipeClientProcessId`) compiles
+and has not been run against a live pipe.
+
 ## Free access is opened in the app, never by the config file
 
 **The rule.** `ai_unrestricted` in `splitlane.json` is a request, not a grant.
