@@ -781,14 +781,28 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
             // its `uuid` differs between turns. Only that record: an interrupt
             // also closes the turn, but it is a `user` record the person
             // wrote by pressing Esc, not the agent finishing an answer.
-            if !open_now
-                && value.get("type").and_then(|v| v.as_str()) == Some("assistant")
-                && let Some(uuid) = value.get("uuid").and_then(|v| v.as_str())
-            {
-                last_turn_end = Some(crate::rail_state::TurnEnd {
-                    marker: uuid.to_string(),
-                    failed: false,
-                });
+            if !open_now && let Some(uuid) = value.get("uuid").and_then(|v| v.as_str()) {
+                match value.get("type").and_then(|v| v.as_str()) {
+                    Some("assistant") => {
+                        last_turn_end = Some(crate::rail_state::TurnEnd {
+                            marker: uuid.to_string(),
+                            failed: false,
+                            interrupted: false,
+                        });
+                    }
+                    // The one `user` record that closes a turn is the
+                    // interrupt. It makes no marker of its own - it is not
+                    // the agent finishing an answer - and says how the newest
+                    // turn ended on the one that is standing. With no
+                    // finished turn in the window there is nothing to say it
+                    // on, and such a turn is reported as before.
+                    Some("user") => {
+                        if let Some(end) = last_turn_end.as_mut() {
+                            end.interrupted = true;
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -2241,10 +2255,11 @@ mod answer_tests {
         std::fs::write(&path, THREE_TURNS).expect("write");
         let now = crate::agent_sessions::last_activity_secs_from_iso("2026-10-04T16:14:20.000Z");
         let probe = probe_state_from_tail(&path, now).expect("probe");
-        assert_eq!(
-            probe.last_turn_end.map(|end| end.marker).as_deref(),
-            Some("824c0234-da56-41d7-950e-203bf4521610")
-        );
+        let end = probe.last_turn_end.expect("a turn end");
+        assert_eq!(end.marker, "824c0234-da56-41d7-950e-203bf4521610");
+        // And the same record says how the newest turn ended, which is what
+        // keeps a stopped turn from being announced as a finished one.
+        assert!(end.interrupted, "the newest turn was stopped by a person");
         assert_eq!(probe.open_turn, None, "the interrupt closed the turn");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2472,6 +2487,54 @@ mod tests {
     fn turn_end_marker(lines: &[&str]) -> Option<String> {
         let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
         probe_lines(lines, now).last_turn_end.map(|end| end.marker)
+    }
+
+    fn interrupt_record(uuid: &str) -> String {
+        format!(
+            r#"{{"type":"user","uuid":"{uuid}","timestamp":"{}","message":{{"role":"user","content":[{{"type":"text","text":"[Request interrupted by user]"}}]}}}}"#,
+            at("20")
+        )
+    }
+
+    /// A turn a person stopped is told apart from one the agent finished, and
+    /// the next finished turn clears it.
+    #[test]
+    fn the_turn_end_says_when_a_person_stopped_the_newest_turn() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        let finished = assistant_record(
+            "35c89ced-9c42-4286-a1bf-8283abdcffa5",
+            "end_turn",
+            false,
+            "claude-opus-5-5",
+        );
+        let stopped = interrupt_record("55555555-5555-4555-8555-555555555555");
+        let finished_again = assistant_record(
+            "9f000000-0000-4000-8000-000000000001",
+            "end_turn",
+            false,
+            "claude-opus-5-5",
+        );
+
+        let end = probe_lines(&[&finished], now).last_turn_end.expect("end");
+        assert!(!end.interrupted);
+
+        // The marker stays on the turn that finished; the flag is about the
+        // newest one.
+        let end = probe_lines(&[&finished, &stopped], now)
+            .last_turn_end
+            .expect("end");
+        assert_eq!(end.marker, "35c89ced-9c42-4286-a1bf-8283abdcffa5");
+        assert!(end.interrupted);
+
+        let end = probe_lines(&[&finished, &stopped, &finished_again], now)
+            .last_turn_end
+            .expect("end");
+        assert_eq!(end.marker, "9f000000-0000-4000-8000-000000000001");
+        assert!(!end.interrupted);
+
+        // An interrupt makes no marker of its own: a session whose only turn
+        // was stopped has no turn end to report.
+        assert!(probe_lines(&[&stopped], now).last_turn_end.is_none());
     }
 
     /// The turn's end mark is the closing record's own `uuid`, and the newest

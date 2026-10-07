@@ -494,6 +494,54 @@ on `SplitlaneApp` rather than on `Thread` because many places write
 forget. `run_ended` is the single place that both fills and empties it, so an
 entry cannot outlive the run it measures.
 
+**Whether a run's end is news is asked once, with three conditions**
+(`orchestration::run_is_news`, called from `announce_finished_run`). The run
+is still counted for a waiting script whichever way the answer goes: the mark
+and the notification are for a person, the count is for whoever is waiting.
+
+- **The pass announces only for a surface it speaks for.** `run_ended` looks
+  at `Thread::status` and its own clock, and neither says who wrote the
+  status. So the pass announced runs it had not read. Measured on a live
+  instance: an agent the hook speaks for was announced by `ai.stop` and again
+  by the pass a second later, a second notification for one run; a surface
+  only the byte counter speaks for was announced as finished when its output
+  stopped, including once on its own launch, with no turn anywhere. The count
+  of ended runs already asked `detector_read_at`; the announcement now asks it
+  too. A hooked agent is announced by its hook, and a surface nothing reads
+  is announced by nobody.
+- **A turn a person stopped is not announced.** Esc ends the run, and the pass
+  reported it as a finished one: a mark on the row and, past ten seconds, a
+  notification, about a turn the person had just ended by hand. The agent's
+  own file says which it was. Claude Code writes the interrupt as a `user`
+  record, Codex as `turn_aborted`, and the reader hands it over beside the
+  turn-end marker (`TurnEnd::interrupted`). It is read from the file rather
+  than inferred from a marker that did not move, because the closing record of
+  a finished turn can land a moment after the status settles, and inferring
+  from its absence would silence a real finish. The interrupt is written the
+  instant it happens, three seconds before the held end is confirmed, so it is
+  there to read by then. For Claude Code the marker itself stays on the last
+  turn that finished; only the flag is about the newest one. A session whose
+  very first turn is stopped has no finished turn to carry the flag, and that
+  one stop is still announced.
+- **News of a finished run belongs to whoever sent the last message.** A
+  session opened by another session ends a run its opener started, and the
+  opener reads the result. Telling the person as well would put eight marks
+  and eight notifications on the work of one agent they are already watching.
+  If the person typed the last message, or the opener has been closed, it is
+  the person's news as usual. The same rule is asked in the `ai.stop` handler
+  for the agents the hook speaks for. `waiting for you` and `failed` are not
+  completions and are not subject to it: they go to the person in full.
+
+  "The last message" needs a definition of a person's message, and any key in
+  the pane is too wide: an arrow pressed by accident would turn the opener's
+  run into the person's news. It is Enter on the keyboard in that terminal,
+  counted by the terminal (`TerminalView::keyboard_submits`); the session
+  remembers the count as it stood when its opener last wrote text
+  (`Thread::opener_wrote_at`), and the opener's message is the last one for as
+  long as the two are equal. The count is taken before the terminal's modes
+  decide what the key does, so it can be one too high, which errs towards
+  telling the person.
+
 **A run ends on a span, not on a sample** (`agent_state_pass::confirm_run_end`).
 A working Claude Code session says `idle` for about a second in the middle of
 its work every time a background task ends. This was measured on CLI 2.1.270 by

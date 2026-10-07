@@ -274,6 +274,7 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
                             // `task_complete`, with what went wrong in `error`.
                             failed: ending == "task_complete"
                                 && payload.get("error").is_some_and(|e| !e.is_null()),
+                            interrupted: ending == "turn_aborted",
                         });
                     }
                 }
@@ -630,6 +631,9 @@ mod tests {
             .expect("the turn ended");
         assert_eq!(end.marker, "01a034c1-8854-7721-965a-36b2d39e2996");
         assert!(!end.failed);
+        // And it says so, which is what keeps a stopped turn from being
+        // announced as a finished one.
+        assert!(end.interrupted);
     }
 
     /// The writer's type makes `turn_id` optional on an aborted turn. The

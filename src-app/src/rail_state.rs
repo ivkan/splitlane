@@ -98,6 +98,11 @@ pub struct TurnEnd {
     pub marker: String,
     /// The file says this turn ended in an error.
     pub failed: bool,
+    /// The newest thing that closed a turn in the file was a person stopping
+    /// it. For Claude Code the marker beside it is still the last turn that
+    /// **finished**: an interrupt is a record the person wrote by pressing
+    /// Esc, and it leaves the marker where it was.
+    pub interrupted: bool,
 }
 
 /// The part of the rail's answer that is kept on the surface's record.
@@ -327,6 +332,7 @@ mod tests {
         Some(TurnEnd {
             marker: marker.to_string(),
             failed: false,
+            interrupted: false,
         })
     }
 

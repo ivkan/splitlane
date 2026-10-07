@@ -452,6 +452,13 @@ impl TerminalView {
 
         let keystroke = &event.keystroke;
 
+        // Counted before any mode below decides what the key does. A count
+        // that is one too high makes a run's end news for the person, which
+        // is the safe way for it to be wrong.
+        if keystroke.key == "enter" {
+            self.keyboard_submits = self.keyboard_submits.saturating_add(1);
+        }
+
         // End key (no modifiers) while scrolled back - snap to bottom instead of
         // sending "end of line" to the shell.
         if keystroke.key == "end"

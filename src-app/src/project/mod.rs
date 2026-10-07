@@ -488,6 +488,14 @@ pub struct Thread {
     /// persisted, because agents come back after a restart and the question
     /// "where did these eight rows come from" is asked exactly then.
     pub opened_by: Option<splitlane_config::schema::OpenedBy>,
+    /// The terminal's count of keyboard submits when this session's opener
+    /// last wrote text into it, or `None` if it never has.
+    ///
+    /// While the count is still that number, the last message this session
+    /// was given came from its opener, and the end of the run it started is
+    /// the opener's to read - not a mark on the row and not a notification.
+    /// Runtime only: after a restart nobody has sent anything yet.
+    pub opener_wrote_at: Option<u64>,
 }
 
 impl Thread {
@@ -521,6 +529,7 @@ impl Thread {
             hook_has_spoken: false,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
+            opener_wrote_at: None,
         }
     }
 
@@ -596,6 +605,7 @@ impl Thread {
             hook_has_spoken: false,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
+            opener_wrote_at: None,
         }
     }
 }
@@ -785,6 +795,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         // An id is all a file can say; whether the opener still exists is
         // asked of the live records when it matters.
         opened_by: payload.opened_by.clone(),
+        opener_wrote_at: None,
     })
 }
 

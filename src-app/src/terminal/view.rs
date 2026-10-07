@@ -428,6 +428,12 @@ pub struct TerminalView {
     /// next save writes it out as a bare shell and the binding is gone.
     /// Attached to the entity, the identity travels with the process.
     pub agent_thread_id: Option<u64>,
+    /// How many times Enter has been pressed on the keyboard with this
+    /// terminal focused. A count rather than a flag, so a reader can keep the
+    /// value it saw and later ask whether a person has submitted anything
+    /// since - which is how a run's end is told apart as answering a person
+    /// or answering the session that opened this one.
+    pub(crate) keyboard_submits: u64,
     /// Whether this surface is an **agent**, as opposed to merely having a
     /// record in the container's rail.
     ///
@@ -1293,6 +1299,7 @@ impl TerminalView {
             // Set by the agent-surface mount, the only place that knows a
             // thread produced this PTY.
             agent_thread_id: None,
+            keyboard_submits: 0,
             surface_is_agent: false,
             record_title: None,
         }

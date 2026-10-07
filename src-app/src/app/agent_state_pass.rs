@@ -551,7 +551,17 @@ impl SplitlaneApp {
                     // After the deposit, not across it: the clock's own
                     // presence says whether this surface was in a run, so the
                     // status before the write is no longer part of the question.
-                    finished_runs.extend(run_ended(&mut self.running_since, thread));
+                    // How the file says the newest turn ended, read during
+                    // the span the end was held for: an interrupt is written
+                    // the moment it happens, three seconds before this.
+                    let file_says_interrupted =
+                        watch.current.as_ref().is_some_and(|end| end.interrupted);
+                    finished_runs.extend(run_ended(&mut self.running_since, thread).map(|run| {
+                        FinishedRun {
+                            interrupted: file_says_interrupted,
+                            ..run
+                        }
+                    }));
                     // **The count of ended runs is taken here, where the run
                     // clock is emptied**, which is also what leads to the
                     // row's unread mark. One decision, so a script waiting on
@@ -691,10 +701,32 @@ impl SplitlaneApp {
     /// different sources: the detector owned the dot and the hook owned the
     /// toast, so a surface whose shim had gone quiet showed a correct status
     /// and announced nothing at all.
+    ///
+    /// Whether the end is news at all is asked first, in one place
+    /// ([`crate::app::orchestration::run_is_news`]); the case for each of its
+    /// three conditions is in `docs/internals/agent-state-and-the-rail.md`.
     fn announce_finished_run(&mut self, run: FinishedRun, cx: &mut gpui::Context<Self>) {
+        let last_message_from_opener = self.last_message_was_openers(run.thread_id, cx);
         let Some(thread) = self.thread_by_id(run.thread_id) else {
             return;
         };
+        let facts = crate::app::orchestration::RunFacts {
+            detector_speaks: thread.detector_read_at.is_some(),
+            interrupted: run.interrupted,
+            last_message_from_opener,
+        };
+        let news = crate::app::orchestration::run_is_news(facts);
+        // A run that is silently not announced looks exactly like a run that
+        // never ended, so the decision is traced with what it was made from.
+        log::debug!(
+            target: TRACE,
+            "#{} run ended after {:?}: news={news} ({facts:?})",
+            run.thread_id,
+            run.ran_for,
+        );
+        if !news {
+            return;
+        }
         let Some(agent) = thread.terminal_agent else {
             return;
         };
@@ -749,6 +781,9 @@ pub(crate) struct FinishedRun {
     /// used to report one with no duration, which asserted a completion on the
     /// strength of a single sample.
     ran_for: std::time::Duration,
+    /// The agent's own file says the newest turn was stopped by a person.
+    /// Filled in by the pass, which is what reads the file.
+    interrupted: bool,
 }
 
 /// Maintain the run clock and report a run that just ended.
@@ -808,6 +843,7 @@ fn run_ended(
     (started.is_some() && thread.status == ThreadStatus::Idle).then(|| FinishedRun {
         thread_id: thread.id,
         ran_for: started.map_or(std::time::Duration::ZERO, |at| at.elapsed()),
+        interrupted: false,
     })
 }
 

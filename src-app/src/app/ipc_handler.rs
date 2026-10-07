@@ -3340,6 +3340,7 @@ impl SplitlaneApp {
                     _ => None,
                 };
                 let sent_length = text.len();
+                let from_opener = marked.is_some();
                 let text = marked.as_deref().unwrap_or(text);
                 // A surface restored from `session.json` only forks its
                 // shell when it is first shown. An IPC write is an explicit
@@ -3409,6 +3410,12 @@ impl SplitlaneApp {
                     } else {
                         terminal.read(cx).send_text("\r");
                     }
+                }
+                // Whose message the session is now answering. Noted after the
+                // write went in, and only for text: a bare Enter says nothing
+                // new.
+                if from_opener && let Some(thread_id) = write_target.thread_id {
+                    self.note_opener_wrote(thread_id, cx);
                 }
                 let submit_mode = if submit && paste && !text.is_empty() {
                     serde_json::Value::String("deferred_paste_cr".to_string())
@@ -4135,7 +4142,12 @@ impl SplitlaneApp {
                         t.rail
                             .record_run_end(crate::rail_state::RunOutcome::Finished);
                     }
-                    if !interrupt_stop && !detector_will_announce {
+                    // Nor is the end of a run its opener started news for
+                    // the person: the opener reads that result.
+                    if !interrupt_stop
+                        && !detector_will_announce
+                        && !self.last_message_was_openers(thread_id, cx)
+                    {
                         let seen = self.thread_is_seen(thread_id, cx);
                         // The row's mark, for the fourteen agents the detector
                         // does not read. Not bounded by the duration floor -

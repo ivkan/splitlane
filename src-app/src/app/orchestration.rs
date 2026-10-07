@@ -311,6 +311,28 @@ struct ArrangedTarget {
     position: Option<(usize, usize)>,
 }
 
+/// What decides whether the end of a run is told to a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RunFacts {
+    /// The state pass is what speaks for this session: it read the agent's
+    /// own file this pass.
+    pub detector_speaks: bool,
+    /// The agent's own file says a person stopped the turn.
+    pub interrupted: bool,
+    /// The last message the session was given came from the session that
+    /// opened it, and that session is still open.
+    pub last_message_from_opener: bool,
+}
+
+/// Whether a run the state pass watched end is news for a person: a mark on
+/// the row, and a notification if it ran long enough.
+///
+/// Counting the run for a waiting script is a different question and is not
+/// asked here; a run that is not news still ended.
+pub(crate) fn run_is_news(facts: RunFacts) -> bool {
+    facts.detector_speaks && !facts.interrupted && !facts.last_message_from_opener
+}
+
 /// The session a close is aimed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CloseTarget {
@@ -866,6 +888,49 @@ impl SplitlaneApp {
         shown(displaced)
     }
 
+    /// The terminal holding the session `thread_id`, on screen or not.
+    fn terminal_of(&self, thread_id: u64, cx: &App) -> Option<Entity<TerminalView>> {
+        self.held_terminals(cx)
+            .into_iter()
+            .find(|(_, held)| *held == Some(thread_id))
+            .map(|(terminal, _)| terminal)
+    }
+
+    /// Note that the opener of `thread_id` has just written text into it.
+    pub(crate) fn note_opener_wrote(&mut self, thread_id: u64, cx: &App) {
+        let submits = self
+            .terminal_of(thread_id, cx)
+            .map(|terminal| terminal.read(cx).keyboard_submits);
+        if let Some(thread) = self.thread_by_id_mut(thread_id) {
+            thread.opener_wrote_at = submits;
+        }
+    }
+
+    /// Whether the last message `thread_id` was given came from the session
+    /// that opened it.
+    ///
+    /// A person's message is Enter pressed on the keyboard in that session's
+    /// terminal, counted by the terminal itself. Any key would be too wide a
+    /// test: an arrow pressed by accident in the pane would turn the opener's
+    /// run into the person's news. An opener that has been closed has nobody
+    /// left to read the result, so the news goes to the person.
+    pub(crate) fn last_message_was_openers(&self, thread_id: u64, cx: &App) -> bool {
+        let Some(thread) = self.thread_by_id(thread_id) else {
+            return false;
+        };
+        let Some(opener) = thread.opened_by.as_ref() else {
+            return false;
+        };
+        if self.thread_by_id(opener.id).is_none() {
+            return false;
+        }
+        let Some(wrote_at) = thread.opener_wrote_at else {
+            return false;
+        };
+        self.terminal_of(thread_id, cx)
+            .is_some_and(|terminal| terminal.read(cx).keyboard_submits == wrote_at)
+    }
+
     /// How many of the sessions `opener` opened still have a process.
     ///
     /// A session whose agent has exited, and one restored from a file that
@@ -1048,7 +1113,8 @@ impl SplitlaneApp {
                 Caller::Pane(pane) => format!("{}\n\n{prompt}", provenance_line(&pane.title)),
                 Caller::Outside => prompt.to_string(),
             };
-            self.schedule_opening_prompt(thread_id, &view, text, submit, cx);
+            let from_opener = matches!(caller, Caller::Pane(_));
+            self.schedule_opening_prompt(thread_id, &view, text, submit, from_opener, cx);
         }
         self.save_session(cx);
         cx.notify();
@@ -1092,6 +1158,7 @@ impl SplitlaneApp {
         terminal: &Entity<TerminalView>,
         text: String,
         submit: bool,
+        from_opener: bool,
         cx: &mut Context<Self>,
     ) {
         let weak = terminal.downgrade();
@@ -1162,15 +1229,16 @@ impl SplitlaneApp {
                     );
                     return;
                 }
-                if submit {
-                    let _ = cx.update(|cx| {
-                        this.update(cx, |_, cx| {
-                            if let Some(terminal) = weak.upgrade() {
-                                Self::schedule_deferred_submit(&terminal, submit_floor, cx);
-                            }
-                        })
-                    });
-                }
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        if from_opener {
+                            app.note_opener_wrote(thread_id, cx);
+                        }
+                        if submit && let Some(terminal) = weak.upgrade() {
+                            Self::schedule_deferred_submit(&terminal, submit_floor, cx);
+                        }
+                    })
+                });
             },
         )
         .detach();
@@ -1420,6 +1488,47 @@ mod tests {
         opened_by: Some(3),
         turn_in_flight: false,
     };
+
+    const NEWS: RunFacts = RunFacts {
+        detector_speaks: true,
+        interrupted: false,
+        last_message_from_opener: false,
+    };
+
+    #[test]
+    fn a_run_the_pass_read_to_its_end_is_news() {
+        assert!(run_is_news(NEWS));
+    }
+
+    /// A session the hook speaks for is announced by the hook's own handler,
+    /// and one only the byte counter speaks for by nobody: output stopping is
+    /// not a turn ending. The pass announcing either was a second
+    /// notification for the first and a false "finished" for the second.
+    #[test]
+    fn a_run_the_pass_does_not_speak_for_is_not_its_news() {
+        assert!(!run_is_news(RunFacts {
+            detector_speaks: false,
+            ..NEWS
+        }));
+    }
+
+    /// Pressing Esc is not the agent finishing.
+    #[test]
+    fn a_turn_a_person_stopped_is_not_news() {
+        assert!(!run_is_news(RunFacts {
+            interrupted: true,
+            ..NEWS
+        }));
+    }
+
+    /// The result of a task an opener handed down is the opener's to read.
+    #[test]
+    fn a_run_started_by_the_opener_is_not_news_for_the_person() {
+        assert!(!run_is_news(RunFacts {
+            last_message_from_opener: true,
+            ..NEWS
+        }));
+    }
 
     #[test]
     fn a_session_closes_what_it_opened_once_its_turn_is_over() {
