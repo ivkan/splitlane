@@ -224,7 +224,7 @@ impl SplitlaneApp {
     ///
     /// The view is kept alive across the read, because the read needs the
     /// tree as it is while the shell is still there to be the parent.
-    fn end_session_processes(
+    pub(crate) fn end_session_processes(
         view: gpui::Entity<crate::terminal::view::TerminalView>,
         cx: &mut Context<Self>,
     ) {

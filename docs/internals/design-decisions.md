@@ -928,7 +928,12 @@ groups under the shell while the tree still names them
 (`process_tree::JobGroups`), closes the PTY, and signals those groups: SIGTERM,
 then SIGKILL half a second later. The read has to come first, because once
 the shell is gone its children hang off init and nothing says whose they
-were.
+were. Closing a project goes the same way for each of its sessions, from the
+interface and from `workspace.close` alike; the second used to leave the
+sessions in the surface cache, running and listed, with no project. A group
+is recognised at signal time by any member it was read with, not by one: the
+first signal can end the shim that leads the group while the agent it wrapped
+is still there for the second.
 
 What stands in front of it (`orchestration::may_close`), in the order asked:
 the caller's own session is never the target; a session in another project is

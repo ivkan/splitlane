@@ -380,8 +380,8 @@ impl ProcessSnapshot {
 /// signalled after the PTY has been closed.
 #[cfg(unix)]
 pub(crate) struct JobGroups {
-    /// A group id, with one of its members to recognise it by later.
-    groups: Vec<(i32, ProcId)>,
+    /// A group id, with the members it had, to recognise it by later.
+    groups: Vec<(i32, Vec<ProcId>)>,
 }
 
 #[cfg(unix)]
@@ -397,7 +397,7 @@ impl JobGroups {
     fn under_in(snapshot: &ProcessSnapshot, pty_child: u32) -> Self {
         // SAFETY: `getpgrp` takes nothing and cannot fail.
         let own = unsafe { libc::getpgrp() };
-        let mut groups: Vec<(i32, ProcId)> = Vec::new();
+        let mut groups: Vec<(i32, Vec<ProcId>)> = Vec::new();
         for member in snapshot.descendants_of(pty_child).unwrap_or_default() {
             let Ok(pid) = i32::try_from(member.0) else {
                 continue;
@@ -411,11 +411,8 @@ impl JobGroups {
                 continue;
             }
             match groups.iter_mut().find(|(known, _)| *known == group) {
-                // The leader is the member that keeps the group's id alive,
-                // so it is the better one to recognise the group by.
-                Some(entry) if pid == group => entry.1 = member,
-                Some(_) => {}
-                None => groups.push((group, member)),
+                Some(entry) => entry.1.push(member),
+                None => groups.push((group, vec![member])),
             }
         }
         Self { groups }
@@ -427,23 +424,27 @@ impl JobGroups {
 
     /// Send `signal` to every group that is still the one that was read.
     ///
-    /// A group id is a pid, and a pid is reused: the member noted with each
-    /// group has to be the same process, still in that group, or the signal
-    /// would go to whoever inherited the number. Returns how many groups were
+    /// A group id is a pid, and a pid is reused: one of the members noted with
+    /// the group has to be the same process, still in that group, or the
+    /// signal would go to whoever inherited the number. Any member will do,
+    /// and all of them are kept for that: the first signal can end the leader
+    /// while the process it was wrapping lives on in the same group, and the
+    /// second signal is for exactly that one. Returns how many groups were
     /// signalled.
     pub(crate) fn signal(&self, signal: i32) -> usize {
         self.groups
             .iter()
-            .filter(|(group, (pid, start))| {
-                let Ok(member) = i32::try_from(*pid) else {
-                    return false;
-                };
-                if start_token(*pid) != Some(*start) {
-                    return false;
-                }
-                // SAFETY: a query, then a signal to a group this function has
-                // just confirmed still holds the process it was read with.
-                unsafe { libc::getpgid(member) == *group && libc::kill(-*group, signal) == 0 }
+            .filter(|(group, members)| {
+                let still_ours = members.iter().any(|(pid, start)| {
+                    let Ok(member) = i32::try_from(*pid) else {
+                        return false;
+                    };
+                    // SAFETY: `getpgid` is a query.
+                    start_token(*pid) == Some(*start) && unsafe { libc::getpgid(member) } == *group
+                });
+                // SAFETY: a signal to a group just confirmed to still hold a
+                // process it was read with.
+                still_ours && unsafe { libc::kill(-*group, signal) == 0 }
             })
             .count()
     }
@@ -1469,7 +1470,7 @@ mod tests {
             }
         }
         assert!(!jobs.is_empty(), "the job's group never appeared");
-        let (group, (member, _)) = jobs.groups[0];
+        let (group, member) = (jobs.groups[0].0, jobs.groups[0].1[0].0);
         // SAFETY: a query about a process this test started.
         let shell_group = unsafe { libc::getpgid(shell_pid as i32) };
         assert_ne!(group, shell_group, "the job is in the shell's own group");
@@ -1501,17 +1502,22 @@ mod tests {
         let group = unsafe { libc::getpgrp() };
         // Signal 0 only probes, so a mistake here cannot end the test run.
         let stale = JobGroups {
-            groups: vec![(group, (me, start + 1))],
+            groups: vec![(group, vec![(me, start + 1)])],
         };
         assert_eq!(stale.signal(0), 0);
         let wrong_group = JobGroups {
-            groups: vec![(group + 1, (me, start))],
+            groups: vec![(group + 1, vec![(me, start)])],
         };
         assert_eq!(wrong_group.signal(0), 0);
         let current = JobGroups {
-            groups: vec![(group, (me, start))],
+            groups: vec![(group, vec![(me, start)])],
         };
         assert_eq!(current.signal(0), 1);
+        // One member gone and another still there is still the same group.
+        let one_left = JobGroups {
+            groups: vec![(group, vec![(me, start + 1), (me, start)])],
+        };
+        assert_eq!(one_left.signal(0), 1);
     }
 
     /// A chain of ancestors is the pid, then whoever is above it, to the top.

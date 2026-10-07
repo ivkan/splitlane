@@ -2908,7 +2908,20 @@ impl SplitlaneApp {
                         let worktrees = std::mem::take(&mut self.workspaces[idx].managed_worktrees);
                         let open_containers = self.container_paths_outliving(idx);
                         Self::spawn_worktree_teardown(worktrees, open_containers, cx);
-                        self.workspaces.remove(idx);
+                        let removed = self.workspaces.remove(idx);
+                        // And its sessions with it, as the interface's close
+                        // does. Left in the surface cache they kept running
+                        // and kept answering `surface.list`, belonging to no
+                        // project anybody could open.
+                        for thread in &removed.threads {
+                            if let Some(view) = self
+                                .agents_view
+                                .agents_terminal_view_cache
+                                .remove(&thread.id)
+                            {
+                                Self::end_session_processes(view, cx);
+                            }
+                        }
                         self.reconcile_project_groups();
                         if self.active_idx >= self.workspaces.len() {
                             self.active_idx = self.workspaces.len() - 1;

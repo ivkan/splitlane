@@ -891,11 +891,17 @@ impl SplitlaneApp {
         // Its group goes with it if it was the last one in it.
         self.reconcile_project_groups();
         // Cascade the warm-resume cache: a closed container's agent surfaces
-        // must not keep their PTY entity alive until the next restart.
+        // must not keep their PTY entity alive until the next restart. And
+        // their agents must not outlive them, which dropping the terminal
+        // alone does not see to.
         for thread in &removed.threads {
-            self.agents_view
+            if let Some(view) = self
+                .agents_view
                 .agents_terminal_view_cache
-                .remove(&thread.id);
+                .remove(&thread.id)
+            {
+                Self::end_session_processes(view, cx);
+            }
         }
         // Keep the center selection in range: a target inside the closed
         // container falls back to the picker, one after it shifts down.

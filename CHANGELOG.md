@@ -42,9 +42,11 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
-- Deleting a session stops its agent. On macOS the agent process kept
-  running after its row and pane were gone, and a turn in flight ran to its
-  end unseen.
+- Deleting a session or closing its project stops its agent. On macOS the
+  agent process kept running after its row and pane were gone, and a turn in
+  flight ran to its end unseen. `workspace.close` over the socket did not end
+  the project's sessions at all: they stayed in `surface.list` with no
+  project to open them from.
 - A prompt given when opening a session is not written into a pane whose
   agent did not start.
 
