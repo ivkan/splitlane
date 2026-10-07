@@ -1005,6 +1005,18 @@ own finished work is never stopped by this. A dialog asking the person to confir
 considered and refused, because it would make a request wait on a person's
 answer, and the server has no call that waits on a person.
 
+**What a session opened sits under it in the rail.** A session and the
+sessions it opened are one piece of work, and rows scattered through a
+project by age and by pin do not read as one. So they follow their opener,
+first opened first (`agents_sidebar::under_their_openers`) - the one place
+the rail is not newest-first, because it is a list of what was handed out. A
+pin on the opener takes them with it; a pin on one of them does not lift it
+out. The pane of each says `opened by ‹name›` in its header, with the
+opener's name as it is now. When the opener is closed its last name is
+written into their records, since from then on that is the only place it
+exists, and the header says `opened by ‹name› · closed`; with nothing to sit
+under, those rows keep their own places.
+
 **What it does not claim.** A process of the same user that runs code inside a
 pane is, as far as the process table can tell, that pane - and it is: that is
 what the agent in the pane does. The rule places a call; it does not vouch for

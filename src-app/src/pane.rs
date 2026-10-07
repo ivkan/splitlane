@@ -107,6 +107,9 @@ pub struct SurfaceFacts {
     pub drive_questions: Vec<DriveQuestion>,
     /// The name of the session a person let drive this one.
     pub driven_by: Option<SharedString>,
+    /// The name of the session that opened this one, and whether that
+    /// session is still open.
+    pub opened_by: Option<(SharedString, bool)>,
 }
 
 /// One question a session put to a person: may it send messages to a session
@@ -2788,14 +2791,22 @@ impl Pane {
         )
     }
 
-    /// `driven by ‹name›`, for a session a person let another one drive.
-    /// A person looking at this pane has to be able to tell that what is
-    /// typed into it may not be theirs.
+    /// `opened by ‹name›` for a session another session opened, `driven by
+    /// ‹name›` for one a person let another drive. A person looking at this
+    /// pane has to be able to tell that what is typed into it may not be
+    /// theirs.
     fn render_surface_driver(&self, ui: crate::theme::UiColors) -> Option<gpui::AnyElement> {
         if self.tabs.len() != 1 {
             return None;
         }
-        let driver = self.active_surface_facts()?.driven_by.clone()?;
+        let facts = self.active_surface_facts()?;
+        // Never both: a session another one opened is driven by its opener.
+        let label = match (&facts.opened_by, &facts.driven_by) {
+            (Some((opener, true)), _) => format!("opened by {opener}"),
+            (Some((opener, false)), _) => format!("opened by {opener} \u{b7} closed"),
+            (None, Some(driver)) => format!("driven by {driver}"),
+            (None, None) => return None,
+        };
         Some(
             div()
                 .flex_none()
@@ -2804,7 +2815,7 @@ impl Pane {
                 .font_family(tok::font::MONO)
                 .text_size(tok::mono::HINT)
                 .text_color(ui.muted)
-                .child(SharedString::from(format!("driven by {driver}")))
+                .child(SharedString::from(label))
                 .into_any_element(),
         )
     }

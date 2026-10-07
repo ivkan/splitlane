@@ -181,6 +181,22 @@ impl SplitlaneApp {
             return Err(OpError::ThreadNotFound);
         }
         let removed = project.threads.remove(thread_idx);
+        // The sessions it opened go on naming it, and from here on the name
+        // in their records is the only one there is. It was written when they
+        // were opened, and the session may have been renamed since.
+        let last_name = crate::project::clean_sidebar_title(&removed.title)
+            .unwrap_or_else(|| removed.title.clone());
+        for thread in self
+            .workspaces
+            .iter_mut()
+            .flat_map(|container| container.threads.iter_mut())
+        {
+            if let Some(opened_by) = thread.opened_by.as_mut()
+                && opened_by.id == removed.id
+            {
+                opened_by.title = last_name.clone();
+            }
+        }
         // A surface showing in a slot has to leave the slot too, or deleting
         // its row would leave a running PTY in the layout with nothing in the
         // rail naming it - the one state from which an agent cannot be

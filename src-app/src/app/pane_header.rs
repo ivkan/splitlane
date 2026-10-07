@@ -352,6 +352,23 @@ impl SplitlaneApp {
                         driven_by: thread_id
                             .and_then(|id| self.driver_name(id))
                             .map(gpui::SharedString::from),
+                        opened_by: thread_id
+                            .and_then(|id| self.thread_by_id(id))
+                            .and_then(|thread| thread.opened_by.as_ref())
+                            .map(|by| {
+                                // The opener's name as it is now while it is
+                                // open, and as it last was once it is not.
+                                match self.thread_by_id(by.id) {
+                                    Some(opener) => (
+                                        gpui::SharedString::from(
+                                            crate::project::clean_sidebar_title(&opener.title)
+                                                .unwrap_or_else(|| opener.title.clone()),
+                                        ),
+                                        true,
+                                    ),
+                                    None => (gpui::SharedString::from(by.title.clone()), false),
+                                }
+                            }),
                     },
                 );
             }

@@ -2335,9 +2335,48 @@ pub(crate) fn surface_row_order(threads: &[crate::project::Thread]) -> SurfaceRo
     }
     pinned.extend(agents);
     SurfaceRowOrder {
-        agents: pinned,
+        agents: under_their_openers(pinned, threads),
         shells,
     }
+}
+
+/// Move every session another session opened to right under the one that
+/// opened it, in the order they were opened.
+///
+/// A session and the sessions it opened are one piece of work, and eight rows
+/// scattered through a project by age and by pin do not read as one. Oldest
+/// first under the opener, unlike the rest of the rail: they are a list of
+/// what was handed out, read in the order it was.
+///
+/// A session whose opener has no row among these - it was closed, or it is a
+/// shell and sits in the other group - stays where it was.
+fn under_their_openers(order: Vec<usize>, threads: &[crate::project::Thread]) -> Vec<usize> {
+    let opener_of = |idx: usize| threads[idx].opened_by.as_ref().map(|by| by.id);
+    let shown: std::collections::HashSet<u64> = order.iter().map(|idx| threads[*idx].id).collect();
+    let mut opened: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+    for idx in &order {
+        if let Some(opener) = opener_of(*idx).filter(|opener| shown.contains(opener)) {
+            opened.entry(opener).or_default().push(*idx);
+        }
+    }
+    if opened.is_empty() {
+        return order;
+    }
+    for rows in opened.values_mut() {
+        // The container appends, so a lower index was opened earlier.
+        rows.sort_unstable();
+    }
+    let mut out = Vec::with_capacity(order.len());
+    for idx in order {
+        if opener_of(idx).is_some_and(|opener| shown.contains(&opener)) {
+            continue;
+        }
+        out.push(idx);
+        if let Some(rows) = opened.get(&threads[idx].id) {
+            out.extend(rows);
+        }
+    }
+    out
 }
 
 /// The actions a rail row carries under the pointer: pin, delete, overflow.
@@ -2615,6 +2654,55 @@ mod tests {
             ["newest agent", "middle agent", "oldest agent"]
         );
         assert_eq!(titles(&threads, &order.shells), ["a shell"]);
+    }
+
+    /// `plan` opened two sessions, and a newer session of the person's sits
+    /// above all three. The opened ones go under `plan`, first opened first.
+    #[test]
+    fn opened_sessions_sit_under_their_opener_in_the_order_they_were_opened() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let agent =
+            |title: &str| Thread::new_terminal(title, "/w", Some(TerminalAgent::ClaudeCode));
+        let mut threads = vec![agent("older"), agent("plan"), agent("api"), agent("web")];
+        let opened_by = splitlane_config::schema::OpenedBy {
+            id: threads[1].id,
+            title: "plan".to_string(),
+        };
+        threads[2].opened_by = Some(opened_by.clone());
+        threads[3].opened_by = Some(opened_by.clone());
+        threads.push(agent("newest"));
+        let order = surface_row_order(&threads);
+        assert_eq!(
+            titles(&threads, &order.agents),
+            ["newest", "plan", "api", "web", "older"]
+        );
+
+        // A pin on the opener takes what it opened with it; a pin on one of
+        // the opened does not lift it out from under its opener.
+        threads[1].pinned = true;
+        threads[3].pinned = true;
+        let order = surface_row_order(&threads);
+        assert_eq!(
+            titles(&threads, &order.agents),
+            ["plan", "api", "web", "newest", "older"]
+        );
+    }
+
+    /// With the opener gone there is nothing to sit under.
+    #[test]
+    fn a_session_whose_opener_was_closed_keeps_its_own_place() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let agent =
+            |title: &str| Thread::new_terminal(title, "/w", Some(TerminalAgent::ClaudeCode));
+        let mut threads = vec![agent("older"), agent("api"), agent("newest")];
+        threads[1].opened_by = Some(splitlane_config::schema::OpenedBy {
+            id: u64::MAX,
+            title: "plan".to_string(),
+        });
+        let order = surface_row_order(&threads);
+        assert_eq!(titles(&threads, &order.agents), ["newest", "api", "older"]);
     }
 
     #[test]
