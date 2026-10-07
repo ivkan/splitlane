@@ -167,14 +167,20 @@ fn opening_a_session_keeps_its_published_names() {
         handler.contains("\"surface.add_agent\""),
         "IPC method `surface.add_agent` disappeared"
     );
-    for method in ["surface.park", "surface.show"] {
+    for method in ["surface.park", "surface.show", "surface.close"] {
         assert!(
             handler.contains(&format!("\"{method}\"")),
             "IPC method `{method}` disappeared"
         );
     }
     let rules = read("src-app/src/app/orchestration.rs");
-    for field in ["\"parked\"", "\"shown\"", "\"displaced_surface_id\""] {
+    for field in [
+        "\"parked\"",
+        "\"shown\"",
+        "\"displaced_surface_id\"",
+        "\"closed\"",
+        "\"stop_turn\"",
+    ] {
         assert!(
             rules.contains(field),
             "a move lost its response field {field}"
@@ -229,6 +235,8 @@ fn opening_a_session_keeps_its_published_names() {
         "\"not_yours\"",
         "\"self\"",
         "\"waiting\"",
+        "\"other_project\"",
+        "\"turn_in_flight\"",
     ] {
         assert!(rules.contains(word), "the refusal word {word} is published");
     }

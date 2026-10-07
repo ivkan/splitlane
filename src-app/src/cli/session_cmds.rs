@@ -1,4 +1,5 @@
-//! The verbs a session uses on the sessions it opened: `add`, `park`, `show`.
+//! The verbs a session uses on the sessions it opened: `add`, `park`, `show`,
+//! `close`.
 //!
 //! Thin wrappers over the `surface.*` methods of the same names. What a caller
 //! may do is decided by the server, which knows which pane the call came from;
@@ -146,6 +147,29 @@ pub fn show(
             Some(displaced) => println!("{surface_id}\tin a pane, in place of {displaced}"),
             None => println!("{surface_id}\tin a pane"),
         }
+    }
+    Ok(EXIT_OK)
+}
+
+/// `splitlane close <target> [--stop-turn] [--json]`: stop a session and
+/// drop its row. The conversation stays in the agent's own history.
+pub fn close(
+    client: &impl IpcTransport,
+    target: &str,
+    stop_turn: bool,
+    json: bool,
+) -> Result<i32, CliError> {
+    let surface_id = resolve_target(client, target)?;
+    let mut params = json!({ "surface_id": surface_id });
+    if stop_turn {
+        params["stop_turn"] = json!(true);
+    }
+    let result =
+        super::reject_legacy_error(client.call("surface.close", params).map_err(call_error)?)?;
+    if json {
+        super::print_json(&result)?;
+    } else {
+        println!("{surface_id}\tclosed");
     }
     Ok(EXIT_OK)
 }
@@ -309,6 +333,33 @@ mod tests {
         assert_eq!(err.code, EXIT_REFUSED);
         let err = park(&fake, "nothing-by-this-name", false).expect_err("no target");
         assert_eq!(err.code, crate::cli::EXIT_TARGET);
+    }
+
+    #[test]
+    fn close_stops_a_turn_only_when_told_to() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Ok(json!({ "closed": true, "surface_id": 12, "thread_id": 4 })),
+        };
+        assert_eq!(close(&fake, "api-docs", false, true).expect("ok"), EXIT_OK);
+        assert_eq!(close(&fake, "api-docs", true, true).expect("ok"), EXIT_OK);
+        let calls = fake.calls.borrow();
+        assert_eq!(calls[0].0, "surface.close");
+        assert_eq!(calls[0].1, json!({ "surface_id": 12 }));
+        assert_eq!(calls[1].1, json!({ "surface_id": 12, "stop_turn": true }));
+    }
+
+    #[test]
+    fn a_close_refused_for_a_turn_in_flight_is_exit_8() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Err(
+                "splitlane error -32004: surface.close refused (turn_in_flight): no".to_string(),
+            ),
+        };
+        let err = close(&fake, "api-docs", false, false).expect_err("refused");
+        assert_eq!(err.code, EXIT_REFUSED);
+        assert!(err.message.contains("turn_in_flight"));
     }
 
     #[test]

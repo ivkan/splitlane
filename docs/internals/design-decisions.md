@@ -908,6 +908,38 @@ would be deciding what they look at. Neither call moves the keyboard.
 the focused pane and the one before it, which is an order over two. It now
 keeps a count per pane, written where the pair is (`track_pane_focus`).
 
+**Closing is "Delete session", and it is the opener's alone.** The interface
+has two actions that could be called closing: closing a pane, which parks the
+session, and Delete session, which stops the process and drops the row. For an
+opener only the second is worth the name - a session left running without a
+pane spends out of sight, which is the thing an opener closes sessions to
+prevent. `surface.close` goes through `remove_thread`, the path the menu
+takes. The conversation survives in the agent's own history, as it does for
+the menu.
+
+**Stopping the session means stopping the agent, and closing the PTY did not
+do that.** The teardown signals the process group of the pane's shell. An
+interactive shell gives each foreground job a group of its own, so the agent,
+whose launch command was typed into that shell, is in a group the signal
+never reaches. Measured on macOS: after "Delete session" the shell sat
+exiting and the agent and its shim were still running minutes later, with a
+turn in flight running to its end unseen. `remove_thread` therefore reads the
+groups under the shell while the tree still names them
+(`process_tree::JobGroups`), closes the PTY, and signals those groups: SIGTERM,
+then SIGKILL half a second later. The read has to come first, because once
+the shell is gone its children hang off init and nothing says whose they
+were.
+
+What stands in front of it (`orchestration::may_close`), in the order asked:
+the caller's own session is never the target; a session in another project is
+out of reach; a session the caller did not open is refused - and for one a
+person opened there is no flag, variable or later permission that changes
+that. Last, a session whose rail word is `running` or `waiting` is closed
+only with `stop_turn`: the turn is what would be lost, the same line Quit
+draws when agents are working. A dialog asking the person to confirm was
+considered and refused, because it would make a request wait on a person's
+answer, and the server has no call that waits on a person.
+
 **What it does not claim.** A process of the same user that runs code inside a
 pane is, as far as the process table can tell, that pane - and it is: that is
 what the agent in the pane does. The rule places a call; it does not vouch for

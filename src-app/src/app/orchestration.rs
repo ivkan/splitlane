@@ -64,6 +64,10 @@ pub(crate) enum Refusal {
     Itself,
     /// The target is waiting for a person.
     Waiting,
+    /// The target is in another project than the caller.
+    OtherProject,
+    /// The target is in the middle of a turn, and closing it would lose it.
+    TurnInFlight,
 }
 
 impl Refusal {
@@ -80,6 +84,8 @@ impl Refusal {
             Refusal::NotYours => "not_yours",
             Refusal::Itself => "self",
             Refusal::Waiting => "waiting",
+            Refusal::OtherProject => "other_project",
+            Refusal::TurnInFlight => "turn_in_flight",
         }
     }
 
@@ -105,6 +111,13 @@ impl Refusal {
             Refusal::Itself => "the target is the calling session itself".to_string(),
             Refusal::Waiting => "the target is waiting for a person, and only a person \
                  answers that"
+                .to_string(),
+            Refusal::OtherProject => {
+                "the target is in another project than the calling session".to_string()
+            }
+            Refusal::TurnInFlight => "the target is in the middle of a turn or is waiting for \
+                 a person, and closing it loses that turn; wait for it to end, or ask to stop \
+                 the turn as well"
                 .to_string(),
         }
     }
@@ -296,6 +309,57 @@ struct ArrangedTarget {
     target: WriteTarget,
     /// The project and the position in it of the session's record.
     position: Option<(usize, usize)>,
+}
+
+/// The session a close is aimed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CloseTarget {
+    pub thread_id: u64,
+    pub ws_idx: usize,
+    pub opened_by: Option<u64>,
+    /// The rail says `running` or `waiting`: a turn is in flight, or a
+    /// question to a person is on screen.
+    pub turn_in_flight: bool,
+}
+
+/// Whether `caller` may close `target`: stop its process and drop its row.
+///
+/// The conversation is not what is lost - the agent keeps its own record and
+/// the session can be opened again from history. What is lost is the turn, so
+/// a session in the middle of one is closed only when the caller says it
+/// means to stop it. The same line the app draws when it is quit with agents
+/// working.
+///
+/// A session a person opened is never closed by a session, and nothing here
+/// lets one be: that is not a matter of asking.
+pub(crate) fn may_close(
+    caller: &Caller,
+    target: CloseTarget,
+    gates: LaunchGates,
+    stop_turn: bool,
+) -> Result<(), Refusal> {
+    match caller {
+        Caller::Pane(pane) => {
+            if target.thread_id == pane.thread_id {
+                return Err(Refusal::Itself);
+            }
+            if target.ws_idx != pane.ws_idx {
+                return Err(Refusal::OtherProject);
+            }
+            if target.opened_by != Some(pane.thread_id) {
+                return Err(Refusal::NotYours);
+            }
+        }
+        Caller::Outside => {
+            if !gates.orchestration {
+                return Err(Refusal::NotFromAPane);
+            }
+        }
+    }
+    if target.turn_in_flight && !stop_turn {
+        return Err(Refusal::TurnInFlight);
+    }
+    Ok(())
 }
 
 /// A pane, as the choice of which one to give up sees it.
@@ -570,6 +634,64 @@ impl SplitlaneApp {
             cx.notify();
         }
         serde_json::json!({ "parked": true, "surface_id": surface_id })
+    }
+
+    /// `surface.close`: stop a session's process and drop its row - "Delete
+    /// session" from the rail, and not "close the pane", which only parks.
+    ///
+    /// For an opener there is no other meaning of closing worth having: a
+    /// session left running without a pane goes on spending, out of sight.
+    pub(crate) fn handle_close(
+        &mut self,
+        params: &serde_json::Value,
+        lineage: &CallerLineage,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        const METHOD: &str = "surface.close";
+        let stop_turn = params
+            .get("stop_turn")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
+        let ArrangedTarget {
+            terminal,
+            target,
+            position,
+        } = match self.arranged_target(params, cx) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        let (Some(thread_id), Some((ws_idx, thread_idx))) = (target.thread_id, position) else {
+            return JsonRpcError::invalid_params("The target is not a session with a row to close")
+                .into_value();
+        };
+        let turn_in_flight = self
+            .rail_snapshot_for(&terminal, Some(thread_id), cx)
+            .is_some_and(|rail| {
+                matches!(
+                    rail.status,
+                    crate::project::ThreadStatus::Thinking
+                        | crate::project::ThreadStatus::WaitingForInput
+                )
+            });
+        let caller = self.caller_of(lineage, cx);
+        let close_target = CloseTarget {
+            thread_id,
+            ws_idx,
+            opened_by: target.opened_by,
+            turn_in_flight,
+        };
+        if let Err(refusal) = may_close(&caller, close_target, LaunchGates::read(), stop_turn) {
+            return refusal.into_value(METHOD);
+        }
+        let surface_id = terminal.entity_id().as_u64();
+        // The one path that removes a session: it takes the surface out of
+        // its pane, drops the view that owns the PTY, and with it the process.
+        if self.remove_thread(ws_idx, thread_idx, cx).is_err() {
+            return JsonRpcError::invalid_params("The session was already gone").into_value();
+        }
+        self.save_session(cx);
+        cx.notify();
+        serde_json::json!({ "closed": true, "surface_id": surface_id, "thread_id": thread_id })
     }
 
     /// `surface.show`: put a session that is in no pane into one.
@@ -1289,6 +1411,109 @@ mod tests {
             Err(Refusal::NotFromAPane)
         );
         assert_eq!(may_arrange(&Caller::Outside, A_PERSONS, ALL_GATES), Ok(()));
+    }
+
+    /// Record 9 in project 0, opened by record 3 (the caller in `pane`).
+    const MINE_IDLE: CloseTarget = CloseTarget {
+        thread_id: 9,
+        ws_idx: 0,
+        opened_by: Some(3),
+        turn_in_flight: false,
+    };
+
+    #[test]
+    fn a_session_closes_what_it_opened_once_its_turn_is_over() {
+        assert_eq!(may_close(&pane(false), MINE_IDLE, NO_GATES, false), Ok(()));
+    }
+
+    #[test]
+    fn a_session_never_closes_itself() {
+        let itself = CloseTarget {
+            thread_id: 3,
+            opened_by: None,
+            ..MINE_IDLE
+        };
+        for stop_turn in [false, true] {
+            assert_eq!(
+                may_close(&pane(false), itself, ALL_GATES, stop_turn),
+                Err(Refusal::Itself)
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_in_another_project_is_out_of_reach() {
+        let elsewhere = CloseTarget {
+            ws_idx: 1,
+            ..MINE_IDLE
+        };
+        assert_eq!(
+            may_close(&pane(false), elsewhere, ALL_GATES, true),
+            Err(Refusal::OtherProject)
+        );
+    }
+
+    /// Not with the variables set and not with the turn stopped: there is no
+    /// way for a session to close one a person opened.
+    #[test]
+    fn a_session_a_person_opened_is_never_closed_by_a_session() {
+        let persons = CloseTarget {
+            opened_by: None,
+            ..MINE_IDLE
+        };
+        let anothers = CloseTarget {
+            opened_by: Some(77),
+            ..MINE_IDLE
+        };
+        for target in [persons, anothers] {
+            for gates in [NO_GATES, ALL_GATES] {
+                for stop_turn in [false, true] {
+                    assert_eq!(
+                        may_close(&pane(false), target, gates, stop_turn),
+                        Err(Refusal::NotYours)
+                    );
+                }
+            }
+        }
+    }
+
+    /// A turn in flight is what closing would lose, so it takes saying so.
+    /// Saying so lifts this refusal and no other.
+    #[test]
+    fn a_turn_in_flight_is_stopped_only_on_purpose() {
+        let busy = CloseTarget {
+            turn_in_flight: true,
+            ..MINE_IDLE
+        };
+        assert_eq!(
+            may_close(&pane(false), busy, NO_GATES, false),
+            Err(Refusal::TurnInFlight)
+        );
+        assert_eq!(may_close(&pane(false), busy, NO_GATES, true), Ok(()));
+    }
+
+    #[test]
+    fn a_script_outside_a_pane_closes_by_the_launch_variable() {
+        let persons = CloseTarget {
+            opened_by: None,
+            ..MINE_IDLE
+        };
+        assert_eq!(
+            may_close(&Caller::Outside, persons, NO_GATES, false),
+            Err(Refusal::NotFromAPane)
+        );
+        assert_eq!(
+            may_close(&Caller::Outside, persons, ALL_GATES, false),
+            Ok(())
+        );
+        let busy = CloseTarget {
+            turn_in_flight: true,
+            ..persons
+        };
+        assert_eq!(
+            may_close(&Caller::Outside, busy, ALL_GATES, false),
+            Err(Refusal::TurnInFlight)
+        );
     }
 
     fn facts(thread_id: u64, opened_by: Option<u64>, focused: u64) -> PaneFacts {

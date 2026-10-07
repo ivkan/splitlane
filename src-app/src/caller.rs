@@ -63,6 +63,7 @@ pub(crate) fn method_asks_who_calls(method: &str) -> bool {
             | "surface.send_keystroke"
             | "surface.park"
             | "surface.show"
+            | "surface.close"
     )
 }
 

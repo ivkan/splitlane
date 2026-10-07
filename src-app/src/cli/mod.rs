@@ -73,6 +73,7 @@ const VERBS: &[&str] = &[
     "add",
     "park",
     "show",
+    "close",
     "send",
     "up",
     "wait",
@@ -300,6 +301,23 @@ enum Commands {
         #[arg(long, requires = "beside")]
         direction: Option<SplitDir>,
         /// Emit `{shown, surface_id, displaced_surface_id}` as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a session and drop its row - "Delete session", not "close the
+    /// pane". The conversation stays in the agent's own history.
+    ///
+    /// For a session the caller opened with `add`. A session a person opened
+    /// is never closed this way, and neither is the caller itself (exit 8).
+    Close {
+        /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
+        target: String,
+        /// Close it even in the middle of a turn or while it waits for a
+        /// person. Without this such a session is refused (exit 8), because
+        /// the turn is what would be lost.
+        #[arg(long)]
+        stop_turn: bool,
+        /// Emit `{closed, surface_id, thread_id}` as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -623,6 +641,11 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             },
         ),
         Commands::Park { target, json } => session_cmds::park(client, &target, json),
+        Commands::Close {
+            target,
+            stop_turn,
+            json,
+        } => session_cmds::close(client, &target, stop_turn, json),
         Commands::Show {
             target,
             beside,

@@ -3709,6 +3709,7 @@ impl SplitlaneApp {
             "surface.add_agent" => self.handle_add_agent(params, caller, cx),
             "surface.park" => self.handle_park(params, caller, cx),
             "surface.show" => self.handle_show(params, caller, cx),
+            "surface.close" => self.handle_close(params, caller, cx),
             "workspace.restore_layout" => {
                 let Some(layout_value) = params.get("layout") else {
                     return serde_json::json!({"error": "Missing 'layout' parameter"});
