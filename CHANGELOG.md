@@ -103,6 +103,11 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- A Claude Code session waiting for an answer sent no notification when its
+  hook was not reporting, which is how a session opened by another session
+  could stand on a permission prompt unnoticed. The notification now goes out
+  as soon as Splitlane reads the wait, with or without the hook, once per
+  question.
 - A Claude Code session that started a command in the background and said
   it would wait for it was shown as `finished` and announced the moment its
   turn ended, then went on working when the command was done. The end of the

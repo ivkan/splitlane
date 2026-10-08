@@ -494,6 +494,67 @@ on `SplitlaneApp` rather than on `Thread` because many places write
 forget. `run_ended` is the single place that both fills and empties it, so an
 entry cannot outlive the run it measures.
 
+**A wait is announced by whichever source learns of it first, and by that one
+alone.** A session opened by another session, with no hook frames arriving,
+stood on a permission ask: the row said `waiting`, the Activity chip counted
+it, and no notification went out. The detector had read the wait and had
+nothing to send it with, because the only caller of the "needs input"
+notification was the `ai.notification` handler. For the sessions nobody is
+looking at, which is what sessions opened by a lead are, the notification is
+the whole of the message. The pass now sends it itself (`announce_wait`), with
+the words the hook path uses: the same subject, the `Opened by` line, and the
+sentence about the opener counted only when the notification was really shown.
+
+It is **not** the split used for the end of a run, where the hook stands down
+wherever the detector reads. That split rests on the detector seeing every end
+of a run. It does not see every wait: the hook forwards an elicitation dialog,
+which the status file has not been measured to report, and the readers for
+agents other than Claude Code do not tell a wait from work. Standing the hook
+down wherever the detector reads would have taken those notifications from
+one to none. So the rule is about order, not ownership
+(`Thread::wait_announced`):
+
+- A reading that says `waiting` announces if nobody has, and takes the wait
+  over either way. A reading that says anything else ends a wait the detector
+  was following. A pass that could not read changes nothing, so one missed
+  read in the middle of a wait is not a second question.
+- A waiting frame announces as it always has, except where the detector
+  already announced this wait. Measured on Claude Code 2.1.294: the status
+  file said `waiting` six seconds before the frame arrived, on each of three
+  asks, so on a surface with both sources the detector is the one that
+  announces and the notification is six seconds earlier than it was.
+- Each source takes down only its own name. The agent's status and its hook
+  frames are not written in step: a reading taken a moment before the agent
+  wrote `waiting` must not clear what the frame just announced, and the frame
+  that follows an answer must not clear a wait the status still shows for a
+  moment. Either would announce one question twice.
+- A frame of another kind does not end a wait the detector is following. It
+  was tried as the sign of a new question, for two asks a second apart that a
+  two-second pass reads as one unbroken wait, and it is not that sign: a
+  second tool finishing beside the one that is asking sends such a frame in
+  the middle of a single wait, and the waiting frame that follows six seconds
+  later would announce the question again. Every frame already asks for a
+  reading out of turn, and that reading is what catches the work between two
+  asks.
+
+Nothing is held and nothing is floored. The end of a run waits out a span and
+needs ten seconds behind it; a wait is raised on the first reading that shows
+it, two seconds into a run or twenty minutes. The message is the agent's own
+question when a frame brought one and the status file's `waitingFor`
+otherwise, which was measured as `permission prompt` for a permission ask and
+`input needed` for a question the agent asks; a wait with no words is
+announced by name alone. A question this app puts to a person on a session's
+behalf is announced where it is put and not here: the pass asks what the
+source read, not the status it wrote.
+
+What this leaves open, stated rather than hidden. Without hook frames, two
+asks inside one two-second window are one notification; the person has just
+answered the first and is at the session. A wait that follows another with
+nothing read in between but failed reads is taken for the same wait; an agent
+that starts again writes `idle` first, which is what ends the old one. And for agents
+whose reader does not report a wait, nothing has changed: their hook is still
+the only thing that announces one, and without it nothing does.
+
 **Whether a run's end is news is asked once, with three conditions**
 (`orchestration::run_is_news`, called from `announce_finished_run`). The run
 is still counted for a waiting script whichever way the answer goes: the mark
