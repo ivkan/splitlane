@@ -325,6 +325,9 @@ impl SplitlaneApp {
                 hint,
                 ..
             } => (label.clone(), detail.clone(), hint.clone()),
+            PaletteItem::StopDriving { label, detail, .. } => {
+                (label.clone(), detail.clone(), String::new())
+            }
             PaletteItem::History { index } => {
                 let Some(row) = self
                     .command_palette

@@ -1170,6 +1170,7 @@ impl SplitlaneApp {
             interrupts_asked: std::collections::HashMap::new(),
             drive: crate::app::drive::DriveBook::default(),
             folded_openers: std::collections::HashSet::new(),
+            openers_explained: std::collections::HashSet::new(),
             drive_status_before: std::collections::HashMap::new(),
             turn_ends: std::collections::HashMap::new(),
             rail_published: std::collections::HashMap::new(),

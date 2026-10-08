@@ -121,6 +121,19 @@ impl DriveBook {
             .map(|((asker, _), _)| *asker)
     }
 
+    /// Every pair in which one session drives another, `(driver, driven)`,
+    /// in the order of the driven session's id.
+    pub(crate) fn driven(&self) -> Vec<(u64, u64)> {
+        let mut pairs: Vec<(u64, u64)> = self
+            .pairs
+            .iter()
+            .filter(|(_, standing)| **standing == Standing::Allowed)
+            .map(|(pair, _)| *pair)
+            .collect();
+        pairs.sort_unstable_by_key(|(_, driven)| *driven);
+        pairs
+    }
+
     /// The sessions `asker` is allowed to drive, in the order of their ids.
     pub(crate) fn driven_by(&self, asker: u64) -> Vec<u64> {
         let mut targets: Vec<u64> = self
@@ -170,6 +183,12 @@ pub(crate) fn question_summary(targets: &[String]) -> String {
     }
 }
 
+/// The command that takes a session back, with both names: it is listed
+/// where the row it is about is not in sight.
+pub(crate) fn stop_driving_label(driver: &str, driven: &str) -> String {
+    format!("Stop {driver} driving {driven}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +220,7 @@ mod tests {
         assert_eq!(book.driver_of(API), Some(PLAN));
         assert_eq!(book.driver_of(WEB), None);
         assert_eq!(book.driven_by(PLAN), [API]);
+        assert_eq!(book.driven(), [(PLAN, API)]);
         // Nothing is standing, so there is nothing to answer.
         assert!(!book.answer(PLAN, API, false));
         assert_eq!(book.standing(PLAN, API), Some(Standing::Allowed));
@@ -288,6 +308,11 @@ mod tests {
         assert_eq!(Drive::Standing(Standing::Asked).word(), Some("asked"));
         assert_eq!(Drive::Standing(Standing::Allowed).word(), Some("allowed"));
         assert_eq!(Drive::Standing(Standing::Declined).word(), Some("declined"));
+    }
+
+    #[test]
+    fn taking_a_session_back_names_both_sessions() {
+        assert_eq!(stop_driving_label("plan", "api"), "Stop plan driving api");
     }
 
     #[test]

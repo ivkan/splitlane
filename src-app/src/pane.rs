@@ -112,6 +112,25 @@ pub struct SurfaceFacts {
     pub opened_by: Option<(SharedString, bool)>,
 }
 
+/// The header's line about where a session came from, in its parts: the
+/// words before the name, the name, whether the name leads anywhere, and
+/// what follows it.
+///
+/// Never both `opened by` and `driven by`: a session another one opened is
+/// driven by its opener.
+pub(crate) fn surface_origin_words(
+    facts: &SurfaceFacts,
+) -> Option<(&'static str, SharedString, bool, Option<&'static str>)> {
+    match (&facts.opened_by, &facts.driven_by) {
+        (Some((opener, true)), _) => Some(("opened by ", opener.clone(), true, None)),
+        (Some((opener, false)), _) => {
+            Some(("opened by ", opener.clone(), false, Some(" \u{b7} closed")))
+        }
+        (None, Some(driver)) => Some(("driven by ", driver.clone(), true, None)),
+        (None, None) => None,
+    }
+}
+
 /// One question a session put to a person: may it send messages to a session
 /// they opened. Answered in the asking session's own pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -510,6 +529,10 @@ pub enum PaneEvent {
         target: u64,
         allow: bool,
     },
+    /// The name in `opened by ‹name›` or `driven by ‹name›` was pressed. The
+    /// pane knows the name and not the session; the app shows the opener,
+    /// or offers what can be done about a driver.
+    SurfaceOrigin { position: Point<Pixels> },
     /// A tile of the launcher was picked. The pane cannot create a session -
     /// it knows its `workspace_id` and not its directory, and the thread record
     /// belongs to the container - so it names the agent and `SplitlaneApp`
@@ -2461,7 +2484,7 @@ impl Pane {
                     Some(stop) => Some(stop),
                     None => self.render_surface_status(ui),
                 })
-                .children(self.render_surface_driver(ui));
+                .children(self.render_surface_driver(ui, cx));
         }
         let tabs_area = tabs_area.child(tabs_row);
 
@@ -2795,29 +2818,51 @@ impl Pane {
     /// ‹name›` for one a person let another drive. A person looking at this
     /// pane has to be able to tell that what is typed into it may not be
     /// theirs.
-    fn render_surface_driver(&self, ui: crate::theme::UiColors) -> Option<gpui::AnyElement> {
+    ///
+    /// The name is the way to that session: pressing it shows the opener,
+    /// and for a driven session opens the two things a person can do about
+    /// it, show the driver or take the session back. A closed opener's name
+    /// leads nowhere and is plain text.
+    fn render_surface_driver(
+        &self,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         if self.tabs.len() != 1 {
             return None;
         }
         let facts = self.active_surface_facts()?;
-        // Never both: a session another one opened is driven by its opener.
-        let label = match (&facts.opened_by, &facts.driven_by) {
-            (Some((opener, true)), _) => format!("opened by {opener}"),
-            (Some((opener, false)), _) => format!("opened by {opener} \u{b7} closed"),
-            (None, Some(driver)) => format!("driven by {driver}"),
-            (None, None) => return None,
-        };
-        Some(
+        let (words, name, live, after) = surface_origin_words(facts)?;
+        let line = div()
+            .flex_none()
+            .ml(tok::space::SM)
+            .flex()
+            .flex_row()
+            .whitespace_nowrap()
+            .font_family(tok::font::MONO)
+            .text_size(tok::mono::HINT)
+            .text_color(ui.muted)
+            .child(words);
+        let name = if live {
             div()
+                .id("pane-surface-origin")
                 .flex_none()
-                .ml(tok::space::SM)
-                .whitespace_nowrap()
-                .font_family(tok::font::MONO)
-                .text_size(tok::mono::HINT)
-                .text_color(ui.muted)
-                .child(SharedString::from(label))
-                .into_any_element(),
-        )
+                .text_color(ui.dim)
+                .underline()
+                .text_decoration_color(ui.group_rule)
+                .cursor_pointer()
+                .child(name)
+                .on_click(cx.listener(|_this, e: &ClickEvent, _window, cx| {
+                    if let Some(position) = e.mouse_position() {
+                        cx.emit(PaneEvent::SurfaceOrigin { position });
+                    }
+                    cx.stop_propagation();
+                }))
+                .into_any_element()
+        } else {
+            div().flex_none().child(name).into_any_element()
+        };
+        Some(line.child(name).children(after).into_any_element())
     }
 
     /// The status word beside the name (the design: "status text, coloured
@@ -3782,6 +3827,40 @@ mod tests {
         pane_content_background, peek_badge_line, tab_bar_background, truncate_tab_title,
     };
     use gpui::SharedString;
+
+    /// The name leads somewhere only while the session it names is there.
+    #[test]
+    fn the_header_names_who_opened_or_drives_a_session() {
+        use super::{SurfaceFacts, surface_origin_words};
+        let plan = || SharedString::from("plan");
+        assert_eq!(surface_origin_words(&SurfaceFacts::default()), None);
+        let opened = SurfaceFacts {
+            opened_by: Some((plan(), true)),
+            // An opener drives what it opened; the line says the first.
+            driven_by: Some(plan()),
+            ..SurfaceFacts::default()
+        };
+        assert_eq!(
+            surface_origin_words(&opened),
+            Some(("opened by ", plan(), true, None))
+        );
+        let orphaned = SurfaceFacts {
+            opened_by: Some((plan(), false)),
+            ..SurfaceFacts::default()
+        };
+        assert_eq!(
+            surface_origin_words(&orphaned),
+            Some(("opened by ", plan(), false, Some(" \u{b7} closed")))
+        );
+        let driven = SurfaceFacts {
+            driven_by: Some(plan()),
+            ..SurfaceFacts::default()
+        };
+        assert_eq!(
+            surface_origin_words(&driven),
+            Some(("driven by ", plan(), true, None))
+        );
+    }
 
     fn question(target: &str) -> DriveQuestion {
         DriveQuestion {

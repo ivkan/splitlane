@@ -87,6 +87,17 @@ pub(crate) enum PaletteItem {
         /// was typed by the person, which is looking.
         group: Option<String>,
     },
+    /// Take a session back from the session a person let drive it. Not in
+    /// the registry: there is one per driven session, and none when nothing
+    /// is driven.
+    StopDriving {
+        /// The driven session's surface record id.
+        target: u64,
+        /// `Stop plan driving api`.
+        label: String,
+        /// The project's title.
+        detail: String,
+    },
     /// A session on disk, activated by resuming it into its project.
     History { index: usize },
     /// A session whose live output matches the query, activated by focusing it
@@ -296,6 +307,36 @@ impl SplitlaneApp {
             return items;
         }
 
+        // Only for a query. With none, the row the palette opens on is the
+        // last one that is not a command, and Enter on an untouched palette
+        // must never be what takes a session back.
+        for (driver, target) in self.drive.driven() {
+            let (Some(driver), Some(driven)) =
+                (self.thread_by_id(driver), self.thread_by_id(target))
+            else {
+                continue;
+            };
+            let name = |thread: &crate::project::Thread| {
+                crate::app::ipc_handler::sanitize_pane_name(&thread.title)
+                    .unwrap_or_else(|| thread.title.clone())
+            };
+            let label = crate::app::drive::stop_driving_label(&name(driver), &name(driven));
+            if !label.to_lowercase().contains(needle) {
+                continue;
+            }
+            let detail = self
+                .workspaces
+                .iter()
+                .find(|container| container.threads.iter().any(|t| t.id == target))
+                .map(|container| container.title.clone())
+                .unwrap_or_default();
+            items.push(PaletteItem::StopDriving {
+                target,
+                label,
+                detail,
+            });
+        }
+
         for (group, rows) in crate::keybindings::group_shortcuts(&self.effective_shortcuts, needle)
         {
             for (_, entry) in rows {
@@ -355,6 +396,7 @@ impl SplitlaneApp {
         enum Target {
             Action(Option<Box<dyn gpui::Action>>),
             Surface(u64),
+            StopDriving(u64),
             History(usize),
             Output(usize),
         }
@@ -363,6 +405,7 @@ impl SplitlaneApp {
                 Target::Action(crate::keybindings::action_from_name(action_name))
             }
             Some(PaletteItem::Surface { surface_id, .. }) => Target::Surface(*surface_id),
+            Some(PaletteItem::StopDriving { target, .. }) => Target::StopDriving(*target),
             Some(PaletteItem::History { index }) => Target::History(*index),
             Some(PaletteItem::Output { index }) => Target::Output(*index),
             None => return,
@@ -402,6 +445,10 @@ impl SplitlaneApp {
                     }
                 }
                 cx.notify();
+            }
+            Target::StopDriving(target) => {
+                self.close_command_palette(window, cx);
+                self.stop_drive(target, cx);
             }
             Target::History(index) => self.resume_palette_history_row(index, cx),
             Target::Output(index) => self.focus_palette_output_row(index, window, cx),

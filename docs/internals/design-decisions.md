@@ -1160,6 +1160,24 @@ its agent's name was and `driven by ‹name›` in its pane's header, so a
 person looking at it can tell that what is typed there may not be theirs.
 `surface.list` and `surface.status` carry the same fact as `driven_by`.
 
+The name in the header is the way to that session. Pressed, it offers
+`Show ‹name›` and `Stop ‹name› driving`; in `opened by ‹name›` it shows the
+opener at once, there being nothing else to do about one, and after the
+opener is closed it is plain text. The palette lists `Stop ‹name› driving
+‹session›` for each driven session, with both names because the row it is
+about is not in sight there - and only for a typed query: the palette
+opens with its last session selected, and Enter on an untouched palette
+must never be what takes a session back.
+
+In `Activity` the asking session's row says `‹project› · asks for ‹name›`
+where the branch would be, and the row of a session another opened says
+`‹project› · opened by ‹name›`. A notification that an opened session is
+waiting or has failed ends with `Opened by ‹name› in ‹project›.`, and the
+first one about a waiting session adds `‹name› can't answer for you.`,
+once per opener while the app runs: it explains why the person is being
+told, and does not need saying for each of eight sessions. A session in a
+private group says none of this, as it says nothing else.
+
 **Nothing is printed into the asking session.** The designs show a line in
 its terminal saying what the person answered. With no call in flight that
 would be the app typing into an agent's session on its own, so it is not

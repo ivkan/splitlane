@@ -54,6 +54,14 @@ Notable changes to Splitlane are recorded here. The format follows
   what they are doing (`1 waiting · 6 running`). When the opener is closed
   and some of its sessions are left, a line `opened by <name> · closed`
   stands in its place.
+- A notification that a session another session opened is waiting or has
+  failed says `Opened by <name> in <project>.`; in `Activity` its row says
+  `<project> · opened by <name>`, and the row of a session asking to drive
+  one of yours says `<project> · asks for <name>`.
+- The name in `opened by <name>` and `driven by <name>` in a pane's header
+  can be pressed: it shows the opener, or offers `Show <name>` and
+  `Stop <name> driving`. The command palette finds `Stop <name> driving
+  <session>`.
 - The skill in `skills/splitlane-fleet` teaches an agent to open its own
   sessions, wait on them, read their answers, redirect and close them.
 

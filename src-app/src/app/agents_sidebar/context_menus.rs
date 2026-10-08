@@ -405,6 +405,93 @@ impl SplitlaneApp {
     }
 }
 
+impl SplitlaneApp {
+    /// The name of an opener or a driver was pressed in the header of the
+    /// pane showing `thread_id`.
+    ///
+    /// An opener is shown: there is nothing else to do about one. A driver
+    /// gets a menu, because there are two things - go and look at it, or
+    /// take the session back.
+    pub(crate) fn surface_origin_pressed(
+        &mut self,
+        thread_id: u64,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let opener = self
+            .thread_by_id(thread_id)
+            .and_then(|thread| thread.opened_by.as_ref().map(|by| by.id));
+        if let Some(opener) = opener {
+            self.show_session(opener, cx);
+        } else if self.drive.driver_of(thread_id).is_some() {
+            self.dismiss_transient_surfaces();
+            self.agents_view.agents_menu_open = Some(AgentsContextMenu::Driver {
+                driven: thread_id,
+                position,
+            });
+            cx.notify();
+        }
+    }
+
+    /// Bring a session up by the ordinary ladder, as a click on its row
+    /// would. Nothing happens when it is gone.
+    fn show_session(&mut self, thread_id: u64, cx: &mut Context<Self>) {
+        if let Some(target) = crate::project::find_surface(&self.workspaces, thread_id) {
+            self.select_agents_target(target, cx);
+        }
+    }
+
+    /// `Show ‹name›` and `Stop ‹name› driving`, for the session that drives
+    /// `driven`. `None` once nobody drives it: the menu closes by itself if
+    /// the session is taken back from somewhere else while it is open.
+    fn render_driver_menu(
+        &self,
+        driven: u64,
+        position: gpui::Point<gpui::Pixels>,
+        ui: crate::theme::UiColors,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let driver = self.drive.driver_of(driven)?;
+        let name = self.driver_name(driven)?;
+        let width = px(220.);
+        // Two rows and the menu's padding.
+        let height = px(8. + 2. * 29.);
+        let menu_pos = clamped_context_menu_position(position, width, height, window);
+        let menu = select_menu("pane-driver-menu", ui)
+            .occlude()
+            .absolute()
+            .left(menu_pos.x)
+            .top(menu_pos.y)
+            .w(width)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_agents_menu(cx)))
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(self.render_select_menu_item(
+                "pane-driver-menu-show".into(),
+                &format!("Show {name}"),
+                None,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                    this.close_agents_menu(cx);
+                    this.show_session(driver, cx);
+                    cx.stop_propagation();
+                }),
+            ))
+            .child(self.render_select_menu_item(
+                "pane-driver-menu-stop".into(),
+                &format!("Stop {name} driving"),
+                None,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                    this.close_agents_menu(cx);
+                    this.stop_drive(driven, cx);
+                    cx.stop_propagation();
+                }),
+            ));
+        Some(deferred(menu).priority(3).into_any_element())
+    }
+}
+
 /// Type-erased view-side helper: given the live `agents_menu_open`,
 /// build the right deferred element. Centralised so the main render
 /// path is one line.
@@ -444,6 +531,9 @@ pub(crate) fn render_open_agents_menu(
             if app.project_group(group_id).is_some() =>
         {
             Some(app.render_group_menu(group_id, position, ui, window, cx))
+        }
+        AgentsContextMenu::Driver { driven, position } => {
+            app.render_driver_menu(driven, position, ui, window, cx)
         }
         _ => None,
     }

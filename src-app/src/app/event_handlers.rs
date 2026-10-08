@@ -662,6 +662,15 @@ impl SplitlaneApp {
             } => {
                 self.answer_drive(*asker, *target, *allow, cx);
             }
+            pane::PaneEvent::SurfaceOrigin { position } => {
+                let shown = pane
+                    .read(cx)
+                    .active_terminal_opt()
+                    .and_then(|view| view.read(cx).agent_thread_id);
+                if let Some(thread_id) = shown {
+                    self.surface_origin_pressed(thread_id, *position, cx);
+                }
+            }
             pane::PaneEvent::DropRailSurface { ws_idx, thread_id } => {
                 // Resolved from the id, not from the index the drag started
                 // with: the rail can be reordered while the pointer is down.

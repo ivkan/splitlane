@@ -52,6 +52,13 @@ pub(crate) enum AgentsContextMenu {
         group_id: u64,
         position: Point<Pixels>,
     },
+    /// What a person can do about the session that drives `driven`, opened
+    /// from that name in the driven session's pane header.
+    Driver {
+        /// The driven session's surface record id.
+        driven: u64,
+        position: Point<Pixels>,
+    },
 }
 
 /// Where a surface's menu was opened from.

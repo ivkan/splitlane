@@ -217,6 +217,21 @@ pub(crate) fn queue_meta(project: &str, branch: &str) -> String {
     }
 }
 
+/// What a row's second line says after the project in place of the branch,
+/// for a session whose row needs explaining: `asks for api` while it waits
+/// on a person's leave to send messages to their sessions, `opened by plan`
+/// for one another session opened. Pure - unit-tested.
+///
+/// The question comes first. A session can be both, in principle, and the
+/// question is the reason the row is in the list right now.
+pub(crate) fn queue_origin(asks_for: &[String], opened_by: Option<&str>) -> Option<String> {
+    match asks_for {
+        [] => opened_by.map(|opener| format!("opened by {opener}")),
+        [one] => Some(format!("asks for {one}")),
+        many => Some(format!("asks for {} sessions", many.len())),
+    }
+}
+
 /// Compact wait label: `42s`, `7m`, `1h 12m`. Pure - unit-tested.
 pub(crate) fn wait_label(secs: u64) -> String {
     if secs < 60 {
@@ -364,10 +379,44 @@ impl SplitlaneApp {
             // finished rows overwrite this from their own mark.
             unacknowledged: false,
             name,
-            meta: queue_meta(&ws.title, &ws.git_branch),
+            meta: queue_meta(
+                &ws.title,
+                self.queue_origin_of(kind, thread_id)
+                    .as_deref()
+                    .unwrap_or(&ws.git_branch),
+            ),
             waiting_secs,
             private_group: None,
         })
+    }
+
+    /// [`queue_origin`] for one session's row.
+    fn queue_origin_of(&self, kind: QueueKind, thread_id: Option<u64>) -> Option<String> {
+        let thread = self.thread_by_id(thread_id?)?;
+        let name = |thread: &crate::project::Thread| {
+            crate::project::clean_sidebar_title(&thread.title)
+                .unwrap_or_else(|| thread.title.clone())
+        };
+        // Only a waiting row is explained by a question: a session that
+        // failed while one stood is in the list because it failed.
+        let asks_for: Vec<String> = if kind == QueueKind::Waiting {
+            self.drive
+                .asked_by(thread.id)
+                .into_iter()
+                .filter_map(|id| self.thread_by_id(id))
+                .map(name)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let opener = thread.opened_by.as_ref().map(|by| {
+            // The opener's name as it is now, and the one kept in the record
+            // once the opener is gone.
+            self.thread_by_id(by.id)
+                .map(name)
+                .unwrap_or_else(|| by.title.clone())
+        });
+        queue_origin(&asks_for, opener.as_deref())
     }
 
     pub(crate) fn handle_open_attention_queue(
@@ -1008,6 +1057,28 @@ mod tests {
         // A plain directory is not a repository, and an empty branch must not
         // leave a dangling separator behind the project name.
         assert_eq!(queue_meta("atlas", ""), "atlas");
+    }
+
+    #[test]
+    fn a_row_that_needs_explaining_says_why_in_place_of_the_branch() {
+        assert_eq!(queue_origin(&[], None), None);
+        assert_eq!(
+            queue_origin(&[], Some("plan")).as_deref(),
+            Some("opened by plan")
+        );
+        assert_eq!(
+            queue_origin(&["api".to_string()], None).as_deref(),
+            Some("asks for api")
+        );
+        let three = ["api".to_string(), "web".to_string(), "docs".to_string()];
+        assert_eq!(
+            queue_origin(&three, Some("plan")).as_deref(),
+            Some("asks for 3 sessions")
+        );
+        assert_eq!(
+            queue_meta("atlas", "asks for api"),
+            "atlas \u{b7} asks for api"
+        );
     }
 
     #[test]

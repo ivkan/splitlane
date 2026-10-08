@@ -3949,9 +3949,16 @@ impl SplitlaneApp {
                         self.accelerate_agent_state(thread_id, cx);
                     }
                     let seen = self.thread_is_seen(thread_id, cx);
+                    let subject = self.notification_subject_of_session(
+                        workspace_id,
+                        thread_id,
+                        title,
+                        true,
+                        cx,
+                    );
                     fire_attention_notification(
                         tool,
-                        self.notification_subject(workspace_id, title, cx),
+                        subject,
                         message.as_deref(),
                         &notify_config,
                         seen,
@@ -4352,9 +4359,16 @@ impl SplitlaneApp {
                     }
                     if errored {
                         let seen = self.thread_is_seen(thread_id, cx);
+                        let subject = self.notification_subject_of_session(
+                            workspace_id,
+                            thread_id,
+                            title,
+                            false,
+                            cx,
+                        );
                         fire_agent_exit_notification(
                             tool,
-                            self.notification_subject(workspace_id, title, cx),
+                            subject,
                             exit_code,
                             &notify_config,
                             seen,

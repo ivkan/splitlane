@@ -1438,6 +1438,9 @@ struct SplitlaneApp {
     /// session by itself, except that going to a folded session opens the
     /// row it is under. Kept for the run of the app.
     folded_openers: std::collections::HashSet<u64>,
+    /// Openers a notification has already said "can't answer for you" about.
+    /// The sentence is said once per opener while the app runs.
+    openers_explained: std::collections::HashSet<u64>,
     /// What a session's row said before a question to a person was put on
     /// it, for a session nothing re-reads the status of.
     drive_status_before: std::collections::HashMap<u64, project::ThreadStatus>,

@@ -86,6 +86,10 @@ pub(crate) enum NotificationClass {
 pub(crate) enum NotificationSubject {
     /// The surface's or project's name, as notifications have always said it.
     Named(String),
+    /// A session another session opened: its own name, and a line saying
+    /// where it came from. The person did not open it, so its name alone
+    /// does not tell them what is asking for them.
+    Opened { name: String, origin: String },
     /// A private group, with how many of its sessions are waiting now.
     PrivateGroup { group: String, waiting: usize },
 }
@@ -94,15 +98,39 @@ impl NotificationSubject {
     fn private_group(&self) -> Option<&str> {
         match self {
             NotificationSubject::PrivateGroup { group, .. } => Some(group),
-            NotificationSubject::Named(_) => None,
+            NotificationSubject::Named(_) | NotificationSubject::Opened { .. } => None,
         }
     }
 
     fn name(&self) -> &str {
         match self {
-            NotificationSubject::Named(name) => name,
+            NotificationSubject::Named(name) | NotificationSubject::Opened { name, .. } => name,
             NotificationSubject::PrivateGroup { group, .. } => group,
         }
+    }
+
+    /// `body`, followed by where the session came from when another session
+    /// opened it. On a line of its own and last: services cut the tail, and
+    /// the name and the question are what must survive.
+    fn with_origin(&self, body: String) -> String {
+        match self {
+            NotificationSubject::Opened { origin, .. } => format!("{body}\n{origin}"),
+            _ => body,
+        }
+    }
+}
+
+/// The line a notification about an opened session ends with.
+///
+/// `cannot_answer` adds why the person is being told at all: the session
+/// that opened this one is not allowed to answer its questions. Said once
+/// per opener, by the caller - after that it is known.
+pub(crate) fn opened_by_line(opener: &str, project: &str, cannot_answer: bool) -> String {
+    let origin = format!("Opened by {opener} in {project}.");
+    if cannot_answer {
+        format!("{origin} {opener} can\u{2019}t answer for you.")
+    } else {
+        origin
     }
 }
 
@@ -161,9 +189,9 @@ impl DesktopNotification {
                 };
                 (summary, private_body(waiting))
             }
-            NotificationSubject::Named(name) => (
+            NotificationSubject::Named(name) | NotificationSubject::Opened { name, .. } => (
                 format!("{} needs input", agent.display_name()),
-                attention_notification_body(name, message),
+                subject.with_origin(attention_notification_body(name, message)),
             ),
         };
         Self {
@@ -183,7 +211,7 @@ impl DesktopNotification {
             Some(group) => (format!("A session failed in {group}"), private_body(1)),
             None => (
                 format!("{} exited unexpectedly", agent.display_name()),
-                agent_exit_notification_body(subject.name(), exit_code),
+                subject.with_origin(agent_exit_notification_body(subject.name(), exit_code)),
             ),
         };
         Self {
@@ -683,6 +711,36 @@ mod tests {
         assert_ne!(auth.body, parser.body);
         assert!(auth.body.starts_with("auth refactor"));
         assert!(parser.body.starts_with("parser"));
+    }
+
+    /// A session another session opened says where it came from, after its
+    /// own name and question. A private group still says nothing of either.
+    #[test]
+    fn an_opened_session_says_who_opened_it() {
+        let first = NotificationSubject::Opened {
+            name: "api-docs".to_string(),
+            origin: opened_by_line("plan", "atlas", true),
+        };
+        let waiting =
+            DesktopNotification::needs_input(TerminalAgent::ClaudeCode, &first, Some("Allow?"));
+        assert_eq!(waiting.summary, "Claude Code needs input");
+        assert_eq!(
+            waiting.body,
+            "api-docs: Allow?\nOpened by plan in atlas. plan can\u{2019}t answer for you."
+        );
+        let later = NotificationSubject::Opened {
+            name: "migrate-db".to_string(),
+            origin: opened_by_line("plan", "atlas", false),
+        };
+        let failed = DesktopNotification::agent_exited(TerminalAgent::ClaudeCode, &later, 1);
+        assert_eq!(
+            failed.body,
+            "migrate-db: exited with code 1\nOpened by plan in atlas."
+        );
+        // A finished turn is told as it always was: the line is for the two
+        // events that reach the person whoever sent the last message.
+        let finished = DesktopNotification::turn_finished(TerminalAgent::ClaudeCode, &later, None);
+        assert_eq!(finished.body, "migrate-db");
     }
 
     /// Notification services cut the tail, so the name has to be at the head:

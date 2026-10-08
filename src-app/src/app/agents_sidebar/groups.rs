@@ -524,6 +524,55 @@ impl SplitlaneApp {
         }
     }
 
+    /// The subject of a notification that `thread_id` is waiting for a
+    /// person or has failed: as above, and for a session another session
+    /// opened, with the line that says which one and in which project.
+    ///
+    /// The first such notification about a waiting session also says the
+    /// opener cannot answer for the person, once per opener while the app
+    /// runs: it explains why they are being told, and does not need saying
+    /// eight times for eight sessions.
+    pub(crate) fn notification_subject_of_session(
+        &mut self,
+        ws_id: u64,
+        thread_id: u64,
+        name: impl Into<String>,
+        waiting: bool,
+        cx: &Context<Self>,
+    ) -> crate::agents::notifications::NotificationSubject {
+        use crate::agents::notifications::NotificationSubject;
+        let subject = self.notification_subject(ws_id, name, cx);
+        let NotificationSubject::Named(name) = subject else {
+            return subject;
+        };
+        let Some(by) = self
+            .thread_by_id(thread_id)
+            .and_then(|thread| thread.opened_by.clone())
+        else {
+            return NotificationSubject::Named(name);
+        };
+        // The opener's name as it is now; the one kept in the record is for
+        // when the opener is gone.
+        let opener = self
+            .thread_by_id(by.id)
+            .map(|opener| {
+                crate::project::clean_sidebar_title(&opener.title)
+                    .unwrap_or_else(|| opener.title.clone())
+            })
+            .unwrap_or(by.title);
+        let project = self
+            .workspaces
+            .iter()
+            .find(|container| container.threads.iter().any(|t| t.id == thread_id))
+            .map(|container| container.title.clone())
+            .unwrap_or_default();
+        let cannot_answer = waiting && self.openers_explained.insert(by.id);
+        NotificationSubject::Opened {
+            name,
+            origin: crate::agents::notifications::opened_by_line(&opener, &project, cannot_answer),
+        }
+    }
+
     /// How many sessions of a group are waiting now - off the same stops the
     /// chip and Activity count, so the three cannot disagree.
     fn waiting_in_group(&self, group_id: u64, cx: &Context<Self>) -> usize {
