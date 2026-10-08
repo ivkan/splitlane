@@ -1433,6 +1433,11 @@ struct SplitlaneApp {
     /// Which session a person has let drive which, and what is still being
     /// asked. In memory only; see `app::drive`.
     drive: app::drive::DriveBook,
+    /// Openers whose sessions the person folded away in the rail, by surface
+    /// record id. The fold is theirs alone: nothing folds or unfolds a
+    /// session by itself, except that going to a folded session opens the
+    /// row it is under. Kept for the run of the app.
+    folded_openers: std::collections::HashSet<u64>,
     /// What a session's row said before a question to a person was put on
     /// it, for a session nothing re-reads the status of.
     drive_status_before: std::collections::HashMap<u64, project::ThreadStatus>,

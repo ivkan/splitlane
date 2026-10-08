@@ -225,6 +225,11 @@ pub mod row {
     /// A surface row in the rail - the densest row in the app.
     pub const SESSION: Pixels = px(25.);
 
+    /// A caption among the rail's surface rows that is not a surface: the
+    /// line standing where a closed session was. Lower than a row, so it
+    /// reads as a label over the rows under it.
+    pub const CAPTION: Pixels = px(22.);
+
     /// A project group's label row in the rail. Lower than a project row:
     /// the label is a heading over projects, not one of them.
     pub const GROUP: Pixels = px(24.);

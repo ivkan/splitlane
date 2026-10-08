@@ -48,7 +48,12 @@ Notable changes to Splitlane are recorded here. The format follows
   the caller's behalf, and `splitlane wait --until allowed` ends on it at
   once with exit code `1` instead of waiting out its timeout.
 - The sessions a session opened sit under it in the rail, in the order they
-  were opened, and each one's pane says `opened by <name>`.
+  were opened, and each one's pane says `opened by <name>`. A bracket in the
+  rows' margin joins them to their opener. The opener's row shows how many it
+  opened; clicking that count folds them away, and the folded row then says
+  what they are doing (`1 waiting · 6 running`). When the opener is closed
+  and some of its sessions are left, a line `opened by <name> · closed`
+  stands in its place.
 - The skill in `skills/splitlane-fleet` teaches an agent to open its own
   sessions, wait on them, read their answers, redirect and close them.
 

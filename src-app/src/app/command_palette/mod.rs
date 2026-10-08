@@ -386,6 +386,20 @@ impl SplitlaneApp {
                 if self.focus_surface_by_id(surface_id, window, cx) {
                     // Its group opens if it was folded, private or not.
                     self.reveal_project_group(self.active_idx, cx);
+                    // And so does the row it sits under, when the session
+                    // that opened it had been folded.
+                    let opener = self
+                        .workspaces
+                        .iter()
+                        .flat_map(|container| container.threads.iter())
+                        .find(|thread| {
+                            self.terminal_of(thread.id, cx)
+                                .is_some_and(|view| view.entity_id().as_u64() == surface_id)
+                        })
+                        .and_then(|thread| thread.opened_by.as_ref().map(|by| by.id));
+                    if let Some(opener) = opener {
+                        self.folded_openers.remove(&opener);
+                    }
                 }
                 cx.notify();
             }

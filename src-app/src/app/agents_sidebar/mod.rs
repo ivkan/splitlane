@@ -369,10 +369,32 @@ impl SplitlaneApp {
             shells: shell_order,
         } = surface_row_order(&self.workspaces[ws_idx].threads);
         let mut rows_in_project = agent_order.len() + shell_order.len();
-        for thread_idx in agent_order {
-            let thread = &self.workspaces[ws_idx].threads[thread_idx];
+        let threads = &self.workspaces[ws_idx].threads;
+        for row in bracketed_rows(&agent_order, threads, &self.folded_openers) {
+            let (thread_idx, bracket, opened) = match row {
+                AgentRow::ClosedOpener { name } => {
+                    list = list.child(closed_opener_caption(&name, ui));
+                    continue;
+                }
+                AgentRow::Session {
+                    idx,
+                    bracket,
+                    opened,
+                } => (idx, bracket, opened),
+            };
+            let thread = &threads[thread_idx];
+            let opened = opened.map(|opened| OpenedMark {
+                count: opened.sessions.len(),
+                folded: opened.folded,
+                // What the folded row answers for: the sessions it opened
+                // and no others. Its own state is on its own dot, and a
+                // session it drives has a row of its own that says it.
+                tally: FoldedTally::of(opened.sessions.iter().map(|idx| &threads[*idx]), true),
+                hint: self.opener_hint(thread.id, opened.sessions.len()),
+            });
             let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
-            list = list.child(self.agents_thread_row_for(target, thread, shared, cx));
+            let under = RowUnderOpener { bracket, opened };
+            list = list.child(self.agents_thread_row_for(target, thread, under, shared, cx));
         }
 
         // Views: the container's diff, when it is open.
@@ -385,7 +407,8 @@ impl SplitlaneApp {
         for thread_idx in shell_order {
             let thread = &self.workspaces[ws_idx].threads[thread_idx];
             let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
-            list = list.child(self.agents_thread_row_for(target, thread, shared, cx));
+            let alone = RowUnderOpener::default();
+            list = list.child(self.agents_thread_row_for(target, thread, alone, shared, cx));
         }
         for row in self.container_pane_rows(ws_idx, shared, cx) {
             list = list.child(row);
@@ -427,6 +450,7 @@ impl SplitlaneApp {
         &self,
         target: crate::project::AgentsTarget,
         thread: &crate::project::Thread,
+        under: RowUnderOpener,
         shared: &RowSharedState,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -469,6 +493,7 @@ impl SplitlaneApp {
                 // keyed on mounting would replay the whole queue's worth of
                 // pulses each time the order changed.
                 announcing: self.thread_announcement(thread.id),
+                under,
                 // The design spends the row's right side on what the session
                 // *is* rather than on how old it is: the agent's name, or the
                 // word "shell".
@@ -489,6 +514,33 @@ impl SplitlaneApp {
             },
             cx,
         )
+    }
+
+    /// What an opener's count says under the pointer: how many sessions it
+    /// opened, and which sessions a person let it drive. The second half is
+    /// there because the count leaves those out - they keep their own places
+    /// in the rail - and this is the one spot that lists both.
+    fn opener_hint(&self, opener: u64, opened: usize) -> SharedString {
+        let driven: Vec<String> = self
+            .drive
+            .driven_by(opener)
+            .into_iter()
+            .filter_map(|id| self.thread_by_id(id))
+            .map(|thread| {
+                crate::project::clean_sidebar_title(&thread.title)
+                    .unwrap_or_else(|| thread.title.clone())
+            })
+            .collect();
+        SharedString::from(opener_hint_text(opened, &driven))
+    }
+
+    /// Fold or unfold the sessions `opener` opened. The person's choice, and
+    /// remembered for that opener.
+    fn toggle_opener_fold(&mut self, opener: u64, cx: &mut Context<Self>) {
+        if !self.folded_openers.remove(&opener) {
+            self.folded_openers.insert(opener);
+        }
+        cx.notify();
     }
 
     /// How many surfaces a container's rail row counts in its badge: its
@@ -1257,6 +1309,7 @@ impl SplitlaneApp {
             unseen,
             announcing,
             meta,
+            under: RowUnderOpener { bracket, opened },
         } = args;
         let is_renaming = rename_input.is_some();
         // Snapshotted before the title is moved into the row, for the drag
@@ -1328,6 +1381,15 @@ impl SplitlaneApp {
             // red 6px dot is the case that rule exists to prevent.
             .child(if unseen {
                 surface_row_news(news_word(status), ui)
+            } else if let Some(tally) = opened
+                .as_ref()
+                .filter(|opened| opened.folded)
+                .and_then(|opened| folded_opener_tally(opened.tally, ui))
+            {
+                // A folded opener answers for the rows it is not drawing,
+                // where its agent's name was: the icon still names the
+                // agent, and nothing else says what is going on under it.
+                tally
             } else {
                 surface_row_meta(meta, ui)
             })
@@ -1346,7 +1408,10 @@ impl SplitlaneApp {
             is_focused,
             ui,
         )
-        .relative();
+        .relative()
+        .children(bracket.map(|part| bracket_mark(part, tok::row::SESSION, ui)));
+        let opened_count =
+            opened.map(|opened| opened_counter(thread_id, opened, tooltips_ok, ui, cx));
 
         // A parked surface can be dragged into the panes area: onto the dashed
         // strip for a third pane, or onto a pane to show it there. One already
@@ -1436,8 +1501,191 @@ impl SplitlaneApp {
         }))
         .child(surface_type_glyph(is_shell, ui))
         .child(title_el)
+        .children(opened_count)
         .into_any_element()
     }
+}
+
+/// `Opened 3 sessions`, and after it the sessions a person let it drive.
+pub(crate) fn opener_hint_text(opened: usize, driven: &[String]) -> String {
+    let opened = if opened == 1 {
+        "Opened 1 session".to_string()
+    } else {
+        format!("Opened {opened} sessions")
+    };
+    if driven.is_empty() {
+        opened
+    } else {
+        format!("{opened} \u{b7} drives {}", driven.join(", "))
+    }
+}
+
+/// Where the bracket's upright stands, from the row's own left edge: inside
+/// the indent every session row already has, so no name moves to make room.
+// Physical: the position and thickness of a rule, not steps of the scale.
+const BRACKET_X: gpui::Pixels = px(9.);
+/// How far the bracket's tick reaches toward the row's glyph.
+const BRACKET_TICK: gpui::Pixels = px(7.);
+
+/// One row's part of the bracket that joins an opener to what it opened.
+///
+/// Drawn in the row's existing indent, one pixel in the role of the rule
+/// that marks a group, and never in a status colour: belonging is not a
+/// state. It is told apart from a group's rule by its ticks - that one is
+/// two pixels, runs through project rows and has none.
+fn bracket_mark(part: Bracket, row_height: gpui::Pixels, ui: crate::theme::UiColors) -> gpui::Div {
+    let middle = row_height / 2.;
+    let mark = div()
+        .absolute()
+        .left(BRACKET_X)
+        .w(BRACKET_TICK)
+        .border_color(ui.group_rule);
+    match part {
+        // From the middle of the row down, with the tick at the top.
+        Bracket::Top => mark.top(middle).bottom_0().border_l_1().border_t_1(),
+        // Straight through, and a tick of its own.
+        Bracket::Mid => mark.top_0().bottom_0().border_l_1().child(
+            div()
+                .absolute()
+                .left_0()
+                .top(middle)
+                .w_full()
+                .h(px(1.))
+                .bg(ui.group_rule),
+        ),
+        // Down to the middle and round the corner.
+        Bracket::Last => mark
+            .top_0()
+            .h(middle + px(1.))
+            .border_l_1()
+            .border_b_1()
+            .rounded_bl(tok::radius::METER),
+    }
+}
+
+/// The row standing where an opener was before it was closed, for as long
+/// as a session it opened is still there.
+///
+/// Not a session and not clickable. It keeps the bracket whole: without it
+/// the rows under it would read as ordinary sessions at the very moment a
+/// person coming back to the machine needs to know they did not open them.
+fn closed_opener_caption(name: &str, ui: crate::theme::UiColors) -> gpui::AnyElement {
+    div()
+        .ml(RAIL_SURFACE_MARGIN_L)
+        .pl(RAIL_SURFACE_INDENT)
+        .pr(RAIL_ROW_PADDING_X)
+        .h(tok::row::CAPTION)
+        .flex()
+        .flex_row()
+        .items_center()
+        .relative()
+        .child(bracket_mark(Bracket::Top, tok::row::CAPTION, ui))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_family(tok::font::MONO)
+                .text_size(tok::mono::HINT)
+                .text_color(ui.faint)
+                .child(SharedString::from(format!(
+                    "opened by {name} \u{b7} closed"
+                ))),
+        )
+        .into_any_element()
+}
+
+/// The count on an opener's row, which is also what folds its sessions.
+///
+/// A target of its own: the row it sits in opens the opener in a pane, as
+/// any session row does, so folding cannot be the row's click.
+fn opened_counter(
+    thread_id: u64,
+    opened: OpenedMark,
+    tooltips_ok: bool,
+    ui: crate::theme::UiColors,
+    cx: &mut Context<SplitlaneApp>,
+) -> gpui::AnyElement {
+    let caret = if opened.folded {
+        "\u{25b8}"
+    } else {
+        "\u{25be}"
+    };
+    let hint = opened.hint;
+    div()
+        .id(SharedString::from(format!("rail-opened-{thread_id}")))
+        .flex_none()
+        .px(tok::space::XS)
+        // Physical, as on the project's count: optical air around a numeral.
+        .py(px(1.))
+        .rounded(tok::radius::BADGE)
+        .bg(ui.subtle)
+        .text_size(tok::mono::LABEL)
+        .text_color(ui.dim)
+        .cursor_pointer()
+        .child(SharedString::from(format!("{} {caret}", opened.count)))
+        // Both halves, like the project's caret: the press is what the row's
+        // drag starts from, and the release is what would open the session.
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+            this.close_agents_menu(cx);
+            this.commit_agents_rename(cx);
+            this.toggle_opener_fold(thread_id, cx);
+            cx.stop_propagation();
+        }))
+        .when(tooltips_ok, |count| {
+            count.tooltip(move |_w, cx| {
+                cx.new(|_| crate::ui_primitives::SplitlaneTooltip {
+                    label: hint.clone(),
+                })
+                .into()
+            })
+        })
+        .into_any_element()
+}
+
+/// What a folded opener says for the sessions under it: the two highest
+/// words of the tally, in triage order.
+///
+/// Two, not all four: the row also carries a name, a count and a dot, and
+/// the lower words are the ones that can wait until the row is unfolded.
+fn folded_opener_tally(tally: FoldedTally, ui: crate::theme::UiColors) -> Option<gpui::AnyElement> {
+    tally_words(
+        folded_opener_words(tally)
+            .into_iter()
+            .map(|(word, tone)| {
+                let tone = match tone {
+                    TallyTone::Failed => ui.agent_error,
+                    TallyTone::Waiting => ui.accent,
+                    TallyTone::Running => ui.faint,
+                    TallyTone::Finished => ui.text_tertiary,
+                };
+                (word, tone)
+            })
+            .collect(),
+        ui,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TallyTone {
+    Failed,
+    Waiting,
+    Running,
+    Finished,
+}
+
+pub(crate) fn folded_opener_words(tally: FoldedTally) -> Vec<(String, TallyTone)> {
+    [
+        (tally.failed, "failed", TallyTone::Failed),
+        (tally.waiting, "waiting", TallyTone::Waiting),
+        (tally.running, "running", TallyTone::Running),
+        (tally.finished, "finished", TallyTone::Finished),
+    ]
+    .into_iter()
+    .filter(|(count, _, _)| *count > 0)
+    .take(2)
+    .map(|(count, word, tone)| (format!("{count} {word}"), tone))
+    .collect()
 }
 
 /// Argument carrier for [`SplitlaneApp::project_header_row`]. Lets the
@@ -1538,6 +1786,27 @@ struct ThreadRowArgs {
     /// The announcement when this session is one that made the queue's edge,
     /// `None` otherwise.
     announcing: Option<crate::app::announce::AnnouncePhase>,
+    /// What the row says about who opened what.
+    under: RowUnderOpener,
+}
+
+/// A session row's place in an opener's bracket, and its count when it is
+/// the opener. Empty for a session that opened nothing and that nobody here
+/// opened.
+#[derive(Default)]
+struct RowUnderOpener {
+    bracket: Option<Bracket>,
+    opened: Option<OpenedMark>,
+}
+
+/// What an opener's row draws for the sessions it opened.
+struct OpenedMark {
+    count: usize,
+    folded: bool,
+    /// What those sessions are doing, for the row to say while folded.
+    tally: FoldedTally,
+    /// The count's tooltip.
+    hint: SharedString,
 }
 
 /// Per-render state shared by every surface row, captured once in
@@ -1819,6 +2088,14 @@ fn folded_project_tally(
     .into_iter()
     .flatten()
     .collect();
+    tally_words(words, ui)
+}
+
+/// A folded row's words, each in its own tone, with a faint dot between.
+fn tally_words(
+    words: Vec<(String, gpui::Hsla)>,
+    ui: crate::theme::UiColors,
+) -> Option<gpui::AnyElement> {
     if words.is_empty() {
         return None;
     }
@@ -2351,32 +2628,11 @@ pub(crate) fn surface_row_order(threads: &[crate::project::Thread]) -> SurfaceRo
 /// A session whose opener has no row among these - it was closed, or it is a
 /// shell and sits in the other group - stays where it was.
 fn under_their_openers(order: Vec<usize>, threads: &[crate::project::Thread]) -> Vec<usize> {
-    let shown: std::collections::HashSet<u64> = order.iter().map(|idx| threads[*idx].id).collect();
-    // Rows that keep a place of their own: everything nobody here opened.
-    // Only those have rows put under them. The rules allow no session that
-    // was opened to open another, but a file can say anything, and a row
-    // moved under a row that is itself being moved would be drawn nowhere.
-    let stands_alone = |thread: &crate::project::Thread| {
-        thread
-            .opened_by
-            .as_ref()
-            .is_none_or(|by| by.id == thread.id || !shown.contains(&by.id))
-    };
-    let alone: std::collections::HashSet<u64> = threads
-        .iter()
-        .filter(|thread| stands_alone(thread))
-        .map(|thread| thread.id)
-        .collect();
-    let opener_of = |idx: usize| {
-        threads[idx]
-            .opened_by
-            .as_ref()
-            .map(|by| by.id)
-            .filter(|opener| *opener != threads[idx].id && alone.contains(opener))
-    };
+    let openers = Openers::among(&order, threads);
+    let opener_of = |idx: usize| openers.of(idx, threads);
     let mut opened: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
     for idx in &order {
-        if let Some(opener) = opener_of(*idx).filter(|opener| shown.contains(opener)) {
+        if let Some(opener) = opener_of(*idx) {
             opened.entry(opener).or_default().push(*idx);
         }
     }
@@ -2389,12 +2645,177 @@ fn under_their_openers(order: Vec<usize>, threads: &[crate::project::Thread]) ->
     }
     let mut out = Vec::with_capacity(order.len());
     for idx in order {
-        if opener_of(idx).is_some_and(|opener| shown.contains(&opener)) {
+        if opener_of(idx).is_some() {
             continue;
         }
         out.push(idx);
         if let Some(rows) = opened.get(&threads[idx].id) {
             out.extend(rows);
+        }
+    }
+    out
+}
+
+/// Which of a project's agent rows have a row put under them, and under
+/// which each other row goes.
+struct Openers {
+    /// Rows that keep a place of their own: everything nobody here opened.
+    /// Only those have rows put under them. The rules allow no session that
+    /// was opened to open another, but a file can say anything, and a row
+    /// moved under a row that is itself being moved would be drawn nowhere.
+    alone: std::collections::HashSet<u64>,
+}
+
+impl Openers {
+    fn among(order: &[usize], threads: &[crate::project::Thread]) -> Self {
+        let shown: std::collections::HashSet<u64> =
+            order.iter().map(|idx| threads[*idx].id).collect();
+        let alone = order
+            .iter()
+            .map(|idx| &threads[*idx])
+            .filter(|thread| {
+                thread
+                    .opened_by
+                    .as_ref()
+                    .is_none_or(|by| by.id == thread.id || !shown.contains(&by.id))
+            })
+            .map(|thread| thread.id)
+            .collect();
+        Self { alone }
+    }
+
+    /// The row `idx` goes under, when its opener has a row here.
+    fn of(&self, idx: usize, threads: &[crate::project::Thread]) -> Option<u64> {
+        threads[idx]
+            .opened_by
+            .as_ref()
+            .map(|by| by.id)
+            .filter(|opener| *opener != threads[idx].id && self.alone.contains(opener))
+    }
+}
+
+/// Which part of the bracket a row draws in its indent: the mark that says a
+/// run of rows is one session and the sessions it opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bracket {
+    /// The opener, or the caption standing where a closed one was.
+    Top,
+    /// A session it opened, with another below it.
+    Mid,
+    /// The last one it opened.
+    Last,
+}
+
+/// One row among a project's agent sessions, with what it says about who
+/// opened what.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentRow {
+    Session {
+        idx: usize,
+        bracket: Option<Bracket>,
+        /// How many sessions this one opened that have rows here, and whether
+        /// the person folded them away. `None` for a session that opened none.
+        opened: Option<Opened>,
+    },
+    /// Where an opener stood before it was closed, while a session it opened
+    /// is still there. Not a session: nothing to select and nothing to click.
+    ClosedOpener { name: String },
+}
+
+/// What an opener's row says about the sessions under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Opened {
+    /// Their indices, first opened first - the rows a folded opener answers
+    /// for.
+    pub(crate) sessions: Vec<usize>,
+    pub(crate) folded: bool,
+}
+
+/// Turn a project's agent rows, already in [`surface_row_order`], into the
+/// rows as drawn: each opener marked with what it opened, a folded opener's
+/// sessions left out, and the sessions of a closed opener gathered under a
+/// caption that names it.
+///
+/// A closed opener is one no session in the project has the id of. Its
+/// sessions used to keep their own places, scattered by age, and the one
+/// thing that said they belonged together was each pane's header. They are
+/// gathered where the first of them stood, oldest first like any opener's.
+/// An opener that is still there but has no row among these - a shell - is
+/// not closed, and its sessions stay where they are, unmarked.
+pub(crate) fn bracketed_rows(
+    order: &[usize],
+    threads: &[crate::project::Thread],
+    folded: &std::collections::HashSet<u64>,
+) -> Vec<AgentRow> {
+    let openers = Openers::among(order, threads);
+    let closed_opener = |idx: usize| {
+        threads[idx]
+            .opened_by
+            .as_ref()
+            .filter(|by| by.id != threads[idx].id && threads.iter().all(|t| t.id != by.id))
+    };
+    let mut orphans: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+    for idx in order {
+        if let Some(by) = closed_opener(*idx) {
+            orphans.entry(by.id).or_default().push(*idx);
+        }
+    }
+    for rows in orphans.values_mut() {
+        rows.sort_unstable();
+    }
+    let under = |rows: &[usize], out: &mut Vec<AgentRow>| {
+        for (at, idx) in rows.iter().enumerate() {
+            out.push(AgentRow::Session {
+                idx: *idx,
+                bracket: Some(if at + 1 == rows.len() {
+                    Bracket::Last
+                } else {
+                    Bracket::Mid
+                }),
+                opened: None,
+            });
+        }
+    };
+    let mut out = Vec::with_capacity(order.len() + orphans.len());
+    let mut at = 0;
+    while at < order.len() {
+        let idx = order[at];
+        at += 1;
+        if let Some(by) = closed_opener(idx) {
+            // The whole group goes where its first row stood.
+            if let Some(rows) = orphans.remove(&by.id) {
+                out.push(AgentRow::ClosedOpener {
+                    name: by.title.clone(),
+                });
+                under(&rows, &mut out);
+            }
+            continue;
+        }
+        let mut sessions = Vec::new();
+        while at < order.len() && openers.of(order[at], threads) == Some(threads[idx].id) {
+            sessions.push(order[at]);
+            at += 1;
+        }
+        if sessions.is_empty() {
+            out.push(AgentRow::Session {
+                idx,
+                bracket: None,
+                opened: None,
+            });
+            continue;
+        }
+        let is_folded = folded.contains(&threads[idx].id);
+        out.push(AgentRow::Session {
+            idx,
+            // A folded opener has nothing under it to be the top of.
+            bracket: (!is_folded).then_some(Bracket::Top),
+            opened: Some(Opened {
+                sessions: sessions.clone(),
+                folded: is_folded,
+            }),
+        });
+        if !is_folded {
+            under(&sessions, &mut out);
         }
     }
     out
@@ -2754,6 +3175,239 @@ mod tests {
         });
         let order = surface_row_order(&threads);
         assert_eq!(titles(&threads, &order.agents), ["newest", "api", "older"]);
+    }
+
+    /// What the rows say, as a reader of the rail would: the bracket part in
+    /// front of each name, the count after an opener's.
+    fn drawn(threads: &[crate::project::Thread], rows: &[AgentRow]) -> Vec<String> {
+        rows.iter()
+            .map(|row| match row {
+                AgentRow::ClosedOpener { name } => format!("\u{250c} ({name} closed)"),
+                AgentRow::Session {
+                    idx,
+                    bracket,
+                    opened,
+                } => {
+                    let mark = match bracket {
+                        Some(Bracket::Top) => "\u{250c} ",
+                        Some(Bracket::Mid) => "\u{251c} ",
+                        Some(Bracket::Last) => "\u{2514} ",
+                        None => "",
+                    };
+                    let count = opened.as_ref().map_or(String::new(), |opened| {
+                        let caret = if opened.folded {
+                            "\u{25b8}"
+                        } else {
+                            "\u{25be}"
+                        };
+                        format!(" {}{caret}", opened.sessions.len())
+                    });
+                    format!("{mark}{}{count}", threads[*idx].title)
+                }
+            })
+            .collect()
+    }
+
+    fn plan_and_what_it_opened() -> Vec<crate::project::Thread> {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let agent =
+            |title: &str| Thread::new_terminal(title, "/w", Some(TerminalAgent::ClaudeCode));
+        let mut threads = vec![agent("older"), agent("plan"), agent("api"), agent("web")];
+        let opened_by = splitlane_config::schema::OpenedBy {
+            id: threads[1].id,
+            title: "plan".to_string(),
+        };
+        threads[2].opened_by = Some(opened_by.clone());
+        threads[3].opened_by = Some(opened_by);
+        threads.push(agent("newest"));
+        threads
+    }
+
+    #[test]
+    fn an_opener_and_what_it_opened_are_drawn_as_one_bracket() {
+        let threads = plan_and_what_it_opened();
+        let order = surface_row_order(&threads).agents;
+        let nothing_folded = std::collections::HashSet::new();
+        assert_eq!(
+            drawn(&threads, &bracketed_rows(&order, &threads, &nothing_folded)),
+            [
+                "newest",
+                "\u{250c} plan 2\u{25be}",
+                "\u{251c} api",
+                "\u{2514} web",
+                "older"
+            ]
+        );
+    }
+
+    /// Folded, the opener keeps its count and its sessions draw no rows. It
+    /// draws no bracket either: there is nothing under it to be the top of.
+    #[test]
+    fn a_folded_opener_keeps_its_count_and_hides_what_it_opened() {
+        let threads = plan_and_what_it_opened();
+        let order = surface_row_order(&threads).agents;
+        let folded = std::collections::HashSet::from([threads[1].id]);
+        let rows = bracketed_rows(&order, &threads, &folded);
+        assert_eq!(
+            drawn(&threads, &rows),
+            ["newest", "plan 2\u{25b8}", "older"]
+        );
+        // What it answers for is still known to the row.
+        let AgentRow::Session {
+            opened: Some(opened),
+            ..
+        } = &rows[1]
+        else {
+            unreachable!("plan opened sessions")
+        };
+        assert_eq!(titles(&threads, &opened.sessions), ["api", "web"]);
+        // A fold remembered for a session that opened nothing changes nothing.
+        let stale = std::collections::HashSet::from([threads[0].id]);
+        assert_eq!(
+            drawn(&threads, &bracketed_rows(&order, &threads, &stale))[4],
+            "older"
+        );
+    }
+
+    /// The opener was closed and two of its sessions are still there. They
+    /// are gathered under a caption that names it, where the first of them
+    /// stood, instead of staying scattered by age with nothing to say they
+    /// belong together.
+    #[test]
+    fn the_sessions_of_a_closed_opener_are_gathered_under_its_name() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let agent =
+            |title: &str| Thread::new_terminal(title, "/w", Some(TerminalAgent::ClaudeCode));
+        let mut threads = vec![
+            agent("api"),
+            agent("between"),
+            agent("web"),
+            agent("newest"),
+        ];
+        let gone = splitlane_config::schema::OpenedBy {
+            id: u64::MAX,
+            title: "plan".to_string(),
+        };
+        threads[0].opened_by = Some(gone.clone());
+        threads[2].opened_by = Some(gone);
+        let order = surface_row_order(&threads).agents;
+        assert_eq!(
+            titles(&threads, &order),
+            ["newest", "web", "between", "api"]
+        );
+        let rows = bracketed_rows(&order, &threads, &std::collections::HashSet::new());
+        assert_eq!(
+            drawn(&threads, &rows),
+            [
+                "newest",
+                "\u{250c} (plan closed)",
+                "\u{251c} api",
+                "\u{2514} web",
+                "between"
+            ]
+        );
+    }
+
+    /// An opener that is a shell is still there, in the other group. Its
+    /// sessions are not those of a closed one, and say nothing false.
+    #[test]
+    fn a_session_a_shell_opened_is_not_drawn_as_orphaned() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let mut threads = vec![
+            Thread::new_terminal("lead", "/w", None),
+            Thread::new_terminal("api", "/w", Some(TerminalAgent::ClaudeCode)),
+        ];
+        threads[1].opened_by = Some(splitlane_config::schema::OpenedBy {
+            id: threads[0].id,
+            title: "lead".to_string(),
+        });
+        let order = surface_row_order(&threads).agents;
+        let rows = bracketed_rows(&order, &threads, &std::collections::HashSet::new());
+        assert_eq!(drawn(&threads, &rows), ["api"]);
+    }
+
+    /// The same promise as for the order: whatever the file says, every
+    /// session is drawn once.
+    #[test]
+    fn no_row_is_lost_between_the_order_and_the_bracket() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let agent =
+            |title: &str| Thread::new_terminal(title, "/w", Some(TerminalAgent::ClaudeCode));
+        let by = |thread: &Thread| {
+            Some(splitlane_config::schema::OpenedBy {
+                id: thread.id,
+                title: thread.title.clone(),
+            })
+        };
+        let mut threads = vec![agent("plan"), agent("api"), agent("deeper"), agent("loop")];
+        threads[1].opened_by = by(&threads[0]);
+        threads[2].opened_by = by(&threads[1]);
+        threads[3].opened_by = by(&threads[3]);
+        let order = surface_row_order(&threads).agents;
+        let rows = bracketed_rows(&order, &threads, &std::collections::HashSet::new());
+        let mut seen: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| match row {
+                AgentRow::Session { idx, .. } => Some(*idx),
+                AgentRow::ClosedOpener { .. } => None,
+            })
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(seen, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn the_count_says_what_was_opened_and_what_is_driven() {
+        assert_eq!(opener_hint_text(1, &[]), "Opened 1 session");
+        assert_eq!(opener_hint_text(3, &[]), "Opened 3 sessions");
+        assert_eq!(
+            opener_hint_text(3, &["api".to_string()]),
+            "Opened 3 sessions \u{b7} drives api"
+        );
+        assert_eq!(
+            opener_hint_text(2, &["api".to_string(), "web".to_string()]),
+            "Opened 2 sessions \u{b7} drives api, web"
+        );
+    }
+
+    /// A folded opener says the two highest words for what it opened, in
+    /// triage order, and nothing when there is nothing to say.
+    #[test]
+    fn a_folded_opener_says_its_two_highest_words() {
+        let words = |tally: FoldedTally| -> Vec<String> {
+            folded_opener_words(tally)
+                .into_iter()
+                .map(|(word, _)| word)
+                .collect()
+        };
+        let all_running = FoldedTally {
+            running: 7,
+            ..FoldedTally::default()
+        };
+        assert_eq!(words(all_running), ["7 running"]);
+        let one_waits = FoldedTally {
+            waiting: 1,
+            running: 6,
+            ..FoldedTally::default()
+        };
+        assert_eq!(words(one_waits), ["1 waiting", "6 running"]);
+        let everything = FoldedTally {
+            failed: 1,
+            waiting: 2,
+            running: 3,
+            finished: 4,
+        };
+        assert_eq!(words(everything), ["1 failed", "2 waiting"]);
+        assert_eq!(
+            folded_opener_words(one_waits)[0].1,
+            TallyTone::Waiting,
+            "a waiting session keeps its own tone when folded"
+        );
+        assert!(words(FoldedTally::default()).is_empty());
     }
 
     #[test]

@@ -718,6 +718,9 @@ impl SplitlaneApp {
             self.drive
                 .keep_only(|id| crate::project::find_surface(workspaces, id).is_some());
         }
+        self.folded_openers.retain(|thread_id| {
+            crate::project::find_surface(&self.workspaces, *thread_id).is_some()
+        });
         self.drive_status_before.retain(|thread_id, _| {
             crate::project::find_surface(&self.workspaces, *thread_id).is_some()
         });

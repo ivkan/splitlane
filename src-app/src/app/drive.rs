@@ -121,6 +121,18 @@ impl DriveBook {
             .map(|((asker, _), _)| *asker)
     }
 
+    /// The sessions `asker` is allowed to drive, in the order of their ids.
+    pub(crate) fn driven_by(&self, asker: u64) -> Vec<u64> {
+        let mut targets: Vec<u64> = self
+            .pairs
+            .iter()
+            .filter(|((by, _), standing)| *by == asker && **standing == Standing::Allowed)
+            .map(|((_, target), _)| *target)
+            .collect();
+        targets.sort_unstable();
+        targets
+    }
+
     /// The sessions `asker` has an unanswered question about, in the order of
     /// their ids so the rows of the question do not move between frames.
     pub(crate) fn asked_by(&self, asker: u64) -> Vec<u64> {
@@ -188,6 +200,7 @@ mod tests {
         assert!(!book.has_questions(PLAN));
         assert_eq!(book.driver_of(API), Some(PLAN));
         assert_eq!(book.driver_of(WEB), None);
+        assert_eq!(book.driven_by(PLAN), [API]);
         // Nothing is standing, so there is nothing to answer.
         assert!(!book.answer(PLAN, API, false));
         assert_eq!(book.standing(PLAN, API), Some(Standing::Allowed));

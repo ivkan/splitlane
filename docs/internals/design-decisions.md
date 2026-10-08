@@ -1012,10 +1012,40 @@ first opened first (`agents_sidebar::under_their_openers`) - the one place
 the rail is not newest-first, because it is a list of what was handed out. A
 pin on the opener takes them with it; a pin on one of them does not lift it
 out. The pane of each says `opened by ‹name›` in its header, with the
-opener's name as it is now. When the opener is closed its last name is
-written into their records, since from then on that is the only place it
-exists, and the header says `opened by ‹name› · closed`; with nothing to sit
-under, those rows keep their own places.
+opener's name as it is now.
+
+**What joins them is a bracket, not an indent and not a word.** The rows
+stay at the depth of every session, and in the indent each already has runs
+a one-pixel rule in the role of a group's rule (`agents_sidebar::bracket_mark`):
+down from the opener, a tick at each session it opened, a corner at the
+last. An indent was the first thing tried on paper and costs a dozen pixels
+of every name at the narrowest rail, on up to nine rows at once; `from plan`
+on each row stands exactly where the state word is. The bracket takes no
+width at all. It is told from a group's rule, which is two pixels and runs
+through project rows, by its ticks.
+
+The opener's row carries a count of what it opened, and the count folds
+them: a target of its own, because the row itself opens the opener in a
+pane like any session row. Folding is the person's and is remembered for
+that opener while the app runs; nothing folds by itself, and going to a
+folded session - from `Activity`, a notification, the palette - opens the
+fold (`select_thread`). Folded, the opener says for the rows it is not
+drawing what a folded project says for its own, the two highest words of
+`failed`, `waiting`, `running` and unread `finished`, where its agent's name
+was. It counts only what it opened: its own state is on its own dot, and a
+session it merely drives keeps its own row. Under the pointer the count
+says `Opened 3 sessions · drives api`, the one place that lists both.
+
+When the opener is closed its last name is written into the records of what
+it opened, since from then on that is the only place it exists. Their
+headers say `opened by ‹name› · closed`, and in the rail a caption with the
+same words stands where the opener was, with the bracket's top, for as long
+as one of them is left (`agents_sidebar::bracketed_rows`). They were first
+left in their own places, scattered by age like ordinary sessions - at the
+very moment a person coming back to the machine most needs to be told they
+did not open them. An opener that is still there but is a shell, and so
+sits in the other group of rows, is not closed: its sessions stay where
+they are and are not marked.
 
 **What it does not claim.** A process of the same user that runs code inside a
 pane is, as far as the process table can tell, that pane - and it is: that is

@@ -134,6 +134,12 @@ impl SplitlaneApp {
         }
         let cwd = project.cwd.clone();
         let thread = &project.threads[thread_idx];
+        // Going to a session whose opener is folded opens the fold: Activity,
+        // a notification and the palette all arrive here, and a session that
+        // was gone to has to have a row to be selected in.
+        if let Some(opener) = thread.opened_by.as_ref().map(|by| by.id) {
+            self.folded_openers.remove(&opener);
+        }
         let thread_id = thread.id;
         // An agent and a shell are different kinds to the ladder - "the left
         // half stays conversation, the right half stays terminal" is the whole
