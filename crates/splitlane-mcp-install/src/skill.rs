@@ -21,7 +21,8 @@
 //! earlier version, and is replaced freely; one that does not match was
 //! edited by hand, and is left alone unless `--force` is given. A file with
 //! no such line at all was not put there by this command and is treated the
-//! same way.
+//! same way. With `--force` the edited file is not destroyed either: it is
+//! set aside beside the skill under a name no earlier backup has.
 //!
 //! Exit codes are those of `splitlane mcp`: `0` done (including "nothing
 //! detected"), `1` when a place could not be written or was left alone
@@ -49,7 +50,8 @@ Usage:
   splitlane skill uninstall [--force]   Remove it again
   splitlane skill status                Report where it is installed
 
-A copy that was edited by hand is left alone unless --force is given.";
+A copy that was edited by hand is left alone unless --force is given, and
+is then kept beside the skill as SKILL.md.bak.";
 
 /// One place a skill can be installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,7 +206,36 @@ pub enum InstallOutcome {
     Error(String),
 }
 
+/// Set an edited file aside under a name nothing else has: `SKILL.md.bak`,
+/// then `SKILL.md.bak.1` and so on. Moved, not copied, so the caller writes
+/// or leaves nothing in its place as it chooses.
+///
+/// Never over an existing backup. An earlier one can be the only copy of
+/// what a person wrote, and a fixed name would let the second forced
+/// install destroy what the first one saved.
+fn set_aside(file: &std::path::Path) -> std::io::Result<PathBuf> {
+    let name = |n: u32| {
+        let mut name = file.as_os_str().to_owned();
+        name.push(if n == 0 {
+            ".bak".to_string()
+        } else {
+            format!(".bak.{n}")
+        });
+        PathBuf::from(name)
+    };
+    let free = (0..)
+        .map(name)
+        .find(|candidate| !candidate.exists())
+        .unwrap_or_else(|| name(0));
+    std::fs::rename(file, &free)?;
+    Ok(free)
+}
+
 /// Write the skill at `place`.
+///
+/// A copy of ours, current or from another version, is replaced with no
+/// backup: there is nothing in it a person wrote. An edited one is replaced
+/// only with `force`, and is set aside first.
 pub fn install_at(place: &SkillPlace, force: bool) -> InstallOutcome {
     let before = state_at(place);
     match before {
@@ -213,11 +244,16 @@ pub fn install_at(place: &SkillPlace, force: bool) -> InstallOutcome {
         SkillState::Modified if !force => return InstallOutcome::LeftModified,
         SkillState::NotInstalled | SkillState::Stale | SkillState::Modified => {}
     }
-    // Backs up what was there before replacing it, which is what makes
-    // `--force` over an edited copy something a person can take back.
-    match crate::io::write_if_changed(&place.file(), installed_text().as_bytes()) {
-        Ok(_) if before == SkillState::NotInstalled => InstallOutcome::Installed,
-        Ok(_) => InstallOutcome::Updated,
+    let file = place.file();
+    let written = crate::io::with_config_lock(&file, || {
+        if before == SkillState::Modified {
+            set_aside(&file)?;
+        }
+        crate::io::write_atomic(&file, installed_text().as_bytes())
+    });
+    match written {
+        Ok(()) if before == SkillState::NotInstalled => InstallOutcome::Installed,
+        Ok(()) => InstallOutcome::Updated,
         Err(error) => InstallOutcome::Error(format!("{error:#}")),
     }
 }
@@ -226,6 +262,9 @@ pub fn install_at(place: &SkillPlace, force: bool) -> InstallOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UninstallOutcome {
     Removed,
+    /// An edited copy was taken out with `--force`, and kept under this
+    /// name.
+    SetAside(PathBuf),
     NothingToRemove,
     NotDetected,
     /// Edited by hand and `--force` was not given. Nothing was removed.
@@ -234,17 +273,27 @@ pub enum UninstallOutcome {
 }
 
 /// Remove the skill from `place`: its file, and its directory when that
-/// leaves it empty. A backup made by an earlier install is not ours to
-/// delete - it can be the only copy of what a person wrote - so a directory
-/// that still holds one stays.
+/// leaves it empty. A copy of ours is deleted. An edited one, taken out
+/// with `force`, is set aside instead - the agent stops reading it, and
+/// what the person wrote is still there. A directory that holds such a file
+/// stays.
 pub fn uninstall_at(place: &SkillPlace, force: bool) -> UninstallOutcome {
-    match state_at(place) {
+    let before = state_at(place);
+    match before {
         SkillState::NotDetected => return UninstallOutcome::NotDetected,
         SkillState::NotInstalled => return UninstallOutcome::NothingToRemove,
         SkillState::Modified if !force => return UninstallOutcome::LeftModified,
         SkillState::Installed | SkillState::Stale | SkillState::Modified => {}
     }
     let file = place.file();
+    if before == SkillState::Modified {
+        return match set_aside(&file) {
+            Ok(kept) => UninstallOutcome::SetAside(kept),
+            Err(error) => {
+                UninstallOutcome::Error(format!("set aside {} failed: {error}", file.display()))
+            }
+        };
+    }
     if let Err(error) = std::fs::remove_file(&file) {
         return UninstallOutcome::Error(format!("remove {} failed: {error}", file.display()));
     }
@@ -356,6 +405,9 @@ fn run_with(
             Command::Uninstall => {
                 let _ = match uninstall_at(place, force) {
                     UninstallOutcome::Removed => writeln!(out, "{id}: removed"),
+                    UninstallOutcome::SetAside(kept) => {
+                        writeln!(out, "{id}: removed (kept as {})", kept.display())
+                    }
                     UninstallOutcome::NothingToRemove => {
                         writeln!(out, "{id}: not installed (nothing to remove)")
                     }
@@ -366,7 +418,8 @@ fn run_with(
                         failed = true;
                         writeln!(
                             out,
-                            "{id}: left alone ({file}) - edited by hand; --force removes it"
+                            "{id}: left alone ({file}) - edited by hand; \
+                             --force removes it and keeps a .bak"
                         )
                     }
                     UninstallOutcome::Error(error) => {
@@ -488,7 +541,7 @@ mod tests {
             std::fs::metadata(&file).unwrap().modified().unwrap(),
             written
         );
-        assert!(!file.with_extension("md.bak").exists());
+        assert!(!file.parent().unwrap().join("SKILL.md.bak").exists());
     }
 
     /// A copy an earlier version wrote, untouched since, is replaced without
@@ -511,6 +564,50 @@ mod tests {
         let (code, out, _) = run(&["install"], &places);
         assert_eq!(code, 0);
         assert!(out.contains("claude-code: updated"), "{out}");
+        assert_eq!(state_at(&places[0]), SkillState::Installed);
+        // Nothing a person wrote was in it, so nothing is kept of it.
+        assert!(!file.parent().unwrap().join("SKILL.md.bak").exists());
+    }
+
+    /// What a forced install saved is still there after the next update,
+    /// and after a second forced install: no backup is written over one.
+    #[test]
+    fn a_backup_is_never_written_over() {
+        let (_dir, places) = home();
+        let file = places[0].file();
+        let dir = file.parent().unwrap().to_path_buf();
+        run(&["install"], &places);
+        std::fs::write(&file, "first edit\n").unwrap();
+        run(&["install", "--force"], &places);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md.bak")).unwrap(),
+            "first edit\n"
+        );
+
+        // An update of an unedited copy leaves the backup as it is.
+        let old = "an older text\n";
+        std::fs::write(
+            &file,
+            format!("{old}{MARKER_PREFIX}{}{MARKER_SUFFIX}\n", fingerprint(old)),
+        )
+        .unwrap();
+        run(&["install"], &places);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md.bak")).unwrap(),
+            "first edit\n"
+        );
+
+        // A second edit forced over goes beside the first.
+        std::fs::write(&file, "second edit\n").unwrap();
+        run(&["install", "--force"], &places);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md.bak")).unwrap(),
+            "first edit\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md.bak.1")).unwrap(),
+            "second edit\n"
+        );
         assert_eq!(state_at(&places[0]), SkillState::Installed);
     }
 
@@ -582,6 +679,25 @@ mod tests {
         run(&["uninstall"], &places);
         assert!(!file.exists());
         assert!(file.parent().unwrap().join("SKILL.md.bak").exists());
+    }
+
+    /// Forcing an edited copy out takes it away from the agent and keeps it
+    /// for the person.
+    #[test]
+    fn a_forced_uninstall_keeps_what_was_edited() {
+        let (_dir, places) = home();
+        run(&["install"], &places);
+        let file = places[0].file();
+        std::fs::write(&file, "my own rules\n").unwrap();
+        let (code, out, _) = run(&["uninstall", "--force"], &places);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("claude-code: removed (kept as "), "{out}");
+        assert!(!file.exists());
+        assert_eq!(
+            std::fs::read_to_string(file.parent().unwrap().join("SKILL.md.bak")).unwrap(),
+            "my own rules\n"
+        );
+        assert_eq!(state_at(&places[0]), SkillState::NotInstalled);
     }
 
     #[test]

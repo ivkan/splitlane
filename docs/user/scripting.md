@@ -334,7 +334,7 @@ on. `status` reports one of:
 | `not installed` | The directory is there and the skill is not |
 | `installed` | The copy this version of Splitlane writes |
 | `stale` | A copy written by another version and not edited since. `install` replaces it |
-| `modified` | Edited by hand, or a file at that path Splitlane did not write. `install` and `uninstall` leave it alone and exit `1`; with `--force` they go ahead, and `install` keeps the old file beside the new one as `SKILL.md.bak` |
+| `modified` | Edited by hand, or a file at that path Splitlane did not write. `install` and `uninstall` leave it alone and exit `1`; with `--force` they go ahead, and the edited file is kept beside the skill as `SKILL.md.bak` (`SKILL.md.bak.1` if that name is taken) |
 
 The exit code is `0` when everything asked for was done or there was nothing
 to do, `1` when a copy could not be written or was left alone, `2` for a
