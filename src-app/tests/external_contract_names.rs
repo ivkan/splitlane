@@ -284,6 +284,14 @@ fn opening_a_session_keeps_its_published_names() {
         "a write that asked a person is exit code 9"
     );
     assert!(
+        cli.contains("pub const EXIT_INTERRUPTED: i32 = 10;"),
+        "a wait that ended on a stopped turn is exit code 10"
+    );
+    assert!(
+        read("src-app/src/cli/wait_rail.rs").contains("Outcome::Interrupted => \"interrupted\","),
+        "`wait --until turn-end` names a stopped turn `interrupted`"
+    );
+    assert!(
         handler.matches("value[\"driven_by\"]").count() >= 2,
         "`surface.list` and `surface.status` both say which session drives one"
     );

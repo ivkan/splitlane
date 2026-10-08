@@ -120,7 +120,7 @@ configuration files:
   | --- | --- | --- |
   | The surface closed | `closed` | `1` |
   | The surface has no `rail` | `no_rail` | `7` |
-  | A run past the baseline has ended and the status is `idle` | `finished`, or `failed` when that run's `last_outcome` is `failed`. A run that was stopped is reported `finished` here too; `last_outcome` says `interrupted` | `0`, or `6` |
+  | A run past the baseline has ended and the status is `idle` | `finished`; `failed` when that run's `last_outcome` is `failed`; `interrupted` when it is `interrupted` - the turn was stopped before it finished, by a person or by `interrupt`, and there is no answer to read | `0`, `6`, or `10` |
   | `rail.exited`, or the status is `failed` | `failed` | `6` |
   | The tier is `T3` | `no_turn_signal` after `--start-grace`, or `degraded` at once if the surface was on a higher tier earlier in this wait | `7` |
   | The status is `waiting` | `waiting`, with the question in `message` when known | `5` |
@@ -215,6 +215,7 @@ No match, or several matches where one is required, exits with code `3`.
 | `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`). `answer`: no reader for that agent's conversation. `interrupt`: no interrupt key is known for that agent |
 | `8` | A rule refused the call and nothing was done. The message names the reason; see [Refusals](#refusals). Repeating the call gets the same answer |
 | `9` | The target is a session a person opened, and the person is being asked whether the caller may send it messages. Nothing was written; `wait --until allowed` waits for the answer |
+| `10` | `wait --until turn-end`: the turn was stopped before it finished. The agent is idle and takes the next prompt; there is no answer to read |
 | `130` | `wait --idle` interrupted with `Ctrl-C` |
 
 ## Gates

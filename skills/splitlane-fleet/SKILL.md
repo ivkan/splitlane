@@ -294,7 +294,10 @@ splitlane close reviewer
 is **asking a person a question** - pass the question on word for word and
 stop; you cannot answer it and nothing can be sent to that session until a
 person has - `6` when the run failed, `7` when the agent gives no turn
-signal (use `--idle --pattern` from section 3), and `4` on timeout: wait
+signal (use `--idle --pattern` from section 3), `10` when the turn was
+stopped before it finished - a person pressed Esc there, or it was
+interrupted: there is no answer to read, so say so and ask what the session
+should do next rather than sending the task again - and `4` on timeout: wait
 again, do not send the task again. Use `--timeout 540`, not more: a shell
 call from an agent is cut off at ten minutes.
 
@@ -388,6 +391,7 @@ answered.
 | 7 | the agent gives no signal for what was asked: no turn end, or no interrupt key |
 | 8 | a rule refused the call and nothing was done - tell the person, do not retry |
 | 9 | the person is being asked whether you may write into a session they opened |
+| 10 | `wait --until turn-end`: the turn was stopped before it finished; no answer to read |
 
 When a command exits non-zero, read the message, fix the target or surface the
 problem to the user - do not retry the identical command.

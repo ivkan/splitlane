@@ -28,6 +28,10 @@ Notable changes to Splitlane are recorded here. The format follows
   otherwise. Claude Code only for now: other agents are refused with
   `no_interrupt` (exit `7`). `rail.last_outcome` has a third word,
   `interrupted`.
+- `wait --until turn-end` reports a turn that was stopped before it finished
+  as `interrupted`, with exit code `10`, whether a person pressed Esc or
+  `interrupt` did. It used to say `finished` and exit `0`, which sent a
+  script on to read an answer the stopped turn never gave.
 - An agent can work through a session **you** opened, once you say it may.
   When it sends to one, nothing is written and its own pane shows a strip
   under the header - `plan wants to send messages to api`, with `Allow` and

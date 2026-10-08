@@ -681,7 +681,12 @@ yet. A surface that had a better source earlier in the same wait and lost it
 is refused at once. And waiting for a person is returned to the caller with
 its own exit code and never waited through by default: it is the middle of a
 run, and the one thing a script must not do with it is carry on as if the
-agent had answered.
+agent had answered. A turn that was stopped is returned the same way and for
+the same reason, as `interrupted` with exit 10: it ended, the agent is idle,
+and there is no answer. It was `finished` and exit 0 at first, with the word
+only under `rail.last_outcome`; a caller waiting on a session whose turn a
+person stopped by hand then went on to read an answer that was not there, or
+the one from the turn before.
 
 **The last answer is read by the CLI, from the agent's own file, never from
 scrollback.** `surface.status` says where the conversation is (`rail.agent`,

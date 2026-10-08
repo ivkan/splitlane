@@ -21,8 +21,8 @@ use splitlane_ipc_client::{IpcClient, IpcTransport, StreamEvent};
 use super::selector::{resolve_all, resolve_target};
 use super::wait_cmd::MatchMode;
 use super::{
-    CliError, EXIT_AGENT_FAILED, EXIT_NEEDS_PERSON, EXIT_NO_TURN_SIGNAL, EXIT_OK, EXIT_RUNTIME,
-    EXIT_TIMEOUT,
+    CliError, EXIT_AGENT_FAILED, EXIT_INTERRUPTED, EXIT_NEEDS_PERSON, EXIT_NO_TURN_SIGNAL, EXIT_OK,
+    EXIT_RUNTIME, EXIT_TIMEOUT,
 };
 
 /// How often `surface.status` is asked when no event wakes the loop sooner.
@@ -105,6 +105,9 @@ impl Observation {
 enum Outcome {
     /// The turn ended and the agent is idle.
     Finished,
+    /// The turn was stopped before it finished. The agent is idle, and there
+    /// is no answer to read.
+    Interrupted,
     /// `--state`: the status word is one of those asked for.
     Matched,
     /// The agent is waiting for a person. Not an answer and not an end.
@@ -128,6 +131,7 @@ impl Outcome {
     fn wire_str(&self) -> &'static str {
         match self {
             Outcome::Finished => "finished",
+            Outcome::Interrupted => "interrupted",
             Outcome::Matched => "matched",
             Outcome::Waiting => "waiting",
             Outcome::Failed => "failed",
@@ -143,6 +147,7 @@ impl Outcome {
     fn exit_code(&self) -> i32 {
         match self {
             Outcome::Finished | Outcome::Matched => EXIT_OK,
+            Outcome::Interrupted => EXIT_INTERRUPTED,
             Outcome::Waiting => EXIT_NEEDS_PERSON,
             Outcome::Failed => EXIT_AGENT_FAILED,
             Outcome::Closed | Outcome::NoTurn => EXIT_RUNTIME,
@@ -153,7 +158,10 @@ impl Outcome {
 
     /// Worst first, for the exit code of a wait over several surfaces: a
     /// failure outranks a question, which outranks a surface that could not be
-    /// waited on, which outranks running out of time.
+    /// waited on, which outranks running out of time. A stopped turn comes
+    /// last of the ones that are not success: every other outcome asks for
+    /// something to be done first, and each surface's own word is in the
+    /// report either way.
     fn severity(&self) -> u8 {
         match self {
             Outcome::Failed => 6,
@@ -161,6 +169,7 @@ impl Outcome {
             Outcome::NoRail | Outcome::NoTurnSignal | Outcome::Degraded => 4,
             Outcome::Closed | Outcome::NoTurn => 3,
             Outcome::Timeout => 2,
+            Outcome::Interrupted => 1,
             Outcome::Finished | Outcome::Matched => 0,
         }
     }
@@ -192,7 +201,8 @@ struct Track {
 /// 1. a closed surface or one with no rail ends the wait at once;
 /// 2. a run counted past the baseline, with the surface idle, is the turn's
 ///    end - checked before anything about the source, because the count was
-///    made by a source that could make it;
+///    made by a source that could make it. How it ended is the rail's word
+///    for that run: finished, failed, or stopped before it finished;
 /// 3. a failed run or an agent that is gone is a failure;
 /// 4. a surface nothing can report a turn ending for is refused - after the
 ///    grace when it never had such a source, at once when it lost one;
@@ -226,10 +236,10 @@ fn decide_turn_end(
     let ended = rail.runs_ended > baseline;
 
     if ended && status == "idle" {
-        return Step::Done(if rail.last_outcome.as_deref() == Some("failed") {
-            Outcome::Failed
-        } else {
-            Outcome::Finished
+        return Step::Done(match rail.last_outcome.as_deref() {
+            Some("failed") => Outcome::Failed,
+            Some("interrupted") => Outcome::Interrupted,
+            _ => Outcome::Finished,
         });
     }
     // A failure standing from before a named baseline is the previous run's;
@@ -514,6 +524,9 @@ fn finish((report, code): (Value, i32)) -> Result<i32, CliError> {
         Some("waiting") => {
             eprintln!("splitlane: the agent is waiting for a person; answer it in its own pane.")
         }
+        Some("interrupted") => eprintln!(
+            "splitlane: the turn was stopped before it finished; there is no answer to read."
+        ),
         _ => {}
     }
     Ok(code)
@@ -618,6 +631,31 @@ mod tests {
             );
         }
         assert_eq!(Outcome::Finished.exit_code(), EXIT_OK);
+    }
+
+    /// A stopped turn ended too, and left nothing to read: the caller that
+    /// would go on to `answer` has to be told it is not that kind of end.
+    #[test]
+    fn a_turn_that_was_stopped_is_not_reported_as_finished() {
+        let mut stopped = rail("idle", "T1", 8);
+        if let Observation::Rail(rail) = &mut stopped {
+            rail.last_outcome = Some("interrupted".to_string());
+        }
+        assert_eq!(
+            decide(&stopped, Some(7), SOON),
+            Step::Done(Outcome::Interrupted)
+        );
+        assert_eq!(Outcome::Interrupted.wire_str(), "interrupted");
+        assert_eq!(Outcome::Interrupted.exit_code(), EXIT_INTERRUPTED);
+        // The stop standing from before the baseline is the previous run's.
+        let mut earlier = rail("idle", "T1", 7);
+        if let Observation::Rail(rail) = &mut earlier {
+            rail.last_outcome = Some("interrupted".to_string());
+        }
+        assert_eq!(decide(&earlier, Some(7), SOON), Step::Continue);
+        // Over several surfaces anything that needs acting on outranks it.
+        assert!(Outcome::Interrupted.severity() > Outcome::Finished.severity());
+        assert!(Outcome::Interrupted.severity() < Outcome::Timeout.severity());
     }
 
     /// A turn that ended in an error ended, and is reported as a failure.

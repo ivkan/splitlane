@@ -56,6 +56,11 @@ pub const EXIT_REFUSED: i32 = 8;
 /// refusal: the answer is still to come, and `wait --until allowed` waits
 /// for it.
 pub const EXIT_ASKED_PERSON: i32 = 9;
+/// `wait --until turn-end`: the turn was stopped before it finished, by a
+/// person or by `interrupt`. Not `0`, because `0` says there is an answer to
+/// read and a stopped turn left none; not a failure either, since the agent
+/// is idle and takes the next prompt.
+pub const EXIT_INTERRUPTED: i32 = 10;
 
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
@@ -449,9 +454,9 @@ enum Commands {
         all: bool,
         /// Wait for what the rail says rather than for output: `turn-end`
         /// returns when the agent's turn is over (exit 0), when it is waiting
-        /// for a person (5), when the run failed (6), or when nothing can
-        /// report a turn ending for that surface (7). Works with `--any` and
-        /// `--all`.
+        /// for a person (5), when the run failed (6), when nothing can
+        /// report a turn ending for that surface (7), or when the turn was
+        /// stopped before it finished (10). Works with `--any` and `--all`.
         #[arg(long, value_enum, conflicts_with_all = ["idle", "pattern", "for_ms", "state"])]
         until: Option<WaitUntil>,
         /// Wait until the rail's status word is one of these, comma separated:

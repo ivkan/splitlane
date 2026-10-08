@@ -108,6 +108,7 @@ case $? in
   5) echo "the agent is asking a person something" ;;
   6) echo "the run failed" ;;
   7) echo "no turn signal for this agent; use --report-file" ;;
+  10) echo "the turn was stopped before it finished" ;;
   4) echo "still running" ;;
 esac
 ```
@@ -321,7 +322,10 @@ The loop, for an agent working from its own pane:
    the session is asking a person a question: pass it on, do not answer it,
    and nothing can be sent to it until a person has. On exit `7` the agent
    has no turn signal; fall back to
-   `splitlane wait --match <target> --idle --pattern '<sentinel>'`.
+   `splitlane wait --match <target> --idle --pattern '<sentinel>'`. Exit
+   `10` means the turn was stopped before it finished - somebody pressed
+   Esc in that pane, or it was interrupted: there is no answer to read, and
+   the session is idle and waiting for a task.
 3. **Read.** `splitlane answer reviewer --after <N>` for Claude Code and
    Codex; `splitlane read <target>` or a report file for the others.
 4. **Hand over the next task.** `splitlane send reviewer "<task>" --submit`.
