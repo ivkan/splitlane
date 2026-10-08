@@ -92,8 +92,10 @@ approval UI to keep in sync.
   started from the Launch pad (`⇧⌘L`) or with `splitlane up`.
 - **For agents.** A read-only MCP bridge (`splitlane mcp install`) lets one
   agent read another pane's output, and a local CLI and JSON-RPC socket
-  (`splitlane ls`, `read`, `send`, `wait`, `watch`) script the app. Anything
-  that types into a pane is off until you enable it.
+  (`splitlane ls`, `read`, `send`, `wait`, `watch`) script the app. An agent
+  in a pane can open sessions of its own and work through them - the next
+  section. A script outside a pane types into one only when you start
+  Splitlane with that switched on.
 
 Supported agents: Claude Code, Codex, OpenCode, Gemini, Cursor, Copilot, Amp,
 Pi, Hermes Agent, Grok, Kiro, Antigravity, CodeBuddy, Factory, Qoder and
@@ -102,6 +104,36 @@ Openclaw. Any other CLI runs in an ordinary shell pane.
 Keys above are macOS; Linux and Windows use `Ctrl`-based equivalents that do
 not collide with readline. The full list is in Settings → Shortcuts and
 [docs/user/keybindings.md](docs/user/keybindings.md).
+
+## One agent working through others
+
+An agent in a pane can open agent sessions of its own: hand each a task, wait
+for its turn to end, read the answer, stop it when the plan changes, close it.
+Nothing has to be switched on, because it reaches only what it opened - which
+is no more than it could do by starting a second agent in its own shell. Done
+through Splitlane, each of those sessions is a row in the rail with a status
+you can see.
+
+- **You can tell whose a session is.** Sessions sit under the one that opened
+  them, joined by a bracket in the margin. The opener's row counts them, and
+  the count folds them away; folded, the row says what they are doing. Each
+  one's pane says `opened by <name>`.
+- **Eight at most, one level deep.** A session that was opened by another
+  cannot open any.
+- **A session you opened is yours.** When an agent sends to one, nothing is
+  written and you are asked, in that agent's own pane: `plan wants to send
+  messages to api`. Your answer holds for that pair of sessions until you quit.
+  `Stop plan driving` takes it back, and an agent never closes a session you
+  opened.
+- **A question meant for you reaches you.** No agent types into a session
+  that is waiting for a person, and the notification says which session
+  opened the one that is asking.
+- **What an agent typed says so.** Text one session sends another starts with
+  `[Splitlane] Sent by the agent session "<name>", not typed by a person.`
+
+`splitlane skill install` writes a skill that teaches Claude Code and Codex
+these commands. Splitlane does not install it by itself. The commands and
+their exit codes are in [Scripting](docs/user/scripting.md#coordinating-agents-from-a-lead-agent).
 
 ## Next to its neighbours
 
@@ -227,7 +259,9 @@ DirectX on Windows.
 **Does it run agents for me, or in the cloud?**
 Neither. The agents are the CLIs installed on your machine, signed in with your
 own accounts, running in ordinary terminals. Splitlane never sends a prompt on
-its own; scripted input is off until you enable it.
+its own. An agent can send one to a session it opened itself, and to a session
+you opened only after you say it may; a script outside a pane types into one
+only when you start Splitlane with that switched on.
 
 **Can other agents read my terminals?**
 Only agents you register with the MCP bridge, and only to read. Output it hands

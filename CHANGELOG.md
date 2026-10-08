@@ -65,6 +65,11 @@ Notable changes to Splitlane are recorded here. The format follows
 - Every pane exports `SPLITLANE_CLI`, the absolute path of the `splitlane`
   executable it belongs to, so a script or an agent can reach the instance
   it runs in where `splitlane` is not on `PATH`.
+- `splitlane skill install | status | uninstall` writes the fleet skill into
+  the skills directory of Claude Code, of Codex and the shared `~/.agents`,
+  each only where that directory exists. A copy you edited is reported as
+  `modified` and left alone unless you pass `--force`. Nothing installs the
+  skill by itself.
 - The skill in `skills/splitlane-fleet` teaches an agent to open its own
   sessions, wait on them, read their answers, redirect and close them.
 

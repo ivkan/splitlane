@@ -47,6 +47,7 @@ configuration files:
 | --- | --- |
 | `splitlane mcp install \| status \| uninstall` | [MCP bridge](../../mcp-bridge.md) |
 | `splitlane hooks setup \| status \| uninstall` | [Agent hooks](../hooks.md) |
+| `splitlane skill install \| status \| uninstall` | [Coordinating agents from a lead agent](../scripting.md#coordinating-agents-from-a-lead-agent) |
 
 ### Verb details
 

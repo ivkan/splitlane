@@ -21,6 +21,8 @@
 //!   concrete per-agent writers (`default_writers`).
 //! - [`cli`] - [`run_cli`]: parse the subcommand, drive every writer,
 //!   format a per-agent report, return a process exit code.
+//! - [`skill`] - [`run_skill_cli`]: `splitlane skill install | status |
+//!   uninstall`, the fleet skill as a file in each agent's skills directory.
 //!
 //! The whole crate is panic-free in non-test paths (workspace lints:
 //! `panic = deny`, `unwrap_used`/`expect_used` = warn). Errors flow through
@@ -38,6 +40,7 @@ pub mod detect;
 pub mod hooks;
 pub mod io;
 pub mod merge;
+pub mod skill;
 
 pub use api::{
     install_all, overall_state, status_all, uninstall_all, AgentResult, InstallKind, InstallReport,
@@ -45,3 +48,4 @@ pub use api::{
 };
 pub use cli::run_cli;
 pub use hooks::run_hooks_cli;
+pub use skill::run_skill_cli;

@@ -3348,20 +3348,26 @@ fn main() {
     // before clap (like `mcp`) and mutates agent config files offline - so the
     // global flag scans must not eat its `--help`.
     let is_hooks_subcommand = args.get(1).map(String::as_str) == Some("hooks");
+    // `splitlane skill <cmd>` is the third of that kind: it writes a file
+    // into each agent's skills directory and exits.
+    let is_skill_subcommand = args.get(1).map(String::as_str) == Some("skill");
     let is_global_help = !is_msi_relay
         && !is_mcp_subcommand
         && !is_cli_subcommand
         && !is_hooks_subcommand
+        && !is_skill_subcommand
         && args.iter().any(|a| a == "--help" || a == "-h");
     let is_global_version = !is_msi_relay
         && !is_mcp_subcommand
         && !is_cli_subcommand
         && !is_hooks_subcommand
+        && !is_skill_subcommand
         && args.iter().any(|a| a == "--version" || a == "-v");
     let is_update_and_exit = !is_msi_relay
         && !is_mcp_subcommand
         && !is_cli_subcommand
         && !is_hooks_subcommand
+        && !is_skill_subcommand
         && args.iter().any(|a| a == "--update-and-exit");
     let is_unknown_verb = args
         .get(1)
@@ -3373,6 +3379,7 @@ fn main() {
             || is_mcp_subcommand
             || is_cli_subcommand
             || is_hooks_subcommand
+            || is_skill_subcommand
             || is_global_help
             || is_global_version
             || is_update_and_exit
@@ -3479,7 +3486,7 @@ fn main() {
         is_msi_relay,
         is_mcp_subcommand,
         is_cli_subcommand,
-        is_hooks_subcommand,
+        is_hooks_subcommand || is_skill_subcommand,
         is_update_and_exit,
         is_unknown_verb,
     ) {
@@ -3536,6 +3543,13 @@ fn main() {
             runtime_paths::bridge_binary_path()
         };
         std::process::exit(splitlane_mcp_install::run_cli(&args[2..], bridge_path));
+    }
+
+    // `splitlane skill <cmd>` writes or removes the fleet skill in each
+    // agent's skills directory and exits. It needs nothing unpacked: the
+    // text is built into the binary.
+    if is_skill_subcommand {
+        std::process::exit(splitlane_mcp_install::run_skill_cli(&args[2..]));
     }
 
     // `splitlane hooks <cmd>` installs the

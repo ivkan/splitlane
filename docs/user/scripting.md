@@ -24,6 +24,7 @@ Exact verbs, flags, JSON fields, methods, events and exit codes are in the
 | `splitlane flow run <file>` | Run a dependency graph of agent steps | Gated |
 | `splitlane mcp install` | Let MCP-capable agents read other panes | No - see [MCP bridge](../mcp-bridge.md) |
 | `splitlane hooks setup` | Report Claude Code turn state to Splitlane | No - see [Agent hooks](hooks.md) |
+| `splitlane skill install` | Teach an agent the commands on this page | No - see [Coordinating agents](#coordinating-agents-from-a-lead-agent) |
 
 ## Terms
 
@@ -309,10 +310,35 @@ splitlane flow run review.flow.toml --json   # final report on stdout, progress 
 
 A lead agent is a coding agent in one pane that hands work to agents in other
 panes, using the same `splitlane` commands. The repository ships a skill that
-teaches an agent this workflow: `skills/splitlane-fleet/SKILL.md`. Install it
-the way your agent installs skills, for example by copying the
-`skills/splitlane-fleet` directory into its skills folder, and start a new
-agent session so it is picked up.
+teaches an agent this workflow, `skills/splitlane-fleet/SKILL.md`, and the
+same text is built into the app:
+
+```bash
+splitlane skill install     # write it for every agent found on this machine
+splitlane skill status      # say where it is and in what state; writes nothing
+splitlane skill uninstall   # remove it again
+```
+
+It is written to `skills/splitlane-fleet/SKILL.md` under Claude Code's
+directory (`~/.claude`, or `CLAUDE_CONFIG_DIR`), Codex's (`~/.codex`, or
+`CODEX_HOME`) and `~/.agents`, each only if that directory already exists.
+Start a new agent session afterwards so it is picked up.
+
+Nothing installs the skill for you, and installing the MCP bridge does not
+bring it along: a skill changes what an agent does, which is yours to switch
+on. `status` reports one of:
+
+| State | Meaning |
+| --- | --- |
+| `not detected` | The agent's directory is not there |
+| `not installed` | The directory is there and the skill is not |
+| `installed` | The copy this version of Splitlane writes |
+| `stale` | A copy written by another version and not edited since. `install` replaces it |
+| `modified` | Edited by hand, or a file at that path Splitlane did not write. `install` and `uninstall` leave it alone and exit `1`; with `--force` they go ahead, and `install` keeps the old file beside the new one as `SKILL.md.bak` |
+
+The exit code is `0` when everything asked for was done or there was nothing
+to do, `1` when a copy could not be written or was left alone, `2` for a
+usage error.
 
 The loop, for an agent working from its own pane:
 
