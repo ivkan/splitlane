@@ -170,7 +170,21 @@ struct StateReading {
     /// The file's length and the newest turn end it records, when this pass
     /// read them. `None` means the marker was not read - no reader for this
     /// agent, or a file that has not changed - and keeps what is known.
-    turn_end: Option<(u64, Option<crate::rail_state::TurnEnd>)>,
+    turn_end: Option<TailRead>,
+    /// The agent's own status says its turn is over with a background command
+    /// still alive. `false` from every source that cannot say.
+    background_shell: bool,
+}
+
+/// What one read of a session file's tail told the pass, beyond the state.
+#[derive(Debug, Clone)]
+struct TailRead {
+    /// The file's length at the read, so an unchanged file is not parsed again.
+    len: u64,
+    /// The newest turn end the file records.
+    end: Option<crate::rail_state::TurnEnd>,
+    /// Background commands started and not yet reported finished.
+    background_shells: usize,
 }
 
 /// The agent's own turn-end marker, read out of turn for a surface whose state
@@ -184,13 +198,17 @@ fn read_turn_end(
     state_file: Option<&crate::agent_sessions::StateFile>,
     known_len: Option<u64>,
     now: i64,
-) -> Option<(u64, Option<crate::rail_state::TurnEnd>)> {
+) -> Option<TailRead> {
     let state_file = state_file?;
     let Some(len) = state_file_len(state_file) else {
         // Not written yet: a session nothing has been sent to. That is a look
         // at the file all the same, and the one that lets its first turn be
         // counted rather than taken for history.
-        return (known_len != Some(0)).then_some((0, None));
+        return (known_len != Some(0)).then_some(TailRead {
+            len: 0,
+            end: None,
+            background_shells: 0,
+        });
     };
     if known_len == Some(len) {
         return None;
@@ -217,7 +235,11 @@ fn read_turn_end(
         }),
         None => probe.last_turn_end,
     };
-    Some((len, end))
+    Some(TailRead {
+        len,
+        end,
+        background_shells: probe.background_shells,
+    })
 }
 
 fn state_file_len(state_file: &crate::agent_sessions::StateFile) -> Option<u64> {
@@ -567,10 +589,40 @@ impl SplitlaneApp {
                         };
                     let state =
                         confirm_run_end(&mut self.run_end_seen_at, thread, read_at, reading_state);
+                    // Taken before the deposit moves it: an older reading
+                    // must not rewrite what a newer one already said.
+                    let stale = thread.detector_read_at.is_some_and(|seen| seen > read_at);
                     changed |= deposit(thread, read_at, state);
                     let watch = self.turn_ends.entry(reading.thread_id).or_default();
-                    if let Some((len, end)) = reading.turn_end.clone() {
-                        watch.observe(len, end);
+                    if let Some(tail) = reading.turn_end.clone() {
+                        watch.background_shells = tail.background_shells;
+                        watch.observe(tail.len, tail.end);
+                    }
+                    if !stale {
+                        // Rewritten from this reading alone. A reading that
+                        // could not say - no status file, a process that is
+                        // gone, another agent - says zero, which is what
+                        // takes the fact down when its source goes away.
+                        //
+                        // Asked of the word just deposited and not of the
+                        // reading: while the end of a run is being held the
+                        // row still says `running`, and the fact is a
+                        // property of an idle one.
+                        let shells = crate::rail_state::background_shell_count(
+                            reading.background_shell
+                                && thread.status == crate::project::ThreadStatus::Idle,
+                            watch.background_shells,
+                        );
+                        if thread.rail.background_shells != shells {
+                            log::debug!(
+                                target: TRACE,
+                                "#{} background commands alive: {} -> {shells}",
+                                reading.thread_id,
+                                thread.rail.background_shells,
+                            );
+                            thread.rail.background_shells = shells;
+                            changed = true;
+                        }
                     }
                     let was_in_run = self.running_since.contains_key(&reading.thread_id);
                     // After the deposit, not across it: the clock's own
@@ -1336,6 +1388,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     baseline,
                     proposed_session,
                     turn_end,
+                    background_shell,
                 };
             }
 
@@ -1361,6 +1414,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     baseline: None,
                     proposed_session,
                     turn_end: None,
+                    background_shell: false,
                 };
             };
             // Each agent's own reader, over its own file's shape. What comes
@@ -1391,6 +1445,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     baseline: None,
                     proposed_session,
                     turn_end: None,
+                    background_shell: false,
                 };
             };
             let (agent, worker) = match (&snapshot, &shim_dir) {
@@ -1480,7 +1535,14 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                 output_generation: target.output_generation,
                 baseline,
                 proposed_session,
-                turn_end: state_file_len(state_file).map(|len| (len, probe.last_turn_end.clone())),
+                turn_end: state_file_len(state_file).map(|len| TailRead {
+                    len,
+                    end: probe.last_turn_end.clone(),
+                    background_shells: probe.background_shells,
+                }),
+                // The transcript counts commands; only the status file says
+                // any is alive, and it did not answer for this surface.
+                background_shell: false,
             }
         })
         .collect();
@@ -1516,14 +1578,14 @@ mod tests {
         let file = crate::agent_sessions::StateFile::Claude(path.clone());
 
         std::fs::write(&path, format!("{prompt}\n")).expect("write");
-        let (_, end) = super::read_turn_end(Some(&file), None, now).expect("read");
-        let end = end.expect("an end");
+        let tail = super::read_turn_end(Some(&file), None, now).expect("read");
+        let end = tail.end.expect("an end");
         assert_eq!(end.marker, "p-1");
         assert!(end.interrupted && end.prompt_returned);
 
         std::fs::write(&path, format!("{prompt}\n{answer}\n")).expect("write");
-        let (_, end) = super::read_turn_end(Some(&file), None, now).expect("read");
-        let end = end.expect("an end");
+        let tail = super::read_turn_end(Some(&file), None, now).expect("read");
+        let end = tail.end.expect("an end");
         assert_eq!(end.marker, "a-1");
         assert!(!end.interrupted && !end.prompt_returned);
     }

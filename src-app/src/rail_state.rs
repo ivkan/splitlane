@@ -134,6 +134,15 @@ pub struct RailRecord {
     /// The shim reported that the agent binary exited and nothing has started
     /// in the pane since.
     pub agent_exited: bool,
+    /// Background commands the agent started that are alive while its turn is
+    /// over. Zero whenever the agent is not idle, and for every agent whose
+    /// own file does not say.
+    ///
+    /// Rewritten by every state pass from that pass's reading and never kept
+    /// across one, so it cannot outlive what it describes: a command that
+    /// ended, an agent process that is gone and a status file nobody is
+    /// writing any more all read as zero on the next pass.
+    pub background_shells: u32,
 }
 
 impl RailRecord {
@@ -229,6 +238,23 @@ pub fn rail_changes(
     events
 }
 
+/// How many background commands to report for a session, from the two sources
+/// that each know half of it.
+///
+/// The status file says whether any are alive and not how many; the transcript
+/// counts them, but only those started inside the window it reads, and it keeps
+/// counting one whose end it never recorded. So the status file decides
+/// **whether** and the transcript says **how many**: nothing is reported
+/// without the file's word, and with it the count is at least one.
+pub fn background_shell_count(status_says_alive: bool, counted_in_transcript: usize) -> u32 {
+    if !status_says_alive {
+        return 0;
+    }
+    u32::try_from(counted_in_transcript)
+        .unwrap_or(u32::MAX)
+        .max(1)
+}
+
 /// What the state pass remembers about one surface's turn-end marker.
 ///
 /// It exists for the run the pass never saw. The pass samples every two
@@ -259,6 +285,10 @@ pub struct TurnEndWatch {
     /// A marker that moved while the surface was idle, and when that was first
     /// seen. Counted once it has stood for the confirmation span.
     pending: Option<(String, Instant)>,
+    /// Background commands the file showed alive when it was last read. Kept
+    /// here because the file is read only when it has grown, and a command
+    /// that is still running adds nothing to it.
+    pub background_shells: usize,
 }
 
 impl TurnEndWatch {
@@ -448,6 +478,18 @@ mod tests {
         );
         rail_changes(&mut published, &[], 2);
         assert!(published.is_empty());
+    }
+
+    /// The status file's word decides whether anything is reported; the
+    /// transcript only says how many.
+    #[test]
+    fn the_status_word_decides_and_the_transcript_counts() {
+        // A command whose end the transcript never recorded: the file says
+        // nothing is alive, and nothing is reported.
+        assert_eq!(background_shell_count(false, 2), 0);
+        assert_eq!(background_shell_count(true, 2), 2);
+        // A dev server started before the window the transcript reader sees.
+        assert_eq!(background_shell_count(true, 0), 1);
     }
 
     /// What the file already held when the surface was first seen is history,

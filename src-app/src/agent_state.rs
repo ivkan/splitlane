@@ -255,11 +255,6 @@ pub(crate) struct TranscriptProbe {
     /// and not how many. A command started before the window opened is not
     /// counted, so this is a floor; zero for an agent whose reader does not
     /// look for it.
-    #[allow(
-        dead_code,
-        reason = "read by the rail's state pass, which lands next; exercised \
-        by the reader's own tests in the meantime"
-    )]
     pub(crate) background_shells: usize,
 }
 
