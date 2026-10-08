@@ -246,6 +246,21 @@ pub(crate) struct TranscriptProbe {
     /// [`crate::rail_state::TurnEnd::prompt_returned`]. `None` for an agent
     /// whose reader does not look for it.
     pub(crate) unanswered_prompt: Option<String>,
+    /// Background commands the window shows started and not yet reported
+    /// finished.
+    ///
+    /// Not a state signal either, and [`classify`] does not look at it: a
+    /// background command is not the agent working. It is the count that goes
+    /// beside the status file's `shell` word, which says that some are alive
+    /// and not how many. A command started before the window opened is not
+    /// counted, so this is a floor; zero for an agent whose reader does not
+    /// look for it.
+    #[allow(
+        dead_code,
+        reason = "read by the rail's state pass, which lands next; exercised \
+        by the reader's own tests in the meantime"
+    )]
+    pub(crate) background_shells: usize,
 }
 
 impl TranscriptProbe {
@@ -656,6 +671,7 @@ mod tests {
             incomplete: false,
             last_turn_end: None,
             unanswered_prompt: None,
+            background_shells: 0,
         }
     }
 

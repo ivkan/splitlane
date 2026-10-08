@@ -615,6 +615,10 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
     // opinion about the turn. Any later such record - an answer, a tool
     // result, an interrupt - means the prompt was taken up, and clears it.
     let mut unanswered_prompt: Option<String> = None;
+    // Background commands started and not yet reported finished, by task id.
+    // Kept apart from `open`: a command left running is not a call in flight,
+    // and nothing here may make the rule read it as work.
+    let mut background_shells: Vec<String> = Vec::new();
     let mut incomplete = false;
     let mut last_error: Option<usize> = None;
     let mut last_message: Option<usize> = None;
@@ -762,6 +766,24 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
                 ToolExecution::Opaque,
             ));
         }
+        // A **background command** has the same two ends, one field over. The
+        // result of a `Bash` call made with `run_in_background` comes back at
+        // once carrying `toolUseResult.backgroundTaskId`, and when the command
+        // stops the CLI enqueues the same `<task-notification>` naming that
+        // id - `completed` for one that ran out, `failed` for one killed from
+        // outside (measured on 2.1.294, 8 October 2026; exit code 144 for a
+        // `pkill`). Both ends are the same for a test run the agent is waiting
+        // on and for a dev server it left behind: nothing in either record
+        // tells them apart.
+        if let Some(task_id) = value
+            .get("toolUseResult")
+            .and_then(|result| result.get("backgroundTaskId"))
+            .and_then(|v| v.as_str())
+            && !task_id.is_empty()
+            && !background_shells.iter().any(|known| known == task_id)
+        {
+            background_shells.push(task_id.to_string());
+        }
         // The notification lands in three record shapes - a `queue-operation`
         // with a bare `content` string, the `user` turn it becomes, and an
         // `attachment` - and only one of them would survive the guard below. So
@@ -771,6 +793,7 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
             for id in task_notification_ids(text) {
                 let key = async_agent_key(id);
                 open.retain(|(open_id, _, _, _)| *open_id != key);
+                background_shells.retain(|known| known != id);
             }
         }
 
@@ -908,6 +931,7 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
         incomplete,
         last_turn_end,
         unanswered_prompt,
+        background_shells: background_shells.len(),
     })
 }
 
@@ -3123,6 +3147,77 @@ mod tests {
 
     /// One notification record can name several agents, and closing the first
     /// must not stop the scan.
+    /// The two records a background command leaves, as CLI 2.1.294 wrote them
+    /// on 8 October 2026, cut down to the fields this reader looks at.
+    fn background_launch(task_id: &str, secs: &str) -> String {
+        format!(
+            r#"{{"type":"user","timestamp":"{}","toolUseResult":{{"stdout":"","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false,"backgroundTaskId":"{task_id}"}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t-{task_id}","content":"Command running in background with ID: {task_id}."}}]}}}}"#,
+            at(secs)
+        )
+    }
+
+    fn background_end(task_id: &str, status: &str, secs: &str) -> String {
+        format!(
+            r#"{{"type":"queue-operation","operation":"enqueue","timestamp":"{}","content":"<task-notification>\n<task-id>{task_id}</task-id>\n<status>{status}</status>\n<summary>Background command \"tests\" {status}</summary>\n</task-notification>"}}"#,
+            at(secs)
+        )
+    }
+
+    /// A command left running in the background is counted and is not a call
+    /// in flight: the session is idle, with something alive beside it.
+    #[test]
+    fn a_background_command_is_counted_and_is_not_an_open_call() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        let probe = probe_lines(
+            &[
+                &background_launch("bcdx1hvfi", "10"),
+                &background_launch("bzzroo4ot", "11"),
+            ],
+            now,
+        );
+        assert_eq!(probe.background_shells, 2);
+        assert!(probe.open_calls.is_empty(), "{:?}", probe.open_calls);
+    }
+
+    /// The notification is written however the command stopped. `failed` is
+    /// what a command killed from outside reports.
+    #[test]
+    fn a_task_notification_ends_its_background_command() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        for status in ["completed", "failed", "killed", "stopped"] {
+            let probe = probe_lines(
+                &[
+                    &background_launch("bcdx1hvfi", "10"),
+                    &background_launch("bzzroo4ot", "11"),
+                    &background_end("bcdx1hvfi", status, "30"),
+                ],
+                now,
+            );
+            assert_eq!(probe.background_shells, 1, "{status}");
+        }
+    }
+
+    /// A command's id and a background agent's are separate sets: the same
+    /// notification closes whichever one it names and leaves the other.
+    #[test]
+    fn a_background_command_and_a_background_agent_do_not_close_each_other() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        let agent = format!(
+            r#"{{"type":"user","timestamp":"{}","toolUseResult":{{"isAsync":true,"status":"async_launched","agentId":"a053d575490c765fc"}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"launched"}}]}}}}"#,
+            at("09")
+        );
+        let probe = probe_lines(
+            &[
+                &agent,
+                &background_launch("bcdx1hvfi", "10"),
+                &background_end("a053d575490c765fc", "completed", "30"),
+            ],
+            now,
+        );
+        assert_eq!(probe.background_shells, 1);
+        assert!(probe.open_calls.is_empty(), "{:?}", probe.open_calls);
+    }
+
     #[test]
     fn a_notification_closes_every_agent_it_names() {
         assert_eq!(

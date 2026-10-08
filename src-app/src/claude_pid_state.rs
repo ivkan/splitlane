@@ -118,6 +118,27 @@ use crate::ai_types::AgentState;
 /// A pathological one is not parsed at all.
 const MAX_PID_FILE_BYTES: u64 = 64 * 1024;
 
+/// What the status file says about one session: the rail's answer, and whether
+/// the word behind it was `shell`.
+///
+/// The second half is a property of an idle session, not a fourth state. See
+/// [`state_from_status`] for why the word still resolves like `idle`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusReading {
+    pub state: AgentState,
+    /// The CLI wrote `shell`: the turn is over and at least one background
+    /// command it started is still alive.
+    ///
+    /// **This is all the file says.** Measured on 2.1.294 (8 October 2026) by
+    /// logging the file every 50 ms across a turn that left two background
+    /// commands running, then one: the file is byte-for-byte the same in both
+    /// except for its two timestamps. No count, no list, no task id. How many
+    /// are alive is read from the transcript
+    /// ([`crate::agent_state::TranscriptProbe::background_shells`]); this is
+    /// what says that any are.
+    pub background_shell: bool,
+}
+
 /// The status vocabulary the CLI writes, mapped to what the rail says.
 ///
 /// `shell` resolves like `idle` on purpose: it means the turn is over while a
@@ -125,19 +146,29 @@ const MAX_PID_FILE_BYTES: u64 = 64 * 1024;
 /// "running" once and every session stayed on "Thinking" until the process
 /// exited - the same shape as our own failure where a long-lived child process
 /// kept the session reading as working for ever, from the other direction.
-fn state_from_status(status: &str) -> Option<AgentState> {
-    match status {
-        "busy" => Some(AgentState::Thinking),
-        "waiting" => Some(AgentState::WaitingForInput),
-        "idle" | "shell" => Some(AgentState::Finished),
+///
+/// It is not the same as `idle` either: an agent that started a test run and
+/// said it would wait for it is not done. The word cannot tell that from a dev
+/// server left running, so it is carried beside the state rather than folded
+/// into it.
+fn state_from_status(status: &str) -> Option<StatusReading> {
+    let (state, background_shell) = match status {
+        "busy" => (AgentState::Thinking, false),
+        "waiting" => (AgentState::WaitingForInput, false),
+        "idle" => (AgentState::Finished, false),
+        "shell" => (AgentState::Finished, true),
         // Deliberately not a catch-all to `Finished`. An unrecognised word is a
         // CLI that has moved on, and the honest answer is silence - the caller
         // falls through to the rule, which is what it did before this module
         // existed. `shell` itself is the cautionary tale: it was added in
         // 2.1.141 and read as "unparseable" by a reader that defaulted the
         // wrong way.
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(StatusReading {
+        state,
+        background_shell,
+    })
 }
 
 /// Where Claude Code keeps its configuration.
@@ -180,7 +211,7 @@ pub fn pid_file_path(pid: u32) -> Option<PathBuf> {
 ///
 /// **`agent_pid` must come from a live process snapshot taken in the same
 /// pass.** This module does no liveness check of its own - see fact 4 above.
-pub fn state_for(agent_pid: u32, expect_session: Option<&str>) -> Option<AgentState> {
+pub fn state_for(agent_pid: u32, expect_session: Option<&str>) -> Option<StatusReading> {
     let expect_session = expect_session?;
     let path = pid_file_path(agent_pid)?;
     let raw = read_bounded(&path)?;
@@ -275,7 +306,7 @@ fn read_bounded(path: &Path) -> Option<String> {
 /// Every refusal here returns `None`, and `None` means the caller uses the rule
 /// instead. Nothing in this function can produce a wrong answer; it can only
 /// decline to produce one.
-fn state_from_pid_file(raw: &str, expect_session: &str) -> Option<AgentState> {
+fn state_from_pid_file(raw: &str, expect_session: &str) -> Option<StatusReading> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let obj = value.as_object()?;
 
@@ -369,20 +400,22 @@ mod tests {
         assert_eq!(session_from_pid_file(raw, "/tmp/wd"), None);
     }
 
+    fn state_of(raw: &str, session: &str) -> Option<AgentState> {
+        state_from_pid_file(raw, session).map(|reading| reading.state)
+    }
+
     #[test]
     fn the_three_words_map_to_the_three_answers() {
+        assert_eq!(state_of(&file("busy"), SID), Some(AgentState::Thinking));
         assert_eq!(
-            state_from_pid_file(&file("busy"), SID),
-            Some(AgentState::Thinking)
-        );
-        assert_eq!(
-            state_from_pid_file(&file("waiting"), SID),
+            state_of(&file("waiting"), SID),
             Some(AgentState::WaitingForInput)
         );
-        assert_eq!(
-            state_from_pid_file(&file("idle"), SID),
-            Some(AgentState::Finished)
-        );
+        assert_eq!(state_of(&file("idle"), SID), Some(AgentState::Finished));
+        for word in ["busy", "waiting", "idle"] {
+            let reading = state_from_pid_file(&file(word), SID).expect("a known word");
+            assert!(!reading.background_shell, "{word}");
+        }
     }
 
     /// `shell` is "turn over, background task alive" - it resolves like idle.
@@ -390,9 +423,55 @@ mod tests {
     /// for the life of the process.
     #[test]
     fn shell_is_not_work() {
+        assert_eq!(state_of(&file("shell"), SID), Some(AgentState::Finished));
+    }
+
+    /// The file as CLI 2.1.294 wrote it on 8 October 2026, in the three
+    /// states sampled from one live session: mid-turn, turn over with two
+    /// background commands alive, and turn over with one. Only the session id,
+    /// the directory, the session name and the socket path are replaced.
+    ///
+    /// The two `shell` samples differ in their timestamps and in nothing else,
+    /// which is the measurement: the file says that a background command is
+    /// alive and does not say how many.
+    const BUSY_2_1_294: &str = r#"{"pid":86428,"sessionId":"cd55b6a2-b16f-4a54-b9dd-235b3747d2ed","cwd":"/tmp/wd","startedAt":1791482030693,"procStart":"Thu Oct  8 17:53:49 2026","version":"2.1.294","peerProtocol":1,"peerFeatures":["notify_idle","reply_across_default_dirs","artifact_yield"],"kind":"interactive","entrypoint":"cli","pidDomain":"darwin","messagingSocketPath":"/tmp/cc-socks/86428.sock","name":"wd-1","nameSource":"derived","nameSince":1791482030693,"status":"busy","updatedAt":1791482032875,"statusUpdatedAt":1791482032875}"#;
+    const SHELL_TWO_ALIVE_2_1_294: &str = r#"{"pid":86428,"sessionId":"cd55b6a2-b16f-4a54-b9dd-235b3747d2ed","cwd":"/tmp/wd","startedAt":1791482030693,"procStart":"Thu Oct  8 17:53:49 2026","version":"2.1.294","peerProtocol":1,"peerFeatures":["notify_idle","reply_across_default_dirs","artifact_yield"],"kind":"interactive","entrypoint":"cli","pidDomain":"darwin","messagingSocketPath":"/tmp/cc-socks/86428.sock","name":"wd-1","nameSource":"derived","nameSince":1791482030693,"status":"shell","updatedAt":1791482099805,"statusUpdatedAt":1791482099805}"#;
+    const SHELL_ONE_ALIVE_2_1_294: &str = r#"{"pid":86428,"sessionId":"cd55b6a2-b16f-4a54-b9dd-235b3747d2ed","cwd":"/tmp/wd","startedAt":1791482030693,"procStart":"Thu Oct  8 17:53:49 2026","version":"2.1.294","peerProtocol":1,"peerFeatures":["notify_idle","reply_across_default_dirs","artifact_yield"],"kind":"interactive","entrypoint":"cli","pidDomain":"darwin","messagingSocketPath":"/tmp/cc-socks/86428.sock","name":"wd-1","nameSource":"derived","nameSince":1791482030693,"status":"shell","updatedAt":1791482130173,"statusUpdatedAt":1791482130173}"#;
+
+    #[test]
+    fn the_sampled_files_read_as_measured() {
         assert_eq!(
-            state_from_pid_file(&file("shell"), SID),
-            Some(AgentState::Finished)
+            state_from_pid_file(BUSY_2_1_294, SID),
+            Some(StatusReading {
+                state: AgentState::Thinking,
+                background_shell: false,
+            })
+        );
+        for sample in [SHELL_TWO_ALIVE_2_1_294, SHELL_ONE_ALIVE_2_1_294] {
+            assert_eq!(
+                state_from_pid_file(sample, SID),
+                Some(StatusReading {
+                    state: AgentState::Finished,
+                    background_shell: true,
+                })
+            );
+        }
+    }
+
+    /// The file carries no count: with its two timestamps removed, the sample
+    /// taken with two commands alive is the sample taken with one.
+    #[test]
+    fn the_file_does_not_say_how_many_commands_are_alive() {
+        fn without_stamps(raw: &str) -> serde_json::Value {
+            let mut value: serde_json::Value = serde_json::from_str(raw).expect("sample parses");
+            let obj = value.as_object_mut().expect("an object");
+            obj.remove("updatedAt");
+            obj.remove("statusUpdatedAt");
+            value
+        }
+        assert_eq!(
+            without_stamps(SHELL_TWO_ALIVE_2_1_294),
+            without_stamps(SHELL_ONE_ALIVE_2_1_294)
         );
     }
 
@@ -400,8 +479,8 @@ mod tests {
     /// falls back to the rule, which is exactly where it was before.
     #[test]
     fn an_unknown_word_says_nothing() {
-        assert_eq!(state_from_pid_file(&file("parked"), SID), None);
-        assert_eq!(state_from_pid_file(&file(""), SID), None);
+        assert_eq!(state_of(&file("parked"), SID), None);
+        assert_eq!(state_of(&file(""), SID), None);
     }
 
     /// The measured VS Code shape: every identifying field, no `status`.

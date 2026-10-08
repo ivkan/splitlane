@@ -1298,15 +1298,22 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
             }
 
             if let Some(pid) = agent_pid
-                && let Some(state) =
-                    crate::claude_pid_state::state_for(pid, target.session_id.as_deref())
+                && let Some(crate::claude_pid_state::StatusReading {
+                    state,
+                    background_shell,
+                }) = crate::claude_pid_state::state_for(pid, target.session_id.as_deref())
             {
                 log::debug!(
                     target: TRACE,
-                    "{} (#{}) pty={} agent={pid} -> status file says {state:?}",
+                    "{} (#{}) pty={} agent={pid} -> status file says {state:?}{}",
                     named(),
                     target.thread_id,
                     target.pty_child,
+                    if background_shell {
+                        ", with a background command alive"
+                    } else {
+                        ""
+                    },
                 );
                 // The baseline is still refreshed at the end of a turn, so the
                 // rule stays warm and correct for the day this file stops

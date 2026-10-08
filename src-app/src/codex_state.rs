@@ -310,6 +310,10 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
         incomplete,
         last_turn_end,
         unanswered_prompt: None,
+        // Not looked for. Codex 0.158 can leave a command running past its
+        // turn, and whether its rollout records the two ends has not been
+        // measured.
+        background_shells: 0,
     }
 }
 
