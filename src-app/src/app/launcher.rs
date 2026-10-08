@@ -238,6 +238,7 @@ impl SplitlaneApp {
                 } else {
                     crate::app::slot_header::slot_header_status_word(
                         thread.status,
+                        thread.rail.shells_beside_idle(thread.status),
                         crate::theme::ui_colors(),
                     )
                     .0

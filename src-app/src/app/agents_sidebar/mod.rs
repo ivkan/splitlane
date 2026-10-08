@@ -499,6 +499,14 @@ impl SplitlaneApp {
                 // word "shell".
                 meta: if is_shell {
                     SharedString::from("shell")
+                } else if let shells @ 1.. = thread.rail.shells_beside_idle(thread.status) {
+                    // An idle session with a background command of its own
+                    // still alive says so where its agent's name was, for as
+                    // long as that lasts. The dot stays the idle dot: the
+                    // turn is over, and whether the agent is waiting on the
+                    // command or left a server running is not something the
+                    // CLI says.
+                    crate::app::slot_header::idle_with_shells_word(shells)
                 } else if let Some(driver) = self.driver_name(thread.id) {
                     // A session a person let another drive says so where its
                     // agent's name was; the icon still names the agent.

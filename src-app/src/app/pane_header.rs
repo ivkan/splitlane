@@ -321,6 +321,10 @@ impl SplitlaneApp {
                     })
                     .map(|thread| thread.status)
                     .filter(|_| is_agent);
+                let background_shells = thread_id
+                    .and_then(|id| self.thread_by_id(id))
+                    .filter(|_| is_agent)
+                    .map_or(0, |thread| thread.rail.shells_beside_idle(thread.status));
                 let context = thread_id
                     .and_then(|id| {
                         self.workspaces
@@ -344,6 +348,7 @@ impl SplitlaneApp {
                         is_agent,
                         model: model.filter(|_| is_agent),
                         status,
+                        background_shells,
                         branch: branch.clone(),
                         context: context.filter(|_| is_agent),
                         drive_questions: thread_id

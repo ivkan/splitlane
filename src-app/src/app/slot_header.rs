@@ -97,12 +97,24 @@ pub(crate) fn slot_header_name(
 ///
 /// The colours are the rail's status dot, deliberately: one surface, one
 /// state, one colour wherever it is read.
+///
+/// `background_shells` is how many background commands the agent left alive
+/// beside an idle turn; it changes the idle word and no other. Pass
+/// [`crate::rail_state::RailRecord::shells_beside_idle`].
 pub(crate) fn slot_header_status_word(
     status: crate::project::ThreadStatus,
+    background_shells: u32,
     ui: crate::theme::UiColors,
 ) -> (SharedString, gpui::Hsla) {
     use crate::project::ThreadStatus;
     match status {
+        // Still `idle`, and still its colour: the agent's turn is over and it
+        // can be written to. What follows the word is why it may start again
+        // unasked - or the dev server somebody asked for. Not `waiting`, which
+        // here means a person is being waited on, and not the accent.
+        ThreadStatus::Idle if background_shells > 0 => {
+            (idle_with_shells_word(background_shells), ui.faint)
+        }
         // Muted text, not a state colour. `running` is amber and
         // `waiting` is the accent because they are claims on the user's
         // attention - something is happening to their code, or something needs
@@ -115,6 +127,18 @@ pub(crate) fn slot_header_status_word(
         ThreadStatus::Failed => (SharedString::from("failed"), ui.agent_error),
         ThreadStatus::Idle => (SharedString::from("idle"), ui.faint),
     }
+}
+
+/// `idle · 1 shell` / `idle · 2 shells`: an idle session with background
+/// commands of its own still alive, in the word Claude Code's own status line
+/// uses for them.
+pub(crate) fn idle_with_shells_word(background_shells: u32) -> SharedString {
+    let noun = if background_shells == 1 {
+        "shell"
+    } else {
+        "shells"
+    };
+    SharedString::from(format!("idle \u{b7} {background_shells} {noun}"))
 }
 
 /// The `⋯` at the right end of a slot header: the active surface's own menu.
@@ -157,4 +181,39 @@ pub(crate) fn slot_overflow_button(
         // ellipsis asset, and the glyph sidesteps the `svg()` colour trap.
         .child("⋯")
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{idle_with_shells_word, slot_header_status_word};
+    use crate::project::ThreadStatus;
+
+    /// The count changes the idle word and nothing else: not its colour, and
+    /// not any other status, which is what keeps a session with a dev server
+    /// from reading as working.
+    #[test]
+    fn background_shells_are_named_beside_idle_only() {
+        let ui = crate::theme::ui_colors();
+        assert_eq!(idle_with_shells_word(1).as_ref(), "idle \u{b7} 1 shell");
+        assert_eq!(idle_with_shells_word(2).as_ref(), "idle \u{b7} 2 shells");
+
+        let (plain, plain_tone) = slot_header_status_word(ThreadStatus::Idle, 0, ui);
+        let (with_shell, shell_tone) = slot_header_status_word(ThreadStatus::Idle, 1, ui);
+        assert_eq!(plain.as_ref(), "idle");
+        assert_eq!(with_shell.as_ref(), "idle \u{b7} 1 shell");
+        assert_eq!(plain_tone, shell_tone);
+
+        for status in [
+            ThreadStatus::Starting,
+            ThreadStatus::Thinking,
+            ThreadStatus::WaitingForInput,
+            ThreadStatus::Failed,
+        ] {
+            assert_eq!(
+                slot_header_status_word(status, 3, ui),
+                slot_header_status_word(status, 0, ui),
+                "{status:?}"
+            );
+        }
+    }
 }

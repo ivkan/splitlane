@@ -94,6 +94,9 @@ pub struct SurfaceFacts {
     /// field the rail's row reads. `None` for a shell, which has no turn to be
     /// in and takes neither a word nor a dot.
     pub status: Option<crate::project::ThreadStatus>,
+    /// Background commands the agent left alive beside an idle turn. Zero for
+    /// every other status and for a shell.
+    pub background_shells: u32,
     /// The branch the surface's container is on, and whether that checkout is
     /// a linked git worktree. `None` outside a repository, which is the
     /// design's rule: a header with nothing to say about git says nothing.
@@ -2886,8 +2889,18 @@ impl Pane {
         if !self.active_surface_facts()?.is_agent {
             return None;
         }
+        let status = self.single_surface_status()?;
+        // The count belongs to the status the app pushed facts for. A status
+        // resolved some other way - a failure this pane recorded itself - is
+        // a different word and takes none.
+        let facts = self.active_surface_facts()?;
+        let background_shells = if facts.status == Some(status) {
+            facts.background_shells
+        } else {
+            0
+        };
         let (word, color) =
-            crate::app::slot_header::slot_header_status_word(self.single_surface_status()?, ui);
+            crate::app::slot_header::slot_header_status_word(status, background_shells, ui);
         Some(
             div()
                 .flex_none()
