@@ -62,6 +62,9 @@ Notable changes to Splitlane are recorded here. The format follows
   can be pressed: it shows the opener, or offers `Show <name>` and
   `Stop <name> driving`. The command palette finds `Stop <name> driving
   <session>`.
+- Every pane exports `SPLITLANE_CLI`, the absolute path of the `splitlane`
+  executable it belongs to, so a script or an agent can reach the instance
+  it runs in where `splitlane` is not on `PATH`.
 - The skill in `skills/splitlane-fleet` teaches an agent to open its own
   sessions, wait on them, read their answers, redirect and close them.
 

@@ -284,6 +284,7 @@ Every terminal Splitlane starts carries:
 | --- | --- |
 | `SPLITLANE_SOCKET_PATH` | Path of the instance's socket or named pipe |
 | `SPLITLANE_SURFACE_ID` | This surface's id |
+| `SPLITLANE_CLI` | Absolute path of the `splitlane` executable of the instance that owns the pane. Use `"${SPLITLANE_CLI:-splitlane}"` in a script that must work where `splitlane` is not on `PATH` |
 | `SPLITLANE_WORKSPACE_ID` | Internal id of the project or agent session owning the terminal (not the `workspace` index) |
 
 A pane created with a `context` param also gets `SPLITLANE_CONTEXT_FILE`, the

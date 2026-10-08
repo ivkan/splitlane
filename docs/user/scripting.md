@@ -42,6 +42,11 @@ the default socket location (`<runtime dir>/splitlane/splitlane.sock` on Linux
 and macOS, `\\.\pipe\splitlane` on Windows). Set `SPLITLANE_SOCKET_PATH` if the
 instance is somewhere else. A debug build uses `splitlane-dev` in both names.
 
+Every pane also gets `SPLITLANE_CLI`, the absolute path of the `splitlane`
+executable it belongs to. The examples here say `splitlane`, which works
+once the command is [on your `PATH`](installation.md#put-splitlane-on-path);
+where it is not, `"$SPLITLANE_CLI"` in its place always works inside a pane.
+
 ```bash
 splitlane ps   # prints "(no agents)" or a table when an instance is reachable
 ```

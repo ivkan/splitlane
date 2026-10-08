@@ -58,6 +58,17 @@ fn pty_env_identity_key_keeps_its_published_name() {
         mcp.contains("\"SPLITLANE_WORKSPACE_ID\""),
         "splitlane-mcp reads `SPLITLANE_WORKSPACE_ID`; the name is a contract"
     );
+
+    // Read by scripts and by the skill, which are not in this repository's
+    // build: nothing here fails to compile when the name changes.
+    assert!(
+        pty.contains("env.insert(\"SPLITLANE_CLI\".into()"),
+        "every pane exports `SPLITLANE_CLI`, the path of the CLI it belongs to"
+    );
+    assert!(
+        read("skills/splitlane-fleet/SKILL.md").contains("\"$SPLITLANE_CLI\""),
+        "the skill falls back on `SPLITLANE_CLI` where `splitlane` is not on PATH"
+    );
 }
 
 #[test]

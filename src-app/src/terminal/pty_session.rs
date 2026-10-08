@@ -4297,6 +4297,18 @@ fn assemble_pty_env(
     if let Some(socket_path) = splitlane_socket_path() {
         env.insert("SPLITLANE_SOCKET_PATH".into(), socket_path);
     }
+    // The path of this very executable, which is also the CLI. The pane's
+    // `PATH` is only guaranteed to hold the hook shims: an app installed by
+    // dragging it into place has put no `splitlane` anywhere a shell looks,
+    // so an agent told to run `splitlane ...` would find nothing. With this
+    // it can always reach the instance it is running in, and the right one
+    // when several are installed.
+    if let Some(cli) = std::env::current_exe()
+        .ok()
+        .filter(|path| path.is_absolute())
+    {
+        env.insert("SPLITLANE_CLI".into(), cli.display().to_string());
+    }
 
     // Propagate the opt-in hook-diagnostic log path explicitly so the whole
     // chain (shell → shim → agent → ai-hook) appends to the same file even if
@@ -4353,6 +4365,7 @@ fn assemble_pty_env(
             "SPLITLANE_SURFACE_ID",
             "SPLITLANE_SOCKET_PATH",
             "SPLITLANE_BIN_DIR",
+            "SPLITLANE_CLI",
         ];
         for (k, v) in user_vars {
             // Windows env names are case-insensitive; normalise so a user
@@ -5787,6 +5800,22 @@ mod tests {
         assert_eq!(
             env.get("SPLITLANE_SURFACE_ID").map(String::as_str),
             Some("3")
+        );
+    }
+
+    /// A pane can always reach the CLI of the instance it runs in, whether
+    /// or not anything named `splitlane` is on its `PATH`, and a variable
+    /// from the config cannot point it somewhere else.
+    #[test]
+    fn a_pane_is_told_where_the_cli_is() {
+        let mut user = HashMap::new();
+        user.insert("SPLITLANE_CLI".to_string(), "/elsewhere".to_string());
+        let env = assemble_pty_env(HashMap::new(), 1, 1, Some(user));
+        let cli = env.get("SPLITLANE_CLI").expect("SPLITLANE_CLI is set");
+        assert!(std::path::Path::new(cli).is_absolute(), "{cli}");
+        assert_eq!(
+            std::path::Path::new(cli),
+            std::env::current_exe().expect("current exe")
         );
     }
 

@@ -23,6 +23,12 @@ Before anything else, confirm an instance is up:
 splitlane ps
 ```
 
+If the shell answers that `splitlane` is not a command, it is not on `PATH`.
+Inside a Splitlane pane the variable `SPLITLANE_CLI` holds its full path: run
+`"$SPLITLANE_CLI" ps`, and put `"$SPLITLANE_CLI"` wherever this skill says
+`splitlane`. If that variable is empty too, you are not in a Splitlane pane:
+say so and stop.
+
 If it prints a fleet table (or `(no agents)`), you are connected - continue. If it
 fails with a message like `cannot locate the IPC socket; is Splitlane running?`
 (non-zero exit), then **there is no instance to drive**: say so to the user and
