@@ -534,7 +534,8 @@ pub enum WaitUntil {
     TurnEnd,
     /// A person has answered whether the caller may send messages to the
     /// session: 0 when they allowed it, 8 when they did not, 4 when the time
-    /// ran out with the question still standing.
+    /// ran out with the question still standing, 1 at once when it is not a
+    /// session anybody would be asked about.
     Allowed,
 }
 

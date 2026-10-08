@@ -302,7 +302,12 @@ fn opening_a_session_keeps_its_published_names() {
         );
     }
     let drive = read("src-app/src/app/drive.rs");
-    for word in ["\"asked\"", "\"allowed\"", "\"declined\""] {
+    for word in [
+        "\"asked\"",
+        "\"allowed\"",
+        "\"declined\"",
+        "\"not_offered\"",
+    ] {
         assert!(drive.contains(word), "the `drive` word {word} is published");
     }
     assert!(

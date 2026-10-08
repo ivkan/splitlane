@@ -195,9 +195,11 @@ pub fn close(
 /// opened.
 ///
 /// Reads `drive` in `surface.status`, which is the server's answer about
-/// this caller and that session. A session nobody was asked about has no
-/// answer coming, and is waited on all the same: the question may be put by
-/// a `send` that has not been made yet.
+/// this caller and that session. A session nobody was asked about yet is
+/// waited on all the same: the question may be put by a `send` that has not
+/// been made. One nobody will ever be asked about ends the wait at once -
+/// there is no answer coming, and waiting out the timeout said only that
+/// the time was up.
 pub fn wait_allowed(
     client: &impl IpcTransport,
     target: &str,
@@ -217,6 +219,16 @@ pub fn wait_allowed(
             Some("declined") => {
                 println!("{surface_id}\tdeclined");
                 return Ok(EXIT_REFUSED);
+            }
+            Some("not_offered") => {
+                println!("{surface_id}\tnot_offered");
+                eprintln!(
+                    "splitlane: nobody is asked about this session for this caller. A person \
+                     is asked only when a session they opened sends to another agent session \
+                     they opened, in the same project. A session the caller opened itself \
+                     needs no leave: just send to it."
+                );
+                return Ok(EXIT_RUNTIME);
             }
             _ if started.elapsed() >= timeout => {
                 println!("{surface_id}\ttimeout");
@@ -642,6 +654,12 @@ mod tests {
             words: RefCell::new(vec![json!("asked"), json!("declined")]),
         };
         assert_eq!(wait_allowed(&no, "api", SOON).expect("ok"), EXIT_REFUSED);
+        // No question can be put for this pair, so there is nothing to wait
+        // out: the answer comes at once, with the timeout untouched.
+        let never = Driving {
+            words: RefCell::new(vec![json!("not_offered")]),
+        };
+        assert_eq!(wait_allowed(&never, "api", SOON).expect("ok"), EXIT_RUNTIME);
         // A question still standing, or never put, when the time is up.
         for word in [json!("asked"), Value::Null] {
             let pending = Driving {

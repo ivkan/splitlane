@@ -3080,7 +3080,8 @@ impl SplitlaneApp {
                 );
                 // Where a person's leave for the caller to drive this session
                 // stands, and which session drives it now. The first is about
-                // the caller, so it is `null` for everybody else.
+                // the caller: `null` until a person is asked on its behalf,
+                // and `not_offered` when nobody ever would be.
                 let who = self.caller_of(caller, cx);
                 let target = self.write_target_for(&who, &terminal, cx);
                 value["drive"] = serde_json::json!(target.drive.word());

@@ -44,6 +44,9 @@ Notable changes to Splitlane are recorded here. The format follows
   session says `by <name>` in the rail and `driven by <name>` in its pane's
   header; `surface.list` and `surface.status` carry `driven_by`, and
   `surface.status` carries `drive` for the caller.
+- `drive` says `not_offered` for a session nobody would be asked about on
+  the caller's behalf, and `splitlane wait --until allowed` ends on it at
+  once with exit code `1` instead of waiting out its timeout.
 - The sessions a session opened sit under it in the rail, in the order they
   were opened, and each one's pane says `opened by <name>`.
 - The skill in `skills/splitlane-fleet` teaches an agent to open its own

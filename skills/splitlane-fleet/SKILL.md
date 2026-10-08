@@ -346,7 +346,9 @@ splitlane wait --match api --until allowed --timeout 540
 
 Exit `0`: send again. Exit `8`: they said no - do not ask again and do not
 look for another way in. Exit `4`: they have not answered; tell them and
-stop. You never close or move a session the person opened, whatever they
+stop. Exit `1` with `not_offered`: this is not a session anyone is asked
+about - a shell, a session in another project, or one you opened yourself,
+which you write into without asking. You never close or move a session the person opened, whatever they
 answered.
 
 ## 6. The discipline (read this twice)

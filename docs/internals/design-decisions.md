@@ -1087,7 +1087,11 @@ that asked has a turn of its own to get on with. The write comes back at once
 with its own code - JSON-RPC `-32005`, reason `asked_person`, exit 9 - which
 is neither done nor refused. `surface.status` answers `drive` for the caller
 and the target (`asked`, `allowed`, `declined`), and `splitlane wait --until
-allowed` waits on that word. A write repeated while the question stands asks
+allowed` waits on that word. A pair nobody would be asked about answers
+`not_offered`, and the wait ends on it at once: with one empty value for
+both "not asked yet" and "never will be", a caller that waited on a shell
+or on a session in another project sat out its whole timeout to learn
+nothing. A write repeated while the question stands asks
 nothing new.
 
 **The question is an ordinary wait, on the session that asked.** While it

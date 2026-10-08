@@ -87,6 +87,8 @@ configuration files:
   `send` to it exited `9`. It takes one target and only `--timeout`, and
   exits `0` when they allowed it, `8` when they did not, and `4` when the
   time ran out with the question still standing - or with no question put.
+  It exits `1` at once, printing `not_offered`, when the target is not a
+  session anybody would be asked about for this caller.
 - `split h` stacks panes, `split v` puts them side by side. Without `--target`
   the first pane of the active project is split.
 - `read`: `--lines` defaults to 200 and is clamped to 1-4000 by the server;
@@ -341,7 +343,7 @@ An empty fleet is `{"agents": []}`.
 | `waiting_ms` | yes | yes | Milliseconds since it started waiting for input |
 | `idle_ms` | yes | yes | Milliseconds since the last hook activity |
 | `output_generation` | | yes | As in `surface.read` |
-| `drive` | | yes | Where a person's leave for **the caller** to send messages to this session stands: `asked`, `allowed` or `declined`. `null` when nobody was asked, and for every caller but the one that asked |
+| `drive` | | yes | Where a person's leave for **the caller** to send messages to this session stands: `asked`, `allowed` or `declined`. `null` when nobody has been asked yet. `not_offered` when nobody would be: the target is a shell, a session another session opened, or in another project, or the caller is not in a pane or was itself opened by a session |
 | `driven_by` | | yes | The surface id of the session a person let drive this one, otherwise `null` |
 
 `state` values: `thinking`, `waiting_for_input`, `finished`, `errored`,

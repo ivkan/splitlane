@@ -39,9 +39,14 @@ pub(crate) enum Drive {
 
 impl Drive {
     /// The word a caller reads under `drive` in `surface.status`. Published.
+    ///
+    /// "Not asked yet" has no word and "never will be" has one, because a
+    /// caller waiting for an answer has to tell them apart: the first can
+    /// still become a question, the second cannot.
     pub(crate) fn word(self) -> Option<&'static str> {
         match self {
-            Drive::NotOffered | Drive::NotAsked => None,
+            Drive::NotAsked => None,
+            Drive::NotOffered => Some("not_offered"),
             Drive::Standing(Standing::Asked) => Some("asked"),
             Drive::Standing(Standing::Allowed) => Some("allowed"),
             Drive::Standing(Standing::Declined) => Some("declined"),
@@ -264,9 +269,9 @@ mod tests {
     }
 
     #[test]
-    fn only_a_standing_has_a_word() {
-        assert_eq!(Drive::NotOffered.word(), None);
+    fn a_pair_nobody_was_asked_about_yet_has_no_word() {
         assert_eq!(Drive::NotAsked.word(), None);
+        assert_eq!(Drive::NotOffered.word(), Some("not_offered"));
         assert_eq!(Drive::Standing(Standing::Asked).word(), Some("asked"));
         assert_eq!(Drive::Standing(Standing::Allowed).word(), Some("allowed"));
         assert_eq!(Drive::Standing(Standing::Declined).word(), Some("declined"));
