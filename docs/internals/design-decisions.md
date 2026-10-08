@@ -1165,9 +1165,11 @@ The name in the header is the way to that session. Pressed, it offers
 opener at once, there being nothing else to do about one, and after the
 opener is closed it is plain text. The palette lists `Stop ‹name› driving
 ‹session›` for each driven session, with both names because the row it is
-about is not in sight there - and only for a typed query: the palette
-opens with its last session selected, and Enter on an untouched palette
-must never be what takes a session back.
+about is not in sight there - and only for a query that begins like the
+command, with `stop` or `driving`. Matching the label the way a session is
+matched would offer it to somebody typing `api` to go to `api`, as the
+first row whenever `api` is not in a pane, and Enter would take the session
+back.
 
 In `Activity` the asking session's row says `‹project› · asks for ‹name›`
 where the branch would be, and the row of a session another opened says
@@ -1175,7 +1177,9 @@ where the branch would be, and the row of a session another opened says
 waiting or has failed ends with `Opened by ‹name› in ‹project›.`, and the
 first one about a waiting session adds `‹name› can't answer for you.`,
 once per opener while the app runs: it explains why the person is being
-told, and does not need saying for each of eight sessions. A session in a
+told, and does not need saying for each of eight sessions. It counts as
+said only when the notification was shown - one held back because the
+session was on screen has told nobody anything. A session in a
 private group says none of this, as it says nothing else.
 
 **Nothing is printed into the asking session.** The designs show a line in

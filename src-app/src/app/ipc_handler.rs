@@ -293,13 +293,13 @@ pub(crate) fn fire_attention_notification(
     config: &splitlane_config::schema::SplitlaneConfig,
     surface_is_seen: bool,
     executor: gpui::BackgroundExecutor,
-) {
+) -> bool {
     desktop_notifications::fire_desktop_notification(
         DesktopNotification::needs_input(agent, &subject, message),
         config,
         surface_is_seen,
         executor,
-    );
+    )
 }
 
 fn sanitize_notification_message(raw: &str) -> String {
@@ -3949,14 +3949,14 @@ impl SplitlaneApp {
                         self.accelerate_agent_state(thread_id, cx);
                     }
                     let seen = self.thread_is_seen(thread_id, cx);
-                    let subject = self.notification_subject_of_session(
+                    let (subject, explains) = self.notification_subject_of_session(
                         workspace_id,
                         thread_id,
                         title,
                         true,
                         cx,
                     );
-                    fire_attention_notification(
+                    let shown = fire_attention_notification(
                         tool,
                         subject,
                         message.as_deref(),
@@ -3964,6 +3964,7 @@ impl SplitlaneApp {
                         seen,
                         cx.background_executor().clone(),
                     );
+                    self.opener_was_explained(explains, shown);
                     serde_json::json!({"status": "waiting"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -4359,7 +4360,7 @@ impl SplitlaneApp {
                     }
                     if errored {
                         let seen = self.thread_is_seen(thread_id, cx);
-                        let subject = self.notification_subject_of_session(
+                        let (subject, _) = self.notification_subject_of_session(
                             workspace_id,
                             thread_id,
                             title,

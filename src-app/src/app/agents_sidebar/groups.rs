@@ -531,25 +531,32 @@ impl SplitlaneApp {
     /// The first such notification about a waiting session also says the
     /// opener cannot answer for the person, once per opener while the app
     /// runs: it explains why they are being told, and does not need saying
-    /// eight times for eight sessions.
+    /// eight times for eight sessions. The second value is that opener,
+    /// when this subject carries the sentence: the caller hands it to
+    /// [`Self::opener_was_explained`] if the notification was really shown.
+    /// Counting it here would spend the one telling on a notification that
+    /// was never shown, because the session was on screen.
     pub(crate) fn notification_subject_of_session(
-        &mut self,
+        &self,
         ws_id: u64,
         thread_id: u64,
         name: impl Into<String>,
         waiting: bool,
         cx: &Context<Self>,
-    ) -> crate::agents::notifications::NotificationSubject {
+    ) -> (
+        crate::agents::notifications::NotificationSubject,
+        Option<u64>,
+    ) {
         use crate::agents::notifications::NotificationSubject;
         let subject = self.notification_subject(ws_id, name, cx);
         let NotificationSubject::Named(name) = subject else {
-            return subject;
+            return (subject, None);
         };
         let Some(by) = self
             .thread_by_id(thread_id)
             .and_then(|thread| thread.opened_by.clone())
         else {
-            return NotificationSubject::Named(name);
+            return (NotificationSubject::Named(name), None);
         };
         // The opener's name as it is now; the one kept in the record is for
         // when the opener is gone.
@@ -566,10 +573,25 @@ impl SplitlaneApp {
             .find(|container| container.threads.iter().any(|t| t.id == thread_id))
             .map(|container| container.title.clone())
             .unwrap_or_default();
-        let cannot_answer = waiting && self.openers_explained.insert(by.id);
-        NotificationSubject::Opened {
-            name,
-            origin: crate::agents::notifications::opened_by_line(&opener, &project, cannot_answer),
+        let cannot_answer = waiting && !self.openers_explained.contains(&by.id);
+        (
+            NotificationSubject::Opened {
+                name,
+                origin: crate::agents::notifications::opened_by_line(
+                    &opener,
+                    &project,
+                    cannot_answer,
+                ),
+            },
+            cannot_answer.then_some(by.id),
+        )
+    }
+
+    /// A notification that said `opener` cannot answer for the person was
+    /// shown. It is not said again while the app runs.
+    pub(crate) fn opener_was_explained(&mut self, opener: Option<u64>, shown: bool) {
+        if let (Some(opener), true) = (opener, shown) {
+            self.openers_explained.insert(opener);
         }
     }
 

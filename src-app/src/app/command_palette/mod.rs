@@ -307,9 +307,9 @@ impl SplitlaneApp {
             return items;
         }
 
-        // Only for a query. With none, the row the palette opens on is the
-        // last one that is not a command, and Enter on an untouched palette
-        // must never be what takes a session back.
+        // Only for a query that begins like the command. The palette opens
+        // with its first row selected, and a query for a session by name
+        // must never leave this row there for Enter to take.
         for (driver, target) in self.drive.driven() {
             let (Some(driver), Some(driven)) =
                 (self.thread_by_id(driver), self.thread_by_id(target))
@@ -321,7 +321,7 @@ impl SplitlaneApp {
                     .unwrap_or_else(|| thread.title.clone())
             };
             let label = crate::app::drive::stop_driving_label(&name(driver), &name(driven));
-            if !label.to_lowercase().contains(needle) {
+            if !crate::app::drive::stop_driving_matches(&label, needle) {
                 continue;
             }
             let detail = self

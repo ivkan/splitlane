@@ -189,6 +189,24 @@ pub(crate) fn stop_driving_label(driver: &str, driven: &str) -> String {
     format!("Stop {driver} driving {driven}")
 }
 
+/// Whether a palette query is asking for that command.
+///
+/// Not "the label contains the query", which is how a session is found:
+/// the label holds both sessions' names, so somebody typing `api` to go to
+/// `api` would be offered "Stop plan driving api" - as the first row, when
+/// `api` is not in a pane - and Enter would take the session back. The
+/// query has to begin the way the command does, with `stop` or `driving`.
+/// `needle` is lower case, as the palette hands it over.
+pub(crate) fn stop_driving_matches(label: &str, needle: &str) -> bool {
+    let Some(first) = needle.split_whitespace().next() else {
+        return false;
+    };
+    (["stop", "driving"]
+        .iter()
+        .any(|word| word.starts_with(first)))
+        && label.to_lowercase().contains(needle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +331,34 @@ mod tests {
     #[test]
     fn taking_a_session_back_names_both_sessions() {
         assert_eq!(stop_driving_label("plan", "api"), "Stop plan driving api");
+    }
+
+    /// The command is found by its own words and never by a session's name
+    /// alone: a query for the session must not put this row under Enter.
+    #[test]
+    fn the_command_is_found_by_its_verb_not_by_a_sessions_name() {
+        let label = stop_driving_label("plan", "api");
+        for asked in [
+            "st",
+            "stop",
+            "stop plan",
+            "stop plan driving api",
+            "dri",
+            "driving api",
+        ] {
+            assert!(stop_driving_matches(&label, asked), "{asked}");
+        }
+        for not_asked in [
+            "",
+            "api",
+            "plan",
+            "plan driving",
+            "stop web",
+            "stopwatch",
+            "a",
+        ] {
+            assert!(!stop_driving_matches(&label, not_asked), "{not_asked}");
+        }
     }
 
     #[test]
