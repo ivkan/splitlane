@@ -292,7 +292,17 @@ pub(crate) fn fire_desktop_notification(
         NotifyLevel::default,
         AgentPanelConfig::resolved_notify_level,
     );
-    if !should_fire_desktop_notification(level, notification.class, surface_is_seen) {
+    let sent = should_fire_desktop_notification(level, notification.class, surface_is_seen);
+    // A notification that was not sent looks exactly like one nobody asked
+    // for, and a debug build shows neither. The body is left out: it can
+    // carry what a session said.
+    log::debug!(
+        target: crate::app::agent_state_pass::TRACE,
+        "notification {:?} ({:?}): sent={sent} (level={level:?}, seen={surface_is_seen})",
+        notification.class,
+        notification.summary,
+    );
+    if !sent {
         return false;
     }
 
