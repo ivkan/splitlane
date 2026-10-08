@@ -139,13 +139,30 @@ pub struct RailRecord {
     /// own file does not say.
     ///
     /// Rewritten by every state pass from that pass's reading and never kept
-    /// across one, so it cannot outlive what it describes: a command that
-    /// ended, an agent process that is gone and a status file nobody is
-    /// writing any more all read as zero on the next pass.
+    /// across one: a command that ended and an agent process that is gone
+    /// both read as zero on the next pass, the second because the status file
+    /// of a process that is not running is never opened. An agent that is
+    /// alive and has stopped writing its file keeps whatever word it wrote
+    /// last, this one included - the same exposure every word in that file
+    /// has.
+    ///
+    /// Written by the pass only, so between a session starting to work by
+    /// some other route and the next pass it can stand beside a word other
+    /// than `idle`. Read it through [`Self::shells_beside_idle`].
     pub background_shells: u32,
 }
 
 impl RailRecord {
+    /// The background commands to report for a session showing `status`:
+    /// the count is a property of an idle session and of no other.
+    pub fn shells_beside_idle(&self, status: ThreadStatus) -> u32 {
+        if status == ThreadStatus::Idle {
+            self.background_shells
+        } else {
+            0
+        }
+    }
+
     pub fn record_run_end(&mut self, outcome: RunOutcome) {
         self.runs_ended = self.runs_ended.saturating_add(1);
         self.last_outcome = Some(outcome);
@@ -490,6 +507,25 @@ mod tests {
         assert_eq!(background_shell_count(true, 2), 2);
         // A dev server started before the window the transcript reader sees.
         assert_eq!(background_shell_count(true, 0), 1);
+    }
+
+    /// A session that started working again before the pass caught up does
+    /// not carry the count along.
+    #[test]
+    fn the_count_is_reported_beside_idle_only() {
+        let record = RailRecord {
+            background_shells: 2,
+            ..RailRecord::default()
+        };
+        assert_eq!(record.shells_beside_idle(ThreadStatus::Idle), 2);
+        for status in [
+            ThreadStatus::Starting,
+            ThreadStatus::Thinking,
+            ThreadStatus::WaitingForInput,
+            ThreadStatus::Failed,
+        ] {
+            assert_eq!(record.shells_beside_idle(status), 0);
+        }
     }
 
     /// What the file already held when the surface was first seen is history,

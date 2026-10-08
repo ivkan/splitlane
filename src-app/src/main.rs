@@ -1425,6 +1425,12 @@ struct SplitlaneApp {
     /// See `app::agent_state_pass::confirm_run_end` for why a run does not end
     /// on one reading.
     run_end_seen_at: std::collections::HashMap<u64, std::time::Instant>,
+    /// Turns that ended beside a live background command and have not been
+    /// announced. See `app::agent_state_pass::ShellWait`.
+    shell_waits: std::collections::HashMap<u64, crate::app::agent_state_pass::ShellWait>,
+    /// How many background commands each session had alive the last time it
+    /// sat idle with no end being held: the ones that are not news any more.
+    shells_at_rest: std::collections::HashMap<u64, u32>,
     /// Sessions another caller asked to have their turn stopped, and when.
     /// Read once, where that run ends: it is what tells a prompt the agent
     /// put back on its input line because of our key from one a person

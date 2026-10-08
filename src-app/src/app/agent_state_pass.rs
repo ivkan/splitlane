@@ -74,6 +74,17 @@ const INTERVAL: Duration = Duration::from_secs(2);
 /// pass.
 const RUN_END_CONFIRM: Duration = Duration::from_secs(3);
 
+/// How long a turn that ended beside a live background command goes
+/// unannounced. See [`ShellWait`].
+///
+/// Chosen, not measured, and the two sides of it are both costs. Shorter, and
+/// an agent waiting on an ordinary test run is announced as finished before
+/// the run is over, which is the report this exists to stop. Longer, and
+/// somebody who asked for a dev server and walked away hears nothing for that
+/// long about an agent that is done. Two minutes is past most test runs and
+/// builds and short enough to still be news.
+const SHELL_HOLD: Duration = Duration::from_secs(120);
+
 /// One agent surface to ask about.
 struct StateTarget {
     thread_id: u64,
@@ -633,12 +644,82 @@ impl SplitlaneApp {
                     // the moment it happens, three seconds before this.
                     let file_says_interrupted =
                         watch.current.as_ref().is_some_and(|end| end.interrupted);
-                    finished_runs.extend(run_ended(&mut self.running_since, thread).map(|run| {
-                        FinishedRun {
-                            interrupted: file_says_interrupted,
-                            ..run
+                    let ended = run_ended(&mut self.running_since, thread).map(|run| FinishedRun {
+                        interrupted: file_says_interrupted,
+                        ..run
+                    });
+                    // A turn that ended with a background command alive is
+                    // held instead of announced: the agent may be waiting on
+                    // that command and about to carry on. A turn a person
+                    // stopped is not held - it is not announced either way.
+                    //
+                    // Only a command started during this run can be what the
+                    // agent is waiting on. One that was already alive the last
+                    // time the session sat idle - a dev server from an earlier
+                    // turn - would otherwise delay every finish after it.
+                    let shells_before = self
+                        .shells_at_rest
+                        .get(&reading.thread_id)
+                        .copied()
+                        .unwrap_or(0);
+                    match ended {
+                        Some(run)
+                            if thread.rail.shells_beside_idle(thread.status) > shells_before
+                                && !run.interrupted =>
+                        {
+                            self.shell_waits
+                                .insert(reading.thread_id, ShellWait::begin(read_at, run.ran_for));
                         }
-                    }));
+                        Some(run) => {
+                            self.shell_waits.remove(&reading.thread_id);
+                            finished_runs.push(run);
+                        }
+                        None => {
+                            if let Some(wait) = self.shell_waits.get_mut(&reading.thread_id) {
+                                match wait.step(
+                                    thread.status,
+                                    thread.rail.background_shells,
+                                    read_at,
+                                ) {
+                                    ShellWaitStep::Hold => {}
+                                    ShellWaitStep::Resume(started) => {
+                                        // One run, not two: the clock goes
+                                        // back to where the held turn began,
+                                        // so the answer that follows a
+                                        // ten-minute test run is not a
+                                        // four-second run under the floor.
+                                        self.running_since.insert(reading.thread_id, started);
+                                        self.shell_waits.remove(&reading.thread_id);
+                                    }
+                                    ShellWaitStep::Announce {
+                                        ran_for,
+                                        background_shells,
+                                    } => {
+                                        self.shell_waits.remove(&reading.thread_id);
+                                        finished_runs.push(FinishedRun {
+                                            thread_id: reading.thread_id,
+                                            ran_for,
+                                            interrupted: false,
+                                            background_shells,
+                                        });
+                                    }
+                                    ShellWaitStep::Drop => {
+                                        self.shell_waits.remove(&reading.thread_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // After the decision above, which compares against what
+                    // stood before this run. Left alone while an end is held,
+                    // so a run that resumes and ends again is still measured
+                    // against the count it started from.
+                    if thread.status == crate::project::ThreadStatus::Idle
+                        && !self.shell_waits.contains_key(&reading.thread_id)
+                    {
+                        self.shells_at_rest
+                            .insert(reading.thread_id, thread.rail.background_shells);
+                    }
                     // **The count of ended runs is taken here, where the run
                     // clock is emptied**, which is also what leads to the
                     // row's unread mark. One decision, so a script waiting on
@@ -764,6 +845,12 @@ impl SplitlaneApp {
         self.interrupts_asked.retain(|thread_id, _| {
             crate::project::find_surface(&self.workspaces, *thread_id).is_some()
         });
+        self.shell_waits.retain(|thread_id, _| {
+            crate::project::find_surface(&self.workspaces, *thread_id).is_some()
+        });
+        self.shells_at_rest.retain(|thread_id, _| {
+            crate::project::find_surface(&self.workspaces, *thread_id).is_some()
+        });
         // A session that was closed drives nothing and is driven by nobody.
         {
             let workspaces = &self.workspaces;
@@ -883,10 +970,13 @@ impl SplitlaneApp {
         else {
             return;
         };
+        // A turn announced with a command still alive says so, in the words
+        // the agent's own status line uses.
+        let still_running = shells_still_running(run.background_shells);
         crate::app::ipc_handler::fire_turn_end_notification(
             agent,
             self.notification_subject(ws_id, title, cx),
-            None,
+            still_running.as_deref(),
             &self.cached_config,
             seen,
             cx.background_executor().clone(),
@@ -908,6 +998,117 @@ pub(crate) struct FinishedRun {
     /// The agent's own file says the newest turn was stopped by a person.
     /// Filled in by the pass, which is what reads the file.
     interrupted: bool,
+    /// Background commands still alive as this is announced. Non-zero only
+    /// for a turn that was held for [`SHELL_HOLD`] and whose command outlived
+    /// it.
+    background_shells: u32,
+}
+
+/// `1 shell still running` / `2 shells still running`, or nothing for none.
+fn shells_still_running(count: u32) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 shell still running".to_string()),
+        many => Some(format!("{many} shells still running")),
+    }
+}
+
+/// A turn that ended while a background command the agent started was still
+/// alive, and has not been announced.
+///
+/// Claude Code's status file says `shell` for two different things: an agent
+/// that started a test run and is waiting to carry on after it, and an agent
+/// that started a dev server and is done. Nothing the CLI writes tells them
+/// apart - the launch record is the same `Bash` call either way (measured on
+/// 2.1.294). Announcing the end at once is wrong for the first: the row said
+/// `finished`, a notification went out, and a minute later the session was
+/// working again. Never announcing it is wrong for the second.
+///
+/// So the end is held. If the agent wakes, nothing was announced and the run
+/// carries on as one run. If the last command ends and the agent stays idle,
+/// the end is announced then. And if the command is still alive after
+/// [`SHELL_HOLD`], it is announced once, saying a command is still running:
+/// that is the dev server, or a run long enough that somebody may want to
+/// know the agent is only waiting.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ShellWait {
+    /// When the held run began, so a run that resumes keeps its length.
+    run_started: std::time::Instant,
+    /// How long the turn had run when it ended.
+    ran_for: Duration,
+    /// When the turn ended and the hold began.
+    held_since: std::time::Instant,
+    /// When the session was first read idle with no command left alive.
+    quiet_since: Option<std::time::Instant>,
+}
+
+/// What one reading does to a [`ShellWait`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellWaitStep {
+    /// Nothing yet.
+    Hold,
+    /// The agent is working again; the run began at this instant.
+    Resume(std::time::Instant),
+    /// Tell somebody the turn ended.
+    Announce {
+        ran_for: Duration,
+        background_shells: u32,
+    },
+    /// The session moved on to something that has its own announcement.
+    Drop,
+}
+
+impl ShellWait {
+    fn begin(at: std::time::Instant, ran_for: Duration) -> Self {
+        Self {
+            run_started: at.checked_sub(ran_for).unwrap_or(at),
+            ran_for,
+            held_since: at,
+            quiet_since: None,
+        }
+    }
+
+    fn step(
+        &mut self,
+        status: crate::project::ThreadStatus,
+        background_shells: u32,
+        at: std::time::Instant,
+    ) -> ShellWaitStep {
+        use crate::project::ThreadStatus;
+        match status {
+            ThreadStatus::Thinking => ShellWaitStep::Resume(self.run_started),
+            ThreadStatus::Idle if background_shells == 0 => {
+                // The same span a run's end is confirmed over, for the same
+                // reason: one reading between a command ending and the agent
+                // waking must not be taken for the agent staying idle.
+                let first = *self.quiet_since.get_or_insert(at);
+                if at.saturating_duration_since(first) < RUN_END_CONFIRM {
+                    ShellWaitStep::Hold
+                } else {
+                    ShellWaitStep::Announce {
+                        ran_for: self.ran_for,
+                        background_shells: 0,
+                    }
+                }
+            }
+            ThreadStatus::Idle => {
+                self.quiet_since = None;
+                if at.saturating_duration_since(self.held_since) < SHELL_HOLD {
+                    ShellWaitStep::Hold
+                } else {
+                    ShellWaitStep::Announce {
+                        ran_for: self.ran_for,
+                        background_shells,
+                    }
+                }
+            }
+            // Waiting for a person and failing are announced on their own
+            // terms, and a relaunch is a new session as far as this goes.
+            ThreadStatus::WaitingForInput | ThreadStatus::Failed | ThreadStatus::Starting => {
+                ShellWaitStep::Drop
+            }
+        }
+    }
 }
 
 /// Maintain the run clock and report a run that just ended.
@@ -968,6 +1169,7 @@ fn run_ended(
         thread_id: thread.id,
         ran_for: started.map_or(std::time::Duration::ZERO, |at| at.elapsed()),
         interrupted: false,
+        background_shells: 0,
     })
 }
 
@@ -1556,6 +1758,7 @@ mod tests {
     use crate::project::{Thread, ThreadStatus};
 
     use std::collections::HashSet;
+    use std::time::{Duration, Instant};
 
     use super::{
         RUN_END_CONFIRM, confirm_run_end, deposit, deposit_pty_flow, withdraw_starting_if_unwatched,
@@ -1588,6 +1791,112 @@ mod tests {
         let end = tail.end.expect("an end");
         assert_eq!(end.marker, "a-1");
         assert!(!end.interrupted && !end.prompt_returned);
+    }
+
+    /// The case this exists for: the agent started a test run, said it would
+    /// wait, and carried on when the run was over. Nothing is announced in
+    /// between, and the run keeps the start it had.
+    #[test]
+    fn an_agent_that_wakes_after_its_command_was_never_announced() {
+        use super::{ShellWait, ShellWaitStep};
+        let started = Instant::now();
+        let ended = started + Duration::from_secs(20);
+        let mut wait = ShellWait::begin(ended, Duration::from_secs(20));
+        assert_eq!(
+            wait.step(ThreadStatus::Idle, 1, ended + Duration::from_secs(60)),
+            ShellWaitStep::Hold
+        );
+        assert_eq!(
+            wait.step(ThreadStatus::Thinking, 0, ended + Duration::from_secs(62)),
+            ShellWaitStep::Resume(started)
+        );
+    }
+
+    /// A dev server does not end. Whoever left one running and walked away
+    /// is told the agent finished, once, with the command named.
+    #[test]
+    fn a_command_that_outlives_the_hold_is_announced_as_still_running() {
+        use super::{SHELL_HOLD, ShellWait, ShellWaitStep};
+        let ended = Instant::now();
+        let mut wait = ShellWait::begin(ended, Duration::from_secs(20));
+        assert_eq!(
+            wait.step(
+                ThreadStatus::Idle,
+                2,
+                ended + SHELL_HOLD - Duration::from_secs(1)
+            ),
+            ShellWaitStep::Hold
+        );
+        assert_eq!(
+            wait.step(ThreadStatus::Idle, 2, ended + SHELL_HOLD),
+            ShellWaitStep::Announce {
+                ran_for: Duration::from_secs(20),
+                background_shells: 2,
+            }
+        );
+        assert_eq!(
+            super::shells_still_running(2).as_deref(),
+            Some("2 shells still running")
+        );
+        assert_eq!(
+            super::shells_still_running(1).as_deref(),
+            Some("1 shell still running")
+        );
+        assert_eq!(super::shells_still_running(0), None);
+    }
+
+    /// The command ended and the agent did not pick up again - it was killed
+    /// with its command, or the status went quiet. The end is announced after
+    /// the confirmation span, not on the first reading.
+    #[test]
+    fn a_command_that_ends_without_waking_the_agent_is_announced_after_the_span() {
+        use super::{ShellWait, ShellWaitStep};
+        let ended = Instant::now();
+        let mut wait = ShellWait::begin(ended, Duration::from_secs(20));
+        let quiet = ended + Duration::from_secs(30);
+        assert_eq!(wait.step(ThreadStatus::Idle, 0, quiet), ShellWaitStep::Hold);
+        assert_eq!(
+            wait.step(ThreadStatus::Idle, 0, quiet + RUN_END_CONFIRM),
+            ShellWaitStep::Announce {
+                ran_for: Duration::from_secs(20),
+                background_shells: 0,
+            }
+        );
+    }
+
+    /// One of two commands ending wakes the agent, and the other still being
+    /// alive when it stops again starts the span over rather than carrying
+    /// a half-counted one.
+    #[test]
+    fn a_command_seen_alive_again_restarts_the_quiet_span() {
+        use super::{ShellWait, ShellWaitStep};
+        let ended = Instant::now();
+        let mut wait = ShellWait::begin(ended, Duration::from_secs(20));
+        let t = ended + Duration::from_secs(10);
+        assert_eq!(wait.step(ThreadStatus::Idle, 0, t), ShellWaitStep::Hold);
+        assert_eq!(
+            wait.step(ThreadStatus::Idle, 1, t + Duration::from_secs(2)),
+            ShellWaitStep::Hold
+        );
+        assert_eq!(
+            wait.step(ThreadStatus::Idle, 0, t + Duration::from_secs(4)),
+            ShellWaitStep::Hold
+        );
+    }
+
+    /// A question and a failure have announcements of their own.
+    #[test]
+    fn a_wait_or_a_failure_ends_the_hold_without_a_finish() {
+        use super::{ShellWait, ShellWaitStep};
+        let ended = Instant::now();
+        for status in [
+            ThreadStatus::WaitingForInput,
+            ThreadStatus::Failed,
+            ThreadStatus::Starting,
+        ] {
+            let mut wait = ShellWait::begin(ended, Duration::from_secs(20));
+            assert_eq!(wait.step(status, 1, ended), ShellWaitStep::Drop);
+        }
     }
 
     /// A surface the pass cannot look at wears no claim.
