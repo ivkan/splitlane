@@ -2481,6 +2481,7 @@ mod tests {
         };
         println!("open calls: {:?}", probe.open_calls);
         println!("open turn: {:?}", probe.open_turn);
+        println!("background commands alive: {}", probe.background_shells);
         println!(
             "errored: {} incomplete: {}",
             probe.errored, probe.incomplete
