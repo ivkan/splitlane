@@ -584,11 +584,101 @@ Only `Thinking` to `Idle` is held. `waiting for you` goes up at once, because
 holding a claim that somebody is waiting past its truth is the one false answer
 this detector may not give.
 
-`shell` is a different word and is left as it is. The CLI writes it when the
-turn is over but a background `local_bash` is still alive. It resolves like
-`idle` (`claude_pid_state::state_from_status`), because a dev server would
-otherwise hold a session on `running` for its whole life. The CLI's own
-`claude ps` draws `shell` as working. That disagreement is known and deliberate.
+**`shell` is idle with something alive beside it, and it is not announced as
+finished at once.** The CLI writes `shell` when the turn is over but a
+background command it started is still running. It used to resolve to `idle`
+and be forgotten, on the argument that a dev server would otherwise hold a
+session on `running` for its whole life. That argument still stands, and the
+word still resolves to `idle` (`claude_pid_state::state_from_status`). What it
+missed is the other thing the same word means: an agent that started its tests
+in the background, said it would wait for them, and carries on when they
+finish. For that session the row read `finished`, a notification went out, and
+a minute later it was working again, sometimes several times in one piece of
+work. It was reported from live use, with the pane's own footer saying
+`1 shell still running` beside a row that said the session was done.
+
+Measured on CLI 2.1.294 by logging a session's own `sessions/<pid>.json` every
+50 ms across turns that left background commands running:
+
+- **The file says `shell` and nothing more.** With two commands alive and with
+  one, it is the same file apart from its two timestamps: no count, no list,
+  no task id.
+- **The transcript has both ends.** The result of the `Bash` call that started
+  the command carries `toolUseResult.backgroundTaskId`, and when the command
+  stops the CLI enqueues a `<task-notification>` naming that id: `completed`
+  for one that ran out, `failed` for one killed from outside. That is the shape
+  a background agent already has, one field over, and the same reader counts
+  it (`TranscriptProbe::background_shells`).
+- **There is no `idle` in between.** The file goes from `shell` straight to
+  `busy`, about 10 ms after the notification is written, when a command ends
+  with others alive and when the last one ends. Every command ending wakes the
+  agent.
+- **Nothing tells a test run from a dev server.** Both are a `Bash` call with
+  `run_in_background`, and the records are the same. This one is read off the
+  shape of the launch record; a command that never ends was not left running
+  to watch.
+
+So there are three rules, and each follows from one of those.
+
+**The status file decides whether, the transcript says how many**
+(`rail_state::background_shell_count`). A count from the transcript alone is
+not reported: it keeps counting a command whose end it never recorded. And
+with the file's word the count is at least one, because the transcript reader
+sees a window of the file and a dev server started before it is not in it.
+The count lives on the session's record, is rewritten by every pass from that
+pass's own reading, and is zero for any reading that cannot say. A command
+that ended and an agent process that is gone both take it down on the next
+pass, the second because the status file of a process that is not running is
+never opened. It is a property of an idle session: under any other word it is
+reported as zero.
+
+**It is not `running`, and it is not a sixth status word.** The row and the
+header say `idle · 1 shell`, in the idle tone with the idle dot, where the
+header had `idle` and the rail row had the agent's name. `running` would bring
+back the dev server that holds a session amber for ever, which is what another
+product shipped when it read this word as work. `waiting` is taken: it means a
+person is being waited on. The word the CLI itself uses is `shell`, so the row
+uses it. A folded project's tally does not count such a session: it is idle,
+and the tally has no word for idle.
+
+**The end of the turn is held, not announced and not dropped**
+(`agent_state_pass::ShellWait`). When a run ends beside a command started
+during that run, no mark is set and no notification is sent. Then one of three
+things happens:
+
+- the agent wakes: nothing was announced, and the run clock goes back to where
+  the held turn began. It is one run. Without that, the answer after a
+  ten-minute test run would be a four-second run under the notification floor
+  and would never be announced at all;
+- the session is read idle with no command left for `RUN_END_CONFIRM`: the end
+  is announced then. This is the agent that did not wake, which the
+  measurement says should not happen and a killed process can still produce;
+- the command is still alive after two minutes (`SHELL_HOLD`): the end is
+  announced once, and the notification says `1 shell still running`. This is
+  the dev server, and it is why the hold has an end. Somebody who asked for a
+  server and walked away has to hear that the agent finished.
+
+Two minutes is chosen, not measured, and it is the price of having no sign to
+tell the two cases apart: a test run longer than that is announced early, with
+the text saying a command is still running, and announced again when the agent
+finishes. A command that was already alive the last time the session sat idle
+is not waited on at all, so one dev server does not delay every finish after
+it.
+
+The count of ended runs is not held. A turn that ended is counted when it
+ends, for the reason in the next section.
+
+Three things are not covered. Codex 0.158 can leave a command running past its
+turn, and whether its rollout records the two ends has not been measured, so
+for Codex and for every other agent nothing here applies and a turn's end is
+announced as before. `shell` has not been observed on a CLI newer than
+2.1.294, or on Windows or Linux. And an agent that is alive but has stopped
+writing its file keeps whatever word it wrote last, which is the exposure
+every word in that file has.
+
+What would re-open the hold: a field in the status file or the launch record
+that says the agent is waiting on a command. With that, the waiting case reads
+as `running`, the dev server as plain `idle`, and the two-minute guess goes.
 
 
 ## What a script is told
@@ -620,6 +710,19 @@ mark is news for a reader, so a run that ended on screen leaves none; the run
 still ended, and it is counted. An interrupted turn is not news either, and it
 is counted for the same reason: a script waiting for that turn would otherwise
 wait for its timeout.
+
+**A turn that ended beside a background command is counted, and the script
+is told about the command.** The person's notification is held in that case
+and the count is not, on purpose. A count that waited for a dev server would
+never move, and `wait --until turn-end` would run to its timeout for every
+caller that had started one. So the default wait still returns at the end of
+the turn, and `rail.background_shells` says how many commands the session
+left running. A caller that knows it handed over work with tests in it asks
+for `--settled`, which returns only when a run has ended and the session is
+idle with that number at zero. The cost is on the caller that asks: with a
+command that never ends, `--settled` ends on its timeout. The `surface.rail`
+event is sent when the number changes, because a caller waiting to settle is
+watching for exactly that and the status word does not move.
 
 **A surface only the byte counter speaks for has no count.** Its `running` is
 taken down by output stopping, and output stopping says nothing about a turn:

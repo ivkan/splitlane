@@ -6,7 +6,8 @@
 //! `waitingFor`), plus `shell` for "the turn is over but a background
 //! `local_bash` is still alive". Those are the rail's three answers, published
 //! by the vendor, and the CLI's own TUI paints its indicator from the same
-//! three words.
+//! three words. `shell` is the third answer with a fact beside it; see
+//! [`StatusReading`].
 //!
 //! # Why this is a better source than the rule next door
 //!
