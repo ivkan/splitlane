@@ -1058,9 +1058,16 @@ impl Pane {
             .collect();
         Some(
             div()
+                .id("drive-questions")
                 .flex()
                 .flex_col()
-                .flex_none()
+                // It gives way and scrolls rather than holding its height:
+                // in a short pane a strip that could not shrink was cut at
+                // the pane's edge, and the buttons of every request below
+                // the cut could not be reached at all.
+                .flex_shrink_1()
+                .min_h_0()
+                .overflow_y_scroll()
                 .gap(tok::space::SM)
                 .px(tok::space::LG)
                 .py(tok::space::MD)
