@@ -1582,6 +1582,9 @@ fn closed_opener_caption(name: &str, ui: crate::theme::UiColors) -> gpui::AnyEle
         .child(bracket_mark(Bracket::Top, tok::row::CAPTION, ui))
         .child(
             div()
+                // Without `flex_1` a truncating child of a flex row is
+                // laid out at no width and shows as a bare ellipsis.
+                .flex_1()
                 .min_w_0()
                 .truncate()
                 .font_family(tok::font::MONO)
