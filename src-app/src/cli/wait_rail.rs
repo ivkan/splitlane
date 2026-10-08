@@ -55,6 +55,10 @@ pub struct RailWaitOptions {
     pub after: Option<u64>,
     /// Keep waiting while the agent waits for a person instead of returning.
     pub through_waiting: bool,
+    /// Do not take a turn's end for the end while a background command the
+    /// agent started is still alive: it may be waiting on that command and
+    /// about to carry on.
+    pub settled: bool,
     pub start_grace: Duration,
     pub timeout: Duration,
     pub mode: MatchMode,
@@ -81,6 +85,8 @@ struct Rail {
     last_outcome: Option<String>,
     exited: bool,
     message: Option<String>,
+    /// Absent from an instance older than the field, which reads as none.
+    background_shells: u64,
 }
 
 impl Observation {
@@ -96,6 +102,10 @@ impl Observation {
             last_outcome: text("last_outcome"),
             exited: rail.get("exited").and_then(Value::as_bool).unwrap_or(false),
             message: text("message"),
+            background_shells: rail
+                .get("background_shells")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
         })
     }
 }
@@ -202,7 +212,9 @@ struct Track {
 /// 2. a run counted past the baseline, with the surface idle, is the turn's
 ///    end - checked before anything about the source, because the count was
 ///    made by a source that could make it. How it ended is the rail's word
-///    for that run: finished, failed, or stopped before it finished;
+///    for that run: finished, failed, or stopped before it finished. With
+///    `settled`, not while a background command of the agent's is alive -
+///    the wait carries on until the session is idle with none left;
 /// 3. a failed run or an agent that is gone is a failure;
 /// 4. a surface nothing can report a turn ending for is refused - after the
 ///    grace when it never had such a source, at once when it lost one;
@@ -236,6 +248,13 @@ fn decide_turn_end(
     let ended = rail.runs_ended > baseline;
 
     if ended && status == "idle" {
+        // The turn is over and the agent may not be done: a command it left
+        // running wakes it when it ends, and the answer comes after that.
+        // Nothing says whether this one will ever end, so a session that
+        // left a dev server behind is waited on until the timeout.
+        if options.settled && rail.background_shells > 0 {
+            return Step::Continue;
+        }
         return Step::Done(match rail.last_outcome.as_deref() {
             Some("failed") => Outcome::Failed,
             Some("interrupted") => Outcome::Interrupted,
@@ -379,6 +398,7 @@ impl Session {
                     "tier": rail.map(|r| r.tier.as_str()),
                     "runs_ended": rail.map(|r| r.runs_ended),
                     "last_outcome": rail.and_then(|r| r.last_outcome.as_deref()),
+                    "background_shells": rail.map(|r| r.background_shells),
                     "message": rail.and_then(|r| r.message.as_deref()),
                 })
             })
@@ -570,6 +590,7 @@ mod tests {
             wait: RailWait::TurnEnd,
             after,
             through_waiting: false,
+            settled: false,
             start_grace: DEFAULT_START_GRACE,
             timeout: DEFAULT_TIMEOUT,
             mode: MatchMode::Single,
@@ -718,6 +739,51 @@ mod tests {
         });
         assert_eq!(decide(&asking, Some(7), SOON), Step::Done(Outcome::Waiting));
         assert_eq!(Outcome::Waiting.exit_code(), EXIT_NEEDS_PERSON);
+    }
+
+    /// The default is unchanged: a turn that ended is the end, whatever the
+    /// agent left running.
+    #[test]
+    fn a_turn_end_beside_a_background_command_still_returns_by_default() {
+        let mut waiting_on_tests = rail("idle", "T1", 8);
+        if let Observation::Rail(rail) = &mut waiting_on_tests {
+            rail.background_shells = 1;
+        }
+        assert_eq!(
+            decide(&waiting_on_tests, Some(7), SOON),
+            Step::Done(Outcome::Finished)
+        );
+    }
+
+    /// With `--settled` an agent waiting on its own test run is not done: the
+    /// wait goes through the turn that follows the command and returns when
+    /// the session is idle with nothing left alive.
+    #[test]
+    fn settled_waits_out_a_background_command() {
+        let shells = |status: &str, runs: u64, shells: u64| {
+            let mut observation = rail(status, "T1", runs);
+            if let Observation::Rail(rail) = &mut observation {
+                rail.background_shells = shells;
+            }
+            observation
+        };
+        let mut opts = options(Some(7));
+        opts.settled = true;
+        let mut track = Track::default();
+        for (observation, expected) in [
+            (shells("running", 7, 0), Step::Continue),
+            // The turn ended with the test run alive.
+            (shells("idle", 8, 1), Step::Continue),
+            // The run ended and woke the agent.
+            (shells("running", 8, 0), Step::Continue),
+            (shells("idle", 9, 0), Step::Done(Outcome::Finished)),
+        ] {
+            assert_eq!(
+                decide_turn_end(&observation, &mut track, &opts, LATE),
+                expected,
+                "{observation:?}"
+            );
+        }
     }
 
     /// With `--through-waiting` the wait carries on: the person answers in the

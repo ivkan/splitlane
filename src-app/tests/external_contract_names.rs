@@ -137,6 +137,7 @@ fn the_rail_keeps_its_published_names() {
         "\"runs_ended\"",
         "\"last_outcome\"",
         "\"turn_marker\"",
+        "\"background_shells\"",
         "\"exited\"",
         "\"message\"",
     ] {

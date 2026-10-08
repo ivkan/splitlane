@@ -472,6 +472,13 @@ enum Commands {
         /// person, instead of returning with exit 5.
         #[arg(long, requires = "until")]
         through_waiting: bool,
+        /// With `--until turn-end`: also wait out any background command the
+        /// agent left running, and the turn that follows it. Without this a
+        /// turn that ended is the end, even when the agent said it would
+        /// carry on after its tests. A command that never ends (a dev
+        /// server) is waited on until `--timeout`.
+        #[arg(long, requires = "until")]
+        settled: bool,
         /// With `--until turn-end`: seconds a surface is given to start a turn
         /// or to gain a source that can report one ending (default 10).
         #[arg(long, value_name = "SECS", requires = "until")]
@@ -744,6 +751,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             state,
             after,
             through_waiting,
+            settled,
             start_grace,
         } => {
             let mode = if all {
@@ -754,7 +762,13 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
                 wait_cmd::MatchMode::Single
             };
             if until == Some(WaitUntil::Allowed) {
-                if after.is_some() || through_waiting || start_grace.is_some() || any || all {
+                if after.is_some()
+                    || through_waiting
+                    || settled
+                    || start_grace.is_some()
+                    || any
+                    || all
+                {
                     return Err(CliError::runtime(
                         "--until allowed waits on one session and takes only --timeout",
                     ));
@@ -773,10 +787,10 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             // clap drops `requires = "until"` when `--state` is present,
             // because the two conflict; so the pairing is checked here.
             if until != Some(WaitUntil::TurnEnd)
-                && (after.is_some() || through_waiting || start_grace.is_some())
+                && (after.is_some() || through_waiting || settled || start_grace.is_some())
             {
                 return Err(CliError::runtime(
-                    "--after, --through-waiting and --start-grace apply to --until turn-end only",
+                    "--after, --through-waiting, --settled and --start-grace apply to --until turn-end only",
                 ));
             }
             if let Some(wait) = rail_wait {
@@ -788,6 +802,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
                         wait,
                         after,
                         through_waiting,
+                        settled,
                         start_grace,
                         timeout,
                         mode,
@@ -1072,6 +1087,7 @@ mod tests {
             "--after",
             "7",
             "--through-waiting",
+            "--settled",
             "--all",
         ])
         .expect("--until turn-end parses");
@@ -1081,6 +1097,7 @@ mod tests {
                 until: Some(WaitUntil::TurnEnd),
                 after: Some(7),
                 through_waiting: true,
+                settled: true,
                 all: true,
                 pattern: None,
                 ..

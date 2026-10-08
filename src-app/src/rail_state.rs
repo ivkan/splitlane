@@ -177,6 +177,10 @@ pub struct RailSnapshot {
     pub runs_ended: u64,
     pub last_outcome: Option<RunOutcome>,
     pub turn_marker: Option<String>,
+    /// Background commands the agent left alive beside an idle turn. Zero
+    /// under every other status word, and for an agent whose own file does
+    /// not say.
+    pub background_shells: u32,
     pub exited: bool,
     pub message: Option<String>,
     /// Where the agent's own record of the conversation is, for a client that
@@ -198,6 +202,7 @@ impl RailSnapshot {
             "runs_ended": self.runs_ended,
             "last_outcome": self.last_outcome.map(RunOutcome::wire_str),
             "turn_marker": self.turn_marker,
+            "background_shells": self.background_shells,
             "exited": self.exited,
             // A question belongs to a wait. Kept off every other word so a
             // stale one cannot be read as current.
@@ -225,13 +230,17 @@ impl RailSnapshot {
 /// frames while the state pass and the hooks keep running on their own timers,
 /// so an event tied to a frame would go quiet exactly when nobody is looking.
 pub fn rail_changes(
-    published: &mut HashMap<u64, (ThreadStatus, u64)>,
+    published: &mut HashMap<u64, (ThreadStatus, u64, u32)>,
     current: &[(u64, Option<u64>, RailSnapshot)],
     ts: u64,
 ) -> Vec<(u64, serde_json::Value)> {
     let mut events = Vec::new();
     for (surface_id, thread_id, snapshot) in current {
-        let now = (snapshot.status, snapshot.runs_ended);
+        let now = (
+            snapshot.status,
+            snapshot.runs_ended,
+            snapshot.background_shells,
+        );
         if published.insert(*surface_id, now) == Some(now) {
             continue;
         }
@@ -245,6 +254,7 @@ pub fn rail_changes(
                 "source": snapshot.source.wire_str(),
                 "runs_ended": snapshot.runs_ended,
                 "last_outcome": snapshot.last_outcome.map(RunOutcome::wire_str),
+                "background_shells": snapshot.background_shells,
                 "ts": ts,
             }),
         ));
@@ -401,6 +411,7 @@ mod tests {
             runs_ended,
             last_outcome: None,
             turn_marker: None,
+            background_shells: 0,
             exited: false,
             message: None,
             agent: None,
@@ -483,6 +494,23 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].1["runs_ended"], 2);
+    }
+
+    /// A background command ending while the word stays `idle` is a change a
+    /// script waiting for the session to settle is watching for.
+    #[test]
+    fn a_background_command_ending_is_a_change() {
+        let mut published = HashMap::new();
+        let mut with_shell = snapshot(ThreadStatus::Idle, 1);
+        with_shell.background_shells = 1;
+        rail_changes(&mut published, &[(7, None, with_shell)], 1);
+        let events = rail_changes(
+            &mut published,
+            &[(7, None, snapshot(ThreadStatus::Idle, 1))],
+            2,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1["background_shells"], 0);
     }
 
     #[test]

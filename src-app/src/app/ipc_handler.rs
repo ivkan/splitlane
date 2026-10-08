@@ -1336,6 +1336,7 @@ fn thread_rail_snapshot(
         runs_ended: thread.rail.runs_ended,
         last_outcome: thread.rail.last_outcome,
         turn_marker: thread.rail.turn_marker.clone(),
+        background_shells: thread.rail.shells_beside_idle(thread.status),
         exited: pane_exited || thread.rail.agent_exited,
         message: thread.rail.waiting_message.clone(),
         agent: thread.terminal_agent.map(|agent| agent.binary()),
@@ -1368,6 +1369,9 @@ fn hooked_rail_snapshot(
         runs_ended: record.map_or(0, |r| r.runs_ended),
         last_outcome: record.and_then(|r| r.last_outcome),
         turn_marker: None,
+        // Only the agent's own status file says, and a terminal with no
+        // session record has none this build reads.
+        background_shells: 0,
         // A frame that says the agent is working again outranks an earlier
         // report that it exited.
         exited: pane_exited || (record.is_some_and(|r| r.agent_exited) && !working),
@@ -6669,6 +6673,7 @@ mod tests {
             runs_ended: 3,
             last_outcome: Some(crate::rail_state::RunOutcome::Finished),
             turn_marker: Some("m-1".to_string()),
+            background_shells: 0,
             exited: false,
             message: None,
             agent: Some("claude"),
@@ -6715,6 +6720,7 @@ mod tests {
                 "runs_ended": 3,
                 "last_outcome": "finished",
                 "turn_marker": "m-1",
+                "background_shells": 0,
                 "exited": false,
                 "message": null,
                 "agent": "claude",

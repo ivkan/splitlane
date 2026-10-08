@@ -19,6 +19,13 @@ Notable changes to Splitlane are recorded here. The format follows
   `[Splitlane] Sent by the agent session "<name>", not typed by a person.`
 - `send` reports `rail_status_at_send`, the target's status when the text
   went in.
+- `rail.background_shells`: how many background commands a Claude Code
+  session started are still running while it is idle. The pane header and
+  the rail row say `idle · 1 shell` for such a session.
+- `wait --until turn-end --settled` also waits out those commands and the
+  turn that follows them, for a session that said it would carry on after
+  its tests. Without the flag the wait returns at the end of the turn, as
+  before.
 - Exit code `8` (JSON-RPC `-32004`): a rule refused the request and nothing
   was done. The reason is in the message and under `error.data.reason`.
 - `splitlane interrupt <target>` stops the turn a session is in and leaves
@@ -95,6 +102,13 @@ Notable changes to Splitlane are recorded here. The format follows
   `SPLITLANE_IPC_SCRIPTING=1`.
 
 ### Fixed
+
+- A Claude Code session that started a command in the background and said
+  it would wait for it was shown as `finished` and announced the moment its
+  turn ended, then went on working when the command was done. The end of the
+  turn is now held while such a command runs: nothing is announced if the
+  agent carries on, and a command still running after two minutes is
+  announced once, as `1 shell still running`.
 
 - Deleting a session or closing its project stops its agent. On macOS the
   agent process kept running after its row and pane were gone, and a turn in

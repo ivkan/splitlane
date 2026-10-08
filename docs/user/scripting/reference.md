@@ -32,7 +32,7 @@ like a verb but is not one exits with code `2`.
 | `show <target>` | `--beside TARGET`, `--direction h\|v`, `--json` | `surface.show` | A line (default) or JSON |
 | `close <target>` | `--stop-turn`, `--json` | `surface.close` | A line (default) or JSON |
 | `interrupt <target>` | `--timeout SECS` (default 10), `--json` | `surface.interrupt`, then `surface.status` | `<surface_id>`, a tab and the outcome (default), or JSON |
-| `wait` | `--match SEL` (required), one of `--pattern REGEX`, `--idle`, `--until turn-end`, `--until allowed`, `--state WORDS`; `--for MS`, `--timeout SECS`, `--any`, `--all`, `--after N`, `--through-waiting`, `--start-grace SECS` | `surface.read`, `surface.status`, `events.subscribe` | JSON |
+| `wait` | `--match SEL` (required), one of `--pattern REGEX`, `--idle`, `--until turn-end`, `--until allowed`, `--state WORDS`; `--for MS`, `--timeout SECS`, `--any`, `--all`, `--after N`, `--through-waiting`, `--settled`, `--start-grace SECS` | `surface.read`, `surface.status`, `events.subscribe` | JSON |
 | `watch` | `--surface SEL`, `--type TYPE` (repeatable), `--events-only` | `events.subscribe` | JSON lines |
 | `up <file>` | `--dry-run` | `workspace.up` | JSON |
 | `flow run <file>` | `--dry-run`, `--json` | `workspace.up`, `surface.split`, `surface.send_text`, `surface.read` | Progress lines, or a JSON report with `--json` |
@@ -143,11 +143,22 @@ configuration files:
   A finish is reported 3 to 6 seconds after the agent stops, because the rail
   confirms it for 3 seconds first.
 
+  A turn that ends while a background command the agent started is still
+  running is the end of the turn, and the wait returns `finished`. The agent
+  may be waiting on that command and carry on by itself when it ends; the
+  target's `background_shells` in the output says how many are alive.
+  `--settled` waits those out too: it returns once a run past the baseline
+  has ended and the session is `idle` with `background_shells` at `0`. A
+  command that never ends, such as a dev server, cannot be told from one
+  that will, so `--settled` waits on it until `--timeout`. Claude Code only;
+  for every other agent `background_shells` is `0` and the flag changes
+  nothing.
+
   On tier `T3` the wait is refused, not answered from silence. Use
   `wait --idle --pattern <sentinel>` or `send --report-file` there.
 
   Prints `{outcome, targets: [{surface_id, outcome, status, tier, runs_ended,
-  last_outcome, message}]}`. With `--all` every surface the selector matches
+  last_outcome, background_shells, message}]}`. With `--all` every surface the selector matches
   is waited on until it reaches an outcome of its own, and the exit code is
   the worst one: `6`, then `5`, `7`, `1`, `4`, `0`. With `--any` the first
   surface to reach an outcome ends the wait and is the only one listed.
@@ -371,6 +382,7 @@ Prefer `rail` when deciding whether a turn is over.
 | `runs_ended` | How many runs have ended on this surface since it was opened. Only grows; resets when Splitlane restarts |
 | `last_outcome` | `finished`, `failed` or `interrupted` for the last ended run, `null` before the first. `interrupted` is a turn somebody stopped: the run ended and is counted, and no answer was finished |
 | `turn_marker` | An id of the newest turn end in the agent's own file (Claude Code and Codex), otherwise `null` |
+| `background_shells` | How many background commands the agent started are still running while `status` is `idle`. `0` under every other status, and for every agent but Claude Code. An agent with a command alive may start a new turn by itself when the command ends |
 | `agent` | The agent's binary name (`claude`, `codex`, ...), when known |
 | `session_id` | The id of the agent's own session, when Splitlane knows it. `null` for a terminal that is not an agent session |
 | `cwd` | The directory the session was started in. `null` for a terminal that is not an agent session |
@@ -568,7 +580,7 @@ means all.
 | `ai.exit` | same | The agent process exits |
 | `ai.session_end` | same | The session ends |
 | `surface_changed` | `surface_id, output_generation, ts` | A surface's `output_generation` advanced (checked every 50 ms) |
-| `surface.rail` | `surface_id, thread_id, status, source, runs_ended, last_outcome, ts` | A surface's `rail.status` or `rail.runs_ended` changed. Also sent once for each surface when it is first seen |
+| `surface.rail` | `surface_id, thread_id, status, source, runs_ended, last_outcome, background_shells, ts` | A surface's `rail.status`, `rail.runs_ended` or `rail.background_shells` changed. Also sent once for each surface when it is first seen |
 | `heartbeat` | | 30 s without other frames |
 | `dropped` | `count` | The subscriber fell behind and `count` events were discarded |
 

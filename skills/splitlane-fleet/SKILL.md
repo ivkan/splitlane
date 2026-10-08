@@ -307,6 +307,13 @@ should do next rather than sending the task again - and `4` on timeout: wait
 again, do not send the task again. Use `--timeout 540`, not more: a shell
 call from an agent is cut off at ten minutes.
 
+Exit `0` with `background_shells` above `0` in the output means the session
+ended its turn with a command of its own still running, usually tests it is
+waiting on: it will start another turn by itself, and the answer you read
+now is not its last word. Add `--settled` to the same `wait` to wait through
+that. Do not use `--settled` on a session you asked to start a server: that
+command never ends and the wait runs to its timeout.
+
 Limits the app enforces, so do not try around them: eight sessions open at
 a time; a session you opened cannot open sessions of its own; you cannot
 close, move or write into a session you did not open. A refusal is exit

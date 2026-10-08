@@ -127,6 +127,12 @@ esac
   person has to answer, in the agent's own pane. A script should stop and say
   so; `--through-waiting` keeps waiting for scripts that run with a person
   present.
+- Exit `0` is the end of a turn, not always the end of the work. An agent
+  that started its tests in the background and said it would wait for them
+  has ended its turn, and starts another by itself when they finish. Add
+  `--settled` to wait through that: it returns when the session is idle with
+  no background command of its own left running. A session that left a dev
+  server running never settles, and the wait ends on `--timeout`.
 - Exit `7` means nothing reporting for that surface can say a turn ended.
   That is every agent without a hook, and any agent before its first hook
   frame. `wait` refuses there, because the only thing left to read would be
