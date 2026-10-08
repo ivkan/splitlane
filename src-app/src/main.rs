@@ -3398,6 +3398,7 @@ fn main() {
              Usage: splitlane [OPTIONS]\n\
              \x20      splitlane <ls|read|send|up|wait|...>  Script the running app\n\
              \x20      splitlane mcp <install|status|uninstall>\n\
+             \x20      splitlane skill <install|status|uninstall>\n\
              \n\
              Options:\n\
              \x20 -h, --help       Print this help message\n\
@@ -3406,6 +3407,7 @@ fn main() {
              Agent workflow:\n\
              \x20 Launch Claude Code, Codex, opencode, Pi, or any CLI agent in panes\n\
              \x20 Use `splitlane mcp install` so capable agents can read pane output\n\
+             \x20 Use `splitlane skill install` to teach an agent to work through others\n\
              \n\
              Keybindings (Cmd instead of Ctrl on macOS):\n\
              \x20 Alt+\\            Add pane\n\
