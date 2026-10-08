@@ -78,6 +78,12 @@ jobs:
   orchestrate:
     name: Detect changed paths
     runs-on: ubuntu-latest
+    # A runaway guard, not the expected duration. Without one a job runs to
+    # the platform's six-hour limit: twice a hosted runner sat that long in
+    # `apt-get` before the first build step, and the run stayed red for the
+    # whole time. Every job below carries its own, several times what a
+    # cold cache needs.
+    timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       rendering: ${{ steps.filter.outputs.rendering }}
@@ -268,6 +274,7 @@ jobs:
       needs.orchestrate.outputs.ci == 'true' ||
       needs.orchestrate.outputs.release_packaging == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -317,6 +324,7 @@ jobs:
       needs.orchestrate.outputs.ci == 'true' ||
       needs.orchestrate.outputs.release_packaging == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
 
@@ -356,6 +364,7 @@ jobs:
       needs.orchestrate.outputs.ci == 'true' ||
       needs.orchestrate.outputs.release_packaging == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
 
@@ -514,6 +523,7 @@ jobs:
       needs.orchestrate.outputs.security == 'true' ||
       needs.orchestrate.outputs.ci == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -588,6 +598,7 @@ jobs:
       needs.orchestrate.outputs.ci == 'true' ||
       needs.orchestrate.outputs.release_packaging == 'true'
     runs-on: macos-14
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 
@@ -1258,6 +1269,7 @@ jobs:
     # aarch64-unknown-linux-gnu needs manual header staging; that
     # complexity is why this job prefers the native runner.
     runs-on: ubuntu-22.04-arm
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -1316,6 +1328,7 @@ jobs:
     # provisioned. Re-enable by flipping the `if:` condition below.
     if: false
     runs-on: macos-13
+    timeout-minutes: 75
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
@@ -1454,6 +1467,7 @@ jobs:
       - windows_aarch64_check
     if: always()
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     steps:
       - name: Aggregate upstream results
         env:
