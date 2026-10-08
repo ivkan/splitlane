@@ -280,6 +280,16 @@ impl FinishedMark {
     }
 }
 
+/// Which source sent the notification about a surface's current wait. See
+/// [`Thread::wait_announced`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitAnnouncedBy {
+    /// A hook frame said the agent was asking, before the detector read it.
+    Hook,
+    /// The detector read the wait from what the agent writes about itself.
+    Detector,
+}
+
 #[derive(Debug, Clone)]
 pub struct Thread {
     pub id: u64,
@@ -475,6 +485,17 @@ pub struct Thread {
     /// decides that per binary, and a second copy of that list in the app is a
     /// copy that drifts. The surface answers for itself.
     pub hook_has_spoken: bool,
+    /// Who told the person about the wait this surface is standing in, when
+    /// somebody has. Transient, like the two fields above.
+    ///
+    /// Two sources learn that an agent is asking - a hook frame and the
+    /// detector's reading - and for one question they must send one
+    /// notification between them. Whichever learns first sends it and leaves
+    /// its name here; the other finds the name and says nothing. Each source
+    /// takes down only its own name, when it sees the wait is over. The rule
+    /// and the cases behind it are in
+    /// `docs/internals/agent-state-and-the-rail.md`.
+    pub wait_announced: Option<WaitAnnouncedBy>,
     /// What `surface.status` and the `surface.rail` event say about this
     /// surface beyond its status word: how many runs have ended, how the last
     /// one ended, the agent's own turn marker. Transient, like the two fields
@@ -527,6 +548,7 @@ impl Thread {
             finished_unseen: None,
             detector_read_at: None,
             hook_has_spoken: false,
+            wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
             opener_wrote_at: None,
@@ -603,6 +625,7 @@ impl Thread {
             finished_unseen: None,
             detector_read_at: None,
             hook_has_spoken: false,
+            wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
             opener_wrote_at: None,
@@ -791,6 +814,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         finished_unseen: None,
         detector_read_at: None,
         hook_has_spoken: false,
+        wait_announced: None,
         rail: crate::rail_state::RailRecord::default(),
         // An id is all a file can say; whether the opener still exists is
         // asked of the live records when it matters.

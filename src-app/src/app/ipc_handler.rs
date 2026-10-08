@@ -3942,6 +3942,13 @@ impl SplitlaneApp {
                         apply_agents_thread_state(t, ai_types::AgentState::WaitingForInput, pid);
                     // Untrusted text, kept verbatim for `surface.status`.
                     t.rail.waiting_message = message.clone();
+                    // One question, one notification. Where the detector
+                    // has already told the person about this wait, the frame
+                    // says nothing; everywhere else it announces as it
+                    // always has and leaves its name, so a reading that sees
+                    // the wait later does not repeat it. See
+                    // `Thread::wait_announced`.
+                    let detector_announced = hook_frame_follows_detector(t);
                     // Notification body uses the cleaned title so a CLI
                     // spinner glyph baked into the OSC title never leaks
                     // into the desktop notification.
@@ -3960,15 +3967,22 @@ impl SplitlaneApp {
                         true,
                         cx,
                     );
-                    let shown = fire_attention_notification(
-                        tool,
-                        subject,
-                        message.as_deref(),
-                        &notify_config,
-                        seen,
-                        cx.background_executor().clone(),
-                    );
-                    self.opener_was_explained(explains, shown);
+                    if detector_announced {
+                        log::debug!(
+                            target: crate::app::agent_state_pass::TRACE,
+                            "#{thread_id} waiting frame: the detector already announced this wait",
+                        );
+                    } else {
+                        let shown = fire_attention_notification(
+                            tool,
+                            subject,
+                            message.as_deref(),
+                            &notify_config,
+                            seen,
+                            cx.background_executor().clone(),
+                        );
+                        self.opener_was_explained(explains, shown);
+                    }
                     serde_json::json!({"status": "waiting"})
                 } else {
                     serde_json::json!({"error": format!("Unknown workspace_id: {workspace_id}")})
@@ -4618,6 +4632,21 @@ fn apply_agents_thread_state(
     // wait means it was answered or abandoned.
     if reported != crate::project::ThreadStatus::WaitingForInput {
         thread.rail.waiting_message = None;
+        // The wait a frame announced is over when a frame says so. A wait the
+        // detector is following is left to the detector: the agent's status
+        // can lag this frame, and a frame of another kind arrives in the
+        // middle of a wait too - a second tool finishing beside the one that
+        // is asking. Clearing it here would announce one question twice.
+        //
+        // A name the detector left on a surface it no longer reads has
+        // nobody to take it down, so this frame does.
+        match thread.wait_announced {
+            Some(crate::project::WaitAnnouncedBy::Hook) => thread.wait_announced = None,
+            Some(crate::project::WaitAnnouncedBy::Detector) if !detector_owns => {
+                thread.wait_announced = None;
+            }
+            _ => {}
+        }
     }
     // And a frame that says the agent is working means it is there.
     if matches!(
@@ -4639,6 +4668,25 @@ fn apply_agents_thread_state(
         }
     }
     detector_owns.then_some(thread.id)
+}
+
+/// Whether a frame saying the agent is asking arrives after the detector
+/// already announced that wait. When it does not, the frame is the one that
+/// announces, and the surface is marked so.
+///
+/// Whether the detector still reads the surface is deliberately not asked.
+/// The frame arrives seconds after the agent started waiting, and one read
+/// missed in that gap hands the status back to the hook without making the
+/// wait a new one. A name left behind by a detector that stopped reading for
+/// good is taken down by the next frame that is not a wait
+/// ([`apply_agents_thread_state`]).
+fn hook_frame_follows_detector(thread: &mut crate::project::Thread) -> bool {
+    use crate::project::WaitAnnouncedBy;
+    if thread.wait_announced == Some(WaitAnnouncedBy::Detector) {
+        return true;
+    }
+    thread.wait_announced = Some(WaitAnnouncedBy::Hook);
+    false
 }
 
 fn clear_agents_thread_on_session_end(thread: &mut crate::project::Thread) -> bool {
@@ -6223,6 +6271,49 @@ mod tests {
             thread.agent_pid.is_none(),
             "Failed is a durable compact crash signal, not a sweep target"
         );
+    }
+
+    /// One question, one notification, from whichever source learns first.
+    #[test]
+    fn a_waiting_frame_is_quiet_only_where_the_detector_already_announced() {
+        use crate::ai_types::AgentState;
+        use crate::project::{Thread, WaitAnnouncedBy};
+
+        // An agent only the hook speaks for: every waiting frame announces,
+        // as it always has, and the next frame of another kind ends the wait.
+        let mut hooked = Thread::new_terminal("Codex", "/tmp", None);
+        assert!(!super::hook_frame_follows_detector(&mut hooked));
+        assert_eq!(hooked.wait_announced, Some(WaitAnnouncedBy::Hook));
+        let _ = super::apply_agents_thread_state(&mut hooked, AgentState::Thinking, None);
+        assert_eq!(hooked.wait_announced, None);
+        assert!(!super::hook_frame_follows_detector(&mut hooked));
+
+        // A surface the detector reads, with the frame arriving first: the
+        // frame announces and says so.
+        let mut read = Thread::new_terminal("Claude Code", "/tmp", None);
+        read.detector_read_at = Some(std::time::Instant::now());
+        assert!(!super::hook_frame_follows_detector(&mut read));
+        assert_eq!(read.wait_announced, Some(WaitAnnouncedBy::Hook));
+
+        // The same surface with the detector first: the frame says nothing,
+        // and no frame takes the detector's name down while the detector is
+        // reading - the status the agent writes can lag the frame that
+        // follows the answer, and a frame of another kind can arrive in the
+        // middle of the wait.
+        read.wait_announced = Some(WaitAnnouncedBy::Detector);
+        assert!(super::hook_frame_follows_detector(&mut read));
+        let _ = super::apply_agents_thread_state(&mut read, AgentState::Thinking, None);
+        assert_eq!(read.wait_announced, Some(WaitAnnouncedBy::Detector));
+        assert!(super::hook_frame_follows_detector(&mut read));
+
+        // One read missed before the frame arrives hands the status back to
+        // the hook, and the wait is still the one already announced. The
+        // next frame of another kind then retires the name nobody follows.
+        read.detector_read_at = None;
+        assert!(super::hook_frame_follows_detector(&mut read));
+        let _ = super::apply_agents_thread_state(&mut read, AgentState::Thinking, None);
+        assert_eq!(read.wait_announced, None);
+        assert!(!super::hook_frame_follows_detector(&mut read));
     }
 
     /// The ownership split: a surface the detector reads keeps the state the

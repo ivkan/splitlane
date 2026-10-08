@@ -99,9 +99,9 @@
 //! against a platform-specific start token, and getting it wrong fails open.
 //!
 //! The file also carries `waitingFor` (measured: the free string
-//! `"permission prompt"`). Nothing reads it yet, so nothing exposes it - a
-//! tooltip on the rail's waiting dot is the obvious home, and it is one
-//! accessor away when something asks for it.
+//! `"permission prompt"`). It is handed over beside the state
+//! ([`StatusReading::waiting_for`]) and is what the notification about a
+//! wait says when no hook frame brought the agent's own words.
 //!
 //! There is an exact key instead. Splitlane *chose* the session uuid for this
 //! surface and passed it to the CLI as `--session-id` / `--resume`
@@ -138,6 +138,12 @@ pub struct StatusReading {
     /// ([`crate::agent_state::TranscriptProbe::background_shells`]); this is
     /// what says that any are.
     pub background_shell: bool,
+    /// What the CLI says it is waiting for, in its own words, while the state
+    /// is a wait. `None` for every other state, and for a wait the file does
+    /// not explain: the field was measured as `permission prompt` for a
+    /// permission ask (2.1.247) and `input needed` for a question the agent
+    /// asks (2.1.294), and for nothing else, so its absence is not an error.
+    pub waiting_for: Option<String>,
 }
 
 /// The status vocabulary the CLI writes, mapped to what the rail says.
@@ -169,6 +175,7 @@ fn state_from_status(status: &str) -> Option<StatusReading> {
     Some(StatusReading {
         state,
         background_shell,
+        waiting_for: None,
     })
 }
 
@@ -329,7 +336,16 @@ fn state_from_pid_file(raw: &str, expect_session: &str) -> Option<StatusReading>
     }
 
     let status = obj.get("status").and_then(|v| v.as_str())?;
-    state_from_status(status.trim())
+    let mut reading = state_from_status(status.trim())?;
+    if reading.state == AgentState::WaitingForInput {
+        reading.waiting_for = obj
+            .get("waitingFor")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string);
+    }
+    Some(reading)
 }
 
 #[cfg(test)]
@@ -422,6 +438,30 @@ mod tests {
     /// `shell` is "turn over, background task alive" - it resolves like idle.
     /// Reading it as work is how nimbalyst pinned every session to "Thinking"
     /// for the life of the process.
+    /// The words are the CLI's and are handed over as written; a wait the
+    /// file does not explain is still a wait, and no other state carries them.
+    #[test]
+    fn a_wait_says_what_it_is_for_when_the_file_does() {
+        let explained = file("waiting").replace(
+            r#""status":"waiting""#,
+            r#""status":"waiting","waitingFor":" permission prompt ""#,
+        );
+        let reading = state_from_pid_file(&explained, SID).expect("a reading");
+        assert_eq!(reading.state, AgentState::WaitingForInput);
+        assert_eq!(reading.waiting_for.as_deref(), Some("permission prompt"));
+
+        let bare = state_from_pid_file(&file("waiting"), SID).expect("a reading");
+        assert_eq!(bare.state, AgentState::WaitingForInput);
+        assert_eq!(bare.waiting_for, None);
+
+        let left_over = file("busy").replace(
+            r#""status":"busy""#,
+            r#""status":"busy","waitingFor":"permission prompt""#,
+        );
+        let reading = state_from_pid_file(&left_over, SID).expect("a reading");
+        assert_eq!(reading.waiting_for, None);
+    }
+
     #[test]
     fn shell_is_not_work() {
         assert_eq!(state_of(&file("shell"), SID), Some(AgentState::Finished));
@@ -446,6 +486,7 @@ mod tests {
             Some(StatusReading {
                 state: AgentState::Thinking,
                 background_shell: false,
+                waiting_for: None,
             })
         );
         for sample in [SHELL_TWO_ALIVE_2_1_294, SHELL_ONE_ALIVE_2_1_294] {
@@ -454,6 +495,7 @@ mod tests {
                 Some(StatusReading {
                     state: AgentState::Finished,
                     background_shell: true,
+                    waiting_for: None,
                 })
             );
         }

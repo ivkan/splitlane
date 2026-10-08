@@ -185,6 +185,9 @@ struct StateReading {
     /// The agent's own status says its turn is over with a background command
     /// still alive. `false` from every source that cannot say.
     background_shell: bool,
+    /// What the agent's own status says it is waiting for, when the state is
+    /// a wait and the source gives words for it. Only the status file does.
+    waiting_for: Option<String>,
 }
 
 /// What one read of a session file's tail told the pass, beyond the state.
@@ -520,6 +523,9 @@ impl SplitlaneApp {
         // Sessions whose input line holds a prompt our own key put back.
         // Cleared after the loop for the same reason.
         let mut returned_prompts: Vec<u64> = Vec::new();
+        // Waits the detector is the first to learn of, announced after the
+        // loop for the same reason as the finished runs.
+        let mut new_waits: Vec<NewWait> = Vec::new();
         for reading in read {
             // A baseline is only ever **replaced**, never cleared from here: a
             // pass that did not see the turn end has learned nothing about the
@@ -608,6 +614,15 @@ impl SplitlaneApp {
                     if let Some(tail) = reading.turn_end.clone() {
                         watch.background_shells = tail.background_shells;
                         watch.observe(tail.len, tail.end);
+                    }
+                    // Asked of what the source read, not of `reading_state`: a
+                    // question this app put to a person is announced where it
+                    // is put (`notify_drive_question`).
+                    if !stale && wait_is_news(thread, reading.state.as_ref()) {
+                        new_waits.push(NewWait {
+                            thread_id: reading.thread_id,
+                            waiting_for: reading.waiting_for.clone(),
+                        });
                     }
                     if !stale {
                         // Rewritten from this reading alone. A reading that
@@ -895,6 +910,9 @@ impl SplitlaneApp {
         for run in finished_runs {
             self.announce_finished_run(run, cx);
         }
+        for wait in new_waits {
+            self.announce_wait(wait, cx);
+        }
         // Unconditionally, not under `changed`: a counted run moves nothing
         // the rail draws, and it is exactly what a waiting script watches.
         self.publish_rail_changes(cx);
@@ -902,6 +920,68 @@ impl SplitlaneApp {
         // usable login is what signing in inside a pane looks like from here.
         // Floored inside; a no-op whenever the last read succeeded.
         self.refresh_claude_limits_after_agent_pass(cx);
+    }
+
+    /// Tell somebody an agent they cannot see is asking them something.
+    ///
+    /// Called for a wait the detector was the first to learn of
+    /// ([`wait_is_news`]); a wait a hook frame already announced never gets
+    /// here. The words and the subject are the hook path's own: the same
+    /// constructor, the line saying who opened the session, and the sentence
+    /// about the opener counted only when the notification was really shown.
+    ///
+    /// **Not held, and not floored.** The end of a run waits out a span and
+    /// needs ten seconds behind it; a wait does neither. A question asked two
+    /// seconds into a run is still a question, and a wait reported late is
+    /// the one wrong answer this pass may not give.
+    fn announce_wait(&mut self, wait: NewWait, cx: &mut gpui::Context<Self>) {
+        let Some(thread) = self.thread_by_id(wait.thread_id) else {
+            return;
+        };
+        let Some(agent) = thread.terminal_agent else {
+            return;
+        };
+        if crate::app::agents_sidebar::is_shell_surface(thread) {
+            return;
+        }
+        let title = crate::project::clean_sidebar_title(&thread.title)
+            .unwrap_or_else(|| thread.title.clone());
+        // The agent's own question when a hook frame brought it, and the
+        // status file's shorter word for it otherwise. While this app has a
+        // question of its own up, the row's message is that question and
+        // not the agent's.
+        let message = thread
+            .rail
+            .waiting_message
+            .clone()
+            .filter(|_| !self.drive.has_questions(wait.thread_id))
+            .or(wait.waiting_for);
+        // No container, no notification, as for a finished run.
+        let Some(ws_id) = self
+            .workspaces
+            .iter()
+            .find(|ws| ws.threads.iter().any(|thread| thread.id == wait.thread_id))
+            .map(|ws| ws.id)
+        else {
+            return;
+        };
+        let seen = self.thread_is_seen(wait.thread_id, cx);
+        let (subject, explains) =
+            self.notification_subject_of_session(ws_id, wait.thread_id, title, true, cx);
+        log::debug!(
+            target: TRACE,
+            "#{} is waiting, and the detector is the first to know: announcing (seen={seen})",
+            wait.thread_id,
+        );
+        let shown = crate::app::ipc_handler::fire_attention_notification(
+            agent,
+            subject,
+            message.as_deref(),
+            &self.cached_config,
+            seen,
+            cx.background_executor().clone(),
+        );
+        self.opener_was_explained(explains, shown);
     }
 
     /// Tell somebody a run they could not see has ended.
@@ -1002,6 +1082,49 @@ pub(crate) struct FinishedRun {
     /// for a turn that was held for [`SHELL_HOLD`] and whose command outlived
     /// it.
     background_shells: u32,
+}
+
+/// A wait the detector read before any hook frame spoke of it.
+struct NewWait {
+    thread_id: u64,
+    /// The status file's words for the wait, when it gave any.
+    waiting_for: Option<String>,
+}
+
+/// Whether this reading is the first anybody has heard of a wait, and so the
+/// one that announces it. Keeps [`crate::project::Thread::wait_announced`].
+///
+/// **One question, one notification, whichever source learns first.** A
+/// reading of a wait finds either nothing - the detector is first, and
+/// announces - or the name a hook frame left, which it takes over without a
+/// word: the wait is the same one, and from here its end is the detector's to
+/// see. A reading of anything else is the end of a wait the detector was
+/// following, and takes its name down so the next question is news again.
+///
+/// It does not take down a name the **hook** left. That wait is one this
+/// source has not seen yet, and a reading taken a moment before the agent
+/// wrote `waiting` would otherwise clear it and then announce the same
+/// question a pass later. The hook's name comes down on the hook's next
+/// frame, which is what ends a wait the detector never saw.
+///
+/// A pass that could not read (`None`) changes nothing: one missed read in
+/// the middle of a wait is not a second question.
+fn wait_is_news(thread: &mut crate::project::Thread, read: Option<&AgentState>) -> bool {
+    use crate::project::WaitAnnouncedBy;
+    match read {
+        Some(AgentState::WaitingForInput) => {
+            let first = thread.wait_announced.is_none();
+            thread.wait_announced = Some(WaitAnnouncedBy::Detector);
+            first
+        }
+        Some(_) => {
+            if thread.wait_announced == Some(WaitAnnouncedBy::Detector) {
+                thread.wait_announced = None;
+            }
+            false
+        }
+        None => false,
+    }
 }
 
 /// `1 shell still running` / `2 shells still running`, or nothing for none.
@@ -1555,6 +1678,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                 && let Some(crate::claude_pid_state::StatusReading {
                     state,
                     background_shell,
+                    waiting_for,
                 }) = crate::claude_pid_state::state_for(pid, target.session_id.as_deref())
             {
                 log::debug!(
@@ -1591,6 +1715,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     proposed_session,
                     turn_end,
                     background_shell,
+                    waiting_for,
                 };
             }
 
@@ -1617,6 +1742,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     proposed_session,
                     turn_end: None,
                     background_shell: false,
+                    waiting_for: None,
                 };
             };
             // Each agent's own reader, over its own file's shape. What comes
@@ -1648,6 +1774,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     proposed_session,
                     turn_end: None,
                     background_shell: false,
+                    waiting_for: None,
                 };
             };
             let (agent, worker) = match (&snapshot, &shim_dir) {
@@ -1745,6 +1872,7 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                 // The transcript counts commands; only the status file says
                 // any is alive, and it did not answer for this surface.
                 background_shell: false,
+                waiting_for: None,
             }
         })
         .collect();
@@ -2284,6 +2412,49 @@ mod tests {
 
         // And it is announced once: the next pass sees Idle to Idle.
         assert!(run_ended(&mut clock, &thread).is_none());
+    }
+
+    /// The case that forced the rule: a session nothing reports frames for
+    /// stood on a permission ask with a correct row and no notification.
+    #[test]
+    fn a_wait_only_the_detector_sees_is_announced_once() {
+        use super::wait_is_news;
+        let mut thread = surface();
+        let waiting = AgentState::WaitingForInput;
+        assert!(!wait_is_news(&mut thread, Some(&AgentState::Thinking)));
+        assert!(wait_is_news(&mut thread, Some(&waiting)));
+        // The same question, read again every two seconds.
+        assert!(!wait_is_news(&mut thread, Some(&waiting)));
+        // One missed read in the middle of it is not a second question.
+        assert!(!wait_is_news(&mut thread, None));
+        assert!(!wait_is_news(&mut thread, Some(&waiting)));
+        // Answered, and then asked again: that one is news.
+        assert!(!wait_is_news(&mut thread, Some(&AgentState::Thinking)));
+        assert!(wait_is_news(&mut thread, Some(&waiting)));
+        // A run that ends straight out of the ask ends the wait too.
+        assert!(!wait_is_news(&mut thread, Some(&AgentState::Finished)));
+        assert_eq!(thread.wait_announced, None);
+    }
+
+    #[test]
+    fn a_wait_the_hook_announced_is_not_announced_again() {
+        use super::wait_is_news;
+        use crate::project::WaitAnnouncedBy;
+        let mut thread = surface();
+        thread.wait_announced = Some(WaitAnnouncedBy::Hook);
+        // A reading taken just before the agent wrote `waiting` must not
+        // clear the name: the next one would announce the same question.
+        assert!(!wait_is_news(&mut thread, Some(&AgentState::Thinking)));
+        assert_eq!(thread.wait_announced, Some(WaitAnnouncedBy::Hook));
+        // Seeing the wait takes it over without a word, and its end is then
+        // the detector's to see.
+        assert!(!wait_is_news(
+            &mut thread,
+            Some(&AgentState::WaitingForInput)
+        ));
+        assert_eq!(thread.wait_announced, Some(WaitAnnouncedBy::Detector));
+        assert!(!wait_is_news(&mut thread, Some(&AgentState::Thinking)));
+        assert_eq!(thread.wait_announced, None);
     }
 
     #[test]
