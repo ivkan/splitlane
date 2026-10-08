@@ -114,6 +114,11 @@ is no more than it could do by starting a second agent in its own shell. Done
 through Splitlane, each of those sessions is a row in the rail with a status
 you can see.
 
+<p align="center">
+  <img src="assets/images/orchestration-dark.png" alt="Splitlane with one project in a two-by-two grid. In the rail a session named plan carries the count 4, and a bracket in the margin joins it to the four sessions it opened: tests, api-docs, lint and fixtures. The tests pane is in the middle of a turn, the api-docs pane shows a permission prompt and its header reads 'waiting for you', and each of the three opened panes says 'opened by plan' in its header." width="100%" />
+</p>
+<p align="center"><sub>One session and the four it opened. One is working, one is waiting for you.</sub></p>
+
 - **You can tell whose a session is.** Sessions sit under the one that opened
   them, joined by a bracket in the margin. The opener's row counts them, and
   the count folds them away; folded, the row says what they are doing. Each
