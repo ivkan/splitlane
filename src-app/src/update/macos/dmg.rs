@@ -135,11 +135,17 @@ fn dmg_cache_dir(home: &Path) -> PathBuf {
         .join(crate::runtime_paths::APP_SUBDIR)
 }
 
-/// Splitlane's Apple Developer **Team ID** (project_macos_signing, populated
-/// 2026-05-04 with the first signed release; cert valid until 2031-05-05).
+/// The Apple Developer **Team ID** Splitlane's releases are signed under.
 /// For a Developer ID Application certificate the leaf cert's
 /// `subject.OU` equals the Team ID, so pinning it rejects any
 /// validly-notarised-but-*foreign* bundle.
+///
+/// Until v0.2.0 this still named the team of the project Splitlane was
+/// forked from. Every release was signed by the right team and refused by
+/// its own updater: the download started, the check below failed, and the
+/// app said "Update failed". Nothing on the build side compared the two, so
+/// `scripts/sign-macos.sh` now refuses to sign when this constant is not the
+/// team it is signing as.
 ///
 /// The plain `codesign --verify` + `spctl --assess` checks below
 /// only prove "signed by *someone* Apple trusts and notarised" - NOT
@@ -147,7 +153,7 @@ fn dmg_cache_dir(home: &Path) -> PathBuf {
 /// pin closes that gap (defense-in-depth on top of the minisign root-of-trust
 /// that already gates the DMG bytes before the bundle is ever mounted).
 #[cfg(target_os = "macos")]
-const APPLE_TEAM_ID: &str = "228F9H5P95";
+const APPLE_TEAM_ID: &str = "HUY2962X4K";
 
 /// Build the `codesign` argument that pins the signing identity to our Apple
 /// Team ID, using the attached `-R=<requirement>` form.
@@ -703,13 +709,13 @@ mod tests {
         // the "Update keeps failing" toast. The arg MUST be the attached
         // `-R=<requirement>` form (one argv element), which codesign parses as
         // inline requirement source.
-        let arg = team_id_requirement_arg("228F9H5P95");
+        let arg = team_id_requirement_arg("ABCDE12345");
         assert!(
             arg.starts_with("-R="),
             "must be the attached form, got: {arg}"
         );
         assert!(
-            arg.contains("certificate leaf[subject.OU] = \"228F9H5P95\""),
+            arg.contains("certificate leaf[subject.OU] = \"ABCDE12345\""),
             "requirement must pin the leaf OU to the Team ID, got: {arg}"
         );
     }

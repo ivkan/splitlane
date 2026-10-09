@@ -146,6 +146,20 @@ if [[ "$IDENTITY" != *"($APPLE_TEAM_ID)"* ]]; then
     exit 1
 fi
 
+# The app's own updater accepts a downloaded bundle only when it is signed by
+# the team pinned in its source. If that pin is not the team signing here,
+# this release would be refused by every copy of itself - which is what
+# happened to every release up to v0.2.0, unnoticed, because nothing compared
+# the two.
+UPDATER_PIN_FILE="$REPO_ROOT/src-app/src/update/macos/dmg.rs"
+UPDATER_PIN="$(sed -n 's/^const APPLE_TEAM_ID: &str = "\([A-Z0-9]*\)";$/\1/p' "$UPDATER_PIN_FILE")"
+if [ "$UPDATER_PIN" != "$APPLE_TEAM_ID" ]; then
+    echo "error: the updater pins a different team than the one signing this release" >&2
+    echo "  pinned in $UPDATER_PIN_FILE: '${UPDATER_PIN:-<not found>}'" >&2
+    echo "  signing as: $APPLE_TEAM_ID" >&2
+    exit 1
+fi
+
 # --- Sign (inside-out) ---------------------------------------------------
 # Apple Technote TN3127 and the cmux reference script
 # (cmux/scripts/sign-cmux-bundle.sh) both prescribe inside-out signing for
