@@ -2525,10 +2525,21 @@ impl Render for SplitlaneApp {
             // terminal Escape behaviour is unaffected. Drop-outside-target is
             // handled by GPUI itself (it clears the active drag on mouse-up
             // over a non-target), so no extra wiring is needed there.
-            .capture_key_down(cx.listener(|_this, e: &gpui::KeyDownEvent, window, cx| {
-                if cx.has_active_drag() && e.keystroke.key == "escape" {
+            //
+            // The rail's Settings menu closes the same way. It takes no
+            // keyboard focus - the terminal keeps it while the menu is up -
+            // so without this the key went to the agent and the menu stayed.
+            .capture_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                if e.keystroke.key != "escape" {
+                    return;
+                }
+                if cx.has_active_drag() {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                } else if this.agents_view.sidebar_actions_menu_open {
+                    this.agents_view.sidebar_actions_menu_open = false;
+                    cx.stop_propagation();
+                    cx.notify();
                 }
             }))
             .on_mouse_move(|_e, _, cx| cx.stop_propagation())

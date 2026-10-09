@@ -6,6 +6,12 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The rail's Settings button closes its menu as well as opening it, and so
+  does Escape. A second click used to leave the menu open, and Escape went
+  to the agent in the terminal instead.
+
 ## [0.2.1] - 2026-10-09
 
 ### Fixed

@@ -251,9 +251,12 @@ impl SplitlaneApp {
             .items_center()
             .gap(tok::space::MD)
             .animated_hover_bg(settings_resting_bg, settings_hover_bg)
-            .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| {
-                this.agents_view.sidebar_actions_menu_open =
-                    !this.agents_view.sidebar_actions_menu_open;
+            // Toggle from the render-time snapshot, not the live flag: the
+            // popover's `on_mouse_down_out` fires on the press of this same
+            // click and has already cleared the flag, so a live toggle
+            // re-opened the menu the press had just closed.
+            .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.agents_view.sidebar_actions_menu_open = !settings_open;
                 this.agents_view.sidebar_mode_picker_open = false;
                 cx.notify();
             }))
