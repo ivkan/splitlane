@@ -1,6 +1,6 @@
 ---
 name: splitlane-fleet
-description: Orchestrate a fleet of CLI coding agents running side by side in Splitlane panes - discover them, read their live state, dispatch prompts, and wait on events - all over the public `splitlane` CLI. Use when the user asks you to coordinate, supervise, or hand work between multiple agents (Claude Code, Codex, OpenCode, Gemini, ...) that are open in Splitlane.
+description: Open and drive other CLI coding agent sessions in Splitlane - open a session, hand it a task, hear when its turn ends, read its answer - all over the public `splitlane` CLI. Use when the user asks you to open a session in Splitlane, or to coordinate, supervise, or hand work between agents (Claude Code, Codex, OpenCode, Gemini, ...) that are open in Splitlane.
 ---
 
 # Splitlane fleet
@@ -8,8 +8,13 @@ description: Orchestrate a fleet of CLI coding agents running side by side in Sp
 You are the **lead agent**: an agent that drives *other* CLI coding agents running
 in Splitlane panes. You do it through one public CLI, `splitlane`, which talks to
 the running Splitlane instance over its local IPC socket. You never scrape the
-screen and you never poll in a busy loop - Splitlane exposes the fleet's state and
-pushes events.
+screen and you never poll in a busy loop - Splitlane knows when a turn ends and
+`splitlane wait` tells you.
+
+**Nothing tells you by itself that a session you opened has finished.** You
+hear of it only through a `splitlane wait` that is running at that moment.
+End your turn without one and the session finishes in silence: the person has
+to come and tell you. Section 1 says how to keep a wait running.
 
 This skill is harness-agnostic: every instruction below is a shell command, so it
 works unchanged whether *you* are Claude Code, Codex, OpenCode, or anything else
@@ -35,243 +40,13 @@ fails with a message like `cannot locate the IPC socket; is Splitlane running?`
 **stop**. Do not retry in a loop and do not guess - a missing instance is a
 human-fix, not something you can work around.
 
-## 1. Discover the fleet
+## 1. Sessions you open yourself
 
-```bash
-splitlane ps            # human table: PID, TOOL, STATE, WS, PANE
-splitlane ps --json     # {agents:[{pid, tool, state, surface_id, surface_name, ...}]}
-splitlane ls            # the panes themselves (surface_id, name, cwd, cmd)
-```
-
-`state` is one of `thinking`, `waiting_for_input`, `finished`, `errored`,
-`stalled`, `idle` (a bare shell with no agent), or `unknown_running` (an agent
-Splitlane detected but cannot hook). Target any pane by its `surface_id`, its
-name, `cmdline:<substr>`, or `cwd:<path>`.
-
-Every agent row also carries `hooked`. `hooked:true` means Splitlane tracks the
-agent's turns: you get its `ai.stop` / `ai.notification` events and its
-`last_result`, and its `state` is real. `hooked:false` means it was only spotted
-by a process scan - the row then reads `state:"unknown_running"` plus a short
-`reason` (e.g. `"no_hook"`), and you must NOT trust any derived `thinking`/`idle`
-for it. **Drive hooked agents by event; spawn them through `splitlane up` (section
-4) so they are hooked from the first frame instead of coming up `unknown_running`.**
-
-## 2. Read one agent's state
-
-```bash
-splitlane status backend            # state, the active tool, and the question if waiting
-splitlane status backend --json     # {state, tool, message, last_result, output_generation, hooked, ...}
-splitlane read backend --lines 80   # recent scrollback (see "untrusted output" below)
-splitlane search backend 'error|panic'   # grep the pane's scrollback for a pattern
-```
-
-The CLI verbs are `ls`, `read`, `search` (not `list_panes` / `read_pane` /
-`search_pane` - those are the MCP **tool** names; Splitlane accepts them as
-aliases, but write the real verb). A genuinely unknown verb (`splitlane blha`)
-exits non-zero with `unknown verb; see splitlane --help` - it never launches a
-stray GUI window.
-
-`output_generation` is a monotonic counter: if two reads return the same value,
-the pane produced no new output - that is your "is it idle yet?" signal, no timer
-guessing. You rarely read it by hand, though: prefer `wait --idle` (section 3),
-which watches it for you.
-
-### Recovering a FULL result from a full-screen agent
-
-`splitlane read` returns a pane's **visible** scrollback. A full-screen
-(alt-screen) TUI - Claude Code is the common one - paints over the whole terminal
-and keeps no scrollback, so once its report scrolls past the viewport it is
-**gone**: `read` gives you only what is on screen now, not the whole turn. Two
-ways to get the complete result:
-
-1. **Structured channel (free, try first).** After a hooked agent's turn ends,
-   its last message is exposed as `last_result` in `splitlane status <pane> --json`
-   / `splitlane ps --json` - read by Splitlane off-screen, so it is not truncated:
-
-   ```bash
-   splitlane wait --match reviewer --idle --pattern '^REPORT_DONE' --timeout 600
-   splitlane status reviewer --json | jq -r '.last_result // empty'
-   ```
-
-   It is best-effort (Claude Code yes; Codex and others may be `null`) and capped,
-   so treat an empty value as "not available - use the file".
-
-2. **Report-to-file (reliable, for long or alt-screen output).** Use
-   `send --report-file <path>` so Splitlane appends a precise file contract to
-   the prompt. The agent writes the full report there, then prints
-   `REPORT_DONE <path>`; you read the file in full - zero viewport truncation:
-
-   ```bash
-   # mktemp -d with the X's LAST is portable across Linux (GNU) and macOS (BSD);
-   # a fixed report.md inside keeps the extension a suffix after the X's would
-   # break on BSD mktemp.
-   report_dir=$(mktemp -d "${TMPDIR:-/tmp}/splitlane-report.XXXXXX")
-   report="$report_dir/report.md"
-   splitlane send reviewer "Review the backend diff." --report-file "$report" --submit
-   splitlane wait --match reviewer --idle --pattern '^REPORT_DONE' --timeout 600
-   cat "$report"            # the complete report, however long it is
-   rm -rf "$report_dir"     # clean up - never leak temp files
-   ```
-
-   Always remove the temp dir when you are done with it (the `rm -rf` above), the
-   same way Splitlane age-sweeps the >64 KiB context files it stages for `up` /
-   `split`.
-
-A **non**-full-screen agent (Codex renders inline) needs none of this: its output
-stays in the scrollback, so a plain `splitlane read <pane>` is enough. Reach for
-the file only when the agent runs full-screen, or the report is long.
-
-## 3. Wait on events instead of polling
-
-Splitlane pushes on Unix/macOS and falls back to a bounded `output_generation`
-clock when a transport cannot tick subscriptions (Windows named pipes). **Never**
-sit in a home-grown `status` loop, and
-**never** write a background bash poller on `output_generation`: a shell you
-background from inside an agent does not inherit the IPC socket env, so it reads
-`NA` and stalls. Let Splitlane's wait primitive tell you when something happened.
-
-`wait --idle` blocks until a pane stops producing output - the cleanest "the turn
-is over" signal:
-
-```bash
-# Return once `reviewer` produced no new output for 1000 ms (the quiescence
-# window; tune with --for). Exit 4 at --timeout, exit 1 if the instance is down,
-# exit 3 if the target does not resolve.
-splitlane wait --match reviewer --idle --for 1000 --timeout 600
-```
-
-A silently-thinking agent never goes quiet, so pair `--idle` with a **sentinel** -
-a line you told the agent to print when done. Either signal (going idle OR the
-pattern matching) returns first, so you are covered both ways:
-
-```bash
-splitlane wait --match reviewer --idle --pattern '^REPORT_DONE' --timeout 600
-```
-
-`wait --pattern` alone blocks on just the marker (no idle clock), across one pane
-or many:
-
-```bash
-splitlane wait --match backend --pattern '^DONE:' --timeout 300
-splitlane wait --match 'cmdline:claude' --pattern 'tests passed' --all --timeout 600   # --all or --any
-```
-
-`watch` streams the live event flow when you want every transition, not one gate:
-
-```bash
-splitlane watch --surface backend --type ai.stop   # one JSON event per line
-splitlane watch                                     # every ai.* transition + surface change
-```
-
-`watch --type ai.*` and any `ai.stop`-gated flow need a **hooked** agent (section
-1) - an `unknown_running` agent emits no `ai.*` events. `wait --idle` and
-`wait --pattern` can still work on raw output, so they are your fallback there.
-Pattern waits are baseline-aware: they match output produced after the wait
-starts, not a sentinel that was merely echoed in your prompt. `watch` emits
-`{"type":"heartbeat"}` every 30 s so a dead connection is detectable.
-
-## 4. Dispatch work
-
-### Spawn hooked agents with `splitlane up`
-
-Spawn agents from a declarative spec, NOT by typing `splitlane send <shell>
-"claude" --submit` into a bare shell. An agent launched via `up` is **hooked**
-(turn events, real `state`, `last_result`) and gets a stable name, cwd, and
-session; one you start by hand in a shell comes up `unknown_running`, so you get
-no `ai.stop` to wait on and have to fall back to scraping output.
-
-A `splitlane.workspace.toml` (top-level `name`/`layout`, then one `[[panes]]`
-table per pane; unknown keys are rejected, so keep to these fields):
-
-```toml
-name = "review"
-layout = "even_h"          # even_h (side by side) | even_v (stacked) | grid (2x2)
-
-[[panes]]
-name = "impl"
-cwd = "~/dev/myproject"
-agent = "claude"           # launched hooked; or use `command = "..."` for a raw shell
-prompt = "Implement the feature on this branch."   # pre-filled, never auto-submitted
-focus = true
-
-[[panes]]
-name = "reviewer"
-cwd = "~/dev/myproject"
-agent = "codex"
-```
-
-Panes that start an agent or a command, pre-fill a prompt or set environment
-variables need `SPLITLANE_IPC_ORCHESTRATION=1` (or `SPLITLANE_IPC_SCRIPTING=1`)
-in the environment of the **running Splitlane app** - not of the shell you run
-the CLI from. Without it `up` and `flow run` are refused; `--dry-run` still
-works.
-
-```bash
-splitlane up review.workspace.toml --dry-run   # validate + print the plan, no mutation
-splitlane up review.workspace.toml             # spawn it; both panes come up hooked
-splitlane ps --json | jq '.agents[] | {surface_name, hooked, state}'   # confirm hooked:true
-```
-
-For a full pipeline (spawn -> wait -> feed -> review) use a `flow.toml`:
-
-```bash
-splitlane flow run my-pipeline.flow.toml --dry-run   # validate without mutating
-splitlane flow run my-pipeline.flow.toml             # run it
-splitlane flow run my-pipeline.flow.toml --json      # + machine-readable report on stdout
-```
-
-Splitlane ships a worked two-agent pipeline (cross-vendor impl -> review) at
-`examples/review-pipeline.flow.toml` in its source tree - copy it as a starting
-point. The path you pass is relative to wherever you run the command, so point at
-your own file; don't assume that example path resolves from an arbitrary pane's
-cwd.
-
-### Send a prompt, then confirm the turn started
-
-```bash
-# Pre-fill a prompt WITHOUT submitting - the human presses Enter. This is the
-# default, human-in-loop path.
-splitlane send reviewer "Please review the diff in the backend pane."
-
-# Auto-submit toward an agent. Splitlane wraps the text in bracketed paste and
-# sends the Enter as a SEPARATE, calibrated write, then verifies a hooked agent
-# state transition. If no turn start is confirmed, the command exits non-zero
-# instead of returning a false `submitted:true`.
-# Requires writes to be allowed: the target is a session you opened with
-# `splitlane add`, or SPLITLANE_IPC_SCRIPTING=1 is set on the running app;
-# otherwise it is refused with a clear, actionable error. A flow step with
-# `submit = true` accepts only the environment variable.
-splitlane send reviewer "Run the tests." --submit
-
-# Just press Enter on a composer that already has text: submit an empty
-# string - it sends only the carriage return, inserts nothing.
-splitlane send reviewer "" --submit
-
-# Send to every matching pane at once.
-splitlane send 'cmdline:claude' "Status check." --broadcast
-```
-
-After a successful `--submit`, the CLI has already confirmed that a hooked agent
-state transition happened. You can still inspect state before chaining a risky
-step:
-
-```bash
-splitlane send reviewer "Review the backend diff. ..." --submit
-splitlane status reviewer --json | jq -r '.state'   # expect "thinking", not "idle"
-splitlane wait --match reviewer --idle --pattern '^REPORT_DONE' --timeout 600
-```
-
-If `send --submit` exits non-zero with "no turn start was confirmed", the turn
-never started (a swallowed Enter, a closed composer, or a missing hook): fix the
-target or re-send rather than waiting forever on a turn that is not running.
-
-## 5. Sessions you open yourself
-
-Everything above works on agents that are already there. The better way to
-hand work out is to open the sessions yourself: a session you open is
-**yours**. You may write into it, stop its turn, move it and close it with
-nothing switched on, it is hooked from its first frame, and it sits under
-your own row in the rail where the person can see what you started.
+The way to hand work out is to open the sessions yourself: a session you
+open is **yours**. You may write into it, stop its turn, move it and close it
+with nothing switched on, Splitlane reads its turns from the agent's own
+record, and it sits under your own row in the rail where the person can see
+what you started.
 
 Say the plan out loud first: before the first `add`, tell the person how
 many sessions you are about to open and what each is for. Open as many as
@@ -279,49 +54,103 @@ there are independent pieces of work, not as many as you are allowed - every
 session draws on the same usage limits as you do.
 
 ```bash
-# Open one and hand it its first task. Keep `runs_ended` from the answer.
+# Open one and hand it its first task. The answer carries `runs_ended`:
+# keep that number, here as n. It is 0 for a session just opened.
 splitlane add --agent claude_code --name reviewer --prompt "Review the diff on this branch." --submit --json
+n=0
 
-# Wait for the turn to end. N is the `runs_ended` you kept.
-splitlane wait --match reviewer --until turn-end --after 0 --timeout 540
+# Wait for the turn to end - in the background, see below.
+splitlane wait --match reviewer --until turn-end --after "$n" --timeout 7200
 
 # Read the answer from the agent's own record, not from the screen.
-splitlane answer reviewer --after 0
+splitlane answer reviewer --after "$n"
 
 # Hand over the next task. Its answer carries `runs_ended` again: that is
-# the N for the next wait.
+# the new n, for the next wait and the next answer. An old n makes the wait
+# return at once on the turn that is already over, and hands you its answer.
 splitlane send reviewer "Now check the tests cover it." --submit
 
 # Close it when its turn is over. A session left running goes on spending.
 splitlane close reviewer
 ```
 
+### Start the wait in the same turn, and keep it running
+
+Every time you hand a session a task - `add --submit` or `send --submit` -
+start its `wait --until turn-end` as the next command after that one returns,
+and do not end your turn while a session of yours is working and no wait is
+running.
+
+- **Your harness runs commands in the background and tells you when one
+  ends** (Claude Code does: a background shell command): run the `wait` that
+  way, with a long `--timeout` such as `7200`. You may then go on with other
+  work or end your turn; when the session's turn ends the command exits and
+  you are called back with its exit code. A background command started this
+  way reaches Splitlane exactly as a foreground one does. If it comes back
+  with exit `4`, the time ran out and the session is still working: start the
+  same wait again, with the same number after `--after`.
+- **It does not**: run the `wait` in the foreground with `--timeout 540` - a
+  foreground shell call from an agent is usually cut off at ten minutes - and
+  on exit `4` run the same `wait` again. Stay in your turn until it returns.
+
+If you must end your turn with a session still working and no wait running,
+say so to the person in plain words: you will not hear when it finishes, and
+they will have to tell you.
+
+### What the wait tells you
+
 `wait --until turn-end` exits `0` when the turn ended, `5` when the session
 is **asking a person a question** - pass the question on word for word and
 stop; you cannot answer it and nothing can be sent to that session until a
 person has - `6` when the run failed, `7` when the agent gives no turn
-signal (use `--idle --pattern` from section 3), `10` when the turn was
+signal (use `--idle --pattern` from section 4), `10` when the turn was
 stopped before it finished - a person pressed Esc there, or it was
 interrupted: there is no answer to read, so say so and ask what the session
 should do next rather than sending the task again - and `4` on timeout: wait
-again, do not send the task again. Use `--timeout 540`, not more: a shell
-call from an agent is cut off at ten minutes.
+again, do not send the task again.
+
+**Exit `0` means the turn is over, not that the task is done.** Always read
+the answer. A session may end its turn with a question written as ordinary
+text, or with a refusal: it knows its task came from another agent session
+and not from a person, and may decline to commit, push, delete or send
+anything on that word alone. That is the session doing its job. Pass the
+question to the person; do not argue the session into it and do not answer on
+the person's behalf.
+
+So do not hand a session what cannot be undone. Commits, pushes, deletions
+and anything sent outside the machine are done by you after the person agreed,
+or by the person. When the person has already told you to have a session do
+such a thing, quote their words in the task, and still expect to be asked.
+
+The `tier` printed by `add` may read `T3`: the agent had not spoken yet. It
+is not a verdict on the session; read the tier from `status` (section 2).
 
 Exit `0` with `background_shells` above `0` in the output means the session
 ended its turn with a command of its own still running, usually tests it is
 waiting on: it will start another turn by itself, and the answer you read
 now is not its last word. Add `--settled` to the same `wait` to wait through
-that. Do not use `--settled` on a session you asked to start a server: that
+that:
+
+```bash
+splitlane wait --match reviewer --until turn-end --after "$n" --settled --timeout 7200
+```
+
+Do not use `--settled` on a session you asked to start a server: that
 command never ends and the wait runs to its timeout.
 
 Limits the app enforces, so do not try around them: eight sessions open at
-a time; a session you opened cannot open sessions of its own; you cannot
-close, move or write into a session you did not open. A refusal is exit
-`8` with the reason in the message. Tell the person; do not retry.
+a time, counting the ones whose work is finished until you close them; a
+session you opened cannot open sessions of its own; you cannot close, move
+or write into a session you did not open. A refusal is exit `8` with the
+reason in the message. Tell the person; do not retry.
 
-More sessions than panes: `splitlane add ... --parked` opens one in the
-rail with no pane, `splitlane park reviewer` takes one out of its pane and
-leaves it running, `splitlane show reviewer` brings it back.
+More sessions than panes:
+
+```bash
+splitlane add --agent claude_code --name tests --prompt "Run the test suite." --submit --parked --json   # in the rail, no pane
+splitlane park reviewer     # take one out of its pane and leave it running
+splitlane show reviewer     # bring it back
+```
 
 ### When the plan changes
 
@@ -361,10 +190,138 @@ Exit `0`: send again. Exit `8`: they said no - do not ask again and do not
 look for another way in. Exit `4`: they have not answered; tell them and
 stop. Exit `1` with `not_offered`: this is not a session anyone is asked
 about - a shell, a session in another project, or one you opened yourself,
-which you write into without asking. You never close or move a session the person opened, whatever they
-answered.
+which you write into without asking. `"drive": "not_offered"` in `status
+--json` says the same thing and is what a session of your own shows: nobody
+is asked, send. You never close or move a session the person opened, whatever
+they answered.
 
-## 6. The discipline (read this twice)
+## 2. Read a session's state
+
+```bash
+splitlane status reviewer            # state, the active tool, and the question if waiting
+splitlane status reviewer --json     # {state, hooked, rail: {status, source, tier, runs_ended, ...}, drive, ...}
+splitlane answer reviewer            # the answer to the newest prompt, whole, from the agent's own record
+splitlane ls                         # every pane: surface_id, name, cwd, cmd
+splitlane ps                         # every agent: PID, TOOL, STATE, WS, PANE
+```
+
+Target a session by its name, its `surface_id`, `cmdline:<substr>` or
+`cwd:<path>`.
+
+**`rail` is what to trust.** It is what the person sees in the rail row:
+`rail.status` is `starting`, `running`, `waiting`, `idle` or `failed`, and
+`rail.source` says who decided it. `rail.tier` says how much the end of a turn
+can be relied on:
+
+| `tier` | The end of a turn is read from | `wait --until turn-end` |
+|--------|--------------------------------|-------------------------|
+| `T1` | the file the agent writes for itself (Claude Code, Codex) | works |
+| `T2` | the agent's own hook | works |
+| `T3` | nothing - output stopping proves nothing | exits `7`; use section 4 |
+
+`hooked` says only whether a hook decided the status. `hooked: false` beside
+a `rail` on `T1` is a tracked session, not a broken one: go by `rail`. A row
+of `ps --json` carries the same `rail` object.
+
+`answer` reads the whole answer however long it is; `--after N` takes the
+`runs_ended` you kept and refuses to print an answer older than the task you
+sent. Prefer it to `read`, which returns only what is on the screen.
+
+## 3. Agents that are already there
+
+Sessions you did not open are the person's (section 1, "A session the person
+opened") or plain panes. You can always look:
+
+```bash
+splitlane read backend --lines 80        # recent scrollback, fenced as untrusted output
+splitlane search backend 'error|panic'   # grep the pane's scrollback for a pattern
+splitlane watch --surface backend --type ai.stop   # one JSON event per line, for a hooked agent
+```
+
+The CLI verbs are `ls`, `read`, `search` (not `list_panes` / `read_pane` /
+`search_pane` - those are the MCP **tool** names; Splitlane accepts them as
+aliases, but write the real verb). A genuinely unknown verb (`splitlane blha`)
+exits non-zero with `unknown verb; see splitlane --help` - it never launches a
+stray GUI window.
+
+`splitlane read` returns a pane's **visible** scrollback. A full-screen agent
+such as Claude Code keeps no scrollback, so a long report is gone from `read`
+once it scrolls away: use `answer`.
+
+To put text in front of an agent without sending it - the person presses
+Enter - leave `--submit` off:
+
+```bash
+splitlane send reviewer "Please review the diff in the backend pane."
+splitlane send reviewer "" --submit      # only press Enter on text already there
+```
+
+`send --submit` confirms that a turn started and exits non-zero with "no turn
+start was confirmed" when it did not (a swallowed Enter, a closed composer):
+fix the target or send again rather than waiting on a turn that is not
+running.
+
+## 4. Agents with no turn signal, and fixed layouts
+
+For a session on `T3`, `wait --until turn-end` exits `7`. Wait on its output
+instead, with a line you asked it to print when done:
+
+```bash
+# Returns when the pane has printed nothing for --for ms, or the pattern
+# matched, whichever is first. Exit 4 at --timeout.
+splitlane wait --match reviewer --idle --for 1000 --pattern '^REPORT_DONE' --timeout 540
+splitlane wait --match backend --pattern '^DONE:' --timeout 300
+splitlane wait --match 'cmdline:claude' --pattern 'tests passed' --all --timeout 540
+```
+
+A pattern wait matches only output produced after it starts, not a sentinel
+that was merely echoed in your prompt. Never write a loop of your own over
+`status` or `read`; the same rule as in section 1 applies to keeping these
+waits running.
+
+Where there is no `answer` to read, have the agent write its report to a
+file:
+
+```bash
+# mktemp -d with the X's LAST is portable across Linux (GNU) and macOS (BSD).
+report_dir=$(mktemp -d "${TMPDIR:-/tmp}/splitlane-report.XXXXXX")
+report="$report_dir/report.md"
+splitlane send reviewer "Review the backend diff." --report-file "$report" --submit
+splitlane wait --match reviewer --idle --pattern '^REPORT_DONE' --timeout 540
+cat "$report"            # the complete report, however long it is
+rm -rf "$report_dir"     # clean up - never leak temp files
+```
+
+A fixed set of panes can be opened from a file. This is for a layout the
+person asked for by name; for handing out work, section 1 is the way.
+
+```bash
+splitlane up review.workspace.toml --dry-run          # validate + print the plan, no mutation
+splitlane up review.workspace.toml                    # open it
+splitlane flow run my-pipeline.flow.toml --dry-run    # a whole pipeline: validate
+splitlane flow run my-pipeline.flow.toml --json       # run it, machine-readable report
+```
+
+```toml
+name = "review"
+layout = "even_h"          # even_h (side by side) | even_v (stacked) | grid (2x2)
+
+[[panes]]
+name = "impl"
+cwd = "~/dev/myproject"
+agent = "claude"           # or `command = "..."` for a raw shell
+prompt = "Implement the feature on this branch."   # pre-filled, never auto-submitted
+focus = true
+```
+
+Unknown keys are rejected. Panes that start an agent or a command, pre-fill a
+prompt or set environment variables need `SPLITLANE_IPC_ORCHESTRATION=1` (or
+`SPLITLANE_IPC_SCRIPTING=1`) in the environment of the **running Splitlane
+app**, not of your shell; without it `up` and `flow run` are refused and you
+cannot switch it on from here. Tell the person, or use section 1, which needs
+nothing switched on.
+
+## 5. The discipline (read this twice)
 
 - **Hand back to the human on anything destructive or ambiguous.** Deleting,
   force-pushing, `rm -rf`, paying, sending an irreversible message, an
@@ -386,11 +343,12 @@ answered.
   Pass the question on and stop.
 
 - **Be parsimonious.** Every agent you spawn or prompt burns tokens. Do not fan
-  out work to N agents when one will do. Drive the fleet you were asked to drive.
+  out work to N agents when one will do. Drive the fleet you were asked to drive,
+  and close a session when you have its answer and no further task for it.
 
 - **Stop when blocked.** If a target does not resolve (exit 3), if the instance
   is unreachable (exit 1), or if you have asked an agent to do something and it is
-  `waiting_for_input`, surface the situation to the user and stop. Never loop on a
+  waiting for a person, surface the situation to the user and stop. Never loop on a
   failing command.
 
 ## Exit codes

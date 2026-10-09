@@ -327,6 +327,20 @@ earlier version is replaced; one you edited is left alone. An agent session
 started afterwards picks it up, and uses it when you ask for sessions in
 Splitlane: "open a reviewer session in Splitlane and give it this diff".
 
+A lead agent hears that a session it opened has finished only through a
+`splitlane wait` that is running at that moment: nothing is written into the
+lead's pane when the other session's turn ends. The skill tells the agent to
+start that wait in the same turn as the task, as a background command where
+its harness reports one ending (Claude Code does), so that it is called back
+without anyone prompting it. If a lead ended its turn with no wait running,
+tell it the session has finished.
+
+A session opened this way is told that its task came from another agent
+session and not from a person, and may ask before it commits, pushes or
+deletes anything. It then ends its turn with the question as ordinary text,
+which `wait` reports as a finished turn (exit `0`), not as a question (exit
+`5`): the lead reads the answer and passes the question on.
+
 To keep the skill out, turn off Settings → Agents → Fleet skill, or set
 `"fleet_skill": false` in `splitlane.json`. Turning the switch off removes the
 copies Splitlane wrote. A build from source in debug mode never writes it.

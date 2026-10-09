@@ -6,6 +6,17 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The fleet skill now tells a lead agent to start `splitlane wait` in the
+  same turn as it hands out a task, in the background where its harness
+  reports a background command ending, and not to end its turn without one.
+  A lead that opened a session and stopped used to hear nothing when that
+  session finished. The skill also leads with sessions the agent opens
+  itself, says to judge a session by `rail` and not by `hooked`, and says
+  that a finished turn can be a question. Installed copies are replaced at
+  the next start.
+
 ### Fixed
 
 - `splitlane ps` lists agent sessions - those opened from the launcher or
