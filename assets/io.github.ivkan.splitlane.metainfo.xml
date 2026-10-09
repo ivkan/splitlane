@@ -63,6 +63,12 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.1" date="2026-10-09">
+      <description>
+        <p>On macOS the app can update itself again: earlier versions
+        refused every release and have to be replaced by hand once.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-09">
       <description>
         <p>An agent in a pane can open agent sessions of its own and work
