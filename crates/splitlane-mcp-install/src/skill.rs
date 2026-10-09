@@ -6,9 +6,15 @@
 //! this crate, so the copy an install writes always matches the binary that
 //! wrote it.
 //!
-//! It is never installed by itself. The bridge binary is unpacked on every
-//! start because it only gives an agent something it can call; a skill
-//! changes what an agent does, and that is the person's to switch on.
+//! The app keeps it installed: every start writes it wherever an agent is,
+//! unless `fleet_skill` is `false` in `splitlane.json`. It used to be a
+//! command the person had to know about and run, on the reasoning that a
+//! skill changes what an agent does and so is theirs to switch on. Nobody
+//! runs a command they have not heard of, and an agent that was never told
+//! the commands cannot open a session however it is asked, so the feature
+//! was off for everyone who had not read the documentation. What keeps the
+//! default safe is the skill's own first rule: it is used only when the
+//! person asks for sessions in Splitlane.
 //!
 //! Three places are known: Claude Code's skills directory, Codex's, and the
 //! one several agents share. Each is written only when the directory above
@@ -51,7 +57,11 @@ Usage:
   splitlane skill status                Report where it is installed
 
 A copy that was edited by hand is left alone unless --force is given, and
-is then kept beside the skill as SKILL.md.bak.";
+is then kept beside the skill as SKILL.md.bak.
+
+The app installs the skill each time it starts. To keep it out, turn off
+Settings -> Agents -> Fleet skill, or set \"fleet_skill\": false in
+splitlane.json.";
 
 /// One place a skill can be installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +314,24 @@ pub fn uninstall_at(place: &SkillPlace, force: bool) -> UninstallOutcome {
     UninstallOutcome::Removed
 }
 
+/// Write the skill at every place, never over an edited copy. What the app
+/// does at start and when the setting is turned on.
+pub fn install_everywhere(places: &[SkillPlace]) -> Vec<(&'static str, InstallOutcome)> {
+    places
+        .iter()
+        .map(|place| (place.id, install_at(place, false)))
+        .collect()
+}
+
+/// Remove the skill from every place, leaving an edited copy where it is.
+/// What the app does when the setting is turned off.
+pub fn uninstall_everywhere(places: &[SkillPlace]) -> Vec<(&'static str, UninstallOutcome)> {
+    places
+        .iter()
+        .map(|place| (place.id, uninstall_at(place, false)))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
     Install,
@@ -429,6 +457,13 @@ fn run_with(
                 };
             }
         }
+    }
+    if command == Command::Uninstall {
+        let _ = writeln!(
+            out,
+            "Splitlane installs it again at its next start unless \"fleet_skill\" is false in \
+             splitlane.json (Settings -> Agents -> Fleet skill)."
+        );
     }
     i32::from(failed)
 }
@@ -698,6 +733,29 @@ mod tests {
             "my own rules\n"
         );
         assert_eq!(state_at(&places[0]), SkillState::NotInstalled);
+    }
+
+    #[test]
+    fn keeping_it_installed_spares_an_edited_copy_and_an_absent_agent() {
+        let (_home, places) = home();
+        let claude = &places[0];
+        std::fs::create_dir_all(claude.file().parent().unwrap()).unwrap();
+        std::fs::write(claude.file(), "my own notes\n").unwrap();
+
+        let outcomes = install_everywhere(&places);
+
+        assert_eq!(outcomes[0], ("claude-code", InstallOutcome::LeftModified));
+        assert_eq!(outcomes[1], ("codex", InstallOutcome::Installed));
+        assert_eq!(outcomes[2], ("agents", InstallOutcome::NotDetected));
+        assert_eq!(
+            std::fs::read_to_string(claude.file()).unwrap(),
+            "my own notes\n"
+        );
+
+        let removed = uninstall_everywhere(&places);
+        assert_eq!(removed[0], ("claude-code", UninstallOutcome::LeftModified));
+        assert_eq!(removed[1], ("codex", UninstallOutcome::Removed));
+        assert!(claude.file().exists());
     }
 
     #[test]

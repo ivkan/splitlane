@@ -24,7 +24,7 @@ Exact verbs, flags, JSON fields, methods, events and exit codes are in the
 | `splitlane flow run <file>` | Run a dependency graph of agent steps | Gated |
 | `splitlane mcp install` | Let MCP-capable agents read other panes | No - see [MCP bridge](../mcp-bridge.md) |
 | `splitlane hooks setup` | Report Claude Code turn state to Splitlane | No - see [Agent hooks](hooks.md) |
-| `splitlane skill install` | Teach an agent the commands on this page | No - see [Coordinating agents](#coordinating-agents-from-a-lead-agent) |
+| `splitlane skill install` | Teach an agent the commands on this page; Splitlane also does this at every start | No - see [Coordinating agents](#coordinating-agents-from-a-lead-agent) |
 
 ## Terms
 
@@ -315,24 +315,31 @@ splitlane flow run review.flow.toml --json   # final report on stdout, progress 
 ## Coordinating agents from a lead agent
 
 A lead agent is a coding agent in one pane that hands work to agents in other
-panes, using the same `splitlane` commands. The repository ships a skill that
-teaches an agent this workflow, `skills/splitlane-fleet/SKILL.md`, and the
-same text is built into the app:
+panes, using the same `splitlane` commands. A skill teaches an agent this
+workflow. Its source is `skills/splitlane-fleet/SKILL.md` in the repository
+and the same text is built into the app.
+
+Splitlane keeps it installed. Each time the app starts it writes the skill to
+`skills/splitlane-fleet/SKILL.md` under Claude Code's directory (`~/.claude`,
+or `CLAUDE_CONFIG_DIR`), Codex's (`~/.codex`, or `CODEX_HOME`) and
+`~/.agents`, each only if that directory already exists. A copy from an
+earlier version is replaced; one you edited is left alone. An agent session
+started afterwards picks it up, and uses it when you ask for sessions in
+Splitlane: "open a reviewer session in Splitlane and give it this diff".
+
+To keep the skill out, turn off Settings → Agents → Fleet skill, or set
+`"fleet_skill": false` in `splitlane.json`. Turning the switch off removes the
+copies Splitlane wrote. A build from source in debug mode never writes it.
+
+The same thing by hand:
 
 ```bash
 splitlane skill install     # write it for every agent found on this machine
 splitlane skill status      # say where it is and in what state; writes nothing
-splitlane skill uninstall   # remove it again
+splitlane skill uninstall   # remove it; the next start writes it again unless the setting is off
 ```
 
-It is written to `skills/splitlane-fleet/SKILL.md` under Claude Code's
-directory (`~/.claude`, or `CLAUDE_CONFIG_DIR`), Codex's (`~/.codex`, or
-`CODEX_HOME`) and `~/.agents`, each only if that directory already exists.
-Start a new agent session afterwards so it is picked up.
-
-Nothing installs the skill for you, and installing the MCP bridge does not
-bring it along: a skill changes what an agent does, which is yours to switch
-on. `status` reports one of:
+`status` reports one of:
 
 | State | Meaning |
 | --- | --- |

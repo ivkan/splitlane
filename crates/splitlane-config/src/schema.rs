@@ -209,6 +209,14 @@ pub struct SplitlaneConfig {
     /// warn.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub ai_injection_fence: Option<bool>,
+    /// Keep the fleet skill installed for the agents on this machine.
+    /// `Some(true)` / `None` (the default): every start writes the skill
+    /// wherever an agent's directory is, so an agent asked to open sessions
+    /// in Splitlane knows the commands. `Some(false)`: the app writes nothing;
+    /// `splitlane skill install` still works by hand. A non-boolean value
+    /// resolves to `None` (installed) with a warn.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub fleet_skill: Option<bool>,
     /// Show the built-in "Claude Code" command button in the tab bar.
     /// `Some(true)` always renders the button, `Some(false)` hides it, and
     /// `None` (default) renders it only when the CLI binary is installed.
@@ -453,6 +461,12 @@ impl SplitlaneConfig {
     /// to fenced.
     pub fn ai_injection_fence_enabled(&self) -> bool {
         self.ai_injection_fence.unwrap_or(true)
+    }
+
+    /// Whether the app keeps the fleet skill installed. Default ON: only an
+    /// explicit `false` turns it off.
+    pub fn fleet_skill_enabled(&self) -> bool {
+        self.fleet_skill.unwrap_or(true)
     }
 }
 
@@ -2202,6 +2216,7 @@ mod tests {
             claude_code_bypass_permissions: Some(false),
             check_for_updates: Some(false),
             ai_injection_fence: Some(false),
+            fleet_skill: Some(false),
             claude_code_button_visible: Some(true),
             codex_button_visible: Some(true),
             opencode_button_visible: Some(true),
@@ -2589,6 +2604,18 @@ mod tests {
         let cfg: SplitlaneConfig = serde_json::from_str("{}").expect("empty config");
         assert!(cfg.submit_paste_delay_ms.is_none());
         assert_eq!(cfg.resolved_submit_paste_delay_ms(), 70);
+    }
+
+    #[test]
+    fn the_fleet_skill_is_kept_installed_unless_it_is_turned_off() {
+        assert!(SplitlaneConfig::default().fleet_skill_enabled());
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"fleet_skill": false}"#).unwrap();
+        assert!(!cfg.fleet_skill_enabled());
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"fleet_skill": "no"}"#).unwrap();
+        assert!(
+            cfg.fleet_skill_enabled(),
+            "a value that is not a boolean is not an off"
+        );
     }
 
     #[test]

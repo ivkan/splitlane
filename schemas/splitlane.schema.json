@@ -233,6 +233,11 @@
       "description": "Anti-injection fence on the surface.read CLI/IPC path. Null/true (default) wraps returned terminal text in an <untrusted_terminal_output> marker so a malicious peer pane cannot hijack a conductor reading it. False returns raw text (an assumed risk). The fence protects the AI, it does not bridle it.",
       "default": true
     },
+    "fleet_skill": {
+      "type": ["boolean", "null"],
+      "description": "Keep the fleet skill installed. Null/true (default): each start writes the skill that teaches an agent the splitlane commands into the skills directory of every agent found on this machine (Claude Code, Codex, ~/.agents), never over a copy edited by hand. False: Splitlane writes nothing; 'splitlane skill install' still works by hand.",
+      "default": true
+    },
     "claude_code_button_visible": {
       "type": ["boolean", "null"],
       "description": "Show the built-in 'Claude Code' command button. Null/omitted auto-detects the CLI binary.",

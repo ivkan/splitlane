@@ -136,9 +136,11 @@ you can see.
 - **What an agent typed says so.** Text one session sends another starts with
   `[Splitlane] Sent by the agent session "<name>", not typed by a person.`
 
-`splitlane skill install` writes a skill that teaches Claude Code and Codex
-these commands. Splitlane does not install it by itself. The commands and
-their exit codes are in [Scripting](docs/user/scripting.md#coordinating-agents-from-a-lead-agent).
+Splitlane writes a skill that teaches Claude Code and Codex these commands
+each time it starts, so there is nothing to install first: ask an agent in a
+pane to open a session in Splitlane. Settings → Agents → Fleet skill turns
+that off. The commands and their exit codes are in
+[Scripting](docs/user/scripting.md#coordinating-agents-from-a-lead-agent).
 
 ## Next to its neighbours
 

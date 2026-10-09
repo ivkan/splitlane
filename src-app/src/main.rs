@@ -45,6 +45,7 @@ mod diff;
 mod editor;
 mod external_open;
 mod file_view;
+mod fleet_skill;
 mod fonts;
 mod git_command;
 mod ipc;

@@ -278,6 +278,7 @@ pub fn try_parse_and_validate(json: &str) -> Result<SplitlaneConfig, serde_json:
     set_field!(claude_code_bypass_permissions);
     set_field!(check_for_updates);
     set_field!(ai_injection_fence);
+    set_field!(fleet_skill);
     set_field!(claude_code_button_visible);
     set_field!(codex_button_visible);
     set_field!(opencode_button_visible);
@@ -1106,6 +1107,7 @@ mod tests {
             claude_code_bypass_permissions: None,
             check_for_updates: None,
             ai_injection_fence: None,
+            fleet_skill: None,
             claude_code_button_visible: None,
             codex_button_visible: None,
             opencode_button_visible: None,

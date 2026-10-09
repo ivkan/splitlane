@@ -868,6 +868,9 @@ impl SplitlaneApp {
         let posthog_api_key = option_env!("POSTHOG_API_KEY").unwrap_or("");
         let posthog_host = option_env!("POSTHOG_HOST").unwrap_or("https://eu.i.posthog.com");
         let telemetry_config_snapshot = splitlane_config::loader::load_config();
+        crate::fleet_skill::keep_installed_at_start(
+            telemetry_config_snapshot.fleet_skill_enabled(),
+        );
         let telemetry_enabled_last = telemetry_config_snapshot
             .telemetry
             .as_ref()

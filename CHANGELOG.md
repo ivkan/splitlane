@@ -75,8 +75,12 @@ Notable changes to Splitlane are recorded here. The format follows
 - `splitlane skill install | status | uninstall` writes the fleet skill into
   the skills directory of Claude Code, of Codex and the shared `~/.agents`,
   each only where that directory exists. A copy you edited is reported as
-  `modified` and left alone unless you pass `--force`. Nothing installs the
-  skill by itself.
+  `modified` and left alone unless you pass `--force`.
+- Splitlane keeps that skill installed: every start writes it for the agents
+  found on the machine, never over a copy you edited, so an agent asked to
+  open sessions in Splitlane knows how without a command run first.
+  Settings -> Agents -> Fleet skill turns it off and removes it
+  (`"fleet_skill": false` in `splitlane.json`).
 - The skill in `skills/splitlane-fleet` teaches an agent to open its own
   sessions, wait on them, read their answers, redirect and close them.
 

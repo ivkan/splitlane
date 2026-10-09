@@ -54,6 +54,7 @@ impl SplitlaneApp {
         let bypass = config.claude_code_bypass_permissions.unwrap_or(false);
         // The injection fence. Default ON.
         let fence = config.ai_injection_fence_enabled();
+        let fleet_skill = config.fleet_skill_enabled();
 
         let mut agents = div().flex().flex_col();
         for agent in TerminalAgent::ALL {
@@ -116,12 +117,36 @@ impl SplitlaneApp {
                 }),
             ));
 
+        // Turning the switch is the install or the removal, not a note for the
+        // next start: a person who turns it off expects the agents to stop
+        // being told, and the next agent session is where that shows.
+        access = access.child(setting_toggle_row(
+            ui,
+            "agents-fleet-skill",
+            "Fleet skill",
+            Some(SharedString::from(
+                "teaches Claude Code and Codex to open sessions here",
+            )),
+            fleet_skill,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.persist_setting(
+                    false,
+                    "fleet_skill",
+                    serde_json::Value::Bool(!fleet_skill),
+                    cx,
+                );
+                crate::fleet_skill::apply(!fleet_skill);
+            }),
+        ));
+
         access = access.child(caption(
             ui,
             "Bypass permissions launches Claude Code with no protection against prompt \
              injection \u{2014} only on machines you trust. The fence keeps what an agent \
              reads out of another pane wrapped as untrusted; it protects the agent rather \
-             than restricting it.",
+             than restricting it. The fleet skill is a file in each agent's skills \
+             directory, written at every start; an agent uses it only when you ask for \
+             sessions in Splitlane, and a copy you edited is never replaced.",
         ));
 
         // AC #3: once the fence is OFF, surface the active risk in the danger

@@ -82,6 +82,7 @@ Under **What an agent may do**:
 |---|---|---|
 | Bypass permissions | Launches Claude Code with `--permission-mode bypassPermissions`. This removes Claude Code's protection against prompt injection; use it only on machines you trust. | `claude_code_bypass_permissions` |
 | Injection fence | Keeps pane text that an agent reads wrapped as untrusted output. On by default; turning it off shows a warning. | `ai_injection_fence` |
+| Fleet skill | Keeps the skill that teaches Claude Code and Codex the `splitlane` commands installed: written at every start for each agent found, never over a copy you edited. On by default; turning it off removes the copies Splitlane wrote. | `fleet_skill` |
 
 ## MCP
 
