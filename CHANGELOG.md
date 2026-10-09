@@ -6,6 +6,16 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- On macOS the app could not update itself: it downloaded the new version
+  and then said "Update failed". The updater checked the download against
+  the wrong signing team and so refused every release. Versions up to 0.2.0
+  cannot get past this by themselves - install this one from the `.dmg` or
+  with `brew upgrade --cask splitlane`; from here on the in-app update works.
+- The menu behind the rail's Settings button no longer has a line drawn
+  across one of its items.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

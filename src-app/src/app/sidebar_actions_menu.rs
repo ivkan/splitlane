@@ -308,7 +308,12 @@ impl SplitlaneApp {
             for item in items {
                 menu = menu.child(render_menu_item(item, ui, cx));
             }
-            Some(menu.into_any_element())
+            // Deferred, like the rail's other menus. A border is painted
+            // after the children of the element that has it, so the rule on
+            // top of the footer panel - an ancestor of this menu - was drawn
+            // over it: a line through whichever item the menu had grown tall
+            // enough to put there.
+            Some(gpui::deferred(menu).priority(3).into_any_element())
         } else {
             None
         };
