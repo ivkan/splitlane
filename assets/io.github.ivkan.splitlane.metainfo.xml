@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.0" date="2026-10-09">
+      <description>
+        <p>An agent in a pane can open agent sessions of its own and work
+        through them: each is a row in the rail under the one that opened it,
+        and a session that is waiting for you says so in a notification
+        whichever way Splitlane learned of it. The skill that teaches Claude
+        Code and Codex the commands is installed at every start.</p>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-10-04">
       <description>
         <p>Updates are checked for while the app stays open, a worktree is
