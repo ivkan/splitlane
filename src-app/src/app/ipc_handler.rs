@@ -1229,21 +1229,90 @@ struct WsFleet<'a> {
     detected: &'a HashSet<String>,
 }
 
+/// A surface the rail has an answer for, as `fleet.list` needs it.
+struct FleetSurface {
+    /// The project's index, `None` for a surface no project claims.
+    idx: Option<usize>,
+    surface_id: u64,
+    pid: Option<u32>,
+    rail: crate::rail_state::RailSnapshot,
+}
+
 /// Build the sorted `fleet.list` agent rows. Pure.
 ///
 /// Hooked sessions are emitted with full state (`hooked: true`); unhooked rows
 /// come from `ai_types::unhooked_agents`, which is the one definition of
 /// "detected but no hook" in the app.
+///
+/// `surfaces` adds what neither of those holds: an agent session, whose hook
+/// frames go to its own record and never to a project's hook sessions. Left
+/// out, a session opened from the launcher or by `add` was missing here for
+/// its whole life while `surface.status` answered for it. Every row that has
+/// a surface carries that surface's `rail`, the same object `surface.status`
+/// returns.
 /// Sorted by `(workspace, tool display_rank, pid)` for a stable order across the
 /// `HashMap`'s nondeterministic iteration.
 fn build_fleet_rows(
     workspaces: &[WsFleet],
+    surfaces: &[FleetSurface],
     name_by_sid: &HashMap<u64, String>,
     now: std::time::Instant,
 ) -> Vec<serde_json::Value> {
+    let rail_of = |sid: Option<u64>| {
+        sid.and_then(|sid| surfaces.iter().find(|s| s.surface_id == sid))
+            .map_or(serde_json::Value::Null, |s| s.rail.to_json())
+    };
+    let hooked_surfaces: HashSet<u64> = workspaces
+        .iter()
+        .flat_map(|ws| ws.sessions.values())
+        .filter_map(|s| s.surface_id)
+        .collect();
+    // An agent that has exited is not running, and a rail that cannot name
+    // its agent - a shell pane whose hook session was dropped after its
+    // turn - is left to the process scan, as it was.
+    let tracked = |s: &&FleetSurface| {
+        !s.rail.exited && s.rail.agent.is_some() && !hooked_surfaces.contains(&s.surface_id)
+    };
     let mut rows: Vec<(usize, usize, u32, serde_json::Value)> = Vec::new();
+    for surface in surfaces.iter().filter(tracked) {
+        let Some(tool) = surface.rail.agent else {
+            continue;
+        };
+        rows.push((
+            surface.idx.unwrap_or(usize::MAX),
+            crate::agent_launcher::TerminalAgent::from_binary(tool)
+                .map_or(usize::MAX, |agent| agent.display_rank()),
+            surface.pid.unwrap_or(u32::MAX - 1),
+            serde_json::json!({
+                "pid": surface.pid,
+                "tool": tool,
+                "state": surface.rail.state_word(),
+                "hooked": surface.rail.hooked(),
+                "reason": serde_json::Value::Null,
+                "surface_id": surface.surface_id,
+                "surface_name": name_by_sid.get(&surface.surface_id),
+                "workspace": surface.idx,
+                "active_tool_name": serde_json::Value::Null,
+                "message": surface.rail.to_json()["message"],
+                "last_result": serde_json::Value::Null,
+                "waiting_ms": serde_json::Value::Null,
+                "idle_ms": serde_json::Value::Null,
+                "rail": surface.rail.to_json(),
+            }),
+        ));
+    }
     for ws in workspaces {
-        let unhooked = ai_types::unhooked_agents(ws.sessions.values(), ws.detected);
+        // The process scan sees an agent session's binary too; that agent
+        // has its row above.
+        let unhooked: Vec<_> = ai_types::unhooked_agents(ws.sessions.values(), ws.detected)
+            .into_iter()
+            .filter(|tool| {
+                !surfaces
+                    .iter()
+                    .filter(tracked)
+                    .any(|s| s.idx == Some(ws.idx) && s.rail.agent == Some(tool.binary()))
+            })
+            .collect();
         for (pid, s) in ws.sessions {
             let surface_name = s
                 .surface_id
@@ -1271,6 +1340,7 @@ fn build_fleet_rows(
                         .waiting_since
                         .map(|w| now.saturating_duration_since(w).as_millis() as u64),
                     "idle_ms": now.saturating_duration_since(s.last_activity).as_millis() as u64,
+                    "rail": rail_of(s.surface_id),
                 }),
             ));
         }
@@ -1299,6 +1369,7 @@ fn build_fleet_rows(
                     "last_result": serde_json::Value::Null,
                     "waiting_ms": serde_json::Value::Null,
                     "idle_ms": serde_json::Value::Null,
+                    "rail": serde_json::Value::Null,
                 }),
             ));
         }
@@ -1398,6 +1469,19 @@ fn surface_status_value(
     rail: Option<&crate::rail_state::RailSnapshot>,
 ) -> serde_json::Value {
     let mut value = surface_status_base(sid, session, output_generation, now);
+    // No hook session, and a rail that names its agent: an agent session.
+    // The older fields say what the rail says there, in their own words.
+    //
+    // A rail with no agent to name is a shell pane whose hook session was
+    // dropped after its turn. `fleet.list` has no row for it but the process
+    // scan's, which says `hooked: false`, and this answer stays the same.
+    if let (None, Some(rail)) = (session, rail)
+        && let Some(agent) = rail.agent
+    {
+        value["state"] = serde_json::json!(rail.state_word());
+        value["hooked"] = serde_json::json!(rail.hooked());
+        value["tool"] = serde_json::json!(agent);
+    }
     value["rail"] = rail.map_or(serde_json::Value::Null, |rail| rail.to_json());
     value
 }
@@ -1425,11 +1509,11 @@ fn surface_status_base(
             "idle_ms": now.saturating_duration_since(s.last_activity).as_millis() as u64,
             "output_generation": output_generation,
         }),
-        // …and `hooked:false` when no agent session tracks the pane. `idle` is
-        // the honest default (correct for a plain shell, and for an unhooked
-        // agent it signals "precise state unavailable" rather than a scan-
-        // fabricated thinking/idle). The lead agent reads `hooked` to decide
-        // whether to trust `state`.
+        // …and `hooked:false` when no hook session tracks the pane. `idle` is
+        // the honest default for a plain shell, and for an agent nothing
+        // reads it signals "precise state unavailable" rather than a scan-
+        // fabricated thinking/idle. A surface the rail answers for is filled
+        // in by the caller.
         None => serde_json::json!({
             "surface_id": sid,
             "state": "idle",
@@ -3057,7 +3141,24 @@ impl SplitlaneApp {
                         detected: &ws.detected_agents,
                     })
                     .collect();
-                let agents = build_fleet_rows(&fleets, &name_by_sid, std::time::Instant::now());
+                let surfaces: Vec<FleetSurface> = self
+                    .collect_surface_entries(cx)
+                    .iter()
+                    .filter_map(|entry| {
+                        let rail = self.rail_snapshot_for(&entry.entity, entry.thread_id, cx)?;
+                        let thread = entry.thread_id.and_then(|id| self.thread_by_id(id));
+                        Some(FleetSurface {
+                            idx: entry
+                                .workspace_id
+                                .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id)),
+                            surface_id: entry.entity.entity_id().as_u64(),
+                            pid: thread.and_then(|thread| thread.agent_pid),
+                            rail,
+                        })
+                    })
+                    .collect();
+                let agents =
+                    build_fleet_rows(&fleets, &surfaces, &name_by_sid, std::time::Instant::now());
                 serde_json::json!({ "agents": agents })
             }
             "surface.status" => {
@@ -6666,7 +6767,7 @@ mod tests {
             sessions: &sessions,
             detected: &detected,
         }];
-        let rows = build_fleet_rows(&fleets, &HashMap::new(), std::time::Instant::now());
+        let rows = build_fleet_rows(&fleets, &[], &HashMap::new(), std::time::Instant::now());
         assert!(rows.is_empty());
     }
 
@@ -6686,7 +6787,7 @@ mod tests {
         }];
         let mut names = HashMap::new();
         names.insert(42u64, "backend".to_string());
-        let rows = build_fleet_rows(&fleets, &names, std::time::Instant::now());
+        let rows = build_fleet_rows(&fleets, &[], &names, std::time::Instant::now());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["pid"], 1234);
         assert_eq!(rows[0]["tool"], "claude");
@@ -6714,7 +6815,7 @@ mod tests {
             sessions: &sessions,
             detected: &detected,
         }];
-        let rows = build_fleet_rows(&fleets, &HashMap::new(), std::time::Instant::now());
+        let rows = build_fleet_rows(&fleets, &[], &HashMap::new(), std::time::Instant::now());
         // Claude once (hooked), Copilot once (unhooked) - Claude NOT doubled.
         assert_eq!(rows.len(), 2);
         let hooked: Vec<_> = rows.iter().filter(|r| r["hooked"] == true).collect();
@@ -6771,6 +6872,108 @@ mod tests {
             session_id: Some("0f8fad5b-d9cb-469f-a165-70867728950e".to_string()),
             cwd: Some("/work/app".to_string()),
         }
+    }
+
+    /// An agent session has no hook session to list: its frames go to its
+    /// own record. It is still an agent in the middle of a turn, and both
+    /// commands say so in the same words.
+    #[test]
+    fn an_agent_session_is_listed_and_reported_from_its_rail() {
+        use crate::project::ThreadStatus;
+        let sessions = HashMap::new();
+        // The process scan sees the same binary.
+        let detected: HashSet<String> = ["claude".to_string()].into_iter().collect();
+        let fleets = [WsFleet {
+            idx: 0,
+            sessions: &sessions,
+            detected: &detected,
+        }];
+        let surface = |surface_id, rail| FleetSurface {
+            idx: Some(0),
+            surface_id,
+            pid: None,
+            rail,
+        };
+        let mut gone = rail_fixture(ThreadStatus::Idle);
+        gone.exited = true;
+        let surfaces = [
+            surface(42, rail_fixture(ThreadStatus::Thinking)),
+            surface(43, gone),
+        ];
+        let names: HashMap<u64, String> = [(42, "reviewer".to_string())].into_iter().collect();
+        let rows = build_fleet_rows(&fleets, &surfaces, &names, std::time::Instant::now());
+        assert_eq!(rows.len(), 1, "one row: not the exited one, not the scan's");
+        assert_eq!(rows[0]["surface_name"], "reviewer");
+        assert_eq!(rows[0]["tool"], "claude");
+        assert_eq!(rows[0]["state"], "thinking");
+        assert_eq!(
+            rows[0]["hooked"], false,
+            "the detector reads it, not a hook"
+        );
+        assert_eq!(rows[0]["rail"]["status"], "running");
+        assert_eq!(rows[0]["rail"]["tier"], "T1");
+
+        let status = surface_status_value(
+            42,
+            None,
+            0,
+            std::time::Instant::now(),
+            Some(&rail_fixture(ThreadStatus::Thinking)),
+        );
+        assert_eq!(status["state"], rows[0]["state"]);
+        assert_eq!(status["hooked"], rows[0]["hooked"]);
+        assert_eq!(status["tool"], rows[0]["tool"]);
+        assert_eq!(status["rail"], rows[0]["rail"]);
+    }
+
+    /// A hook session keeps its own row, once, and gains the surface's rail.
+    #[test]
+    fn a_hooked_session_is_listed_once_with_its_rail() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::ai_types::{AgentSession, AgentState};
+        use crate::project::ThreadStatus;
+        let mut sessions = HashMap::new();
+        let mut s = AgentSession::new(TerminalAgent::ClaudeCode, AgentState::Thinking);
+        s.surface_id = Some(42);
+        sessions.insert(1234u32, s);
+        let detected = HashSet::new();
+        let fleets = [WsFleet {
+            idx: 0,
+            sessions: &sessions,
+            detected: &detected,
+        }];
+        let mut rail = rail_fixture(ThreadStatus::Thinking);
+        rail.source = crate::rail_state::RailSource::Hook;
+        let surfaces = [FleetSurface {
+            idx: Some(0),
+            surface_id: 42,
+            pid: None,
+            rail,
+        }];
+        let rows = build_fleet_rows(
+            &fleets,
+            &surfaces,
+            &HashMap::new(),
+            std::time::Instant::now(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["pid"], 1234);
+        assert_eq!(rows[0]["hooked"], true);
+        assert_eq!(rows[0]["rail"]["source"], "hook");
+    }
+
+    /// A shell pane whose hook session was dropped after its turn answers as
+    /// it did before, and as the process scan's row in `fleet.list` does.
+    #[test]
+    fn a_shell_pane_between_turns_answers_as_before() {
+        let rail =
+            hooked_rail_snapshot(None, Some(&crate::rail_state::RailRecord::default()), false)
+                .expect("a hook has spoken");
+        let status = surface_status_value(7, None, 0, std::time::Instant::now(), Some(&rail));
+        assert_eq!(status["state"], "idle");
+        assert_eq!(status["hooked"], false);
+        assert!(status.get("tool").is_none());
+        assert_eq!(status["rail"]["source"], "hook");
     }
 
     /// `state`, `hooked` and the rest are read by scripts written before `rail`

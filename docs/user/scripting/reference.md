@@ -342,11 +342,11 @@ An empty fleet is `{"agents": []}`.
 
 | Field | `fleet.list` | `surface.status` | Meaning |
 | --- | --- | --- | --- |
-| `pid` | yes | | Agent pid; `null` for scan-only rows |
+| `pid` | yes | | Agent pid; `null` for scan-only rows, and for an agent session between turns |
 | `tool` | yes | yes | Agent binary name: `claude`, `codex`, `opencode`, `gemini`, ... |
 | `state` | yes | yes | See below |
-| `hooked` | yes | yes | `true` when the state comes from hook events |
-| `reason` | yes | | `null` when hooked, `no_hook` for scan-only rows |
+| `hooked` | yes | yes | `true` when the state comes from hook events. `false` does not mean untracked: a session the detector reads (`rail.source` is `detector`) is `false` here and is the best-tracked kind. Go by `rail` |
+| `reason` | yes | | `no_hook` for scan-only rows, otherwise `null` |
 | `surface_id` | yes | yes | Surface id, when known |
 | `surface_name` | yes | | Surface name, when known |
 | `workspace` | yes | | Project index |
@@ -356,19 +356,28 @@ An empty fleet is `{"agents": []}`.
 | `waiting_ms` | yes | yes | Milliseconds since it started waiting for input |
 | `idle_ms` | yes | yes | Milliseconds since the last hook activity |
 | `output_generation` | | yes | As in `surface.read` |
+| `rail` | yes | yes | See [`rail`](#rail). `null` for scan-only rows and for a plain shell |
 | `drive` | | yes | Where a person's leave for **the caller** to send messages to this session stands: `asked`, `allowed` or `declined`. `null` when nobody has been asked yet. `not_offered` when nobody would be: the target is a shell, a session another session opened, or in another project, or the caller is not in a pane or was itself opened by a session |
 | `driven_by` | | yes | The surface id of the session a person let drive this one, otherwise `null` |
 
 `state` values: `thinking`, `waiting_for_input`, `finished`, `errored`,
-`stalled`; `fleet.list` adds `unknown_running` for agents seen only by the
-process scan. `surface.status` on a surface with no tracked agent returns
-`{surface_id, state: "idle", hooked: false, output_generation, rail}`.
+`stalled`, and `idle` between turns; `fleet.list` adds `unknown_running` for
+agents seen only by the process scan. `surface.status` on a plain shell
+returns `{surface_id, state: "idle", hooked: false, output_generation, rail:
+null}`.
 
-These fields report what the agent's hook last said. `surface.status` also
-carries `rail`, which is what the rail row for that surface shows, and the two
-can differ: while an agent waits on a permission prompt the hook's last frame
-was a tool call, so `state` is `thinking` and `rail.status` is `waiting`.
-Prefer `rail` when deciding whether a turn is over.
+`fleet.list` has a row for every agent in a turn that a hook reports from,
+and for every agent session - one opened from the launcher or by `add` -
+for as long as its agent runs.
+
+For an agent in a shell pane these fields report what its hook last said, and
+`rail` is what the rail row for that surface shows. The two can differ: while
+an agent waits on a permission prompt the hook's last frame was a tool call,
+so `state` is `thinking` and `rail.status` is `waiting`. For an agent session
+there is no separate hook reading, and `state` is `rail.status` in the older
+words: `thinking` for `running`, `waiting_for_input` for `waiting`, `errored`
+for `failed`, `idle` otherwise. Prefer `rail` when deciding whether a turn is
+over.
 
 #### `rail`
 

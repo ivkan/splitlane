@@ -194,6 +194,28 @@ pub struct RailSnapshot {
 }
 
 impl RailSnapshot {
+    /// The older `state` word for an agent session, whose hook frames go to
+    /// its own record and never to a project's hook sessions.
+    ///
+    /// `fleet.list` and `surface.status` used to answer `idle` and nothing
+    /// else there, so a session in the middle of a turn read as a shell in
+    /// one command and was missing from the other while `rail` beside them
+    /// said `running`.
+    pub fn state_word(&self) -> &'static str {
+        match self.status {
+            ThreadStatus::Thinking => "thinking",
+            ThreadStatus::WaitingForInput => "waiting_for_input",
+            ThreadStatus::Failed => "errored",
+            ThreadStatus::Idle | ThreadStatus::Starting => "idle",
+        }
+    }
+
+    /// Whether hook frames decided the status, which is what `hooked` has
+    /// always meant. A session the detector reads is tracked and not hooked.
+    pub fn hooked(&self) -> bool {
+        self.source == RailSource::Hook
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "status": status_word(self.status),

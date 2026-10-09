@@ -8,6 +8,11 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- `splitlane ps` lists agent sessions - those opened from the launcher or
+  with `splitlane add` - and `splitlane status` reports their state. `ps`
+  used to answer `(no agents)` and `status` `idle` while such a session was
+  in the middle of a turn, because both read hook sessions only. Each `ps`
+  row now carries the same `rail` object as `status`.
 - The rail's Settings button closes its menu as well as opening it, and so
   does Escape. A second click used to leave the menu open, and Escape went
   to the agent in the terminal instead.
