@@ -112,10 +112,10 @@ again, do not send the task again.
 Exit `7` straight after `add --submit`, on an agent section 2 lists as `T1`
 or `T2` and with `"session_id": null` in `status --json`, usually means the
 agent stopped at a question of its own before it took the task - whether to
-trust the folder, whether to update. Such a screen reads as empty and the
-state says `idle`. The answer is the person's: tell them the session may be
-showing a start-up question and ask them to look at its pane. Once they have
-dealt with it, send the task again - it was not kept.
+trust the folder, whether to update. The state says `idle` all the same;
+`splitlane read` shows the question. The answer is the person's: pass the
+question on and ask them to answer it in the session's pane. Once they have,
+send the task again - it was not kept.
 
 **Exit `0` means the turn is over, not that the task is done.** Always read
 the answer. A session may end its turn with a question written as ordinary
@@ -241,7 +241,7 @@ Sessions you did not open are the person's (section 1, "A session the person
 opened") or plain panes. You can always look:
 
 ```bash
-splitlane read backend --lines 80        # recent scrollback, fenced as untrusted output
+splitlane read backend --lines 80        # history and the screen, fenced as untrusted output
 splitlane search backend 'error|panic'   # grep the pane's scrollback for a pattern
 splitlane watch --surface backend --type ai.stop   # one JSON event per line, for a hooked agent
 ```
@@ -252,9 +252,10 @@ aliases, but write the real verb). A genuinely unknown verb (`splitlane blha`)
 exits non-zero with `unknown verb; see splitlane --help` - it never launches a
 stray GUI window.
 
-`splitlane read` returns a pane's **visible** scrollback. A full-screen agent
-such as Claude Code keeps no scrollback, so a long report is gone from `read`
-once it scrolls away: use `answer`.
+`splitlane read` returns what a pane holds as text: its history, then the
+screen as it stands. A full-screen agent redraws its screen and keeps no
+history, so a long report is gone from `read` once it scrolls away: use
+`answer`.
 
 To put text in front of an agent without sending it - the person presses
 Enter - leave `--submit` off:

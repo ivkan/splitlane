@@ -145,7 +145,7 @@ enum Commands {
         #[arg(long)]
         human: bool,
     },
-    /// Print a pane's scrollback (raw text by default).
+    /// Print a pane's text: its history, then the screen as it stands.
     #[command(alias = "read_pane")]
     Read {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.

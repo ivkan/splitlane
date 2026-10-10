@@ -98,6 +98,10 @@ impl DisplayTerminal {
         Err(GhosttyError::UnsupportedPlatform)
     }
 
+    pub fn extract_text(&self) -> Result<Option<String>> {
+        Err(GhosttyError::UnsupportedPlatform)
+    }
+
     pub fn restore_scrollback(&mut self, _: &str) -> Result<()> {
         Err(GhosttyError::UnsupportedPlatform)
     }

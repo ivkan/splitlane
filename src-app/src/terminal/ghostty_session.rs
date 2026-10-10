@@ -281,6 +281,7 @@ enum RuntimeMessage {
         reply: SyncSender<Result<Option<ghostty::Hyperlink>, String>>,
     },
     ExtractScrollback(SyncSender<Result<Option<String>, String>>),
+    ExtractText(SyncSender<Result<Option<String>, String>>),
     RestoreScrollback(String),
     #[cfg(test)]
     SimulateWorkerCrash,
@@ -1570,6 +1571,12 @@ impl GhosttySession {
             .flatten()
     }
 
+    pub(super) fn extract_text(&self) -> Option<String> {
+        self.request(RuntimeMessage::ExtractText)
+            .and_then(Result::ok)
+            .flatten()
+    }
+
     pub(super) fn restore_scrollback(&self, text: &str) {
         let _ = self
             .inner
@@ -2199,6 +2206,9 @@ fn run_runtime(
                         .extract_scrollback()
                         .map_err(|error| error.to_string()),
                 );
+            }
+            Ok(RuntimeMessage::ExtractText(reply)) => {
+                let _ = reply.send(terminal.extract_text().map_err(|error| error.to_string()));
             }
             Ok(RuntimeMessage::RestoreScrollback(text)) => {
                 let _ = terminal.restore_scrollback(&text);

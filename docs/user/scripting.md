@@ -59,7 +59,7 @@ splitlane ls --human                     # every terminal surface, in every proj
 splitlane ps                             # agents Splitlane knows about, as a table
 splitlane ps --json
 splitlane status backend --json          # one surface's agent state
-splitlane read backend --lines 120       # recent scrollback
+splitlane read backend --lines 120       # the last 120 lines: history, then the screen
 splitlane search backend "test result" --max 5
 ```
 

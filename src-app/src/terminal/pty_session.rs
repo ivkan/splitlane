@@ -3734,12 +3734,39 @@ impl TerminalState {
         Self::extract_scrollback_from(&self.term)
     }
 
+    /// What a reader of the pane is after: the history **and** the screen as
+    /// it stands, as plain text. [`Self::extract_scrollback`] leaves the
+    /// screen out because it feeds session restore; for a reader that made a
+    /// pane holding less than one screenful, and every full-screen program,
+    /// read as empty. Same caps, same trimming.
+    pub fn extract_text(&self) -> Option<String> {
+        #[cfg(any(
+            all(target_os = "linux", feature = "libghostty-linux"),
+            all(
+                target_os = "windows",
+                target_arch = "x86_64",
+                target_env = "msvc",
+                feature = "libghostty-windows"
+            )
+        ))]
+        if let Some(ghostty) = &self.ghostty {
+            return ghostty.extract_text();
+        }
+        Self::extract_rows_from(&self.term, true)
+    }
+
     /// Scrollback drain decoupled from `&self` so `save_session` can
     /// run it on a background thread against a cloned [`SharedTerm`] handle
     /// (the term mutex is `Send + Sync` - it is the only cross-thread state in
     /// the app) instead of holding the GPUI main thread. The windowing below
     /// keeps the lock bounded to the most-recent `MAX_LINES` rows.
     fn extract_scrollback_from(term: &SharedTerm) -> Option<String> {
+        Self::extract_rows_from(term, false)
+    }
+
+    /// The most recent rows as text: history only, or history and the screen
+    /// under it when `with_screen` is set.
+    fn extract_rows_from(term: &SharedTerm, with_screen: bool) -> Option<String> {
         const MAX_LINES: usize = 4000;
 
         // Read-only scrollback drain for session persistence.
@@ -3749,18 +3776,23 @@ impl TerminalState {
 
         // Alacritty addresses real history with negative grid lines. Line zero
         // starts the active viewport, which must never be persisted as history.
-        if top.0 >= 0 {
+        let end = if with_screen {
+            term.bottommost_line().0 + 1
+        } else {
+            0
+        };
+        if top.0 >= end {
             return None;
         }
 
         // Window to the most-recent MAX_LINES *before* the loop so the
         // lock is never held while materializing the full history (scrollback
         // can be very large - see DEFAULT_SCROLLBACK_LINES). Walk oldest to
-        // newest from the bounded negative-line window through line -1.
-        let start = (-(MAX_LINES as i32)).max(top.0);
-        let mut lines: Vec<String> = Vec::with_capacity((-start).max(0) as usize);
+        // newest from the bounded window through the last wanted line.
+        let start = (end - MAX_LINES as i32).max(top.0);
+        let mut lines: Vec<String> = Vec::with_capacity((end - start).max(0) as usize);
         let mut row = start;
-        while row < 0 {
+        while row < end {
             let text = term.bounds_to_string(
                 AlacPoint::new(GridLine(row), GridCol(0)),
                 AlacPoint::new(GridLine(row), cols),
@@ -6517,6 +6549,34 @@ mod tests {
             found,
             "the EventLoop read path did not deliver shell output to the grid"
         );
+    }
+
+    /// A reader gets the screen too - the part restore must not have.
+    #[test]
+    fn extract_text_reads_the_screen_under_the_history() {
+        let state = TerminalState::new_display_only(3, 80);
+        state.restore_scrollback("history-alpha\nhistory-bravo\nvisible-charlie\nvisible-delta");
+        let text = state
+            .extract_text()
+            .expect("a pane with text reads as text");
+        let at = |marker: &str| {
+            text.find(marker)
+                .unwrap_or_else(|| panic!("{marker}: {text}"))
+        };
+        assert!(at("history-alpha") < at("history-bravo"));
+        assert!(at("history-bravo") < at("visible-charlie"));
+        assert!(at("visible-charlie") < at("visible-delta"));
+        assert!(!text.ends_with('\n'), "trailing blank rows are trimmed");
+    }
+
+    /// The case that used to read as empty: less than one screenful.
+    #[test]
+    fn extract_text_reads_a_pane_that_never_scrolled() {
+        let state = TerminalState::new_display_only(24, 80);
+        assert_eq!(state.extract_text(), None, "a blank pane is still nothing");
+        state.restore_scrollback("only-line");
+        assert_eq!(state.extract_scrollback(), None);
+        assert_eq!(state.extract_text().as_deref(), Some("only-line"));
     }
 
     #[test]

@@ -9,12 +9,24 @@ impl DisplayTerminal {
         // Ghostty stores history before the active screen in its page list.
         // `scrollback_rows` is therefore the exclusive viewport boundary.
         let history_rows = self.scrollback_rows()?;
-        if history_rows == 0 {
+        self.extract_rows(history_rows)
+    }
+
+    /// History and the active screen under it: what a reader of the pane
+    /// wants, where [`Self::extract_scrollback`] is what restore wants.
+    pub fn extract_text(&self) -> Result<Option<String>> {
+        let total_rows = self.total_rows()?;
+        self.extract_rows(total_rows)
+    }
+
+    /// The rows before `end`, most recent last, under the scrollback caps.
+    fn extract_rows(&self, end: usize) -> Result<Option<String>> {
+        if end == 0 {
             return Ok(None);
         }
-        let start = history_rows.saturating_sub(MAX_SCROLLBACK_LINES);
+        let start = end.saturating_sub(MAX_SCROLLBACK_LINES);
         let mut lines: Vec<String> = self
-            .grid_lines(Some(start..history_rows))?
+            .grid_lines(Some(start..end))?
             .into_iter()
             .map(|line| line.text.trim_end().to_owned())
             .collect();

@@ -280,6 +280,13 @@ fn search_selection_links_and_scrollback_use_fresh_owned_data() {
     assert!(scrollback.contains("second"));
     assert!(!scrollback.contains("fifth"));
     assert!(!scrollback.contains("sixth"));
+
+    // A reader gets the screen as well, after the history and in order.
+    let text = terminal.extract_text().unwrap().unwrap();
+    let at = |marker: &str| text.find(marker).unwrap();
+    assert!(at("first") < at("second"));
+    assert!(at("second") < at("fifth"));
+    assert!(at("fifth") < at("sixth"));
 }
 
 #[test]

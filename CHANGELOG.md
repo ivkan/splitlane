@@ -24,6 +24,11 @@ Notable changes to Splitlane are recorded here. The format follows
   used to answer `(no agents)` and `status` `idle` while such a session was
   in the middle of a turn, because both read hook sessions only. Each `ps`
   row now carries the same `rail` object as `status`.
+- `splitlane read` returns the screen as well as the history above it. It
+  used to return the history alone, so a pane that had not yet scrolled - a
+  fresh shell, an agent stopped at a start-up question - read as empty, and
+  `splitlane wait --pattern` could not see a line until it had scrolled off
+  the screen. The MCP `read_pane` tool reads the same way.
 - A Codex session whose `CODEX_HOME` points somewhere other than `~/.codex`
   is followed like any other. Its record was looked for in `~/.codex` only,
   so the rail never learned that a turn had ended and `splitlane wait

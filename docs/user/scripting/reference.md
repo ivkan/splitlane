@@ -324,9 +324,9 @@ describe the active project. One entry per surface across all projects:
 
 | Field | Meaning |
 | --- | --- |
-| `text` | Scrollback text, wrapped in `<untrusted_terminal_output ... id="...">` when fenced |
+| `text` | The surface's history followed by its screen as it stands, trailing blank rows dropped; wrapped in `<untrusted_terminal_output ... id="...">` when fenced |
 | `lines` | Lines returned |
-| `total_lines` | Lines retained |
+| `total_lines` | Lines there are to read: retained history plus the screen |
 | `eof` | `true` when the window reaches the oldest retained line |
 | `output_generation` | Counter that advances when the surface prints |
 | `truncated` | `true` when the text was cut to fit one IPC frame |

@@ -3049,8 +3049,9 @@ impl SplitlaneApp {
                 })
             }
             "surface.read" => {
-                // Read a surface's scrollback as plain text. Read-only;
-                // no scripting gate (the send_* gate guards writes, not reads).
+                // Read a surface as plain text: its history and the screen
+                // under it. Read-only; no scripting gate (the send_* gate
+                // guards writes, not reads).
                 let terminal = match self.resolve_surface(params, cx) {
                     Ok(t) => t,
                     Err(e) => return e.into_value(),
@@ -3077,7 +3078,7 @@ impl SplitlaneApp {
                 let full = terminal
                     .read(cx)
                     .terminal
-                    .extract_scrollback()
+                    .extract_text()
                     .unwrap_or_default();
                 let extract_elapsed = read_started.elapsed();
                 let (text, returned, total, eof) = paginate_scrollback(&full, lines, offset);
