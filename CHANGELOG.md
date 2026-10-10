@@ -6,6 +6,14 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The context meter in a pane header no longer shows a count above its own
+  ceiling, such as `334k / 228k`. The ceiling is the size the session last
+  compacted at, and a session that has grown well past it without compacting
+  has a larger window than that; the meter goes back to a plain count until
+  the next compaction measures it.
+
 ## [0.2.2] - 2026-10-10
 
 ### Changed

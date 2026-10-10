@@ -193,6 +193,20 @@ pub struct ContextFact {
 }
 
 impl ContextFact {
+    /// The measured ceiling, unless the session has since outgrown it.
+    ///
+    /// A ceiling is where an automatic compaction fired, and the next one
+    /// fires near the same size: on this machine's corpus the eight that
+    /// were measured sat within nine per cent of each other. A context well
+    /// past that without compacting says the window itself changed - the
+    /// session moved to a model or a plan with a larger one - and the old
+    /// figure is no longer a ceiling of anything. Seen as `334k / 228k`
+    /// beside an agent reporting itself 41% full. The meter then goes back
+    /// to a count until a compaction measures the new one.
+    pub fn standing_ceiling(tokens: u64, ceiling: Option<u64>) -> Option<u64> {
+        ceiling.filter(|ceiling| tokens <= ceiling.saturating_add(ceiling / 5))
+    }
+
     /// How full, `0.0..=1.0`, once the ceiling is known.
     pub fn fraction(self) -> Option<f32> {
         let ceiling = self.ceiling.filter(|c| *c > 0)?;
@@ -4029,6 +4043,27 @@ mod tests {
             compactions_seen: 0,
         };
         assert_eq!(over.fraction(), Some(1.0));
+        assert_eq!(
+            ContextFact::standing_ceiling(1_100_000, Some(1_000_000)),
+            Some(1_000_000),
+            "a turn or two past the ceiling leaves it standing"
+        );
+    }
+
+    #[test]
+    fn a_ceiling_the_session_outgrew_is_not_a_ceiling() {
+        // Measured: compacted automatically at 228 720, then 334 000 with no
+        // compaction - the window had grown.
+        assert_eq!(ContextFact::standing_ceiling(334_000, Some(228_720)), None);
+        assert_eq!(ContextFact::standing_ceiling(334_000, None), None);
+        let fact = ContextFact {
+            tokens: 334_000,
+            ceiling: ContextFact::standing_ceiling(334_000, Some(228_720)),
+            compaction: None,
+            compactions_seen: 1,
+        };
+        assert_eq!(fact.header_label(true), "334k ctx");
+        assert_eq!(fact.fraction(), None);
     }
 
     #[test]

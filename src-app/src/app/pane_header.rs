@@ -337,7 +337,10 @@ impl SplitlaneApp {
                             .context_tokens
                             .map(|tokens| crate::pane::ContextFact {
                                 tokens,
-                                ceiling: thread.context_ceiling,
+                                ceiling: crate::pane::ContextFact::standing_ceiling(
+                                    tokens,
+                                    thread.context_ceiling,
+                                ),
                                 compaction: thread.last_compaction,
                                 compactions_seen: thread.compactions_seen,
                             })
