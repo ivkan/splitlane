@@ -312,6 +312,12 @@ struct SelfUpdateState {
     /// `update_status` keeps the previous answer meanwhile, so this is what
     /// tells the poll there is something new to pick up.
     recheck_in_flight: bool,
+    /// The check in flight was asked for by a person, who is owed its answer
+    /// in words whatever it is.
+    manual_check: bool,
+    /// When the release feed last answered. `None` until it has, and after a
+    /// check that could not reach it.
+    checked_at: Option<std::time::Instant>,
     /// Live state of the in-app self-update flow (download → install → restart).
     self_update_status: update::SelfUpdateStatus,
     /// How the running binary was installed. Detected once at startup -
@@ -2497,6 +2503,11 @@ impl Render for SplitlaneApp {
             }))
             .on_action(cx.listener(Self::handle_start_self_update))
             .on_action(cx.listener(Self::handle_dismiss_update))
+            .on_action(
+                cx.listener(|this: &mut Self, _: &CheckForUpdatesNow, _window, cx| {
+                    this.check_for_update_now(cx);
+                }),
+            )
             .on_action(cx.listener(Self::handle_toggle_files_sidebar))
             // Title-bar `⋯` overflow menu for the current Agents thread.
             .on_action(cx.listener(Self::handle_open_agents_thread_menu))

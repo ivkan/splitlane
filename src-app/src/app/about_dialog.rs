@@ -55,6 +55,49 @@ impl SplitlaneApp {
             Some(built) => format!("{revision} · built {built}"),
             None => revision.to_owned(),
         };
+        // Whether this is the newest release and when that was last asked,
+        // with a way to ask now. The app asks at startup and every four
+        // hours, and until this line nothing in the window said so: a window
+        // left open across a release could not be told to look.
+        let checks_enabled = self.cached_config.check_for_updates != Some(false);
+        let check_in_flight = self.update_check_in_flight();
+        let update_line = crate::update::checker::update_line(
+            checks_enabled,
+            self.self_update.update_status.as_ref(),
+            check_in_flight,
+            self.self_update.checked_at.map(|at| at.elapsed()),
+        );
+        // Offered only where a click would ask the feed: not while a check is
+        // on its way, not with checks switched off, and not over a release
+        // that has been found, which the title bar already offers to install.
+        let can_check = checks_enabled
+            && !check_in_flight
+            && !matches!(
+                self.self_update.update_status,
+                Some(crate::update::checker::UpdateStatus::Available { .. })
+            );
+        let update_row = div()
+            .mt(tok::space::XS)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tok::space::SM)
+            .text_size(tok::text::CAPTION)
+            .child(div().text_color(ui.muted).child(update_line))
+            .when(can_check, |row| {
+                row.child(
+                    div()
+                        .id("about-check-updates")
+                        .text_color(ui.accent)
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.check_for_update_now(cx);
+                            cx.stop_propagation();
+                        }))
+                        .child("Check now"),
+                )
+            });
         // Every fill in this dialog used to be a hardcoded dark hex, which
         // on the light theme drew a black card in the middle of a white app.
         // They are roles now, and the dialog is the application layer's, not
@@ -128,7 +171,7 @@ impl SplitlaneApp {
 
         let body = div()
             .w_full()
-            .h(px(310.))
+            .h(px(332.))
             .flex()
             .flex_col()
             .items_center()
@@ -162,6 +205,7 @@ impl SplitlaneApp {
                     .text_size(tok::text::CAPTION)
                     .child(build_line),
             )
+            .child(update_row)
             .child(
                 div()
                     .mt(tok::space::XL)

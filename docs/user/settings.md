@@ -22,7 +22,7 @@ what they mean. For keys that have no row here, see the
 | Reattach agent sessions | Always on: a restored agent session resumes from the agent's own transcript on disk. | none |
 | Confirm before closing a running session | Always on. | none |
 | Save layout changes | Always on: the layout is written to `session.json` as it changes. | none |
-| Check for updates | Whether Splitlane checks the GitHub releases feed, at startup and every four hours after. Turning it off stops the next check; turning it on gets one without a restart. | `check_for_updates` |
+| Check for updates | Whether Splitlane checks the GitHub releases feed, at startup and every four hours after. Turning it off stops the next check; turning it on gets one without a restart. To check at once, use **Check now** in About Splitlane, **Check for Updates** in the application menu on macOS, or `Check for updates now` in the command palette; About also says what the last check found and when. With this setting off, none of them contacts the feed. | `check_for_updates` |
 | Default editor | Auto-detect, Zed, Cursor, Windsurf, VS Code, Visual Studio or System default. Used when you open a file in your editor. | `external_editor` |
 | Data directory | Where Splitlane keeps its data on this machine. | none |
 | Permission mode | A fact: each agent decides when to ask for permission, and asks in its own terminal. | none |

@@ -1222,6 +1222,8 @@ impl SplitlaneApp {
                 pending_update,
                 update_status: None,
                 recheck_in_flight: false,
+                manual_check: false,
+                checked_at: None,
                 self_update_status: update::SelfUpdateStatus::default(),
                 install_method,
                 update_attempt_count: 0,
@@ -1533,11 +1535,15 @@ pub(crate) fn system_package_update_command(
 pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
     use gpui::{Menu, MenuItem, OsAction};
 
-    use crate::{About, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp, Paste, Quit};
+    use crate::{
+        About, CheckForUpdatesNow, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp,
+        Paste, Quit,
+    };
 
     cx.set_menus(vec![
         Menu::new("Splitlane").items(vec![
             MenuItem::action("About Splitlane", About),
+            MenuItem::action("Check for Updates", CheckForUpdatesNow),
             MenuItem::separator(),
             MenuItem::action("Quit Splitlane", Quit),
         ]),
@@ -1579,8 +1585,8 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
 #[cfg(target_os = "macos")]
 pub(crate) fn install_macos_menu_action_fallbacks(cx: &mut gpui::App) {
     use crate::{
-        About, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp, Paste, Quit,
-        SplitlaneApp,
+        About, CheckForUpdatesNow, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp,
+        Paste, Quit, SplitlaneApp,
     };
 
     fn with_active_splitlane_window(
@@ -1608,6 +1614,12 @@ pub(crate) fn install_macos_menu_action_fallbacks(cx: &mut gpui::App) {
         with_active_splitlane_window(cx, |app, _window, cx| {
             app.show_about_dialog = true;
             cx.notify();
+        });
+    });
+
+    cx.on_action(|_: &CheckForUpdatesNow, cx| {
+        with_active_splitlane_window(cx, |app, _window, cx| {
+            app.check_for_update_now(cx);
         });
     });
 

@@ -1936,6 +1936,59 @@ impl SplitlaneApp {
         self.self_update.recheck_in_flight = true;
     }
 
+    /// Whether a check is on its way: a repeated one, or the one at startup
+    /// that has not answered yet.
+    pub(crate) fn update_check_in_flight(&self) -> bool {
+        self.self_update.recheck_in_flight
+            || matches!(
+                *self
+                    .self_update
+                    .pending_update
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+                Some(update::checker::UpdateStatus::Checking)
+            )
+    }
+
+    /// Ask the release feed because a person asked: the menu entry, the
+    /// command palette, or the link in About. Every outcome is said in a
+    /// toast, including the ones where nothing is asked.
+    pub(crate) fn check_for_update_now(&mut self, cx: &mut Context<Self>) {
+        use update::checker::ManualCheck;
+        let decided = update::checker::manual_check(
+            self.cached_config.check_for_updates != Some(false),
+            self.self_update.update_status.as_ref(),
+            matches!(
+                self.self_update.self_update_status,
+                update::SelfUpdateStatus::Idle
+            ),
+            self.update_check_in_flight(),
+        );
+        match decided {
+            ManualCheck::Run => {
+                self.self_update.pending_update = update::checker::spawn_check(
+                    std::sync::Arc::clone(&self.telemetry),
+                    update::checker::UpdateCheckTrigger::Manual,
+                );
+                self.self_update.recheck_in_flight = true;
+                self.self_update.manual_check = true;
+                // About shows "Checking…" from this moment.
+                cx.notify();
+            }
+            // Its answer is reported when it comes, as this one would be.
+            ManualCheck::InFlight => self.self_update.manual_check = true,
+            ManualCheck::Off => self.show_toast(
+                "Update checks are turned off (check_for_updates in the config file)",
+                cx,
+            ),
+            ManualCheck::Found(version) => self.show_toast(
+                format!("Splitlane {version} is available: see the update button in the title bar"),
+                cx,
+            ),
+            ManualCheck::Installing => self.show_toast("An update is already being installed", cx),
+        }
+    }
+
     /// Pick up the background update check result. Polls until the check at
     /// startup has answered, and again while a repeated check is in flight.
     pub(crate) fn process_update_check(&mut self, cx: &mut Context<Self>) {
@@ -1952,12 +2005,21 @@ impl SplitlaneApp {
             && !matches!(status, update::checker::UpdateStatus::Checking)
         {
             let repeated = std::mem::take(&mut self.self_update.recheck_in_flight);
+            let failed = matches!(status, update::checker::UpdateStatus::Failed);
+            if !failed {
+                self.self_update.checked_at = Some(std::time::Instant::now());
+            }
+            // Whoever asked by hand is told what came back, a failure too.
+            if std::mem::take(&mut self.self_update.manual_check)
+                && let Some(report) = update::checker::manual_check_report(&status)
+            {
+                self.show_toast(report, cx);
+            }
             // A repeated check that could not reach the feed says nothing new:
             // the laptop was closed, or offline. The earlier answer stands.
-            if repeated
-                && matches!(status, update::checker::UpdateStatus::Failed)
-                && self.self_update.update_status.is_some()
-            {
+            if repeated && failed && self.self_update.update_status.is_some() {
+                // About was showing "Checking…".
+                cx.notify();
                 return;
             }
             self.self_update.update_status = Some(status);

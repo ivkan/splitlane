@@ -188,6 +188,10 @@ entirely, add this to `splitlane.json`:
 }
 ```
 
+With the setting off, **Check now** in About Splitlane and **Check for
+Updates** in the menu do not contact the feed either; they say that checks
+are off.
+
 ## Two copies on Linux
 
 Splitlane notices when one Linux machine has two copies installed: a system

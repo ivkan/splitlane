@@ -19,6 +19,12 @@ Notable changes to Splitlane are recorded here. The format follows
   or given up on, and says which: `opening_prompt` in its output and in
   `rail`, exit `5` when the agent was asking a person something first, `7`
   when no agent was there to take it. It used to exit `0` in every case.
+- Updates can be checked for at once: **Check now** in About Splitlane,
+  **Check for Updates** in the application menu on macOS, and `Check for
+  updates now` in the command palette. About says what the last check found
+  and how long ago. Until now the app asked at startup and every four hours
+  and said nothing about it, so a window left open across a release could
+  not be told to look.
 
 ### Fixed
 

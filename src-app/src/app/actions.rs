@@ -83,6 +83,10 @@ actions!(
         /// (no persistence - re-prompts on next start). Dispatched by
         /// the `×` button on the Idle / Errored pill states.
         DismissUpdate,
+        /// Ask the release feed now. The app otherwise asks at startup and
+        /// every four hours, so a window left open across a release hears of
+        /// it late and has no way to ask sooner.
+        CheckForUpdatesNow,
         // macOS native menu-bar actions. Dispatched by `cx.set_menus`
         // via GPUI's `on_app_menu_action` → `cx.dispatch_action`, then caught
         // by the `.on_action(...)` handlers on the SplitlaneApp render root.

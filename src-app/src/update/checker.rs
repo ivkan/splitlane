@@ -360,12 +360,13 @@ pub enum UpdateStatus {
 pub type SharedUpdateSlot = std::sync::Arc<std::sync::Mutex<Option<UpdateStatus>>>;
 
 /// Trigger source for an `update_check_started` telemetry event: the check at
-/// startup, or the one repeated while the app stays open. A `Manual` variant
-/// should be added when a "Check for updates…" menu entry lands.
+/// startup, the one repeated while the app stays open, or one a person asked
+/// for.
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateCheckTrigger {
     Auto,
     Periodic,
+    Manual,
 }
 
 impl UpdateCheckTrigger {
@@ -373,6 +374,7 @@ impl UpdateCheckTrigger {
         match self {
             UpdateCheckTrigger::Auto => "auto",
             UpdateCheckTrigger::Periodic => "periodic",
+            UpdateCheckTrigger::Manual => "manual",
         }
     }
 }
@@ -402,6 +404,100 @@ pub(crate) fn should_recheck(
         && install_idle
         && !check_in_flight
         && !matches!(known, Some(UpdateStatus::Available { .. }))
+}
+
+/// What a check somebody asked for by hand comes to, before the feed is
+/// touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ManualCheck {
+    /// Ask the feed now.
+    Run,
+    /// A check is already on its way; its answer is the one to report.
+    InFlight,
+    /// `check_for_updates` is off. The feed is not contacted even on request:
+    /// an answer would start the silent pre-install, and that is what the
+    /// setting exists to keep away from a locally built binary.
+    Off,
+    /// A release has been found already and is waiting in the title bar.
+    Found(String),
+    /// A download or an install is running, or waiting for its restart.
+    Installing,
+}
+
+/// Decide a check asked for by hand. The same four facts as
+/// [`should_recheck`], and the same reasons for not asking; the difference is
+/// that each of them is an answer to give the person rather than a silence.
+pub(crate) fn manual_check(
+    enabled: bool,
+    known: Option<&UpdateStatus>,
+    install_idle: bool,
+    check_in_flight: bool,
+) -> ManualCheck {
+    if !enabled {
+        return ManualCheck::Off;
+    }
+    if !install_idle {
+        return ManualCheck::Installing;
+    }
+    if let Some(UpdateStatus::Available { version, .. }) = known {
+        return ManualCheck::Found(version.clone());
+    }
+    if check_in_flight {
+        ManualCheck::InFlight
+    } else {
+        ManualCheck::Run
+    }
+}
+
+/// What a check asked for by hand found, in words for the person who asked.
+pub(crate) fn manual_check_report(status: &UpdateStatus) -> Option<String> {
+    match status {
+        UpdateStatus::Checking => None,
+        UpdateStatus::UpToDate => Some(format!("Splitlane {CURRENT_VERSION} is up to date")),
+        UpdateStatus::Available { version, .. } => {
+            Some(format!("Splitlane {version} is available"))
+        }
+        UpdateStatus::Failed => Some("Could not reach the release feed".to_string()),
+    }
+}
+
+/// The line About shows under the version: whether this is the newest
+/// release, and how long ago that was last asked.
+///
+/// It exists because the answer was nowhere. An app left open across a
+/// release said nothing until its next four-hourly check, and nothing in the
+/// window said when that check had last run or what it had found.
+pub(crate) fn update_line(
+    enabled: bool,
+    known: Option<&UpdateStatus>,
+    check_in_flight: bool,
+    since_check: Option<std::time::Duration>,
+) -> String {
+    if !enabled {
+        return "Update checks are off".to_string();
+    }
+    if check_in_flight {
+        return "Checking for updates…".to_string();
+    }
+    let asked = match since_check {
+        Some(since) => format!(" · checked {}", ago(since)),
+        None => String::new(),
+    };
+    match known {
+        Some(UpdateStatus::Available { version, .. }) => format!("Version {version} is available"),
+        Some(UpdateStatus::UpToDate) => format!("Up to date{asked}"),
+        Some(UpdateStatus::Failed) => "Could not check for updates".to_string(),
+        Some(UpdateStatus::Checking) | None => "Not checked for updates yet".to_string(),
+    }
+}
+
+fn ago(since: std::time::Duration) -> String {
+    let minutes = since.as_secs() / 60;
+    match minutes {
+        0 => "just now".to_string(),
+        1..=59 => format!("{minutes} min ago"),
+        _ => format!("{} h ago", minutes / 60),
+    }
 }
 
 /// Spawn a detached thread that checks GitHub for a newer release.
@@ -1242,9 +1338,116 @@ mod tests {
     }
 
     #[test]
-    fn the_two_triggers_are_told_apart_in_telemetry() {
+    fn the_triggers_are_told_apart_in_telemetry() {
         assert_eq!(UpdateCheckTrigger::Auto.as_str(), "auto");
         assert_eq!(UpdateCheckTrigger::Periodic.as_str(), "periodic");
+        assert_eq!(UpdateCheckTrigger::Manual.as_str(), "manual");
+    }
+
+    fn found(version: &str) -> UpdateStatus {
+        UpdateStatus::Available {
+            version: version.to_string(),
+            url: "https://example.com/release".to_string(),
+            asset_url: None,
+            asset_format: None,
+        }
+    }
+
+    /// A person who asks gets an answer in every case; only one of them
+    /// touches the feed.
+    #[test]
+    fn a_check_asked_for_by_hand_always_has_an_answer() {
+        assert_eq!(manual_check(true, None, true, false), ManualCheck::Run);
+        assert_eq!(
+            manual_check(true, Some(&UpdateStatus::UpToDate), true, false),
+            ManualCheck::Run
+        );
+        // The last attempt could not reach the feed: asking again is the
+        // whole point of the button.
+        assert_eq!(
+            manual_check(true, Some(&UpdateStatus::Failed), true, false),
+            ManualCheck::Run
+        );
+        assert_eq!(
+            manual_check(true, Some(&UpdateStatus::UpToDate), true, true),
+            ManualCheck::InFlight
+        );
+        assert_eq!(
+            manual_check(true, Some(&found("9.9.9")), true, false),
+            ManualCheck::Found("9.9.9".to_string())
+        );
+        assert_eq!(
+            manual_check(true, None, false, false),
+            ManualCheck::Installing
+        );
+    }
+
+    /// The setting means the feed is never contacted, and asking by hand
+    /// does not change what it means.
+    #[test]
+    fn a_check_asked_for_by_hand_does_not_override_the_setting() {
+        assert_eq!(manual_check(false, None, true, false), ManualCheck::Off);
+        assert_eq!(
+            manual_check(false, Some(&found("9.9.9")), true, false),
+            ManualCheck::Off
+        );
+    }
+
+    #[test]
+    fn about_says_what_the_last_check_found_and_when() {
+        use std::time::Duration;
+        let minutes = |n: u64| Some(Duration::from_secs(n * 60));
+        assert_eq!(
+            update_line(true, Some(&UpdateStatus::UpToDate), false, minutes(0)),
+            "Up to date · checked just now"
+        );
+        assert_eq!(
+            update_line(true, Some(&UpdateStatus::UpToDate), false, minutes(17)),
+            "Up to date · checked 17 min ago"
+        );
+        assert_eq!(
+            update_line(true, Some(&UpdateStatus::UpToDate), false, minutes(200)),
+            "Up to date · checked 3 h ago"
+        );
+        assert_eq!(
+            update_line(true, Some(&found("9.9.9")), false, minutes(5)),
+            "Version 9.9.9 is available"
+        );
+        assert_eq!(
+            update_line(true, Some(&UpdateStatus::Failed), false, None),
+            "Could not check for updates"
+        );
+        // A check on its way outranks the answer before it.
+        assert_eq!(
+            update_line(true, Some(&UpdateStatus::UpToDate), true, minutes(5)),
+            "Checking for updates…"
+        );
+        // A dismissed notice leaves nothing known and nothing in flight.
+        assert_eq!(
+            update_line(true, None, false, None),
+            "Not checked for updates yet"
+        );
+        assert_eq!(
+            update_line(false, Some(&UpdateStatus::UpToDate), false, minutes(5)),
+            "Update checks are off"
+        );
+    }
+
+    #[test]
+    fn a_manual_check_reports_each_outcome_in_words() {
+        assert!(
+            manual_check_report(&UpdateStatus::UpToDate)
+                .is_some_and(|said| said.ends_with("is up to date"))
+        );
+        assert_eq!(
+            manual_check_report(&found("9.9.9")).as_deref(),
+            Some("Splitlane 9.9.9 is available")
+        );
+        assert_eq!(
+            manual_check_report(&UpdateStatus::Failed).as_deref(),
+            Some("Could not reach the release feed")
+        );
+        assert_eq!(manual_check_report(&UpdateStatus::Checking), None);
     }
 
     #[test]

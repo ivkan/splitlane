@@ -632,6 +632,12 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         description: "Dismiss the update notice",
     },
     ActionMeta {
+        name: "check_for_updates_now",
+        factory: || Box::new(crate::CheckForUpdatesNow),
+        context: "",
+        description: "Check for updates now",
+    },
+    ActionMeta {
         name: "copy_last_answer",
         factory: || Box::new(crate::CopyLastAnswer),
         context: "",
