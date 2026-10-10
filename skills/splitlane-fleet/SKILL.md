@@ -109,6 +109,14 @@ interrupted: there is no answer to read, so say so and ask what the session
 should do next rather than sending the task again - and `4` on timeout: wait
 again, do not send the task again.
 
+Exit `7` straight after `add --submit`, on an agent section 2 lists as `T1`
+or `T2` and with `"session_id": null` in `status --json`, usually means the
+agent stopped at a question of its own before it took the task - whether to
+trust the folder, whether to update. Such a screen reads as empty and the
+state says `idle`. The answer is the person's: tell them the session may be
+showing a start-up question and ask them to look at its pane. Once they have
+dealt with it, send the task again - it was not kept.
+
 **Exit `0` means the turn is over, not that the task is done.** Always read
 the answer. A session may end its turn with a question written as ordinary
 text, or with a refusal: it knows its task came from another agent session
