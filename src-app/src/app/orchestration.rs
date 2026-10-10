@@ -39,6 +39,83 @@ pub(crate) fn provenance_line(sender_title: &str) -> String {
     )
 }
 
+/// Whether a session's first prompt goes into its launch command instead of
+/// being written into the agent's input line afterwards.
+///
+/// Only a prompt that is to be submitted: an argument cannot be left on the
+/// input line for a person to read first. And only where the text survives
+/// the trip. On Windows an agent installed from npm is started through a
+/// `.cmd` wrapper, which does not carry a line break in an argument, so
+/// there the prompt is still written into the input line.
+pub(crate) fn prompt_goes_at_launch(
+    agent: crate::agent_launcher::TerminalAgent,
+    submit: bool,
+    text: &str,
+) -> bool {
+    submit
+        && agent.takes_prompt_at_launch()
+        && !cfg!(windows)
+        // The agent would read it as one of its own options.
+        && !text.starts_with('-')
+        && !text.contains('\0')
+}
+
+/// Whether text may be typed into a session rather than pasted
+/// ([`crate::agent_launcher::TerminalAgent::takes_typed_text`]).
+///
+/// Typed text is only safe in front of the agent it was measured on. At a
+/// shell every line feed runs the line before it, and a shell is what is left
+/// in the pane when the agent has gone. So the agent's own process has to be
+/// under the pane and its interface up; anything less is pasted, which a
+/// shell holds as one piece of text.
+pub(crate) fn typed_text_is_safe(look: OpeningLook) -> bool {
+    look.agent_found && look.entry != crate::agent_state::TextEntry::NoInterface
+}
+
+/// Leave `text` where the agent's shim collects it by `key`, readable by the
+/// user alone. `None` when there is nowhere to leave it.
+fn stash_opening_prompt(key: &str, text: &str) -> Option<std::path::PathBuf> {
+    use std::io::Write;
+
+    let dir = crate::runtime_paths::opening_prompt_dir()?;
+    // A prompt nobody collected is removed by the wait that follows it. One
+    // left by an app that quit inside that wait is somebody's text with no
+    // further use, and this is the next time anything looks in here.
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age > OPENING_PROMPT_AGENT_MAX * 4);
+            if stale {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    // Written beside and moved into place, so the shim finds the whole text
+    // or nothing: it may look while this is still being written.
+    let (path, beside) = (dir.join(key), dir.join(format!("{key}.tmp")));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = options
+        .open(&beside)
+        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .and_then(|()| std::fs::rename(&beside, &path));
+    if let Err(e) = written {
+        log::warn!("opening prompt: could not be left for the agent's shim: {e}");
+        let _ = std::fs::remove_file(&beside);
+        return None;
+    }
+    Some(path)
+}
+
 /// How long an opening prompt waits for the new session's agent to be there
 /// to read it ([`opening_prompt_step`]) before it is given up on.
 const OPENING_PROMPT_AGENT_MAX: Duration = Duration::from_secs(30);
@@ -1653,8 +1730,44 @@ impl SplitlaneApp {
         let Some(thread_idx) = self.thread_index_by_id(ws_idx, thread_id) else {
             return JsonRpcError::invalid_params("The session vanished while opening").into_value();
         };
+        let from_opener = matches!(caller, Caller::Pane(_));
+        let opening_text = prompt.map(|prompt| match &caller {
+            Caller::Pane(pane) => format!("{}\n\n{prompt}", provenance_line(&pane.title)),
+            Caller::Outside => prompt.to_string(),
+        });
+        // Left for the agent's shim before the launch command is typed, so
+        // the file is there by the time the shell has started and run it.
+        let at_launch = opening_text
+            .as_deref()
+            .filter(|text| prompt_goes_at_launch(agent, submit, text))
+            .map(|text| {
+                let key = uuid::Uuid::new_v4().simple().to_string();
+                let (file, text) = (key.clone(), text.to_string());
+                let stashed = cx
+                    .background_executor()
+                    .spawn(async move { stash_opening_prompt(&file, &text) });
+                (key, stashed)
+            });
+        if let Some(thread) = self.thread_by_id_mut(thread_id) {
+            thread.opening_prompt_key = at_launch.as_ref().map(|(key, _)| key.clone());
+        }
         let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
-        let Some(view) = self.mount_agents_terminal_for_target(target, cx) else {
+        let mounted = self.mount_agents_terminal_for_target(target, cx);
+        // The key was for that one launch: a later reopen resumes the
+        // conversation and must not ask for a prompt that is gone.
+        if let Some(thread) = self.thread_by_id_mut(thread_id) {
+            thread.opening_prompt_key = None;
+        }
+        let Some(view) = mounted else {
+            if let Some((_, stashed)) = at_launch {
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Some(path) = stashed.await {
+                            let _ = std::fs::remove_file(path);
+                        }
+                    })
+                    .detach();
+            }
             // An error must not leave a row behind that the caller was told
             // does not exist.
             let _ = self.remove_thread(ws_idx, thread_idx, cx);
@@ -1685,13 +1798,15 @@ impl SplitlaneApp {
         // not drawn yet, so it is started here.
         view.update(cx, |view, cx| view.ensure_backend_started(cx));
 
-        if let Some(prompt) = prompt {
-            let text = match &caller {
-                Caller::Pane(pane) => format!("{}\n\n{prompt}", provenance_line(&pane.title)),
-                Caller::Outside => prompt.to_string(),
-            };
-            let from_opener = matches!(caller, Caller::Pane(_));
-            self.schedule_opening_prompt(thread_id, &view, text, submit, from_opener, cx);
+        if let Some(text) = opening_text {
+            match at_launch {
+                Some((_, stashed)) => {
+                    self.await_prompt_collected(thread_id, &view, stashed, text, from_opener, cx);
+                }
+                None => {
+                    self.schedule_opening_prompt(thread_id, &view, text, submit, from_opener, cx);
+                }
+            }
         }
         self.save_session(cx);
         cx.notify();
@@ -1722,6 +1837,105 @@ impl SplitlaneApp {
                 .and_then(|rail| rail.opening_prompt)
                 .map(crate::rail_state::OpeningPrompt::wire_str),
         })
+    }
+
+    /// Follow a first prompt that went into the launch command
+    /// ([`prompt_goes_at_launch`]) until the agent's shim has collected it.
+    ///
+    /// The shim removes the file when it has read it, which is the one thing
+    /// here that says the agent was started with the text. A file that could
+    /// not be left at all falls back to writing the prompt into the input
+    /// line: the shim drops a key it finds nothing behind, so the agent is
+    /// starting without a prompt either way.
+    fn await_prompt_collected(
+        &mut self,
+        thread_id: u64,
+        terminal: &Entity<TerminalView>,
+        stashed: gpui::Task<Option<std::path::PathBuf>>,
+        text: String,
+        from_opener: bool,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::rail_state::{NotWritten, OpeningPrompt};
+
+        self.note_opening_prompt(thread_id, OpeningPrompt::Pending);
+        let weak = terminal.downgrade();
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let Some(path) = stashed.await else {
+                    log::warn!(
+                        "opening prompt: no place to leave it for surface record \
+                         {thread_id}; writing it into the input line instead"
+                    );
+                    let _ = cx.update(|cx| {
+                        let terminal = weak.upgrade()?;
+                        this.update(cx, |app, cx| {
+                            app.schedule_opening_prompt(
+                                thread_id,
+                                &terminal,
+                                text,
+                                true,
+                                from_opener,
+                                cx,
+                            );
+                        })
+                        .ok()
+                    });
+                    return;
+                };
+                let started = std::time::Instant::now();
+                let mut collected = false;
+                let became = loop {
+                    if !collected {
+                        let file = path.clone();
+                        collected = !cx
+                            .background_executor()
+                            .spawn(async move { file.exists() })
+                            .await;
+                    }
+                    // `None` once the session is gone: closed, or no longer
+                    // drawn anywhere.
+                    let seen = cx.update(|cx| {
+                        let view = weak.upgrade()?;
+                        this.update(cx, |app, cx| app.opening_look(thread_id, &view, cx))
+                            .ok()
+                            .flatten()
+                    });
+                    // The shim removes the file before it starts the agent,
+                    // and the agent may not start: a session id in use, a
+                    // binary that fails. So the receipt counts once the
+                    // agent is seen as well.
+                    if collected && seen.is_none_or(|look| look.agent_found || look.spoken_for) {
+                        break OpeningPrompt::Submitted;
+                    }
+                    if seen.is_none() || started.elapsed() >= OPENING_PROMPT_AGENT_MAX {
+                        let file = path.clone();
+                        let _ = cx
+                            .background_executor()
+                            .spawn(async move { std::fs::remove_file(file) })
+                            .await;
+                        break OpeningPrompt::NotWritten(NotWritten::NoAgent);
+                    }
+                    smol::Timer::after(OPENING_PROMPT_POLL).await;
+                };
+                if became != OpeningPrompt::Submitted {
+                    log::warn!(
+                        "opening prompt: nothing collected it for surface record \
+                         {thread_id} within {:?}",
+                        started.elapsed()
+                    );
+                }
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        if from_opener && became == OpeningPrompt::Submitted {
+                            app.note_opener_wrote(thread_id, cx);
+                        }
+                        app.note_opening_prompt(thread_id, became);
+                    })
+                });
+            },
+        )
+        .detach();
     }
 
     /// Write a new session's first prompt once its agent is there to read it.
@@ -1854,9 +2068,22 @@ impl SplitlaneApp {
         }
     }
 
+    /// Whether text for `thread_id` is typed and not pasted, as things stand
+    /// in its pane now ([`typed_text_is_safe`]).
+    pub(crate) fn types_into(&self, thread_id: u64, view: &Entity<TerminalView>, cx: &App) -> bool {
+        self.thread_by_id(thread_id).is_some_and(|thread| {
+            !thread.rail.agent_exited
+                && thread
+                    .terminal_agent
+                    .is_some_and(crate::agent_launcher::TerminalAgent::takes_typed_text)
+        }) && self
+            .opening_look(thread_id, view, cx)
+            .is_some_and(typed_text_is_safe)
+    }
+
     /// One look at a session an opening prompt is waiting to be written to.
     /// `None` when the session is gone.
-    fn opening_look(
+    pub(crate) fn opening_look(
         &self,
         thread_id: u64,
         view: &Entity<TerminalView>,
@@ -2007,6 +2234,57 @@ mod tests {
             opening_prompt_step(no_place, Duration::from_secs(2)),
             OpeningStep::Wait
         );
+    }
+
+    /// What is left in a pane when its agent has gone is a shell, and at a
+    /// shell a typed line feed runs the line.
+    #[test]
+    fn text_is_typed_only_in_front_of_a_live_agent() {
+        use crate::agent_state::TextEntry;
+
+        let at_agent = OpeningLook {
+            spoken_for: true,
+            agent_found: true,
+            cursor_marks_text_entry: true,
+            entry: TextEntry::Open,
+            waiting: false,
+        };
+        assert!(typed_text_is_safe(at_agent));
+        // Mid-turn the cursor is hidden and typed text is queued.
+        assert!(typed_text_is_safe(OpeningLook {
+            entry: TextEntry::Closed,
+            ..at_agent
+        }));
+        // The agent exited: a shell, which takes pastes and shows a cursor.
+        assert!(!typed_text_is_safe(OpeningLook {
+            agent_found: false,
+            ..at_agent
+        }));
+        assert!(!typed_text_is_safe(OpeningLook {
+            entry: TextEntry::NoInterface,
+            ..at_agent
+        }));
+    }
+
+    #[test]
+    fn a_first_prompt_goes_at_launch_only_where_that_was_measured() {
+        use crate::agent_launcher::TerminalAgent;
+
+        let claude = TerminalAgent::ClaudeCode;
+        // An argument cannot be left unsubmitted on the input line.
+        assert!(!prompt_goes_at_launch(claude, false, "fix it"));
+        // The agent would take it for an option of its own.
+        assert!(!prompt_goes_at_launch(claude, true, "--help me"));
+        assert!(!prompt_goes_at_launch(claude, true, "a\0b"));
+        assert_eq!(
+            prompt_goes_at_launch(claude, true, "fix it\n\nand test it"),
+            !cfg!(windows)
+        );
+        for agent in TerminalAgent::ALL {
+            if !agent.takes_prompt_at_launch() {
+                assert!(!prompt_goes_at_launch(agent, true, "fix it"));
+            }
+        }
     }
 
     /// A shell prompt takes pastes and shows a cursor too. Without the

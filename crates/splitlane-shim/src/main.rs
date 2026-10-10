@@ -42,6 +42,7 @@ const SPLITLANE_AI_EVENT_SOURCE_INTERRUPT: &str = "interrupt";
 mod detect;
 mod exec;
 mod hooks;
+mod prompt;
 
 use detect::*;
 use exec::*;
@@ -127,6 +128,13 @@ fn main() -> ExitCode {
     ));
 
     let args: Vec<OsString> = env::args_os().skip(1).collect();
+    let args = prompt::with_opening_prompt(
+        args,
+        env::var_os(prompt::PROMPT_DIR_ENV)
+            .map(PathBuf::from)
+            .as_deref(),
+        prompt::PATIENCE,
+    );
 
     // Windows + codex: the JSONL tee path substitutes for config-file hooks.
     // Gated on detecting the `exec` subcommand; interactive codex falls

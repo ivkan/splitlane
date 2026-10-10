@@ -86,6 +86,30 @@ fn legacy_key_bytes(sequence: Cow<'static, str>) -> Cow<'static, [u8]> {
     }
 }
 
+/// `text` as keystrokes: every line break one line feed, a tab the spaces it
+/// stands for, and no other control character. A carriage return would
+/// submit what has been typed so far, a tab or an escape would be read as a
+/// key of the agent's own, and none of them is part of a message.
+pub(crate) fn typed_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push('\n');
+            }
+            '\n' => out.push('\n'),
+            '\t' => out.push_str("    "),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Sanitize and wrap `text` for a single bracketed-paste PTY write
 /// (`ESC[200~` … `ESC[201~`). ESC and C1 control bytes (U+0080..=U+009F) are
 /// stripped so the payload cannot close the paste early or smuggle a CSI
@@ -1409,6 +1433,13 @@ impl TerminalView {
         }
     }
 
+    /// Write `text` the way a keyboard would have produced it, for an agent
+    /// whose input line starts a new line on a line feed
+    /// ([`crate::agent_launcher::TerminalAgent::takes_typed_text`]).
+    pub fn type_text(&self, text: &str) {
+        self.send_text(&typed_text(text));
+    }
+
     // --- Scroll handlers ---
 
     pub(super) fn handle_scroll_wheel(
@@ -1598,7 +1629,7 @@ impl TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{paths_to_pty_text, wrap_bracketed_paste};
+    use super::{paths_to_pty_text, typed_text, wrap_bracketed_paste};
     use crate::terminal::types::{Modes, ShellQuoting};
     use std::path::PathBuf;
 
@@ -1664,6 +1695,17 @@ mod tests {
     }
 
     // The wrap is the burst that reaches an agent; the `\r` must NEVER ride inside it.
+    #[test]
+    fn typed_text_keeps_lines_and_drops_every_key_that_is_not_text() {
+        assert_eq!(typed_text("one\ntwo"), "one\ntwo");
+        // A carriage return would submit what was typed so far.
+        assert_eq!(typed_text("one\r\ntwo\rthree"), "one\ntwo\nthree");
+        assert_eq!(typed_text("a\tb"), "a    b");
+        // Escape, backspace, Ctrl-C, delete: keys of the agent's own.
+        assert_eq!(typed_text("a\x1b[201~b\x08\x03\x7fc"), "a[201~bc");
+        assert_eq!(typed_text("naïve @file /x"), "naïve @file /x");
+    }
+
     #[test]
     fn bracketed_wrap_has_both_sentinels_and_no_cr() {
         let wrapped = wrap_bracketed_paste("hello world");

@@ -69,6 +69,21 @@ fn pty_env_identity_key_keeps_its_published_name() {
         read("skills/splitlane-fleet/SKILL.md").contains("\"$SPLITLANE_CLI\""),
         "the skill falls back on `SPLITLANE_CLI` where `splitlane` is not on PATH"
     );
+
+    // The app and the agents' shim are separate binaries that agree on these
+    // two words and on nothing else: a shim that does not know the launch
+    // argument passes it to the agent, which refuses to start.
+    let shim = read("crates/splitlane-shim/src/prompt.rs");
+    assert!(
+        pty.contains("env.insert(\"SPLITLANE_PROMPT_DIR\".into()")
+            && shim.contains("\"SPLITLANE_PROMPT_DIR\""),
+        "the shim collects a first prompt from `SPLITLANE_PROMPT_DIR`"
+    );
+    let flag = "\"--splitlane-opening-prompt=\"";
+    assert!(
+        read("src-app/src/agent_launcher.rs").contains(flag) && shim.contains(flag),
+        "the launch argument naming a first prompt is spelled the same on both sides"
+    );
 }
 
 #[test]

@@ -4341,6 +4341,10 @@ fn assemble_pty_env(
     {
         env.insert("SPLITLANE_CLI".into(), cli.display().to_string());
     }
+    // Where the agent's shim collects a first prompt the app left for it.
+    if let Some(dir) = crate::runtime_paths::opening_prompt_dir() {
+        env.insert("SPLITLANE_PROMPT_DIR".into(), dir.display().to_string());
+    }
 
     // Propagate the opt-in hook-diagnostic log path explicitly so the whole
     // chain (shell → shim → agent → ai-hook) appends to the same file even if
@@ -4398,6 +4402,7 @@ fn assemble_pty_env(
             "SPLITLANE_SOCKET_PATH",
             "SPLITLANE_BIN_DIR",
             "SPLITLANE_CLI",
+            "SPLITLANE_PROMPT_DIR",
         ];
         for (k, v) in user_vars {
             // Windows env names are case-insensitive; normalise so a user

@@ -28,6 +28,15 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- A Claude Code session opened by another session with `splitlane add
+  --submit` no longer declines its task as "pasted text from an agent
+  session". The task is now given to Claude Code as it starts, and text sent
+  to it afterwards with `splitlane send` is typed instead of pasted. Claude
+  Code marks a paste as text that may not be the person's, and with the line
+  Splitlane puts in front of a task from another session, about half of the
+  sessions measured did nothing at all. A prompt given this way also
+  survives a question the agent asks first, such as whether to trust the
+  folder. Not on Windows, where the task is pasted as before.
 - A prompt given to `splitlane add --agent codex` is written. Codex reports
   nothing before its first prompt, and the prompt waited for a report that
   could only follow it, so it was dropped after 30 seconds with the command

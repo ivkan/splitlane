@@ -802,7 +802,11 @@ impl SplitlaneApp {
                 bound_session.as_deref(),
                 &thread_cwd,
             );
-            let cmd = agent.launch_command_with_session(config, binding);
+            let cmd = agent.launch_command_with_session(
+                config,
+                binding,
+                thread.opening_prompt_key.as_deref(),
+            );
             view.read(cx).send_command(&cmd);
         }
         // Mirror Zed's `AgentTerminal::refresh_terminal_metadata`

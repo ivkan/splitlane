@@ -67,7 +67,7 @@ configuration files:
 
   | `opening_prompt` | `opening_prompt_reason` | Exit | Meaning |
   | --- | --- | --- | --- |
-  | `submitted` | | `0` | Written, and its Enter sent after it |
+  | `submitted` | | `0` | Written, and its Enter sent after it. For Claude Code on macOS and Linux a prompt with `--submit` is given to the agent as it starts instead: `add` returns sooner, and if the agent first asks a person something, it keeps the prompt and takes it once answered. `wait` exits `5` meanwhile; do not send the prompt again |
   | `written` | | `0` | On the agent's input line, not submitted |
   | `not_written` | `waiting` | `5` | The agent is asking a person something before it takes a prompt, such as whether to trust the folder. Nothing was written: an Enter there would be an answer. `read` shows the question. The prompt is not kept; once the person has answered, send it with `send --submit` |
   | `not_written` | `no_agent` | `7` | Nothing showed an agent taking text in the pane within 30 seconds. What reads the pane's input may be a shell, and text sent to a shell is a command |
@@ -573,7 +573,7 @@ Leave the key out to get the default.
 | `surface.rename` | `new_name` (empty or absent clears it) | `{renamed, name}` |
 | `surface.focus` | `surface_id` | `{focused, surface_id, workspace, scope}` |
 | `surface.split` | `direction` (`horizontal` or `vertical`, required), `cwd`, `command`, `prompt`, `env`, `name` or `label`, `context`, `profile` | `{split, direction, panes, surface_id}` |
-| `surface.send_text` | `text`, `submit` (default `false`), `paste` (default: automatic) | `{sent, length, submitted, paste, submit_mode, agent_target, agent_tool, terminal_bracketed_paste}` |
+| `surface.send_text` | `text`, `submit` (default `false`), `paste` (default: automatic) | `{sent, length, submitted, paste, typed, submit_mode, agent_target, agent_tool, terminal_bracketed_paste}`. `typed` is `true` when the text was typed instead of pasted: what a session writes into a Claude Code session it opened |
 | `surface.send_keystroke` | `keystroke` (for example `escape`, `ctrl-c`, `alt-f`) | `{sent}` |
 | `surface.add_agent` | `agent` (required), `name`, `prompt`, `submit`, `placement` (`auto`, `parked` or `pane`) | `{surface_id, thread_id, agent, tier, session_id, runs_ended, placement, placement_reason, opened_by, opening_prompt}`. The method answers at once, with `opening_prompt` at `pending` when a prompt was given; `rail.opening_prompt` in `surface.status` says what became of it |
 | `surface.park` | `surface_id` or `name` | `{parked, surface_id}` |

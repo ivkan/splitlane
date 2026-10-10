@@ -520,6 +520,34 @@ impl TerminalAgent {
         matches!(self, TerminalAgent::ClaudeCode | TerminalAgent::Codex)
     }
 
+    /// Whether a prompt given as the last argument of the launch command is
+    /// taken as the session's first message, and kept across a question the
+    /// agent asks before it takes any prompt.
+    ///
+    /// **Filled in from a measurement, never from memory.** Measured on Claude
+    /// Code 2.1.296, macOS: `claude "<text>"` in a folder it had not seen
+    /// showed the trust question, and on "yes" ran the text as its first turn.
+    ///
+    /// It matters because of how the same agent treats a paste. A prompt
+    /// pasted into its input line reaches the model marked as text that may
+    /// not be the person's own. Together with the line this app puts in front
+    /// of a prompt one session writes into another, that was enough for the
+    /// session to decline the whole task in half of the runs measured; given
+    /// as an argument, the same text with the same line was taken every time.
+    pub fn takes_prompt_at_launch(self) -> bool {
+        matches!(self, TerminalAgent::ClaudeCode)
+    }
+
+    /// Whether text may be typed into this agent's input line instead of
+    /// pasted: a line feed there starts a new line and does not submit.
+    ///
+    /// **Filled in from a measurement, never from memory.** The reason is the
+    /// one given on [`Self::takes_prompt_at_launch`]; this is the same remedy
+    /// for a session that is already running.
+    pub fn takes_typed_text(self) -> bool {
+        matches!(self, TerminalAgent::ClaudeCode)
+    }
+
     /// The key that stops this agent's turn and leaves the agent running, as
     /// [`gpui::Keystroke::parse`] reads it. `None` until it has been measured.
     ///
@@ -670,32 +698,44 @@ impl TerminalAgent {
     /// `--permission-mode bypassPermissions` already baked into the base
     /// command. Any other agent (or [`SessionBinding::Unbound`]) yields the
     /// plain base command.
-    fn command_with_session(self, config: &SplitlaneConfig, binding: SessionBinding<'_>) -> String {
-        if self != TerminalAgent::ClaudeCode {
-            return self.command(config);
-        }
-        let (flag, id) = match binding {
-            SessionBinding::Unbound => return self.command(config),
-            SessionBinding::Mint(id) => ("--session-id", id),
-            SessionBinding::Resume(id) => ("--resume", id),
-        };
-        if !crate::agent_sessions::is_valid_session_id(id) {
-            // Every path that can set a thread's id already re-gates on this
-            // allow-list (the transcript scan, the session.json restore, the
-            // sidebar's resume builder), so reaching here means one of them
-            // regressed. The fallback itself is right - launch a working agent
-            // rather than refuse to open - but it costs the user the binding:
-            // the thread starts a fresh conversation and can never resume the
-            // one it names. Say so, or the failure is invisible.
-            log::warn!(
-                "agent launch: dropping session binding, id failed the allow-list \
-                 (thread starts an unbound session)"
-            );
-            return self.command(config);
-        }
+    fn command_with_session(
+        self,
+        config: &SplitlaneConfig,
+        binding: SessionBinding<'_>,
+        opening_prompt_key: Option<&str>,
+    ) -> String {
         let mut spec = self.launch_spec(config);
-        spec.insert_arg(0, flag);
-        spec.insert_arg(1, id);
+        if self == TerminalAgent::ClaudeCode {
+            let bound = match binding {
+                SessionBinding::Unbound => None,
+                SessionBinding::Mint(id) => Some(("--session-id", id)),
+                SessionBinding::Resume(id) => Some(("--resume", id)),
+            };
+            match bound {
+                Some((flag, id)) if crate::agent_sessions::is_valid_session_id(id) => {
+                    spec.insert_arg(0, flag);
+                    spec.insert_arg(1, id);
+                }
+                // Every path that can set a thread's id already re-gates on
+                // this allow-list (the transcript scan, the session.json
+                // restore, the sidebar's resume builder), so reaching here
+                // means one of them regressed. The fallback itself is right -
+                // launch a working agent rather than refuse to open - but it
+                // costs the user the binding: the thread starts a fresh
+                // conversation and can never resume the one it names. Say so,
+                // or the failure is invisible.
+                Some(_) => log::warn!(
+                    "agent launch: dropping session binding, id failed the allow-list \
+                     (thread starts an unbound session)"
+                ),
+                None => {}
+            }
+        }
+        // Last, where the agent's shim swaps it for the text. Only a key the
+        // shell reads as one plain word is ever typed; the text is not.
+        if let Some(key) = opening_prompt_key.filter(|key| is_plain_shell_token(key)) {
+            spec.push_arg(format!("{OPENING_PROMPT_FLAG}{key}"));
+        }
         spec.render_shell_command()
     }
 
@@ -703,7 +743,7 @@ impl TerminalAgent {
     /// configured shell (`clear`, `cls`, or `Clear-Host`) so the agent TUI owns
     /// the viewport from the first frame on every platform.
     pub fn launch_command(self, config: &SplitlaneConfig) -> String {
-        self.launch_command_with_session(config, SessionBinding::Unbound)
+        self.launch_command_with_session(config, SessionBinding::Unbound, None)
     }
 
     /// [`Self::launch_command`] with a bound agent session (Claude only - see
@@ -715,6 +755,7 @@ impl TerminalAgent {
         self,
         config: &SplitlaneConfig,
         binding: SessionBinding<'_>,
+        opening_prompt_key: Option<&str>,
     ) -> String {
         // Trim + drop-empty exactly like the PTY session does when it
         // resolves the shell (`pty_session.rs:442`). A config such as
@@ -726,7 +767,10 @@ impl TerminalAgent {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        crate::terminal::shell::clear_then(&self.command_with_session(config, binding), shell)
+        crate::terminal::shell::clear_then(
+            &self.command_with_session(config, binding, opening_prompt_key),
+            shell,
+        )
     }
 
     /// Visible variants for the given config, in display order. Drives
@@ -776,6 +820,10 @@ impl AgentCommandSpec {
         command
     }
 }
+
+/// The launch argument that names a waiting first prompt by its key. The
+/// agent's shim knows the same word and never passes it on.
+pub(crate) const OPENING_PROMPT_FLAG: &str = "--splitlane-opening-prompt=";
 
 pub(crate) fn is_plain_shell_token(token: &str) -> bool {
     !token.is_empty()
@@ -1307,8 +1355,11 @@ mod tests {
     #[test]
     fn claude_session_id_is_injected_after_binary() {
         let cfg = SplitlaneConfig::default();
-        let cmd =
-            TerminalAgent::ClaudeCode.command_with_session(&cfg, SessionBinding::Mint(SAMPLE_UUID));
+        let cmd = TerminalAgent::ClaudeCode.command_with_session(
+            &cfg,
+            SessionBinding::Mint(SAMPLE_UUID),
+            None,
+        );
         assert_eq!(cmd, format!("claude --session-id {SAMPLE_UUID}"));
         // Leading token stays `claude` (the PATH-probe invariant).
         assert_eq!(cmd.split_whitespace().next(), Some("claude"));
@@ -1321,8 +1372,11 @@ mod tests {
         // `Error: Session ID <uuid> is already in use.` An id that already
         // has a session file must go out as `--resume`.
         let cfg = SplitlaneConfig::default();
-        let cmd = TerminalAgent::ClaudeCode
-            .command_with_session(&cfg, SessionBinding::Resume(SAMPLE_UUID));
+        let cmd = TerminalAgent::ClaudeCode.command_with_session(
+            &cfg,
+            SessionBinding::Resume(SAMPLE_UUID),
+            None,
+        );
         assert_eq!(cmd, format!("claude --resume {SAMPLE_UUID}"));
         assert!(
             !cmd.contains("--session-id"),
@@ -1331,20 +1385,55 @@ mod tests {
         assert_eq!(cmd.split_whitespace().next(), Some("claude"));
     }
 
+    /// The key rides last, behind the session flag, and is the only part of
+    /// a first prompt the shell ever reads.
+    #[test]
+    fn an_opening_prompt_key_goes_last_in_the_launch_command() {
+        let cfg = SplitlaneConfig::default();
+        let key = "0123456789abcdef0123456789abcdef";
+        let cmd = TerminalAgent::ClaudeCode.command_with_session(
+            &cfg,
+            SessionBinding::Mint(SAMPLE_UUID),
+            Some(key),
+        );
+        assert_eq!(
+            cmd,
+            format!("claude --session-id {SAMPLE_UUID} {OPENING_PROMPT_FLAG}{key}")
+        );
+        // Anything a shell would read as more than one plain word is left
+        // out: the agent starts without a prompt rather than with a command.
+        for hostile in ["two words", "$(reboot)", "a;b", "'x'"] {
+            assert_eq!(
+                TerminalAgent::ClaudeCode.command_with_session(
+                    &cfg,
+                    SessionBinding::Unbound,
+                    Some(hostile)
+                ),
+                "claude"
+            );
+        }
+    }
+
     #[test]
     fn claude_session_id_composes_with_bypass() {
         let cfg = SplitlaneConfig {
             claude_code_bypass_permissions: Some(true),
             ..Default::default()
         };
-        let mint =
-            TerminalAgent::ClaudeCode.command_with_session(&cfg, SessionBinding::Mint(SAMPLE_UUID));
+        let mint = TerminalAgent::ClaudeCode.command_with_session(
+            &cfg,
+            SessionBinding::Mint(SAMPLE_UUID),
+            None,
+        );
         assert_eq!(
             mint,
             format!("claude --session-id {SAMPLE_UUID} --permission-mode bypassPermissions")
         );
-        let resume = TerminalAgent::ClaudeCode
-            .command_with_session(&cfg, SessionBinding::Resume(SAMPLE_UUID));
+        let resume = TerminalAgent::ClaudeCode.command_with_session(
+            &cfg,
+            SessionBinding::Resume(SAMPLE_UUID),
+            None,
+        );
         assert_eq!(
             resume,
             format!("claude --resume {SAMPLE_UUID} --permission-mode bypassPermissions")
@@ -1367,13 +1456,20 @@ mod tests {
             "abc def",
         ] {
             assert_eq!(
-                TerminalAgent::ClaudeCode.command_with_session(&cfg, SessionBinding::Mint(hostile)),
+                TerminalAgent::ClaudeCode.command_with_session(
+                    &cfg,
+                    SessionBinding::Mint(hostile),
+                    None
+                ),
                 "claude",
                 "hostile id {hostile:?} must be dropped when minting"
             );
             assert_eq!(
-                TerminalAgent::ClaudeCode
-                    .command_with_session(&cfg, SessionBinding::Resume(hostile)),
+                TerminalAgent::ClaudeCode.command_with_session(
+                    &cfg,
+                    SessionBinding::Resume(hostile),
+                    None
+                ),
                 "claude",
                 "hostile id {hostile:?} must be dropped when resuming"
             );
@@ -1413,11 +1509,11 @@ mod tests {
             SessionBinding::Resume(SAMPLE_UUID),
         ] {
             assert_eq!(
-                TerminalAgent::Codex.command_with_session(&cfg, binding),
+                TerminalAgent::Codex.command_with_session(&cfg, binding, None),
                 "codex"
             );
             assert_eq!(
-                TerminalAgent::OpenCode.command_with_session(&cfg, binding),
+                TerminalAgent::OpenCode.command_with_session(&cfg, binding, None),
                 "opencode"
             );
         }
@@ -1427,7 +1523,7 @@ mod tests {
     fn claude_without_session_id_is_bare_command() {
         let cfg = SplitlaneConfig::default();
         assert_eq!(
-            TerminalAgent::ClaudeCode.command_with_session(&cfg, SessionBinding::Unbound),
+            TerminalAgent::ClaudeCode.command_with_session(&cfg, SessionBinding::Unbound, None),
             "claude"
         );
     }

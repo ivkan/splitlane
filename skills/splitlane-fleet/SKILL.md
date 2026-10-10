@@ -112,9 +112,17 @@ again, do not send the task again.
 `add` with a prompt exits `5` too, when the agent stopped at a question of
 its own before it took the task - whether to trust the folder, how to sign
 in. The session is open and its state is `waiting`, but **the task was not
-written and is not kept**. `splitlane read` shows the question. The answer is
-the person's: pass the question on and ask them to answer it in the session's
-pane. Once they have, send the task with `send --submit` and start the wait.
+written and is not kept** (`opening_prompt: not_written`). `splitlane read`
+shows the question. The answer is the person's: pass the question on and ask
+them to answer it in the session's pane. Once they have, send the task with
+`send --submit` and start the wait.
+
+A Claude Code session is given the task as it starts, so `add` exits `0`
+with `opening_prompt: submitted` even when such a question comes up, and the
+`wait` that follows exits `5`. There the session **has the task** and starts
+it by itself once the person has answered: pass the question on, wait again,
+and do not send the task a second time.
+
 `add` exiting `7` means the session is open and nothing showed an agent there
 to take the task; `read` shows what is in the pane.
 

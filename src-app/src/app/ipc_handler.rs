@@ -3585,18 +3585,42 @@ impl SplitlaneApp {
                     agent_hint.is_some(),
                     terminal_bracketed_paste,
                 );
-                let paste = match resolve_send_text_body_mode(
-                    text,
-                    paste_param,
-                    paste,
-                    terminal_bracketed_paste,
-                ) {
-                    Ok(paste) => paste,
-                    Err(message) => return JsonRpcError::invalid_params(message).into_value(),
+                // What one session writes into another is typed where the
+                // agent takes that, and not pasted: the agent marks a paste
+                // as text that may not be the person's, and with the line
+                // above in front of it sessions declined whole tasks.
+                // Not on Windows: what a line feed written to a console
+                // there reaches the agent as has not been measured, and read
+                // as Enter it would submit the text in pieces.
+                let typed = from_opener
+                    && !cfg!(windows)
+                    && paste_param != Some(true)
+                    // Typing drops control characters; text made of nothing
+                    // else would leave a bare Enter.
+                    && text.chars().any(|c| !c.is_control())
+                    && write_target
+                        .thread_id
+                        .is_some_and(|id| self.types_into(id, &terminal, cx));
+                let paste = if typed {
+                    false
+                } else {
+                    match resolve_send_text_body_mode(
+                        text,
+                        paste_param,
+                        paste,
+                        terminal_bracketed_paste,
+                    ) {
+                        Ok(paste) => paste,
+                        Err(message) => {
+                            return JsonRpcError::invalid_params(message).into_value();
+                        }
+                    }
                 };
                 // Write the payload (skipped for a bare `--submit ""`).
                 if !text.is_empty() {
-                    if paste {
+                    if typed {
+                        terminal.read(cx).type_text(text);
+                    } else if paste {
                         // `inject_text`, NOT `paste_text`: when the agent has not
                         // enabled bracketed paste, the latter would rewrite body
                         // newlines to `\r` and fragment a multi-line prompt into
@@ -3621,7 +3645,7 @@ impl SplitlaneApp {
                 // thread so the agent does not swallow it; the verbatim
                 // path (shell command, or empty-composer submit) sends it inline.
                 if submit {
-                    if paste && !text.is_empty() {
+                    if (paste || typed) && !text.is_empty() {
                         let floor = std::time::Duration::from_millis(
                             self.cached_config.resolved_submit_paste_delay_ms(),
                         );
@@ -3636,7 +3660,9 @@ impl SplitlaneApp {
                 if from_opener && let Some(thread_id) = write_target.thread_id {
                     self.note_opener_wrote(thread_id, cx);
                 }
-                let submit_mode = if submit && paste && !text.is_empty() {
+                let submit_mode = if submit && typed && !text.is_empty() {
+                    serde_json::Value::String("deferred_typed_cr".to_string())
+                } else if submit && paste && !text.is_empty() {
                     serde_json::Value::String("deferred_paste_cr".to_string())
                 } else if submit {
                     serde_json::Value::String("inline_cr".to_string())
@@ -3651,6 +3677,7 @@ impl SplitlaneApp {
                     "rail_status_at_send": rail_status_at_send,
                     "submitted": submit,
                     "paste": paste,
+                    "typed": typed,
                     "submit_mode": submit_mode,
                     "agent_target": agent_hint.is_some(),
                     "agent_tool": agent_hint.map(|a| a.binary()),

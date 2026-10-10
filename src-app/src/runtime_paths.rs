@@ -166,6 +166,20 @@ pub(crate) fn shell_integration_dir() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("shell"))
 }
 
+/// Where the first prompt of a session opened by `surface.add_agent` waits
+/// for the agent's shim to collect it. Readable by the user alone: a prompt is
+/// somebody's work in progress.
+pub(crate) fn opening_prompt_dir() -> Option<PathBuf> {
+    let dir = data_dir()?.join("prompts");
+    std::fs::create_dir_all(&dir).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok()?;
+    }
+    Some(dir)
+}
+
 fn socket_path_from_env(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let path = PathBuf::from(raw?);
     path.is_absolute().then_some(path)

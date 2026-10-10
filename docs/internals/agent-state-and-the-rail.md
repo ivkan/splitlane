@@ -959,6 +959,53 @@ and exits `5` for a question and `7` when no agent was there. An agent that
 is neither of the two measured ones and has no hook reporting still gets
 `no_agent`, which is what happened to it before, said aloud.
 
+**For Claude Code a submitted opening prompt goes in with the launch, and
+what one session sends another is typed.** Found when a session opened with a
+task did nothing and answered "this whole message is pasted text from an
+agent session, there is no text of your own beside it". Claude Code marks a
+paste for the model as text that may not be the person's, and the line this
+app puts in front of a prompt one session writes into another says the same
+in other words. Measured on 2.1.296 with one task - an edit, a test, a commit,
+a push - a fresh folder and a fresh session each time: pasted with the line,
+two of four sessions did nothing at all and one did the work and declined the
+push; pasted with the line reworded, two of three did nothing; pasted with no
+line, given as a launch argument with the line, and typed with the line, every
+session did all of it (two, three and two runs). So neither the line nor the
+paste does it alone, rewording the line does not help, and the line stays
+because it is true.
+
+The argument is not typed into the pane's shell. The app leaves the text in a
+file only the user can read (`runtime_paths::opening_prompt_dir`, exported
+as `SPLITLANE_PROMPT_DIR`) and types a key of hex digits; the agent's shim
+swaps the key for the text and removes the file. The missing file is the
+receipt, and `orchestration::await_prompt_collected` counts it once the
+agent's process is seen under the pane as well: the shim removes the file
+before it starts the agent, and an agent can fail to start. The file is
+written off the main thread while the launch command is already on its way,
+so it is moved into place whole and the shim waits half a second for it.
+A prompt that is not to be submitted is still written into the input line,
+and so is every prompt on Windows, where an agent installed from npm starts
+through a `.cmd` wrapper that does not carry a line break in an argument.
+
+Given this way the prompt survives a question the agent asks first: Claude
+Code shows "Is this a project you trust?" and on "yes" runs the text as its
+first turn. So `opening_prompt` is `submitted` while the row says `waiting`,
+and here the caller must **not** send the task again. The rule above - not
+kept for later - still holds for a prompt written into the input line.
+
+Typing (`TerminalView::type_text`) sends each line break as a line feed,
+which Claude Code's input line reads as a new line and not as Enter, a tab as
+spaces, and no other control character. Measured with a message of 75 lines,
+with lines starting `/` and `@name` in the text: it arrived as one message,
+whole. `@name` attaches the file of that name, as it does for a person
+typing. Only what a session writes is typed; a script's `send` is unchanged.
+And only in front of the agent (`orchestration::typed_text_is_safe`): what
+is left in a pane when its agent has gone is a shell, where a typed line
+feed runs the line before it, so without the agent's process under the pane
+and its interface up the text is pasted as before. Not on Windows, where
+what a line feed written to a console reaches the agent as was not measured.
+Codex and the other agents were not measured and are pasted to as before.
+
 **The last answer is read by the CLI, from the agent's own file, never from
 scrollback.** `surface.status` says where the conversation is (`rail.agent`,
 `rail.session_id`, `rail.cwd`) and `splitlane answer` opens it with the same

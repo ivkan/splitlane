@@ -485,6 +485,10 @@ pub struct Thread {
     /// decides that per binary, and a second copy of that list in the app is a
     /// copy that drifts. The surface answers for itself.
     pub hook_has_spoken: bool,
+    /// The key of a first prompt waiting to go into this surface's launch
+    /// command ([`crate::agent_launcher::TerminalAgent::takes_prompt_at_launch`]).
+    /// Set and cleared around the one launch it is for; never saved.
+    pub opening_prompt_key: Option<String>,
     /// Who told the person about the wait this surface is standing in, when
     /// somebody has. Transient, like the two fields above.
     ///
@@ -548,6 +552,7 @@ impl Thread {
             finished_unseen: None,
             detector_read_at: None,
             hook_has_spoken: false,
+            opening_prompt_key: None,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
@@ -625,6 +630,7 @@ impl Thread {
             finished_unseen: None,
             detector_read_at: None,
             hook_has_spoken: false,
+            opening_prompt_key: None,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
@@ -814,6 +820,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         finished_unseen: None,
         detector_read_at: None,
         hook_has_spoken: false,
+        opening_prompt_key: None,
         wait_announced: None,
         rail: crate::rail_state::RailRecord::default(),
         // An id is all a file can say; whether the opener still exists is
