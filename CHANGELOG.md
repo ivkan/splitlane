@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-10
+
 ### Changed
 
 - About Splitlane states that the program comes with no warranty and may
@@ -284,7 +286,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ivkan/splitlane/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ivkan/splitlane/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ivkan/splitlane/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/ivkan/splitlane/compare/v0.1.3...v0.1.4

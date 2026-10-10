@@ -5865,11 +5865,11 @@ dependencies = [
 
 [[package]]
 name = "splitlane-acp"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "splitlane-ai-hook"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "interprocess",
  "serde",
@@ -5879,7 +5879,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-app"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5972,7 +5972,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-config"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "dirs",
  "notify",
@@ -5985,7 +5985,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-ghostty-smoke"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "libc",
@@ -5995,7 +5995,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-ipc-client"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "interprocess",
  "serde_json",
@@ -6005,14 +6005,14 @@ dependencies = [
 
 [[package]]
 name = "splitlane-libghostty-sys"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "splitlane-mcp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6021,7 +6021,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-mcp-install"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -6035,11 +6035,11 @@ dependencies = [
 
 [[package]]
 name = "splitlane-process"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "splitlane-shim"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ctrlc",
  "libc",
@@ -6050,7 +6050,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-telemetry"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "log",
  "serde",
@@ -6062,7 +6062,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-terminal-ghostty"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64",
  "regex",

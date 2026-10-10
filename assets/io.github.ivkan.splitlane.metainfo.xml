@@ -63,6 +63,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.2" date="2026-10-10">
+      <description>
+        <p>A lead agent now hears when a session it opened has finished,
+        "splitlane ps" and "status" report agent sessions, "splitlane read"
+        returns the screen as well as the history, and panes keep their
+        script names across a restart.</p>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-10-09">
       <description>
         <p>On macOS the app can update itself again: earlier versions
