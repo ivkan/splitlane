@@ -3560,6 +3560,33 @@ impl SplitlaneApp {
                 };
                 let sent_length = text.len();
                 let from_opener = marked.is_some();
+                // A task for an agent that has left would be read by the
+                // shell it left behind, and submitted there it runs as
+                // commands. A script's own write is not held to this: typing
+                // a command into that shell may be exactly what it is for.
+                //
+                // Asked of the caller and not of the text: a bare submit
+                // carries no line, and Enter in that shell runs whatever is
+                // on its command line.
+                let from_session = matches!(
+                    (&who, leave),
+                    (
+                        crate::app::orchestration::Caller::Pane(_),
+                        crate::app::orchestration::WriteLeave::Opener
+                            | crate::app::orchestration::WriteLeave::Driver,
+                    )
+                );
+                if from_session
+                    && write_target
+                        .thread_id
+                        .is_some_and(|id| self.agent_left_pane(id))
+                {
+                    return JsonRpcError::input_not_taken(
+                        "The session's agent has exited and a shell reads its pane now; \
+                         nothing was sent",
+                    )
+                    .into_value();
+                }
                 let text = marked.as_deref().unwrap_or(text);
                 // A surface restored from `session.json` only forks its
                 // shell when it is first shown. An IPC write is an explicit
@@ -4565,6 +4592,13 @@ impl SplitlaneApp {
                     let accelerate = self
                         .agents_thread_mut_by_id(thread_id)
                         .and_then(|t| apply_agents_thread_state(t, state, pid));
+                    // The state pass saw the agent's process up to two
+                    // seconds ago and would go on saying so until it runs
+                    // again; what is under the pane from this moment is a
+                    // shell.
+                    if let Some(flow) = self.pty_flow.get_mut(&thread_id) {
+                        flow.agent_found = false;
+                    }
                     if let Some(t) = self.agents_thread_mut_by_id(thread_id) {
                         t.rail.agent_exited = true;
                         // A crash ends the run. Counted here only where the

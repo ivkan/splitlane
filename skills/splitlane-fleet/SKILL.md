@@ -123,6 +123,11 @@ with `opening_prompt: submitted` even when such a question comes up, and the
 it by itself once the person has answered: pass the question on, wait again,
 and do not send the task a second time.
 
+`send` refused with "the session's agent has exited" means what it says:
+the agent in that session is gone and a shell is left in its pane. Do not
+retry and do not try to start it again yourself. Tell the person, and open a
+new session for the task if they want it done.
+
 `add` exiting `7` means the session is open and nothing showed an agent there
 to take the task; `read` shows what is in the pane.
 

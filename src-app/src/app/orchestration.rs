@@ -72,6 +72,17 @@ pub(crate) fn typed_text_is_safe(look: OpeningLook) -> bool {
     look.agent_found && look.entry != crate::agent_state::TextEntry::NoInterface
 }
 
+/// Whether the agent of a session has left its pane to the shell it was
+/// started from.
+///
+/// Both halves are needed. The exit is what the agent's shim reported; the
+/// process is what the state pass last saw. A person who starts the agent
+/// again by hand clears the second well before anything clears the first,
+/// and a session whose agent is back takes text again.
+pub(crate) fn agent_has_left(exit_reported: bool, agent_found: bool) -> bool {
+    exit_reported && !agent_found
+}
+
 /// Leave `text` where the agent's shim collects it by `key`, readable by the
 /// user alone. `None` when there is nowhere to leave it.
 fn stash_opening_prompt(key: &str, text: &str) -> Option<std::path::PathBuf> {
@@ -2071,14 +2082,30 @@ impl SplitlaneApp {
     /// Whether text for `thread_id` is typed and not pasted, as things stand
     /// in its pane now ([`typed_text_is_safe`]).
     pub(crate) fn types_into(&self, thread_id: u64, view: &Entity<TerminalView>, cx: &App) -> bool {
+        // Not `rail.agent_exited`: that outlives an agent a person started
+        // again by hand, and the process reading below is cleared the moment
+        // an exit is reported.
         self.thread_by_id(thread_id).is_some_and(|thread| {
-            !thread.rail.agent_exited
-                && thread
-                    .terminal_agent
-                    .is_some_and(crate::agent_launcher::TerminalAgent::takes_typed_text)
+            thread
+                .terminal_agent
+                .is_some_and(crate::agent_launcher::TerminalAgent::takes_typed_text)
         }) && self
             .opening_look(thread_id, view, cx)
             .is_some_and(typed_text_is_safe)
+    }
+
+    /// Whether what reads the pane of `thread_id` now is a shell where an
+    /// agent used to be ([`agent_has_left`]).
+    pub(crate) fn agent_left_pane(&self, thread_id: u64) -> bool {
+        self.thread_by_id(thread_id).is_some_and(|thread| {
+            thread.terminal_agent.is_some()
+                && agent_has_left(
+                    thread.rail.agent_exited,
+                    self.pty_flow
+                        .get(&thread_id)
+                        .is_some_and(|flow| flow.agent_found),
+                )
+        })
     }
 
     /// One look at a session an opening prompt is waiting to be written to.
@@ -2264,6 +2291,16 @@ mod tests {
             entry: TextEntry::NoInterface,
             ..at_agent
         }));
+    }
+
+    #[test]
+    fn an_agent_has_left_only_when_it_exited_and_is_not_back() {
+        assert!(agent_has_left(true, false));
+        // Started again by hand: the exit is still on the record.
+        assert!(!agent_has_left(true, true));
+        // Not seen yet, or between two state passes: no exit, no verdict.
+        assert!(!agent_has_left(false, false));
+        assert!(!agent_has_left(false, true));
     }
 
     #[test]

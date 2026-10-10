@@ -885,6 +885,26 @@ unchanged, byte for byte: no line is added, because the line needs a paste and
 a shell in the middle of a command does not take one. The one thing that
 changed under it is the waiting rule above.
 
+**A session does not write into a pane its agent has left.** When an agent
+exits, the shell it was started from is what reads the pane. A task sent
+there with a submit was pasted into that shell and entered: its lines ran as
+commands. Found by sending to a session after `/exit`. The write is refused
+when the agent's shim has reported the exit and the state pass no longer
+finds the agent's process (`orchestration::agent_has_left`); either alone is
+not enough, since a person who starts the agent again by hand brings the
+process back before anything clears the exit. Only a session's write is
+refused. A script under the launch variable may be typing a command into
+that shell on purpose.
+
+One window stays open and cannot be closed from here: text written while
+the agent is on its way out. Measured one second after `/exit` was sent to
+Claude Code: no exit had been reported yet, the write was accepted, and the
+shell that came back read it. Three seconds after, it was refused. Nothing
+on this side says an agent is about to leave. The same holds for an agent
+whose shim was killed with it and so reported nothing: the missing process
+alone is not taken for an exit, because a session whose agent has not been
+found yet, in its first seconds, looks the same.
+
 `surface.send_text` also answers with `rail_status_at_send`, the rail's word
 for the target at the moment the text went in. Measured on Claude Code
 2.1.289: text sent while a tool runs is taken into the turn in flight, and

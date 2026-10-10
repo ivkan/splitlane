@@ -28,6 +28,9 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- `splitlane send` from one session to another is refused when the other
+  session's agent has exited. The text went to the shell left in that pane,
+  and with `--submit` the lines of a task were run there as commands.
 - A Claude Code session opened by another session with `splitlane add
   --submit` no longer declines its task as "pasted text from an agent
   session". The task is now given to Claude Code as it starts, and text sent

@@ -596,7 +596,7 @@ Leave the key out to get the default.
 | `-32602` | Invalid params, including an unknown surface or event type |
 | `-32001` | Connecting process belongs to another user |
 | `-32002` | The app did not answer within 5 seconds |
-| `-32003` | The pane did not take the input: its process has exited, or its input queue is full. Nothing was sent |
+| `-32003` | The pane did not take the input: its process has exited, its input queue is full, or a session wrote to a session whose agent has exited and left a shell in the pane. Nothing was sent |
 | `-32004` | A rule refused the call; `error.data.reason` names it. See [Refusals](#refusals) |
 | `-32005` | A person is being asked whether the caller may write into the target; `error.data.reason` is `asked_person`. Nothing was written |
 | `-32000` | Busy, too many connections or subscriptions, or shutting down |
