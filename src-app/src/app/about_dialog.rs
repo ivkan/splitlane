@@ -36,6 +36,12 @@ fn build_timestamp() -> Option<String> {
     ))
 }
 
+const LEGAL_NOTICE: &str = "Splitlane comes with absolutely no warranty. It is free software, and \
+     you are welcome to redistribute it under the GNU General Public License, version 3 or later.";
+
+/// The text of the licence the notice names.
+const LICENSE_URL: &str = "https://www.gnu.org/licenses/gpl-3.0.html";
+
 impl SplitlaneApp {
     pub(crate) fn render_about_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let ui = crate::theme::ui_colors();
@@ -122,7 +128,7 @@ impl SplitlaneApp {
 
         let body = div()
             .w_full()
-            .h(px(225.))
+            .h(px(310.))
             .flex()
             .flex_col()
             .items_center()
@@ -162,6 +168,34 @@ impl SplitlaneApp {
                     .text_color(ui.muted)
                     .text_size(tok::text::ROW)
                     .child("© 2025 Arthur Jean, 2026 Ivan Kalashnik"),
+            )
+            // The notices the GPL asks an interactive program to show: that
+            // there is no warranty, that it may be passed on under the same
+            // licence, and where to read that licence.
+            .child(
+                div()
+                    .mt(tok::space::XL)
+                    .px(tok::space::XL)
+                    .text_center()
+                    .text_color(ui.muted)
+                    .text_size(tok::text::CAPTION)
+                    .child(LEGAL_NOTICE),
+            )
+            .child(
+                div()
+                    .id("about-license")
+                    .mt(tok::space::XS)
+                    .text_size(tok::text::CAPTION)
+                    .text_color(ui.accent)
+                    .cursor_pointer()
+                    .hover(|style| style.underline())
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        if let Err(err) = crate::external_open::open_url(LICENSE_URL) {
+                            log::warn!("about: could not open the license: {err}");
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .child("Read the license"),
             );
 
         let ok_button = div()
