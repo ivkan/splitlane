@@ -3474,10 +3474,14 @@ fn main() {
     // diagnostics (GPU selection, IPC, session restore, …) and `RUST_LOG=debug`
     // adds the per-operation diff/git trace - matching the documented
     // "RUST_LOG=info cargo run # with logging" workflow.
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
+    let logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
         "warn,wgpu_hal=off,naga=warn,gpui_macos::text_system=error,zbus=warn,tracing::span=warn",
     ))
-    .init();
+    .build();
+    let max_level = logger.filter();
+    if log::set_boxed_logger(Box::new(Releveled(logger))).is_ok() {
+        log::set_max_level(max_level);
+    }
 
     // Install the process-wide kill-on-parent-death guard BEFORE any
     // agent CLI or ConPTY spawns so children inherit the Job Object (Windows).
@@ -3812,4 +3816,92 @@ fn main() {
                 }
             }
         });
+}
+
+/// The app's logger, with one upstream line put at the level it deserves.
+///
+/// GPUI's X11 client logs "Found no xinput mouse pointers." as an error
+/// whenever the server reports no pointer that scrolls. That is every start
+/// under a virtual display, and nothing is broken by it - but an `ERROR` on
+/// each launch is what a person reading the log stops at. It cannot be
+/// filtered by module without silencing that module's real errors, so the one
+/// record is passed on as a warning.
+struct Releveled(env_logger::Logger);
+
+impl Releveled {
+    fn is_overstated(record: &log::Record) -> bool {
+        record.level() == log::Level::Error
+            && record.target().starts_with("gpui_linux")
+            && record
+                .args()
+                .as_str()
+                .is_some_and(|text| text.starts_with("Found no xinput mouse pointers"))
+    }
+}
+
+impl log::Log for Releveled {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.0.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        if Self::is_overstated(record) {
+            self.0.log(
+                &log::Record::builder()
+                    .level(log::Level::Warn)
+                    .target(record.target())
+                    .module_path(record.module_path())
+                    .file(record.file())
+                    .line(record.line())
+                    .args(format_args!(
+                        "no pointer device that scrolls was reported (expected under a virtual display)"
+                    ))
+                    .build(),
+            );
+            return;
+        }
+        self.0.log(record);
+    }
+
+    fn flush(&self) {
+        self.0.flush();
+    }
+}
+
+#[cfg(test)]
+mod releveled_tests {
+    use super::Releveled;
+
+    fn record<'a>(
+        level: log::Level,
+        target: &'a str,
+        args: std::fmt::Arguments<'a>,
+    ) -> log::Record<'a> {
+        log::Record::builder()
+            .level(level)
+            .target(target)
+            .args(args)
+            .build()
+    }
+
+    #[test]
+    fn only_the_one_upstream_line_is_put_down_a_level() {
+        let x11 = "gpui_linux::linux::x11::client";
+        assert!(Releveled::is_overstated(&record(
+            log::Level::Error,
+            x11,
+            format_args!("Found no xinput mouse pointers.")
+        )));
+        // Any other error from the same module stays an error.
+        assert!(!Releveled::is_overstated(&record(
+            log::Level::Error,
+            x11,
+            format_args!("failed to open the display")
+        )));
+        assert!(!Releveled::is_overstated(&record(
+            log::Level::Error,
+            "splitlane",
+            format_args!("Found no xinput mouse pointers.")
+        )));
+    }
 }

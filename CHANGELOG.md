@@ -8,6 +8,9 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Changed
 
+- About Splitlane states that the program comes with no warranty and may
+  be redistributed under the GNU General Public License, and links to the
+  license text.
 - The fleet skill now tells a lead agent to start `splitlane wait` in the
   same turn as it hands out a task, in the background where its harness
   reports a background command ending, and not to end its turn without one.
@@ -36,6 +39,9 @@ Notable changes to Splitlane are recorded here. The format follows
 - A resumed Claude Code session is no longer shown as working, then marked
   as having finished a run, when the app starts. It happened when the end of
   its transcript held a record too large to read.
+- On Linux under X11, "Found no xinput mouse pointers" is logged as a
+  warning with its cause, not as an error on every start under a virtual
+  display.
 - A Codex session whose `CODEX_HOME` points somewhere other than `~/.codex`
   is followed like any other. Its record was looked for in `~/.codex` only,
   so the rail never learned that a turn had ended and `splitlane wait
