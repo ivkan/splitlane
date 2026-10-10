@@ -1207,12 +1207,7 @@ impl SplitlaneApp {
                 .map(|(id, generation)| {
                     (
                         *id,
-                        crate::app::agent_state_pass::PtyFlow {
-                            generation: *generation,
-                            // `starting` is the launch's claim, not this
-                            // source's; all that source does is take it down.
-                            ours: false,
-                        },
+                        crate::app::agent_state_pass::PtyFlow::at_launch(*generation),
                     )
                 })
                 .collect(),

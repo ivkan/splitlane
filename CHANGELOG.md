@@ -6,7 +6,26 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A question Claude Code or Codex asks before it takes its first prompt -
+  whether to trust the folder, how to sign in, which settings to restart
+  with - now shows as `waiting for you` in the rail, counts in Activity and
+  sends the "needs input" notification. The row used to say `idle` over an
+  agent that would take no prompt. Scripts see `rail.status: "waiting"` with
+  the new `rail.source: "terminal"`, and `splitlane wait --until turn-end`
+  exits `5` for it.
+- `splitlane add` with a prompt now returns once the prompt has been written
+  or given up on, and says which: `opening_prompt` in its output and in
+  `rail`, exit `5` when the agent was asking a person something first, `7`
+  when no agent was there to take it. It used to exit `0` in every case.
+
 ### Fixed
+
+- A prompt given to `splitlane add --agent codex` is written. Codex reports
+  nothing before its first prompt, and the prompt waited for a report that
+  could only follow it, so it was dropped after 30 seconds with the command
+  long since answered `0`.
 
 - The context meter in a pane header no longer shows a count above its own
   ceiling, such as `334k / 228k`. The ceiling is the size the session last

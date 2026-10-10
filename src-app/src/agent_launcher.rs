@@ -499,6 +499,27 @@ impl TerminalAgent {
         matches!(self, TerminalAgent::ClaudeCode | TerminalAgent::Codex)
     }
 
+    /// Whether this agent's text cursor says where typed text would go: shown
+    /// on its input line, hidden while it asks something to be chosen from a
+    /// list.
+    ///
+    /// **Filled in from a measurement, like [`Self::interrupt_key`].** An
+    /// agent that hides the terminal's cursor and draws one of its own would
+    /// read as asking a question for the whole of its life.
+    ///
+    /// Measured in a pane that did not have the keyboard and in a session with
+    /// no pane, macOS:
+    ///
+    /// - Claude Code 2.1.296: hidden on "Is this a project you trust?", shown
+    ///   on the input line of a fresh session and of a resumed one;
+    /// - Codex 0.158: hidden on "Trust this folder?" and on "Background
+    ///   server has incompatible feature settings", shown on the input line.
+    ///
+    /// Both ask for bracketed paste before either screen is drawn.
+    pub fn cursor_marks_text_entry(self) -> bool {
+        matches!(self, TerminalAgent::ClaudeCode | TerminalAgent::Codex)
+    }
+
     /// The key that stops this agent's turn and leaves the agent running, as
     /// [`gpui::Keystroke::parse`] reads it. `None` until it has been measured.
     ///

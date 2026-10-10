@@ -853,12 +853,7 @@ impl SplitlaneApp {
         let baseline = view.read(cx).terminal.output_generation;
         self.pty_flow.insert(
             thread_id,
-            crate::app::agent_state_pass::PtyFlow {
-                generation: baseline,
-                // Not ours: `starting` is the launch's claim, not this
-                // source's. All that source does is take it back down.
-                ours: false,
-            },
+            crate::app::agent_state_pass::PtyFlow::at_launch(baseline),
         );
         if let Some(thread) = self.agents_thread_mut_by_id(thread_id) {
             thread.status = crate::project::ThreadStatus::Starting;

@@ -44,8 +44,23 @@ pub enum RailSource {
     Hook,
     /// Bytes arriving from the pane, which can only ever say `running`.
     PtyFlow,
+    /// The state of the pane's terminal: the agent's interface is up and has
+    /// no place to type. It can only ever say `waiting`, and only before the
+    /// agent's own file or a hook has spoken.
+    Terminal,
     /// Nothing has spoken for this surface yet.
     None,
+}
+
+/// What the pane's own terminal last put on a surface's row, when it was the
+/// one to speak. Neither is a turn boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalClaim {
+    None,
+    /// Output is arriving.
+    Running,
+    /// The agent asks something before it will take typed text.
+    Asking,
 }
 
 impl RailSource {
@@ -54,6 +69,7 @@ impl RailSource {
             RailSource::Detector => "detector",
             RailSource::Hook => "hook",
             RailSource::PtyFlow => "pty_flow",
+            RailSource::Terminal => "terminal",
             RailSource::None => "none",
         }
     }
@@ -65,11 +81,13 @@ impl RailSource {
     /// changing. `T3` has no turn boundary at all: output arriving proves
     /// work, and output stopping proves nothing - an agent thinking, an agent
     /// waiting for a person and an agent that has finished are all silent.
+    /// The terminal's `waiting` is on that tier too: it says a person is
+    /// needed now, and nothing about a turn.
     pub fn tier(self) -> &'static str {
         match self {
             RailSource::Detector => "T1",
             RailSource::Hook => "T2",
-            RailSource::PtyFlow | RailSource::None => "T3",
+            RailSource::PtyFlow | RailSource::Terminal | RailSource::None => "T3",
         }
     }
 }
@@ -91,6 +109,58 @@ impl RunOutcome {
             RunOutcome::Finished => "finished",
             RunOutcome::Failed => "failed",
             RunOutcome::Interrupted => "interrupted",
+        }
+    }
+}
+
+/// What became of the prompt a session was opened with.
+///
+/// The prompt is written some seconds after the call that opened the session
+/// has answered, once the agent is there to read it, and it is not written at
+/// all when the agent never gets there. Without this the caller was told the
+/// session was open and nothing else, and waited for a turn nobody started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpeningPrompt {
+    /// Not written yet: the agent is not there to read it.
+    Pending,
+    /// On the agent's input line, for a person to send.
+    Written,
+    /// Written, with its Enter behind it.
+    Submitted,
+    /// Not written, and it will not be.
+    NotWritten(NotWritten),
+}
+
+/// Why an opening prompt was not written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotWritten {
+    /// The session is waiting for a person, and what it asks is theirs to
+    /// answer. Text written there would be an answer.
+    Waiting,
+    /// Nothing showed an agent taking text in the pane. What reads the pane's
+    /// input may be a shell, and text sent to a shell is a command.
+    NoAgent,
+    /// The prompt has more than one line and the agent takes no paste, so
+    /// every line would be sent by itself.
+    NoPaste,
+}
+
+impl OpeningPrompt {
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            OpeningPrompt::Pending => "pending",
+            OpeningPrompt::Written => "written",
+            OpeningPrompt::Submitted => "submitted",
+            OpeningPrompt::NotWritten(_) => "not_written",
+        }
+    }
+
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            OpeningPrompt::NotWritten(NotWritten::Waiting) => Some("waiting"),
+            OpeningPrompt::NotWritten(NotWritten::NoAgent) => Some("no_agent"),
+            OpeningPrompt::NotWritten(NotWritten::NoPaste) => Some("no_paste"),
+            _ => None,
         }
     }
 }
@@ -150,6 +220,9 @@ pub struct RailRecord {
     /// some other route and the next pass it can stand beside a word other
     /// than `idle`. Read it through [`Self::shells_beside_idle`].
     pub background_shells: u32,
+    /// What became of the prompt this session was opened with. `None` for a
+    /// session opened without one.
+    pub opening_prompt: Option<OpeningPrompt>,
 }
 
 impl RailRecord {
@@ -183,6 +256,7 @@ pub struct RailSnapshot {
     pub background_shells: u32,
     pub exited: bool,
     pub message: Option<String>,
+    pub opening_prompt: Option<OpeningPrompt>,
     /// Where the agent's own record of the conversation is, for a client that
     /// reads the last answer from it: the agent's binary name, the session id
     /// and the directory the session was started in. The client reads the
@@ -232,6 +306,8 @@ impl RailSnapshot {
                 .message
                 .as_deref()
                 .filter(|_| self.status == ThreadStatus::WaitingForInput),
+            "opening_prompt": self.opening_prompt.map(OpeningPrompt::wire_str),
+            "opening_prompt_reason": self.opening_prompt.and_then(OpeningPrompt::reason),
             "agent": self.agent,
             "session_id": self.session_id,
             "cwd": self.cwd,
@@ -436,6 +512,7 @@ mod tests {
             background_shells: 0,
             exited: false,
             message: None,
+            opening_prompt: None,
             agent: None,
             session_id: None,
             cwd: None,
@@ -459,10 +536,26 @@ mod tests {
     }
 
     #[test]
+    fn an_opening_prompts_fate_travels_as_a_word_and_a_reason() {
+        let mut snap = snapshot(ThreadStatus::Idle, 0);
+        assert_eq!(snap.to_json()["opening_prompt"], serde_json::Value::Null);
+        snap.opening_prompt = Some(OpeningPrompt::Submitted);
+        assert_eq!(snap.to_json()["opening_prompt"], "submitted");
+        assert_eq!(
+            snap.to_json()["opening_prompt_reason"],
+            serde_json::Value::Null
+        );
+        snap.opening_prompt = Some(OpeningPrompt::NotWritten(NotWritten::Waiting));
+        assert_eq!(snap.to_json()["opening_prompt"], "not_written");
+        assert_eq!(snap.to_json()["opening_prompt_reason"], "waiting");
+    }
+
+    #[test]
     fn the_tier_follows_the_source() {
         assert_eq!(RailSource::Detector.tier(), "T1");
         assert_eq!(RailSource::Hook.tier(), "T2");
         assert_eq!(RailSource::PtyFlow.tier(), "T3");
+        assert_eq!(RailSource::Terminal.tier(), "T3");
         assert_eq!(RailSource::None.tier(), "T3");
     }
 

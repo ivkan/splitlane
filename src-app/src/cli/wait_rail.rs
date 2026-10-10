@@ -216,9 +216,10 @@ struct Track {
 ///    `settled`, not while a background command of the agent's is alive -
 ///    the wait carries on until the session is idle with none left;
 /// 3. a failed run or an agent that is gone is a failure;
-/// 4. a surface nothing can report a turn ending for is refused - after the
+/// 4. waiting for a person returns at once unless `through_waiting`, whatever
+///    the source: a person being needed is not a claim about a turn;
+/// 5. a surface nothing can report a turn ending for is refused - after the
 ///    grace when it never had such a source, at once when it lost one;
-/// 5. waiting for a person returns at once unless `through_waiting`;
 /// 6. a surface with no turn in flight is given the grace to start one, unless
 ///    the caller named the baseline, which is the proof that a prompt was sent.
 ///
@@ -266,6 +267,12 @@ fn decide_turn_end(
     if rail.exited || (status == "failed" && (ended || !explicit)) {
         return Step::Done(Outcome::Failed);
     }
+    // Before the tier: a question an agent asks ahead of its first prompt is
+    // read off the pane's terminal, which is on the lowest tier, and a caller
+    // told "no turn signal" about it would not know a person is needed.
+    if status == "waiting" && !options.through_waiting {
+        return Step::Done(Outcome::Waiting);
+    }
     if rail.tier == "T3" {
         if track.saw_turn_signal {
             return Step::Done(Outcome::Degraded);
@@ -279,11 +286,7 @@ fn decide_turn_end(
     }
     track.saw_turn_signal = true;
     if status == "waiting" {
-        return if options.through_waiting {
-            Step::Continue
-        } else {
-            Step::Done(Outcome::Waiting)
-        };
+        return Step::Continue;
     }
     if !explicit && !track.saw_turn && elapsed >= options.start_grace {
         return Step::Done(Outcome::NoTurn);
@@ -739,6 +742,21 @@ mod tests {
         });
         assert_eq!(decide(&asking, Some(7), SOON), Step::Done(Outcome::Waiting));
         assert_eq!(Outcome::Waiting.exit_code(), EXIT_NEEDS_PERSON);
+    }
+
+    /// An agent asking whether to trust the folder has no file and no hook
+    /// frame yet, so the word comes from the lowest tier. It is still a
+    /// person being needed, and not "no turn signal".
+    #[test]
+    fn a_question_before_the_first_prompt_is_returned_on_the_lowest_tier() {
+        assert_eq!(
+            decide(&rail("waiting", "T3", 0), Some(0), SOON),
+            Step::Done(Outcome::Waiting)
+        );
+        assert_eq!(
+            decide(&rail("waiting", "T3", 0), Some(0), LATE),
+            Step::Done(Outcome::Waiting)
+        );
     }
 
     /// The default is unchanged: a turn that ended is the end, whatever the

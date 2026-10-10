@@ -435,6 +435,9 @@ impl Modes {
     pub const MOUSE_DRAG: Self = Self(1 << 9);
     pub const MOUSE_MOTION: Self = Self(1 << 10);
     pub const KITTY_KEYBOARD: Self = Self(1 << 11);
+    /// The program in the pane shows the text cursor (DECTCEM, `ESC[?25h`).
+    /// A program that hides it is not taking typed text at that moment.
+    pub const SHOW_CURSOR: Self = Self(1 << 12);
     pub const MOUSE_MODE: Self =
         Self(Self::MOUSE_REPORT_CLICK.0 | Self::MOUSE_DRAG.0 | Self::MOUSE_MOTION.0);
 
@@ -501,6 +504,9 @@ impl From<AlacTermMode> for Modes {
         }
         if m.intersects(AlacTermMode::KITTY_KEYBOARD_PROTOCOL) {
             out = out | Modes::KITTY_KEYBOARD;
+        }
+        if m.contains(AlacTermMode::SHOW_CURSOR) {
+            out = out | Modes::SHOW_CURSOR;
         }
         out
     }
@@ -957,6 +963,12 @@ mod tests {
         let alt = Modes::from(AlacTermMode::ALT_SCREEN);
         assert!(alt.contains(Modes::ALT_SCREEN));
         assert!(!alt.contains(Modes::SGR_MOUSE));
+    }
+
+    #[test]
+    fn the_cursor_mode_maps() {
+        assert!(Modes::from(AlacTermMode::SHOW_CURSOR).contains(Modes::SHOW_CURSOR));
+        assert!(!Modes::from(AlacTermMode::BRACKETED_PASTE).contains(Modes::SHOW_CURSOR));
     }
 
     #[test]

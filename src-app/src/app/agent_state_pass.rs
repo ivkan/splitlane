@@ -43,7 +43,7 @@
 use std::time::Duration;
 
 use crate::SplitlaneApp;
-use crate::agent_state::{AgentProcess, Worker, classify};
+use crate::agent_state::{AgentProcess, TextEntry, Worker, classify};
 use crate::ai_types::AgentState;
 
 /// Long enough for the first agent surfaces to have mounted their PTYs and for
@@ -129,6 +129,9 @@ struct StateTarget {
     /// read. An idle session's file does not grow, so a pass that finds the
     /// same length has nothing new to learn and skips the parse.
     turn_end_len: Option<u64>,
+    /// Whether the program in the pane is taking typed text, read off the
+    /// pane's terminal modes as this pass began.
+    text_entry: TextEntry,
     /// The surface's name, for the trace and nothing else.
     ///
     /// Filled only when [`TRACE`] logging is actually on, because a pass that
@@ -188,6 +191,10 @@ struct StateReading {
     /// What the agent's own status says it is waiting for, when the state is
     /// a wait and the source gives words for it. Only the status file does.
     waiting_for: Option<String>,
+    /// Echoed back from the target, like the output count.
+    text_entry: TextEntry,
+    /// The agent's own process was found under the pane by this pass.
+    agent_found: bool,
 }
 
 /// What one read of a session file's tail told the pass, beyond the state.
@@ -451,6 +458,7 @@ impl SplitlaneApp {
                 baseline: self.worker_baselines.get(&thread_id).cloned(),
                 session_id: thread.session_id.clone(),
                 output_generation: view.terminal.output_generation,
+                text_entry: TextEntry::from_modes(view.terminal.session_backend().modes()),
                 cwd: thread.cwd.clone(),
                 reads_status_file: thread.terminal_agent
                     == Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
@@ -534,13 +542,16 @@ impl SplitlaneApp {
             if let Some(baseline) = reading.baseline {
                 self.worker_baselines.insert(reading.thread_id, baseline);
             }
-            let previous_generation = self
-                .pty_flow
-                .get(&reading.thread_id)
-                .map(|flow| flow.generation);
+            let previous = self.pty_flow.get(&reading.thread_id).copied();
+            let previous_generation = previous.map(|flow| flow.generation);
             let mut flow = PtyFlow {
                 generation: reading.output_generation,
                 ours: false,
+                still_since: previous
+                    .filter(|flow| flow.generation == reading.output_generation)
+                    .map_or(read_at, |flow| flow.still_since),
+                asking: false,
+                agent_found: reading.agent_found,
             };
             for container in &mut self.workspaces {
                 if let Some(thread) = container
@@ -800,10 +811,7 @@ impl SplitlaneApp {
                         }
                     }
                     thread.rail.turn_marker = watch.current.as_ref().map(|end| end.marker.clone());
-                    let was_ours = self
-                        .pty_flow
-                        .get(&reading.thread_id)
-                        .is_some_and(|flow| flow.ours);
+                    let was_ours = previous.is_some_and(|flow| flow.ours);
                     let before = thread.status;
                     let (moved, ours) = deposit_pty_flow(
                         thread,
@@ -828,6 +836,53 @@ impl SplitlaneApp {
                     );
                     changed |= moved;
                     flow.ours = ours;
+                    // Last, and only where neither of the sources that report
+                    // themselves speaks: an agent standing on a question it
+                    // asks before it has a file or a hook frame to its name.
+                    let still_for = read_at.saturating_duration_since(flow.still_since);
+                    let asks = crate::agent_state::asks_before_taking_text(
+                        thread.terminal_agent.is_some_and(
+                            crate::agent_launcher::TerminalAgent::cursor_marks_text_entry,
+                        ),
+                        if reading.agent_found {
+                            AgentProcess::Found
+                        } else {
+                            AgentProcess::NotSeen
+                        },
+                        reading.text_entry,
+                        still_for,
+                    );
+                    let before = thread.status;
+                    let (moved, asking) = deposit_terminal_question(
+                        thread,
+                        asks,
+                        previous.is_some_and(|flow| flow.asking),
+                    );
+                    log::debug!(
+                        target: TRACE,
+                        "#{} terminal: text entry {:?}, still for {still_for:?}, agent found {}: \
+                         {before:?} -> {:?} ({})",
+                        reading.thread_id,
+                        reading.text_entry,
+                        reading.agent_found,
+                        thread.status,
+                        if asking {
+                            "asks before it takes text"
+                        } else {
+                            "claims nothing"
+                        },
+                    );
+                    if moved && asking {
+                        // Announced like any wait this pass is the first to
+                        // learn of. There are no words for it: the question
+                        // is on the agent's screen and nowhere else.
+                        new_waits.push(NewWait {
+                            thread_id: reading.thread_id,
+                            waiting_for: None,
+                        });
+                    }
+                    changed |= moved;
+                    flow.asking = asking;
                 }
             }
             self.pty_flow.insert(reading.thread_id, flow);
@@ -970,7 +1025,7 @@ impl SplitlaneApp {
             self.notification_subject_of_session(ws_id, wait.thread_id, title, true, cx);
         log::debug!(
             target: TRACE,
-            "#{} is waiting, and the detector is the first to know: announcing (seen={seen})",
+            "#{} is waiting, and this pass is the first to know: announcing (seen={seen})",
             wait.thread_id,
         );
         let shown = crate::app::ipc_handler::fire_attention_notification(
@@ -1438,6 +1493,44 @@ pub(crate) struct PtyFlow {
     /// the same rule `deposit` follows for the detector, and for the same
     /// reason.
     pub(crate) ours: bool,
+    /// When the count was last seen to have moved. How long the pane has
+    /// printed nothing is measured from here.
+    pub(crate) still_since: std::time::Instant,
+    /// `true` when the `waiting` on this surface was put up from the state of
+    /// the pane's terminal ([`deposit_terminal_question`]). The same rule as
+    /// [`Self::ours`]: only what was put up from there is taken back.
+    pub(crate) asking: bool,
+    /// The agent's own process was under the pane at the last pass. What an
+    /// opening prompt waits for where nothing else speaks for the agent.
+    pub(crate) agent_found: bool,
+}
+
+impl PtyFlow {
+    /// The record for a surface whose launch command has just been issued,
+    /// with the count the first output is measured against.
+    pub(crate) fn at_launch(generation: u64) -> Self {
+        Self {
+            generation,
+            // Not ours: `starting` is the launch's claim, not this source's.
+            // All this source does is take it back down.
+            ours: false,
+            still_since: std::time::Instant::now(),
+            asking: false,
+            agent_found: false,
+        }
+    }
+
+    /// What the pane's terminal put on the row, if it was the one to speak.
+    pub(crate) fn claim(&self) -> crate::rail_state::TerminalClaim {
+        use crate::rail_state::TerminalClaim;
+        if self.asking {
+            TerminalClaim::Asking
+        } else if self.ours {
+            TerminalClaim::Running
+        } else {
+            TerminalClaim::None
+        }
+    }
 }
 
 /// The third source: bytes came out of that PTY, so something in there is
@@ -1539,6 +1632,44 @@ fn deposit_pty_flow(
         return (true, false);
     }
     (false, was_ours)
+}
+
+/// The fourth source: the agent's interface is up, has no place to type, and
+/// has stood still - it is asking something before it will take a prompt.
+///
+/// `asks` is [`crate::agent_state::asks_before_taking_text`] for this pass.
+/// Returns `(status moved, this source owns the status now)`.
+///
+/// Ranked like [`deposit_pty_flow`], and for the same reasons: it speaks only
+/// where neither the detector nor a hook does, it writes only over `Idle`, and
+/// it takes back only what it put up. Unlike that source it may say `waiting`,
+/// because it does not read silence: a hidden text cursor is something the
+/// agent did.
+fn deposit_terminal_question(
+    thread: &mut crate::project::Thread,
+    asks: bool,
+    was_ours: bool,
+) -> (bool, bool) {
+    use crate::project::ThreadStatus;
+    if thread.detector_read_at.is_some() || thread.hook_has_spoken {
+        // The status is a better source's now, whatever stood here before.
+        return (false, false);
+    }
+    if asks {
+        if thread.status == ThreadStatus::Idle {
+            thread.status = ThreadStatus::WaitingForInput;
+            return (true, true);
+        }
+        return (
+            false,
+            was_ours && thread.status == ThreadStatus::WaitingForInput,
+        );
+    }
+    if was_ours && thread.status == ThreadStatus::WaitingForInput {
+        thread.status = ThreadStatus::Idle;
+        return (true, false);
+    }
+    (false, false)
 }
 
 /// Who speaks for this surface instead of the PTY-flow source, or `None` when
@@ -1716,6 +1847,8 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     turn_end,
                     background_shell,
                     waiting_for,
+                    text_entry: target.text_entry,
+                    agent_found: true,
                 };
             }
 
@@ -1743,6 +1876,8 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     turn_end: None,
                     background_shell: false,
                     waiting_for: None,
+                    text_entry: target.text_entry,
+                    agent_found: agent_pid.is_some(),
                 };
             };
             // Each agent's own reader, over its own file's shape. What comes
@@ -1775,6 +1910,8 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     turn_end: None,
                     background_shell: false,
                     waiting_for: None,
+                    text_entry: target.text_entry,
+                    agent_found: agent_pid.is_some(),
                 };
             };
             let (agent, worker) = match (&snapshot, &shim_dir) {
@@ -1873,6 +2010,8 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                 // any is alive, and it did not answer for this surface.
                 background_shell: false,
                 waiting_for: None,
+                text_entry: target.text_entry,
+                agent_found: agent_pid.is_some(),
             }
         })
         .collect();
@@ -1889,7 +2028,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        RUN_END_CONFIRM, confirm_run_end, deposit, deposit_pty_flow, withdraw_starting_if_unwatched,
+        RUN_END_CONFIRM, confirm_run_end, deposit, deposit_pty_flow, deposit_terminal_question,
+        withdraw_starting_if_unwatched,
     };
 
     fn surface() -> Thread {
@@ -2204,6 +2344,80 @@ mod tests {
             deposit_pty_flow(&mut t, previous, 41, false);
             assert_ne!(t.status, ThreadStatus::WaitingForInput, "{previous:?}");
         }
+    }
+
+    /// An agent standing on a question of its own shows `waiting`, and the
+    /// word goes when the question does.
+    #[test]
+    fn a_question_before_the_first_prompt_is_a_wait_until_it_is_answered() {
+        let mut t = surface();
+        let (moved, ours) = deposit_terminal_question(&mut t, true, false);
+        assert!(moved && ours);
+        assert_eq!(t.status, ThreadStatus::WaitingForInput);
+        // The next pass sees the same thing: the claim stands, nothing moves.
+        assert_eq!(deposit_terminal_question(&mut t, true, true), (false, true));
+        // The person answered: the screen changed, the claim is taken back.
+        assert_eq!(
+            deposit_terminal_question(&mut t, false, true),
+            (true, false)
+        );
+        assert_eq!(t.status, ThreadStatus::Idle);
+    }
+
+    /// It writes only over `idle`, like the byte counter: a launch still in
+    /// progress and a run somebody else reported are not its to replace.
+    #[test]
+    fn a_question_is_never_put_over_another_word() {
+        for standing in [
+            ThreadStatus::Starting,
+            ThreadStatus::Thinking,
+            ThreadStatus::Failed,
+        ] {
+            let mut t = surface();
+            t.status = standing;
+            assert_eq!(
+                deposit_terminal_question(&mut t, true, false),
+                (false, false)
+            );
+            assert_eq!(t.status, standing);
+        }
+    }
+
+    /// A `waiting` the detector or a hook put up is theirs to end. This
+    /// source did not put it there and does not take it down.
+    #[test]
+    fn a_wait_somebody_else_reported_is_left_alone() {
+        let mut t = surface();
+        t.status = ThreadStatus::WaitingForInput;
+        assert_eq!(
+            deposit_terminal_question(&mut t, false, false),
+            (false, false)
+        );
+        assert_eq!(t.status, ThreadStatus::WaitingForInput);
+    }
+
+    /// Once the agent's own file or a hook speaks, the status is that
+    /// source's, and what the terminal shows decides nothing.
+    #[test]
+    fn a_source_that_reports_itself_outranks_the_terminal() {
+        let mut read = surface();
+        read.detector_read_at = Some(std::time::Instant::now());
+        assert_eq!(
+            deposit_terminal_question(&mut read, true, false),
+            (false, false)
+        );
+        assert_eq!(read.status, ThreadStatus::Idle);
+
+        // A claim that was standing is dropped without touching the word the
+        // better source has written since.
+        let mut hooked = surface();
+        hooked.hook_has_spoken = true;
+        hooked.status = ThreadStatus::Thinking;
+        assert_eq!(
+            deposit_terminal_question(&mut hooked, false, true),
+            (false, false)
+        );
+        assert_eq!(hooked.status, ThreadStatus::Thinking);
     }
 
     /// A surface the detector answers for is not this source's to touch: the

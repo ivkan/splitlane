@@ -109,13 +109,14 @@ interrupted: there is no answer to read, so say so and ask what the session
 should do next rather than sending the task again - and `4` on timeout: wait
 again, do not send the task again.
 
-Exit `7` straight after `add --submit`, on an agent section 2 lists as `T1`
-or `T2` and with `"session_id": null` in `status --json`, usually means the
-agent stopped at a question of its own before it took the task - whether to
-trust the folder, whether to update. The state says `idle` all the same;
-`splitlane read` shows the question. The answer is the person's: pass the
-question on and ask them to answer it in the session's pane. Once they have,
-send the task again - it was not kept.
+`add` with a prompt exits `5` too, when the agent stopped at a question of
+its own before it took the task - whether to trust the folder, how to sign
+in. The session is open and its state is `waiting`, but **the task was not
+written and is not kept**. `splitlane read` shows the question. The answer is
+the person's: pass the question on and ask them to answer it in the session's
+pane. Once they have, send the task with `send --submit` and start the wait.
+`add` exiting `7` means the session is open and nothing showed an agent there
+to take the task; `read` shows what is in the pane.
 
 **Exit `0` means the turn is over, not that the task is done.** Always read
 the answer. A session may end its turn with a question written as ordinary
@@ -368,9 +369,9 @@ nothing switched on.
 | 1 | runtime error (instance down, IPC failure, write refused) |
 | 3 | target not found or ambiguous - re-check `splitlane ls` |
 | 4 | `wait` reached its deadline; `interrupt` could not confirm the stop |
-| 5 | `wait --until turn-end`: the session is asking a person a question |
+| 5 | `wait --until turn-end`: the session is asking a person a question. `add`: it asked one before taking the task, which was not written |
 | 6 | `wait --until turn-end`: the run failed, or the agent exited |
-| 7 | the agent gives no signal for what was asked: no turn end, or no interrupt key |
+| 7 | the agent gives no signal for what was asked: no turn end, or no interrupt key. `add`: the session opened and the task was not written |
 | 8 | a rule refused the call and nothing was done - tell the person, do not retry |
 | 9 | the person is being asked whether you may write into a session they opened |
 | 10 | `wait --until turn-end`: the turn was stopped before it finished; no answer to read |

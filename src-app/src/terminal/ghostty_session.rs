@@ -3207,6 +3207,9 @@ pub(super) fn modes_from_ghostty(modes: ghostty::Modes) -> Modes {
     if modes.kitty_keyboard {
         result = result | Modes::KITTY_KEYBOARD;
     }
+    if modes.cursor_visible {
+        result = result | Modes::SHOW_CURSOR;
+    }
     result
 }
 

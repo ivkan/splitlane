@@ -349,6 +349,81 @@ pub(crate) enum AgentProcess {
     NotSeen,
 }
 
+/// Whether the program in a pane is taking typed text, as the pane's own
+/// terminal state says it.
+///
+/// Read off two private modes the program sets for its own sake, so nothing
+/// here is a reading of what is drawn. Bracketed paste says an interface has
+/// taken the terminal over; the text cursor says whether that interface has a
+/// place to type into at this moment. A list to choose from hides the cursor,
+/// and an input line shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextEntry {
+    /// No interface has taken the terminal over: a shell, an agent that has
+    /// not drawn itself yet, or one that never asks for bracketed paste.
+    /// Nothing follows from the cursor here.
+    NoInterface,
+    /// An interface is up and shows the text cursor.
+    Open,
+    /// An interface is up and hides the text cursor.
+    Closed,
+}
+
+impl TextEntry {
+    pub(crate) fn from_modes(modes: crate::terminal::types::Modes) -> Self {
+        use crate::terminal::types::Modes;
+        if !modes.contains(Modes::BRACKETED_PASTE) {
+            TextEntry::NoInterface
+        } else if modes.contains(Modes::SHOW_CURSOR) {
+            TextEntry::Open
+        } else {
+            TextEntry::Closed
+        }
+    }
+}
+
+/// How long a pane has to stand still with its interface up and no place to
+/// type before that is read as a question.
+///
+/// Two passes of the two-second state pass. Neither agent this is read for was
+/// seen in that state for even one pass on its way to an input line: Claude
+/// Code 2.1.296 shows the cursor within a second of drawing itself, a fresh
+/// start and a resumed 38 MB session alike, and Codex 0.158 repaints its input
+/// line for about fifteen seconds with the cursor shown throughout.
+pub(crate) const QUESTION_STANDS: Duration = Duration::from_secs(4);
+
+/// Whether an agent nothing else speaks for is standing on a question of its
+/// own: whether to trust the folder, which settings to restart with, how to
+/// sign in.
+///
+/// Such a question is asked before the agent has a status file, a transcript
+/// or a hook frame to its name, so none of the other sources can see it, and
+/// the row said `idle` over an agent that would take no prompt.
+///
+/// Four things have to hold, and each is something positive:
+///
+/// - the agent is one whose cursor was measured to mean this
+///   ([`crate::agent_launcher::TerminalAgent::cursor_marks_text_entry`]);
+/// - its own process is under the pane, so this is not a shell;
+/// - its interface is up and has no place to type ([`TextEntry::Closed`]);
+/// - the pane has printed nothing for [`QUESTION_STANDS`], so this is not a
+///   screen on its way to another one.
+///
+/// What is on the screen is never read. A question this build has not seen
+/// before is recognised like one it has, and a wording that changes in the
+/// next release changes nothing here.
+pub(crate) fn asks_before_taking_text(
+    cursor_marks_text_entry: bool,
+    agent: AgentProcess,
+    entry: TextEntry,
+    still_for: Duration,
+) -> bool {
+    cursor_marks_text_entry
+        && agent == AgentProcess::Found
+        && entry == TextEntry::Closed
+        && still_for >= QUESTION_STANDS
+}
+
 /// How a tool does its work, which is what decides how a hanging call reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolExecution {
@@ -608,6 +683,80 @@ pub(crate) fn classify(probe: &TranscriptProbe, worker: Worker, agent: AgentProc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_still_interface_with_no_place_to_type_is_a_question() {
+        assert!(asks_before_taking_text(
+            true,
+            AgentProcess::Found,
+            TextEntry::Closed,
+            QUESTION_STANDS,
+        ));
+    }
+
+    /// Every input is needed; dropping any one leaves no claim.
+    #[test]
+    fn a_question_is_claimed_only_with_all_four_facts() {
+        let asks =
+            |measured, agent, entry, still| asks_before_taking_text(measured, agent, entry, still);
+        // An agent whose cursor was never measured draws its own, perhaps.
+        assert!(!asks(
+            false,
+            AgentProcess::Found,
+            TextEntry::Closed,
+            QUESTION_STANDS
+        ));
+        // A shell, or an agent that is gone.
+        assert!(!asks(
+            true,
+            AgentProcess::NotSeen,
+            TextEntry::Closed,
+            QUESTION_STANDS
+        ));
+        // An input line.
+        assert!(!asks(
+            true,
+            AgentProcess::Found,
+            TextEntry::Open,
+            QUESTION_STANDS
+        ));
+        // Nothing drawn yet.
+        assert!(!asks(
+            true,
+            AgentProcess::Found,
+            TextEntry::NoInterface,
+            QUESTION_STANDS
+        ));
+        // A screen that is still changing, or has only just stopped.
+        assert!(!asks(
+            true,
+            AgentProcess::Found,
+            TextEntry::Closed,
+            QUESTION_STANDS - Duration::from_millis(1),
+        ));
+    }
+
+    #[test]
+    fn text_entry_is_read_off_two_modes() {
+        use crate::terminal::types::Modes;
+        assert_eq!(
+            TextEntry::from_modes(Modes::empty()),
+            TextEntry::NoInterface
+        );
+        // A shell shows its cursor and has taken nothing over.
+        assert_eq!(
+            TextEntry::from_modes(Modes::SHOW_CURSOR),
+            TextEntry::NoInterface
+        );
+        assert_eq!(
+            TextEntry::from_modes(Modes::BRACKETED_PASTE),
+            TextEntry::Closed
+        );
+        assert_eq!(
+            TextEntry::from_modes(Modes::BRACKETED_PASTE | Modes::SHOW_CURSOR),
+            TextEntry::Open
+        );
+    }
 
     fn call(name: &str, secs: u64) -> OpenCall {
         OpenCall {

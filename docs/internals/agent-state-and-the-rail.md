@@ -742,6 +742,87 @@ that says the agent is waiting on a command. With that, the waiting case reads
 as `running`, the dev server as plain `idle`, and the two-minute guess goes.
 
 
+## A question before the first prompt
+
+**An agent can stop on a question before anything speaks for it, and the row
+said `idle`.** Claude Code asks whether the folder is trusted before it writes
+its status file. Codex asks the same, and on other days asks which settings its
+background server should restart with, before it has a rollout or has sent a
+hook frame. All of the sources above are silent at that moment, so the session
+read `idle`, source `none`, with a person being waited on. A session opened by
+another session stood there until somebody looked at the pane, and the session
+that opened it was told its prompt had been taken.
+
+**The fourth source is the pane's own terminal, and it reads two modes, never
+the screen.** `agent_state::asks_before_taking_text` wants four things, each of
+them positive:
+
+- the agent is one whose cursor was measured to mean this
+  (`TerminalAgent::cursor_marks_text_entry`: Claude Code and Codex);
+- its own process is under the pane, so this is not a shell;
+- it has asked for bracketed paste, so an interface has taken the terminal
+  over, and it hides the text cursor, so that interface has no place to type
+  (`TextEntry::Closed`);
+- the pane has printed nothing for `QUESTION_STANDS`, four seconds, so this is
+  not a screen on its way to another one.
+
+Measured on macOS in a pane without the keyboard and in a session with no pane:
+Claude Code 2.1.296 hides the cursor on its trust question and shows it on the
+input line, for a fresh session and for a resumed 38 MB one; Codex 0.158 hides
+it on its trust question and on its background-server question and shows it on
+the input line. Neither was seen with the cursor hidden for a whole pass on its
+way to the input line, and Codex repaints its input line for about fifteen
+seconds after launch with the cursor shown throughout.
+
+**Why this is not reading silence.** A still counter says nothing, and the byte
+counter above is forbidden from reading it as a wait. This source does not read
+the counter that way either: the claim is the hidden cursor on a live
+interface, which is something the agent did, and stillness only rules out a
+screen that is still being drawn. It is the same shape as the rule for an open
+`Write` call: a positive fact, plus enough time for the innocent explanation to
+have passed.
+
+**Why not the text.** Matching what the question says was the other candidate
+and it is the one this project left behind: a list of known wordings is a
+contract with every vendor's next release. The second Codex question above was
+found while measuring the first, and no list would have had it. The modes are
+what the program sets for its own drawing, so they are owed to nobody.
+
+**It is ranked last and takes back only what it put up**
+(`agent_state_pass::deposit_terminal_question`). It speaks only where neither
+the detector nor a hook does, writes only over `idle`, and withdraws to `idle`
+when any of the four facts stops holding - the person answered, the screen
+moved. Once the status file appears or a frame arrives, the status is that
+source's. So for Claude Code it covers the seconds before the input line, and
+for Codex the time before its first prompt. A Codex with no hook frames at all
+keeps it for the life of the session, which also catches an approval prompt in
+the middle of a turn there.
+
+**The wait is announced once, by the pass, with no words.** There is nothing to
+quote: the question is on the agent's screen and nowhere else, so the
+notification names the session and `message` stays empty.
+
+**It is on the lowest tier and is still returned as a wait.** The source is
+`terminal`, tier `T3`: it says a person is needed now and nothing about a turn.
+`wait --until turn-end` used to refuse `T3` before it looked at the word, which
+would have told a caller "no turn signal" about a session standing on a
+question. The wait now returns `waiting` first, on any tier.
+
+**Closing such a session loses no turn.** `surface.close` refuses a session
+that is `running` or `waiting` unless the caller says the turn may be stopped,
+and stopping needs a key that is known for one agent only. A question before
+the first prompt is no turn (`orchestration::closing_loses_a_turn`), so the
+session that opened it can close it.
+
+What is not covered: the other fourteen agents, whose cursors nobody has
+measured, and Windows and Linux, where neither agent was run for this. An agent
+that hides the terminal's cursor and draws its own would read as asking for the
+whole of its life, which is why the list is filled from measurement. What would
+re-open the rule is either agent showing a still screen with a hidden cursor
+that is not a question: a splash that waits for nothing, or an input line whose
+cursor it draws itself.
+
+
 ## What a script is told
 
 **`surface.status` carries the rail's own word, beside the hook's.** It used to
@@ -836,9 +917,10 @@ is dropped a few seconds after a turn ends), and its tier is `T2`. A shell no
 hook has reported from has `rail: null`.
 
 **`wait --until turn-end` refuses a surface on the lowest tier instead of
-waiting on it.** Nothing that speaks for such a surface can say a turn ended,
-so the only thing a wait could return on is output stopping - the same reading
-the rail refuses for itself. It gives the surface ten seconds first, because a
+waiting on it**, unless that surface is waiting for a person, which is
+returned first on any tier. Nothing that speaks for such a surface can say a
+turn ended, so the only thing a wait could return on is output stopping - the
+same reading the rail refuses for itself. It gives the surface ten seconds first, because a
 session's first hook frame arrives with its first prompt and a wait issued
 right after a prompt can be looking at a surface that has not been spoken for
 yet. A surface that had a better source earlier in the same wait and lost it
@@ -851,6 +933,31 @@ and there is no answer. It was `finished` and exit 0 at first, with the word
 only under `rail.last_outcome`; a caller waiting on a session whose turn a
 person stopped by hand then went on to read an answer that was not there, or
 the one from the turn before.
+
+**A session's opening prompt has a fate, and the caller is told it.**
+`surface.add_agent` answers at once; the prompt is written seconds later, when
+the agent is there to read it, and was dropped with a line in the log when it
+never was. The caller had exit `0` either way. For Codex "never" was every
+time: the prompt waited for the agent's own file or a hook frame, and Codex
+produces neither before its first prompt, so the wait was for a sign that
+could only follow the thing waiting. Found by opening a Codex session with a
+prompt in a folder it already trusted and watching the input line stay empty.
+
+`orchestration::opening_prompt_step` now lets the prompt go on either of two
+signs: something speaks for the agent, as before, or - for the two agents
+whose cursor was measured - the agent's process is under the pane and its
+interface shows a text cursor. The process is what keeps the prompt out of a
+shell, which shows a cursor and takes pastes too. A session that is `waiting`
+is given up on at once and the prompt is **not kept for later**: text that
+appears in a pane minutes after it was sent, when somebody finally answers
+the question, is a surprise to whoever is typing there by then. The caller
+sends it again when the person has answered.
+
+What became of it is `rail.opening_prompt` (`pending`, `written`,
+`submitted`, `not_written` with a reason), and `splitlane add` waits for it
+and exits `5` for a question and `7` when no agent was there. An agent that
+is neither of the two measured ones and has no hook reporting still gets
+`no_agent`, which is what happened to it before, said aloud.
 
 **The last answer is read by the CLI, from the agent's own file, never from
 scrollback.** `surface.status` says where the conversation is (`rail.agent`,

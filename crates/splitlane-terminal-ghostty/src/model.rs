@@ -176,6 +176,7 @@ pub struct Modes {
     pub sgr_mouse: bool,
     pub utf8_mouse: bool,
     pub kitty_keyboard: bool,
+    pub cursor_visible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

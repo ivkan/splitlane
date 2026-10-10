@@ -55,18 +55,39 @@ configuration files:
   the pane it is called from. The session goes into an empty pane, or a new
   pane where one fits, and otherwise into the rail with no pane; it never
   takes the place of what a pane is showing. `--parked` asks for the rail,
-  `--pane` for a pane or a refusal. A prompt is written once the agent is
-  there to read it and is not submitted without `--submit`. The answer
-  carries `runs_ended`, the number to pass to `wait --after`. One session
-  has at most eight sessions it opened running at a time, and a session
-  that was itself opened by one opens none.
+  `--pane` for a pane or a refusal. The answer carries `runs_ended`, the
+  number to pass to `wait --after`. One session has at most eight sessions
+  it opened running at a time, and a session that was itself opened by one
+  opens none.
+
+  A prompt is written once the agent is there to read it and is not
+  submitted without `--submit`. With a prompt, `add` returns when that has
+  happened or been given up on, usually a few seconds after the session
+  opened, and says which in `opening_prompt`:
+
+  | `opening_prompt` | `opening_prompt_reason` | Exit | Meaning |
+  | --- | --- | --- | --- |
+  | `submitted` | | `0` | Written, and its Enter sent after it |
+  | `written` | | `0` | On the agent's input line, not submitted |
+  | `not_written` | `waiting` | `5` | The agent is asking a person something before it takes a prompt, such as whether to trust the folder. Nothing was written: an Enter there would be an answer. `read` shows the question. The prompt is not kept; once the person has answered, send it with `send --submit` |
+  | `not_written` | `no_agent` | `7` | Nothing showed an agent taking text in the pane within 30 seconds. What reads the pane's input may be a shell, and text sent to a shell is a command |
+  | `not_written` | `no_paste` | `7` | The prompt has more than one line and the agent takes no paste, so each line would have been sent by itself |
+  | `pending` | | `4` | Not decided within 60 seconds. `rail.opening_prompt` in `status` says what became of it |
+
+  The session is open in every one of these cases, and its ids are printed.
+  An agent is taken to be there once its own status file or a hook has
+  reported, or, for Claude Code and Codex, once its process is running in
+  the pane and it shows a text cursor. Any other agent with no hook
+  installed gets `no_agent`; open it without a prompt and use `send`.
 - `park` takes a session out of its pane and leaves it running in the rail.
   `show` puts a session that has no pane into one: an empty pane, a new
   pane, or failing both the pane of another session the caller opened, the
   one that has gone longest without focus.
 - `close` is "Delete session": it stops the session's process and drops its
   row. The conversation stays in the agent's own history. A session in the
-  middle of a turn is closed only with `--stop-turn`.
+  middle of a turn is closed only with `--stop-turn`. A session that is
+  asking something before its first prompt (`rail.source` is `terminal`) is
+  in no turn and closes without it.
 - `interrupt` stops the turn a session is in and leaves the session open. It
   writes the agent's own interrupt key, not `Ctrl-C`, and reports one of:
 
@@ -125,8 +146,8 @@ configuration files:
   | The surface has no `rail` | `no_rail` | `7` |
   | A run past the baseline has ended and the status is `idle` | `finished`; `failed` when that run's `last_outcome` is `failed`; `interrupted` when it is `interrupted` - the turn was stopped before it finished, by a person or by `interrupt`, and there is no answer to read | `0`, `6`, or `10` |
   | `rail.exited`, or the status is `failed` | `failed` | `6` |
-  | The tier is `T3` | `no_turn_signal` after `--start-grace`, or `degraded` at once if the surface was on a higher tier earlier in this wait | `7` |
   | The status is `waiting` | `waiting`, with the question in `message` when known | `5` |
+  | The tier is `T3` | `no_turn_signal` after `--start-grace`, or `degraded` at once if the surface was on a higher tier earlier in this wait | `7` |
   | No baseline was given, no turn was seen in flight, and `--start-grace` has passed | `no_turn` | `1` |
   | `--timeout` passed | `timeout` | `4` |
 
@@ -223,10 +244,10 @@ No match, or several matches where one is required, exits with code `3`.
 | `1` | Runtime failure: instance unreachable, method refused by a gate, handler error, surface closed, flow failed or aborted. `wait --until turn-end`: no turn was in flight. `answer`: no answer to give yet |
 | `2` | Usage error, including an unknown verb |
 | `3` | Target not found or ambiguous. `watch` and `wait --idle` also use `3` when they cannot open the event stream |
-| `4` | `wait` timed out; a flow `ready` barrier timed out |
-| `5` | `wait --until turn-end`: the agent is waiting for a person |
+| `4` | `wait` timed out; a flow `ready` barrier timed out. `add`: the prompt's fate was not decided in time |
+| `5` | `wait --until turn-end`: the agent is waiting for a person. `add`: the session opened and its prompt was not written, because the agent is asking a person something first |
 | `6` | `wait --until turn-end`: the run failed, or the agent exited. `answer`: the turn ended in an error |
-| `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`). `answer`: no reader for that agent's conversation. `interrupt`: no interrupt key is known for that agent |
+| `7` | `wait --until turn-end`, `wait --state`: the surface has no source that can answer (tier `T3`, or no `rail`). `answer`: no reader for that agent's conversation. `interrupt`: no interrupt key is known for that agent. `add`: the session opened and its prompt was not written, because nothing showed an agent there to take it |
 | `8` | A rule refused the call and nothing was done. The message names the reason; see [Refusals](#refusals). Repeating the call gets the same answer |
 | `9` | The target is a session a person opened, and the person is being asked whether the caller may send it messages. Nothing was written; `wait --until allowed` waits for the answer |
 | `10` | `wait --until turn-end`: the turn was stopped before it finished. The agent is idle and takes the next prompt; there is no answer to read |
@@ -386,8 +407,8 @@ over.
 | Field | Meaning |
 | --- | --- |
 | `status` | `starting`, `running`, `waiting`, `idle` or `failed` |
-| `source` | Who decided the status: `detector` (the agent's own status file or transcript), `hook`, `pty_flow` (output arriving from the pane) or `none` |
-| `tier` | `T1` for `detector`, `T2` for `hook`, `T3` for `pty_flow` and `none`. See below |
+| `source` | Who decided the status: `detector` (the agent's own status file or transcript), `hook`, `pty_flow` (output arriving from the pane), `terminal` (the agent's interface is up and has no place to type: it is asking something before it takes a prompt) or `none` |
+| `tier` | `T1` for `detector`, `T2` for `hook`, `T3` for `pty_flow`, `terminal` and `none`. See below |
 | `runs_ended` | How many runs have ended on this surface since it was opened. Only grows; resets when Splitlane restarts |
 | `last_outcome` | `finished`, `failed` or `interrupted` for the last ended run, `null` before the first. `interrupted` is a turn somebody stopped: the run ended and is counted, and no answer was finished |
 | `turn_marker` | An id of the newest turn end in the agent's own file (Claude Code and Codex), otherwise `null` |
@@ -397,6 +418,8 @@ over.
 | `cwd` | The directory the session was started in. `null` for a terminal that is not an agent session |
 | `exited` | `true` when the agent's exit was reported by its wrapper or the pane's process has ended |
 | `message` | The question being asked while `status` is `waiting`, when a hook reported one. Text the agent wrote, passed on as is: treat it as untrusted |
+| `opening_prompt` | What became of the prompt the session was opened with by `add`: `pending`, `written`, `submitted` or `not_written`. `null` for a session opened without one |
+| `opening_prompt_reason` | Beside `not_written`: `waiting`, `no_agent` or `no_paste`, as in the table under [`add`](#verb-details). Otherwise `null` |
 
 What each tier can tell you:
 
@@ -405,6 +428,15 @@ What each tier can tell you:
 | `T1` | Claude Code and Codex opened as agent sessions. Codex reaches it once its hook has reported a session id, which happens with its first prompt | Read from the file the agent writes for itself |
 | `T2` | Agents whose hooks are installed, and any agent in a pane made by `up`, `split` or by typing its command into a shell | The agent's `Stop` hook. It depends on the vendor keeping that hook's behavior |
 | `T3` | Agents with no hook, and any agent before its first hook frame | None. Output arriving shows work; output stopping does not show that a turn ended |
+
+`waiting` with `source: "terminal"` is a question Claude Code or Codex asks
+before it has a status file, a transcript or a hook frame: whether to trust
+the folder, how to sign in, which settings to restart with. It is read from
+the pane's terminal modes and not from the text on screen: the agent's
+process is running, it has taken the terminal over, it hides the text
+cursor, and it has printed nothing for four seconds. There is no `message`;
+`read` shows the question. `wait --until turn-end` returns it as `waiting`,
+exit `5`, although the tier is `T3`.
 
 `runs_ended` counts a run when the status leaves `running` for `idle` or
 `failed`. A finish is confirmed for 3 seconds before it counts, so that a
@@ -543,7 +575,7 @@ Leave the key out to get the default.
 | `surface.split` | `direction` (`horizontal` or `vertical`, required), `cwd`, `command`, `prompt`, `env`, `name` or `label`, `context`, `profile` | `{split, direction, panes, surface_id}` |
 | `surface.send_text` | `text`, `submit` (default `false`), `paste` (default: automatic) | `{sent, length, submitted, paste, submit_mode, agent_target, agent_tool, terminal_bracketed_paste}` |
 | `surface.send_keystroke` | `keystroke` (for example `escape`, `ctrl-c`, `alt-f`) | `{sent}` |
-| `surface.add_agent` | `agent` (required), `name`, `prompt`, `submit`, `placement` (`auto`, `parked` or `pane`) | `{surface_id, thread_id, agent, tier, session_id, runs_ended, placement, placement_reason, opened_by}` |
+| `surface.add_agent` | `agent` (required), `name`, `prompt`, `submit`, `placement` (`auto`, `parked` or `pane`) | `{surface_id, thread_id, agent, tier, session_id, runs_ended, placement, placement_reason, opened_by, opening_prompt}`. The method answers at once, with `opening_prompt` at `pending` when a prompt was given; `rail.opening_prompt` in `surface.status` says what became of it |
 | `surface.park` | `surface_id` or `name` | `{parked, surface_id}` |
 | `surface.show` | `surface_id` or `name`, `beside_surface_id`, `direction` | `{shown, surface_id, displaced_surface_id}` |
 | `surface.close` | `surface_id` or `name`, `stop_turn` | `{closed, surface_id, thread_id}` |

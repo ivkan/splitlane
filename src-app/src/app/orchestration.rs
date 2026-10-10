@@ -39,13 +39,70 @@ pub(crate) fn provenance_line(sender_title: &str) -> String {
     )
 }
 
-/// How long an opening prompt waits for the new session's agent to be spoken
-/// for, by its own file or by a hook frame, before it is given up on.
+/// How long an opening prompt waits for the new session's agent to be there
+/// to read it ([`opening_prompt_step`]) before it is given up on.
 const OPENING_PROMPT_AGENT_MAX: Duration = Duration::from_secs(30);
 const OPENING_PROMPT_POLL: Duration = Duration::from_millis(200);
 /// And then for its screen to stop changing.
 const OPENING_PROMPT_SETTLE_FLOOR: Duration = Duration::from_millis(700);
 const OPENING_PROMPT_SETTLE_MAX: Duration = Duration::from_secs(8);
+
+/// What an opening prompt's wait sees of its session on one look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpeningLook {
+    /// The agent's own file or a hook frame has spoken for it.
+    pub spoken_for: bool,
+    /// The agent's own process was under the pane at the last state pass.
+    pub agent_found: bool,
+    /// This agent's text cursor is known to say where typed text would go.
+    pub cursor_marks_text_entry: bool,
+    pub entry: crate::agent_state::TextEntry,
+    /// The rail says the session is waiting for a person.
+    pub waiting: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpeningStep {
+    Write,
+    Wait,
+    GiveUp(crate::rail_state::NotWritten),
+}
+
+/// Whether an opening prompt may be written now, `waited` after its session
+/// was opened.
+///
+/// It goes once something says an agent is there to read it:
+///
+/// - the agent's own file or a hook frame has spoken, which is how Claude
+///   Code is known to be at its input line;
+/// - or the agent's process is under the pane and its interface shows a text
+///   cursor. This is for an agent nothing speaks for before its first prompt.
+///   Codex is one: it writes no file and sends no frame until a prompt is
+///   submitted, so the prompt waited for a sign that could only follow it,
+///   and was never written.
+///
+/// A session that is waiting for a person is given up on at once and not
+/// waited through. Whatever it asks - whether to trust the folder is the
+/// usual one - the answer is the person's, and an Enter written there would
+/// give it for them. The prompt is not kept for later either: text that
+/// appears in a pane minutes after it was sent, when somebody finally
+/// answers, is a surprise to whoever is typing there by then.
+pub(crate) fn opening_prompt_step(look: OpeningLook, waited: Duration) -> OpeningStep {
+    use crate::agent_state::TextEntry;
+    use crate::rail_state::NotWritten;
+    if look.waiting {
+        return OpeningStep::GiveUp(NotWritten::Waiting);
+    }
+    let takes_text =
+        look.cursor_marks_text_entry && look.agent_found && look.entry == TextEntry::Open;
+    if look.spoken_for || takes_text {
+        OpeningStep::Write
+    } else if waited >= OPENING_PROMPT_AGENT_MAX {
+        OpeningStep::GiveUp(NotWritten::NoAgent)
+    } else {
+        OpeningStep::Wait
+    }
+}
 
 /// How long a request to stop a turn stands. Past this, a run that ends was
 /// not ended by that request, and what is on the session's input line is not
@@ -436,6 +493,22 @@ pub(crate) struct CloseTarget {
     /// mark is only ever put there for a person: a run its opener started is
     /// the opener's to read and leaves none.
     pub unseen_by_person: bool,
+}
+
+/// Whether closing a session whose rail says this would lose a turn.
+///
+/// `running` is a turn, and so is a question asked in the middle of one. A
+/// question the agent asks before it has taken any prompt is not: it is read
+/// off the pane's terminal, nothing has been asked of the agent yet, and a
+/// session that opened it must be able to close it without a key that stops
+/// a turn - which for most agents is not known.
+pub(crate) fn closing_loses_a_turn(rail: &crate::rail_state::RailSnapshot) -> bool {
+    use crate::project::ThreadStatus;
+    match rail.status {
+        ThreadStatus::Thinking => true,
+        ThreadStatus::WaitingForInput => rail.source != crate::rail_state::RailSource::Terminal,
+        ThreadStatus::Starting | ThreadStatus::Idle | ThreadStatus::Failed => false,
+    }
 }
 
 /// Whether `caller` may close `target`: stop its process and drop its row.
@@ -1077,13 +1150,7 @@ impl SplitlaneApp {
         };
         let turn_in_flight = self
             .rail_snapshot_for(&terminal, Some(thread_id), cx)
-            .is_some_and(|rail| {
-                matches!(
-                    rail.status,
-                    crate::project::ThreadStatus::Thinking
-                        | crate::project::ThreadStatus::WaitingForInput
-                )
-            });
+            .is_some_and(|rail| closing_loses_a_turn(&rail));
         let caller = self.caller_of(lineage, cx);
         let close_target = CloseTarget {
             thread_id,
@@ -1648,18 +1715,27 @@ impl SplitlaneApp {
                 Caller::Pane(pane) => Some(pane.surface_id),
                 Caller::Outside => None,
             },
+            // `pending` when a prompt was given: it is written once the agent
+            // is there to read it, and `surface.status` says what became of it.
+            "opening_prompt": rail
+                .as_ref()
+                .and_then(|rail| rail.opening_prompt)
+                .map(crate::rail_state::OpeningPrompt::wire_str),
         })
     }
 
     /// Write a new session's first prompt once its agent is there to read it.
     ///
     /// The launch command is typed into the pane's shell, so for the first
-    /// moments the thing reading input is the shell and not the agent. The
-    /// prompt waits until something speaks for the agent - its own file read
-    /// by the detector, or a hook frame - and then for the screen to settle.
-    /// If nothing ever does, the prompt is dropped: an agent that did not
-    /// start leaves a shell at the other end, and text sent to a shell is a
-    /// command.
+    /// moments the thing reading input is the shell and not the agent, and
+    /// after that the agent may be asking something of its own before it
+    /// takes a prompt. [`opening_prompt_step`] says when the prompt may go,
+    /// and then the screen is given time to settle.
+    ///
+    /// What became of the prompt is kept on the session's record
+    /// ([`crate::rail_state::OpeningPrompt`]): the call that opened the
+    /// session has answered long before this ends, and a prompt that was not
+    /// written used to leave nothing but a line in the log.
     /// It goes through the same write as `surface.send_text`: a paste, and
     /// when it is to be submitted, a carriage return of its own afterwards.
     fn schedule_opening_prompt(
@@ -1671,50 +1747,67 @@ impl SplitlaneApp {
         from_opener: bool,
         cx: &mut Context<Self>,
     ) {
+        use crate::rail_state::{NotWritten, OpeningPrompt};
+
+        self.note_opening_prompt(thread_id, OpeningPrompt::Pending);
         let weak = terminal.downgrade();
         let submit_floor =
             Duration::from_millis(self.cached_config.resolved_submit_paste_delay_ms());
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let mut waited = Duration::ZERO;
-                loop {
-                    let spoken_for = cx.update(|cx| {
+                let started = std::time::Instant::now();
+                let look = |cx: &mut gpui::AsyncApp| -> Option<OpeningLook> {
+                    cx.update(|cx| {
+                        let view = weak.upgrade()?;
+                        this.update(cx, |app, cx| app.opening_look(thread_id, &view, cx))
+                            .ok()
+                            .flatten()
+                    })
+                };
+                let give_up = |because: NotWritten, cx: &mut gpui::AsyncApp| {
+                    log::warn!(
+                        "opening prompt: not written to surface record {thread_id} \
+                         ({because:?}) after {:?}",
+                        started.elapsed()
+                    );
+                    let _ = cx.update(|cx| {
                         this.update(cx, |app, _| {
-                            app.thread_by_id(thread_id)
-                                .map(|t| t.detector_read_at.is_some() || t.hook_has_spoken)
+                            app.note_opening_prompt(thread_id, OpeningPrompt::NotWritten(because));
                         })
                     });
-                    match spoken_for {
-                        Ok(Some(true)) => break,
-                        Ok(Some(false)) => {}
-                        // The session was closed, or the app is going away.
-                        Ok(None) | Err(_) => return,
+                };
+                loop {
+                    // The session was closed, or the app is going away.
+                    let seen = look(cx)?;
+                    match opening_prompt_step(seen, started.elapsed()) {
+                        OpeningStep::Write => {}
+                        OpeningStep::Wait => {
+                            smol::Timer::after(OPENING_PROMPT_POLL).await;
+                            continue;
+                        }
+                        OpeningStep::GiveUp(because) => {
+                            give_up(because, cx);
+                            return None;
+                        }
                     }
-                    if waited >= OPENING_PROMPT_AGENT_MAX {
-                        // Not written. With no agent there, the thing reading
-                        // the pane's input is a shell, and the prompt would be
-                        // run as a command.
-                        log::warn!(
-                            "opening prompt: nothing spoke for the agent of surface record \
-                             {thread_id} within {OPENING_PROMPT_AGENT_MAX:?}; the prompt was \
-                             not written"
-                        );
-                        return;
+                    Self::wait_for_terminal_settle(
+                        &weak,
+                        OPENING_PROMPT_SETTLE_FLOOR,
+                        OPENING_PROMPT_SETTLE_MAX,
+                        OPENING_PROMPT_POLL,
+                        cx,
+                    )
+                    .await?;
+                    // What the agent shows may have changed while it settled:
+                    // a question can come up after the first screen.
+                    match opening_prompt_step(look(cx)?, started.elapsed()) {
+                        OpeningStep::Write => break,
+                        OpeningStep::Wait => {}
+                        OpeningStep::GiveUp(because) => {
+                            give_up(because, cx);
+                            return None;
+                        }
                     }
-                    smol::Timer::after(OPENING_PROMPT_POLL).await;
-                    waited += OPENING_PROMPT_POLL;
-                }
-                if Self::wait_for_terminal_settle(
-                    &weak,
-                    OPENING_PROMPT_SETTLE_FLOOR,
-                    OPENING_PROMPT_SETTLE_MAX,
-                    OPENING_PROMPT_POLL,
-                    cx,
-                )
-                .await
-                .is_none()
-                {
-                    return;
                 }
                 let written = cx.update(|cx| {
                     let Some(terminal) = weak.upgrade() else {
@@ -1733,25 +1826,57 @@ impl SplitlaneApp {
                     true
                 });
                 if !written {
-                    log::warn!(
-                        "opening prompt: surface record {thread_id} does not take a paste; \
-                         the prompt was not written"
-                    );
-                    return;
+                    give_up(NotWritten::NoPaste, cx);
+                    return None;
                 }
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
                         if from_opener {
                             app.note_opener_wrote(thread_id, cx);
                         }
+                        let mut became = OpeningPrompt::Written;
                         if submit && let Some(terminal) = weak.upgrade() {
                             Self::schedule_deferred_submit(&terminal, submit_floor, cx);
+                            became = OpeningPrompt::Submitted;
                         }
+                        app.note_opening_prompt(thread_id, became);
                     })
                 });
+                Some(())
             },
         )
         .detach();
+    }
+
+    fn note_opening_prompt(&mut self, thread_id: u64, became: crate::rail_state::OpeningPrompt) {
+        if let Some(thread) = self.thread_by_id_mut(thread_id) {
+            thread.rail.opening_prompt = Some(became);
+        }
+    }
+
+    /// One look at a session an opening prompt is waiting to be written to.
+    /// `None` when the session is gone.
+    fn opening_look(
+        &self,
+        thread_id: u64,
+        view: &Entity<TerminalView>,
+        cx: &App,
+    ) -> Option<OpeningLook> {
+        let thread = self.thread_by_id(thread_id)?;
+        Some(OpeningLook {
+            spoken_for: thread.detector_read_at.is_some() || thread.hook_has_spoken,
+            agent_found: self
+                .pty_flow
+                .get(&thread_id)
+                .is_some_and(|flow| flow.agent_found),
+            cursor_marks_text_entry: thread
+                .terminal_agent
+                .is_some_and(crate::agent_launcher::TerminalAgent::cursor_marks_text_entry),
+            entry: crate::agent_state::TextEntry::from_modes(
+                view.read(cx).terminal.session_backend().modes(),
+            ),
+            waiting: thread.status == crate::project::ThreadStatus::WaitingForInput,
+        })
     }
 }
 
@@ -1808,6 +1933,114 @@ mod tests {
         assert_eq!(
             may_open(&pane(true), 0, all, false),
             Err(Refusal::OpenedSessionCannotOpen)
+        );
+    }
+
+    fn look() -> OpeningLook {
+        OpeningLook {
+            spoken_for: false,
+            agent_found: false,
+            cursor_marks_text_entry: true,
+            entry: crate::agent_state::TextEntry::NoInterface,
+            waiting: false,
+        }
+    }
+
+    /// Codex before its first prompt: no file, no hook frame, and an input
+    /// line. The prompt used to wait for one of the first two and was never
+    /// written.
+    #[test]
+    fn an_opening_prompt_goes_to_an_agent_showing_an_input_line() {
+        let at_its_input_line = OpeningLook {
+            agent_found: true,
+            entry: crate::agent_state::TextEntry::Open,
+            ..look()
+        };
+        assert_eq!(
+            opening_prompt_step(at_its_input_line, Duration::from_secs(2)),
+            OpeningStep::Write
+        );
+    }
+
+    /// Claude Code at its input line, as before: its own file speaks for it,
+    /// and nothing is asked of the cursor.
+    #[test]
+    fn an_opening_prompt_goes_to_an_agent_its_own_file_speaks_for() {
+        let spoken_for = OpeningLook {
+            spoken_for: true,
+            ..look()
+        };
+        assert_eq!(
+            opening_prompt_step(spoken_for, Duration::from_secs(2)),
+            OpeningStep::Write
+        );
+    }
+
+    /// The question is the person's. Nothing is written, at once, and even
+    /// where the agent's own file speaks.
+    #[test]
+    fn an_opening_prompt_is_not_written_into_a_question() {
+        use crate::rail_state::NotWritten;
+        let asking = OpeningLook {
+            spoken_for: true,
+            agent_found: true,
+            entry: crate::agent_state::TextEntry::Closed,
+            waiting: true,
+            ..look()
+        };
+        assert_eq!(
+            opening_prompt_step(asking, Duration::ZERO),
+            OpeningStep::GiveUp(NotWritten::Waiting)
+        );
+    }
+
+    /// A list to choose from that has not stood long enough to be called a
+    /// question is waited on, not written into.
+    #[test]
+    fn an_opening_prompt_waits_while_there_is_no_place_to_type() {
+        let no_place = OpeningLook {
+            agent_found: true,
+            entry: crate::agent_state::TextEntry::Closed,
+            ..look()
+        };
+        assert_eq!(
+            opening_prompt_step(no_place, Duration::from_secs(2)),
+            OpeningStep::Wait
+        );
+    }
+
+    /// A shell prompt takes pastes and shows a cursor too. Without the
+    /// agent's process under the pane the text would be run as a command.
+    #[test]
+    fn an_opening_prompt_is_not_written_to_a_shell() {
+        use crate::rail_state::NotWritten;
+        let shell = OpeningLook {
+            entry: crate::agent_state::TextEntry::Open,
+            ..look()
+        };
+        assert_eq!(
+            opening_prompt_step(shell, Duration::from_secs(2)),
+            OpeningStep::Wait
+        );
+        assert_eq!(
+            opening_prompt_step(shell, OPENING_PROMPT_AGENT_MAX),
+            OpeningStep::GiveUp(NotWritten::NoAgent)
+        );
+    }
+
+    /// An agent whose cursor nobody measured is not written to on the
+    /// cursor's word: it may draw one of its own and hide the terminal's.
+    #[test]
+    fn an_unmeasured_agent_still_needs_something_to_speak_for_it() {
+        let unmeasured = OpeningLook {
+            agent_found: true,
+            cursor_marks_text_entry: false,
+            entry: crate::agent_state::TextEntry::Open,
+            ..look()
+        };
+        assert_eq!(
+            opening_prompt_step(unmeasured, Duration::from_secs(2)),
+            OpeningStep::Wait
         );
     }
 
@@ -2169,6 +2402,53 @@ mod tests {
         turn_in_flight: false,
         unseen_by_person: false,
     };
+
+    fn rail_showing(
+        status: crate::project::ThreadStatus,
+        source: crate::rail_state::RailSource,
+    ) -> crate::rail_state::RailSnapshot {
+        crate::rail_state::RailSnapshot {
+            status,
+            source,
+            runs_ended: 0,
+            last_outcome: None,
+            turn_marker: None,
+            background_shells: 0,
+            exited: false,
+            message: None,
+            opening_prompt: None,
+            agent: Some("codex"),
+            session_id: None,
+            cwd: None,
+        }
+    }
+
+    /// A session standing on "Trust this folder?" has been asked nothing.
+    /// Its opener closes it like an idle one.
+    #[test]
+    fn a_question_before_the_first_prompt_is_no_turn_to_lose() {
+        use crate::project::ThreadStatus;
+        use crate::rail_state::RailSource;
+        assert!(!closing_loses_a_turn(&rail_showing(
+            ThreadStatus::WaitingForInput,
+            RailSource::Terminal
+        )));
+        // A permission ask in the middle of a turn still is one.
+        for source in [RailSource::Detector, RailSource::Hook] {
+            assert!(closing_loses_a_turn(&rail_showing(
+                ThreadStatus::WaitingForInput,
+                source
+            )));
+        }
+        assert!(closing_loses_a_turn(&rail_showing(
+            ThreadStatus::Thinking,
+            RailSource::PtyFlow
+        )));
+        assert!(!closing_loses_a_turn(&rail_showing(
+            ThreadStatus::Idle,
+            RailSource::Detector
+        )));
+    }
 
     const NEWS: RunFacts = RunFacts {
         detector_speaks: true,

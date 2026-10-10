@@ -10,8 +10,8 @@ use splitlane_ipc_client::IpcTransport;
 
 use super::selector::resolve_target;
 use super::{
-    CliError, EXIT_ASKED_PERSON, EXIT_NO_TURN_SIGNAL, EXIT_OK, EXIT_REFUSED, EXIT_RUNTIME,
-    EXIT_TIMEOUT,
+    CliError, EXIT_ASKED_PERSON, EXIT_NEEDS_PERSON, EXIT_NO_TURN_SIGNAL, EXIT_OK, EXIT_REFUSED,
+    EXIT_RUNTIME, EXIT_TIMEOUT,
 };
 
 /// What `splitlane add` was asked for.
@@ -52,9 +52,108 @@ pub(super) fn call_error(message: String) -> CliError {
     }
 }
 
+/// How long `add` waits to learn what became of the prompt it was given.
+/// Longer than the instance takes to decide, which is what ends the wait.
+const OPENING_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+const OPENING_PROMPT_POLL: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// What became of an opening prompt, as `surface.status` words it: the word,
+/// and the reason beside `not_written`. `None` while it is still `pending`.
+fn opening_prompt_settled(rail: &Value) -> Option<(String, Option<String>)> {
+    let word = rail.get("opening_prompt").and_then(Value::as_str)?;
+    if word == "pending" {
+        return None;
+    }
+    let reason = rail
+        .get("opening_prompt_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((word.to_string(), reason))
+}
+
+/// The exit code for what became of the prompt, and what to tell the caller
+/// when it was not written.
+///
+/// The session is open either way. A caller that goes on to wait for a turn
+/// after a prompt that was never written waits for nothing, so the three ways
+/// it can fail are not exit 0.
+fn opening_prompt_exit(word: &str, reason: Option<&str>) -> (i32, Option<&'static str>) {
+    match (word, reason) {
+        ("written" | "submitted", _) => (EXIT_OK, None),
+        ("not_written", Some("waiting")) => (
+            EXIT_NEEDS_PERSON,
+            Some(
+                "the prompt was not written: the session is asking a person something before \
+                 it takes a prompt. `splitlane read` shows the question. Once the person has \
+                 answered it, send the task with `splitlane send --submit`",
+            ),
+        ),
+        ("not_written", Some("no_paste")) => (
+            EXIT_NO_TURN_SIGNAL,
+            Some(
+                "the prompt was not written: it has more than one line and the agent takes \
+                 no paste, so each line would have been sent by itself",
+            ),
+        ),
+        ("not_written", _) => (
+            EXIT_NO_TURN_SIGNAL,
+            Some(
+                "the prompt was not written: nothing showed an agent taking text in the pane. \
+                 `splitlane read` shows what is there",
+            ),
+        ),
+        ("pending", _) => (
+            EXIT_TIMEOUT,
+            Some("the prompt has not been written yet; `splitlane status` says what became of it"),
+        ),
+        // A word from a newer instance. The session is open, and nothing here
+        // can say the prompt failed.
+        _ => (EXIT_OK, None),
+    }
+}
+
+/// Wait until the instance has decided what to do with an opening prompt.
+/// Returns the word and the reason; `pending` when `timeout` ran out first.
+///
+/// `sleep` is a parameter so the loop is tested without a clock.
+fn await_opening_prompt(
+    client: &impl IpcTransport,
+    surface_id: u64,
+    timeout: std::time::Duration,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> Result<(String, Option<String>), CliError> {
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        let status = client
+            .call("surface.status", json!({ "surface_id": surface_id }))
+            .map_err(CliError::runtime)?;
+        let rail = status.get("rail").cloned().unwrap_or(Value::Null);
+        if let Some(settled) = opening_prompt_settled(&rail) {
+            return Ok(settled);
+        }
+        // No word at all: nothing is pending on this surface.
+        if rail.get("opening_prompt").and_then(Value::as_str).is_none() || waited >= timeout {
+            return Ok(("pending".to_string(), None));
+        }
+        sleep(OPENING_PROMPT_POLL);
+        waited += OPENING_PROMPT_POLL;
+    }
+}
+
 /// `splitlane add --agent <tag> [--name N] [--prompt T | --prompt-file P]
 /// [--submit] [--parked | --pane] [--json]`.
+///
+/// With a prompt it returns once the prompt has been written or given up on,
+/// some seconds after the session opened, and its exit code says which.
 pub fn add(client: &impl IpcTransport, options: AddOptions) -> Result<i32, CliError> {
+    add_with_sleep(client, options, std::thread::sleep)
+}
+
+fn add_with_sleep(
+    client: &impl IpcTransport,
+    options: AddOptions,
+    sleep: impl FnMut(std::time::Duration),
+) -> Result<i32, CliError> {
     let prompt = match (&options.prompt, &options.prompt_file) {
         (Some(prompt), _) => Some(prompt.clone()),
         (None, Some(path)) => Some(std::fs::read_to_string(path).map_err(|e| {
@@ -77,17 +176,32 @@ pub fn add(client: &impl IpcTransport, options: AddOptions) -> Result<i32, CliEr
     } else if options.pane {
         params["placement"] = json!("pane");
     }
-    let result = super::reject_legacy_error(
+    let mut result = super::reject_legacy_error(
         client
             .call("surface.add_agent", params)
             .map_err(call_error)?,
     )?;
+    // An instance older than the field says nothing about the prompt, and
+    // the call answers as it always did.
+    let mut code = EXIT_OK;
+    let mut trouble = None;
+    if result.get("opening_prompt").and_then(Value::as_str) == Some("pending")
+        && let Some(surface_id) = result.get("surface_id").and_then(Value::as_u64)
+    {
+        let (word, reason) = await_opening_prompt(client, surface_id, OPENING_PROMPT_WAIT, sleep)?;
+        (code, trouble) = opening_prompt_exit(&word, reason.as_deref());
+        result["opening_prompt"] = json!(word);
+        result["opening_prompt_reason"] = json!(reason);
+    }
     if options.json {
         super::print_json(&result)?;
     } else {
         println!("{}", add_summary(&result));
     }
-    Ok(EXIT_OK)
+    if let Some(trouble) = trouble {
+        eprintln!("splitlane: {trouble}");
+    }
+    Ok(code)
 }
 
 /// One line a person can read and a script can still cut: the surface id
@@ -117,7 +231,14 @@ fn add_summary(result: &Value) -> String {
         ("parked", None) => "in the rail, no pane".to_string(),
         _ => "in a pane".to_string(),
     };
-    format!("{surface}\t{agent} opened {place}; runs_ended {runs_ended}")
+    let prompt = match result.get("opening_prompt").and_then(Value::as_str) {
+        Some("submitted") => "; prompt submitted",
+        Some("written") => "; prompt written, not submitted",
+        Some("not_written") => "; prompt NOT written",
+        Some("pending") => "; prompt not written yet",
+        _ => "",
+    };
+    format!("{surface}\t{agent} opened {place}; runs_ended {runs_ended}{prompt}")
 }
 
 /// `splitlane park <target> [--json]`: take a session out of its pane. It
@@ -402,6 +523,94 @@ mod tests {
                 "placement": "parked",
             })
         );
+    }
+
+    /// Answers `surface.add_agent` with a pending prompt, then each
+    /// `surface.status` with the next of `rails`, repeating the last.
+    struct Opening {
+        rails: RefCell<Vec<Value>>,
+        status_calls: RefCell<usize>,
+    }
+    impl Opening {
+        fn new(rails: Vec<Value>) -> Self {
+            Self {
+                rails: RefCell::new(rails),
+                status_calls: RefCell::new(0),
+            }
+        }
+    }
+    impl IpcTransport for Opening {
+        fn call(&self, method: &str, _params: Value) -> Result<Value, String> {
+            if method == "surface.add_agent" {
+                return Ok(json!({ "surface_id": 12, "opening_prompt": "pending" }));
+            }
+            *self.status_calls.borrow_mut() += 1;
+            let mut rails = self.rails.borrow_mut();
+            let rail = if rails.len() > 1 {
+                rails.remove(0)
+            } else {
+                rails[0].clone()
+            };
+            Ok(json!({ "surface_id": 12, "rail": rail }))
+        }
+    }
+
+    fn add_with_a_prompt(fake: &Opening) -> i32 {
+        let mut asked = options("codex");
+        asked.prompt = Some("write the docs".to_string());
+        asked.submit = true;
+        add_with_sleep(fake, asked, |_| {}).expect("the session opened")
+    }
+
+    #[test]
+    fn add_waits_for_the_prompt_to_be_submitted() {
+        let fake = Opening::new(vec![
+            json!({ "opening_prompt": "pending" }),
+            json!({ "opening_prompt": "pending" }),
+            json!({ "opening_prompt": "submitted" }),
+        ]);
+        assert_eq!(add_with_a_prompt(&fake), EXIT_OK);
+        assert_eq!(*fake.status_calls.borrow(), 3);
+    }
+
+    /// The session is open, and the caller must not go on as if its task
+    /// had been taken.
+    #[test]
+    fn a_prompt_that_met_a_question_is_exit_5() {
+        let fake = Opening::new(vec![json!({
+            "opening_prompt": "not_written",
+            "opening_prompt_reason": "waiting",
+        })]);
+        assert_eq!(add_with_a_prompt(&fake), EXIT_NEEDS_PERSON);
+    }
+
+    #[test]
+    fn a_prompt_no_agent_was_there_for_is_exit_7() {
+        for reason in ["no_agent", "no_paste"] {
+            let fake = Opening::new(vec![json!({
+                "opening_prompt": "not_written",
+                "opening_prompt_reason": reason,
+            })]);
+            assert_eq!(add_with_a_prompt(&fake), EXIT_NO_TURN_SIGNAL, "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_prompt_still_pending_when_the_wait_runs_out_is_exit_4() {
+        let fake = Opening::new(vec![json!({ "opening_prompt": "pending" })]);
+        assert_eq!(add_with_a_prompt(&fake), EXIT_TIMEOUT);
+    }
+
+    #[test]
+    fn the_summary_says_what_became_of_the_prompt() {
+        let line = add_summary(&json!({
+            "surface_id": 12, "agent": "codex", "placement": "pane",
+            "opening_prompt": "not_written",
+        }));
+        assert!(line.starts_with("12\t"), "{line}");
+        assert!(line.ends_with("prompt NOT written"), "{line}");
+        let line = add_summary(&json!({ "surface_id": 12, "agent": "codex", "placement": "pane" }));
+        assert!(line.ends_with("runs_ended 0"), "{line}");
     }
 
     #[test]

@@ -116,6 +116,7 @@ impl DisplayTerminal {
             sgr_mouse: self.mode(1006)?,
             utf8_mouse: self.mode(1005)?,
             kitty_keyboard: self.kitty_keyboard_flags()? != 0,
+            cursor_visible: self.mode(25)?,
         })
     }
 
@@ -238,6 +239,19 @@ mod tests {
         assert!(content.cells.iter().all(|cell| cell.character == ' '));
         assert_eq!(content.cursor.point, crate::Point::new(0, 0));
         assert!(terminal.modes().expect("modes after clear").bracketed_paste);
+    }
+
+    #[test]
+    fn the_cursor_mode_follows_what_the_program_asked_for() {
+        let size = WindowSize::new(10, 2, 8, 16).expect("valid terminal size");
+        let mut terminal = DisplayTerminal::new(size, 100).expect("terminal must initialize");
+        assert!(terminal.modes().expect("modes at start").cursor_visible);
+
+        terminal.feed(b"\x1b[?25l").expect("hide must parse");
+        assert!(!terminal.modes().expect("modes after hide").cursor_visible);
+
+        terminal.feed(b"\x1b[?25h").expect("show must parse");
+        assert!(terminal.modes().expect("modes after show").cursor_visible);
     }
 
     #[test]

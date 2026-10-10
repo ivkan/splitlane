@@ -140,8 +140,26 @@ fn the_rail_keeps_its_published_names() {
         "\"background_shells\"",
         "\"exited\"",
         "\"message\"",
+        "\"opening_prompt\"",
+        "\"opening_prompt_reason\"",
     ] {
         assert!(rail.contains(field), "`rail` lost its field {field}");
+    }
+    // Who decided the status, and what became of a session's opening prompt.
+    for word in [
+        "\"detector\"",
+        "\"hook\"",
+        "\"pty_flow\"",
+        "\"terminal\"",
+        "\"none\"",
+        "\"pending\"",
+        "\"written\"",
+        "\"submitted\"",
+        "\"not_written\"",
+        "\"no_agent\"",
+        "\"no_paste\"",
+    ] {
+        assert!(rail.contains(word), "the rail word {word} is published");
     }
     for word in [
         "\"starting\"",
@@ -208,6 +226,7 @@ fn opening_a_session_keeps_its_published_names() {
         "\"placement\"",
         "\"placement_reason\"",
         "\"opened_by\"",
+        "\"opening_prompt\"",
     ] {
         assert!(
             rules.contains(field),

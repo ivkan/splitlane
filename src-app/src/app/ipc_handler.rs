@@ -1381,14 +1381,15 @@ fn build_fleet_rows(
 /// What the rail says about an agent session's surface, or `None` for a
 /// record that launches no agent (a shell).
 ///
-/// `pty_flow_owns` is whether the `running` showing now was put up by the
-/// byte counter, and `pane_exited` whether the pane's own process has ended.
+/// `terminal` is what the pane's own terminal put on the row, if the word
+/// showing now is its, and `pane_exited` whether the pane's own process has
+/// ended.
 fn thread_rail_snapshot(
     thread: &crate::project::Thread,
-    pty_flow_owns: bool,
+    terminal: crate::rail_state::TerminalClaim,
     pane_exited: bool,
 ) -> Option<crate::rail_state::RailSnapshot> {
-    use crate::rail_state::RailSource;
+    use crate::rail_state::{RailSource, TerminalClaim};
     thread.terminal_agent?;
     // The same ranking the state pass applies when it decides who may write
     // the status, read off the same fields.
@@ -1396,10 +1397,12 @@ fn thread_rail_snapshot(
         RailSource::Detector
     } else if thread.hook_has_spoken {
         RailSource::Hook
-    } else if pty_flow_owns {
-        RailSource::PtyFlow
     } else {
-        RailSource::None
+        match terminal {
+            TerminalClaim::Asking => RailSource::Terminal,
+            TerminalClaim::Running => RailSource::PtyFlow,
+            TerminalClaim::None => RailSource::None,
+        }
     };
     Some(crate::rail_state::RailSnapshot {
         status: thread.status,
@@ -1410,6 +1413,7 @@ fn thread_rail_snapshot(
         background_shells: thread.rail.shells_beside_idle(thread.status),
         exited: pane_exited || thread.rail.agent_exited,
         message: thread.rail.waiting_message.clone(),
+        opening_prompt: thread.rail.opening_prompt,
         agent: thread.terminal_agent.map(|agent| agent.binary()),
         session_id: thread.session_id.clone(),
         cwd: Some(thread.cwd.clone()),
@@ -1447,6 +1451,9 @@ fn hooked_rail_snapshot(
         // report that it exited.
         exited: pane_exited || (record.is_some_and(|r| r.agent_exited) && !working),
         message: session.and_then(|s| s.message.clone()),
+        // Only a session opened with `surface.add_agent` has one, and that
+        // session has a record.
+        opening_prompt: None,
         // No session record: nothing here knows which conversation file is
         // this pane's.
         agent: session.map(|s| s.tool.binary()),
@@ -1701,7 +1708,9 @@ impl SplitlaneApp {
             && let Some(thread) = self.thread_by_id(thread_id)
             && let Some(snapshot) = thread_rail_snapshot(
                 thread,
-                self.pty_flow.get(&thread_id).is_some_and(|flow| flow.ours),
+                self.pty_flow
+                    .get(&thread_id)
+                    .map_or(crate::rail_state::TerminalClaim::None, |flow| flow.claim()),
                 pane_exited,
             )
         {
@@ -6869,6 +6878,7 @@ mod tests {
             background_shells: 0,
             exited: false,
             message: None,
+            opening_prompt: None,
             agent: Some("claude"),
             session_id: Some("0f8fad5b-d9cb-469f-a165-70867728950e".to_string()),
             cwd: Some("/work/app".to_string()),
@@ -7018,6 +7028,8 @@ mod tests {
                 "background_shells": 0,
                 "exited": false,
                 "message": null,
+                "opening_prompt": null,
+                "opening_prompt_reason": null,
                 "agent": "claude",
                 "session_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
                 "cwd": "/work/app",
@@ -7044,23 +7056,25 @@ mod tests {
     fn thread_rail_source_follows_the_ranking() {
         use crate::agent_launcher::TerminalAgent;
         use crate::project::Thread;
-        use crate::rail_state::RailSource;
+        use crate::rail_state::{RailSource, TerminalClaim};
 
         let shell = Thread::new_terminal("shell", "/tmp", None);
-        assert!(thread_rail_snapshot(&shell, false, false).is_none());
+        assert!(thread_rail_snapshot(&shell, TerminalClaim::None, false).is_none());
 
         let mut t = Thread::new_terminal("agent", "/tmp", Some(TerminalAgent::Amp));
-        let source = |t: &Thread, flow: bool| {
-            thread_rail_snapshot(t, flow, false)
+        let source = |t: &Thread, terminal: TerminalClaim| {
+            thread_rail_snapshot(t, terminal, false)
                 .expect("an agent surface has a rail")
                 .source
         };
-        assert_eq!(source(&t, false), RailSource::None);
-        assert_eq!(source(&t, true), RailSource::PtyFlow);
+        assert_eq!(source(&t, TerminalClaim::None), RailSource::None);
+        assert_eq!(source(&t, TerminalClaim::Running), RailSource::PtyFlow);
+        assert_eq!(source(&t, TerminalClaim::Asking), RailSource::Terminal);
         t.hook_has_spoken = true;
-        assert_eq!(source(&t, true), RailSource::Hook);
+        assert_eq!(source(&t, TerminalClaim::Running), RailSource::Hook);
+        assert_eq!(source(&t, TerminalClaim::Asking), RailSource::Hook);
         t.detector_read_at = Some(std::time::Instant::now());
-        assert_eq!(source(&t, true), RailSource::Detector);
+        assert_eq!(source(&t, TerminalClaim::Running), RailSource::Detector);
     }
 
     #[test]
@@ -7070,7 +7084,7 @@ mod tests {
 
         let mut t = Thread::new_terminal("agent", "/tmp", Some(TerminalAgent::ClaudeCode));
         let exited = |t: &Thread, pane: bool| {
-            thread_rail_snapshot(t, false, pane)
+            thread_rail_snapshot(t, crate::rail_state::TerminalClaim::None, pane)
                 .expect("an agent surface has a rail")
                 .exited
         };
