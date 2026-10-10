@@ -44,62 +44,35 @@ unused-ignored-advisory = "warn"
 #   2. what triggers re-evaluation (upstream patch, code-path change)
 # Reviewed 2026-07-03.
 ignore = [
-    # RUSTSEC-2023-0071 - Marvin Attack on the `rsa` crate
-    # (timing side-channel during RSA private-key decryption).
-    #
-    # Why ignored:
-    #   * `rsa v0.9.x` is a transitive dep via
-    #     zed/markdown → zed/language → zed/rpc → rsa.
-    #     Splitlane uses Zed's `markdown` crate purely for AST +
-    #     rendering - we never instantiate the `language` server
-    #     wiring, never connect to rpc.zed.dev, and the linker
-    #     keeps the RSA code only because cargo cannot prove it's
-    #     dead at link-time. `grep -rn 'rsa::' src-app/ crates/`
-    #     returns zero hits.
-    #   * The attack requires the victim to decrypt
-    #     attacker-controlled ciphertext and leak timing
-    #     differences. Splitlane's binary never decrypts anything
-    #     from a network surface - there is no exploitable code
-    #     path.
-    #   * Upstream RustCrypto position (per the advisory itself):
-    #     "No safe upgrade is available!" - no fixed rsa version
-    #     exists as of 2026-05. The recommended migration is to a
-    #     different crate, which has to happen on the Zed side
-    #     (zed/rpc/Cargo.toml), not ours.
-    #
-    # Re-evaluation triggers:
-    #   * rsa publishes a 0.10+ with timing-safe RSA decryption,
-    #   * OR Zed migrates rpc off rsa (drops it from the dep tree),
-    #   * OR Splitlane starts using zed/rpc directly (any
-    #     `use rpc::` in src-app/** would invalidate this ignore).
-    "RUSTSEC-2023-0071",
-
     # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 - quick-xml CPU and memory
     # denial-of-service issues in duplicate-attribute and namespace handling.
     #
     # Why ignored:
     #   * The only remaining vulnerable quick-xml instances after the
     #     notify-rust refresh are transitive:
-    #       - quick-xml 0.38.4 via ivkan/zed mermaid_render,
     #       - quick-xml 0.39.2 via syntect/plist and Linux Wayland/zbus tooling.
     #   * Splitlane has no direct quick_xml usage (`rg 'quick_xml|quick-xml'
     #     src-app crates -g '*.rs'` returns no Rust call sites), so the app
     #     cannot apply the upstream workaround (`attributes().with_checks(false)`)
     #     locally.
     #   * Cargo cannot move these to quick-xml >= 0.41.0 without parent crate
-    #     releases: mermaid_render requires ^0.38, plist/wayland/zbus paths
-    #     require ^0.39.2. A forced lockfile update fails dependency selection.
+    #     releases: the plist/wayland/zbus paths require ^0.39.2. A forced
+    #     lockfile update fails dependency selection.
     #
     # Re-evaluation triggers:
-    #   * Zed's mermaid_render moves to quick-xml >= 0.41.0 or the fork drops
-    #     mermaid rendering from Splitlane's markdown path,
-    #   * OR syntect/plist, wayland-scanner, and zbus_xml publish compatible
+    #   * syntect/plist, wayland-scanner, and zbus_xml publish compatible
     #     releases using quick-xml >= 0.41.0,
     #   * OR Splitlane adds direct XML parsing, untrusted Mermaid XML ingestion,
     #     or any `use quick_xml::` call site.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 
+    # NOTE (2026-10-10): the ignore for RUSTSEC-2023-0071 (the `rsa` timing
+    # side channel) was removed. `rsa` came in through Zed's `markdown` ->
+    # `language` -> `rpc` path and left the lockfile when that dependency was
+    # dropped. Do not re-add it without re-reading the advisory: the old
+    # rationale was about code Splitlane never called.
+    #
     # NOTE (2026-05-28): a preemptive ignore for RUSTSEC-2025-0052
     # (async-std discontinued) was removed -- `async-std` is NOT in the
     # current Cargo.lock (the GPUI pin does not pull
@@ -117,21 +90,15 @@ ignore = [
 # (Unicode-3.0 for the Unicode crates, Zlib for miniz_oxide, BSD
 # variants for misc parsers, plus extras pulled in by GPUI's image /
 # font-kit dep tree: 0BSD, MPL-2.0, CC0-1.0, CDLA-Permissive-2.0,
-# bzip2-1.0.6, NCSA - all OSI-approved or public-domain-equivalent).
+# bzip2-1.0.6 - all OSI-approved or public-domain-equivalent).
 #
-# GPL-3.0 / GPL-3.0-or-later - accepted globally (2026-05-27).
-# The Zed monorepo we pin GPUI from contains 33+ crates licensed
-# `GPL-3.0` that land in our dep tree as transitive deps of `gpui` /
-# `gpui_platform` / `collections` (askpass, clock, component, fs,
-# fuzzy, git, icons, language, lsp, markdown, menu, migrator, net,
-# paths, proto, release_channel, rope, rpc, settings*, syntax_theme,
-# task, telemetry*, text, theme*, ui*, zed_actions, ...). The
-# previous per-crate `[[licenses.exceptions]]` for zlog / ztracing
-# was unsustainable - every GPUI pin bump shifted the list and the
-# CI gate fell out of sync. Splitlane already statically links these,
-# so cargo-deny's noise-vs-block dilemma was the wrong frame: the
-# right question is whether Splitlane's binary distribution license
-# is GPL-3-compatible. It is (same posture Zed itself ships under).
+# GPL-3.0-or-later - accepted globally (2026-05-27).
+# The Zed monorepo GPUI is pinned from licenses its crates under the GPL,
+# and a number of them land in the tree as transitive dependencies of
+# `gpui` / `gpui_platform` / `collections`. Per-crate exceptions for them
+# were unsustainable - every pin bump shifted the list and the CI gate
+# fell out of sync. Splitlane links these statically and is itself
+# GPL-3.0-or-later, so the license is simply allowed.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -146,16 +113,7 @@ allow = [
     "CC0-1.0",
     "CDLA-Permissive-2.0",
     "bzip2-1.0.6",
-    "NCSA",
-    "GPL-3.0",
     "GPL-3.0-or-later",
-]
-
-# Boost Software License 1.0 is required only by xxhash-rust 0.8.16, pulled
-# through Zed's fs -> notify 9 path. Keep it crate-and-version scoped so a new
-# BSL-1.0 dependency is still rejected.
-exceptions = [
-    { crate = "xxhash-rust@0.8.16", allow = ["BSL-1.0"] },
 ]
 
 [sources]
