@@ -309,10 +309,26 @@ fn last_rate_limits_in_tail(path: &Path) -> Option<CodexAccountLimits> {
     no_plan
 }
 
-/// Compute the absolute path of `~/.codex/sessions/`. Returns `None` when
-/// `dirs::home_dir()` fails.
+/// Where Codex keeps its rollouts: `$CODEX_HOME/sessions`, or
+/// `~/.codex/sessions` when the variable is unset or empty - the rule Codex
+/// itself applies. Returns `None` when neither is known.
+///
+/// The variable is the app's own, read at the moment of asking. A pane whose
+/// shell sets a different `CODEX_HOME` writes its rollouts where this does
+/// not look.
 pub fn sessions_root() -> Option<PathBuf> {
-    Some(dirs::home_dir()?.join(".codex").join("sessions"))
+    sessions_root_from(dirs::home_dir(), std::env::var_os("CODEX_HOME"))
+}
+
+fn sessions_root_from(
+    home: Option<PathBuf>,
+    codex_home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    codex_home
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| home.map(|h| h.join(".codex")))
+        .map(|h| h.join("sessions"))
 }
 
 /// Read all Codex CLI sessions whose recorded `cwd` matches the given
@@ -932,6 +948,20 @@ fn clean_user_message(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rollout_root_follows_codex_home() {
+        let home = Some(PathBuf::from("home"));
+        assert_eq!(
+            sessions_root_from(home.clone(), Some("elsewhere".into())),
+            Some(PathBuf::from("elsewhere").join("sessions"))
+        );
+        // Unset and empty both mean the default, as they do to Codex.
+        let default = Some(PathBuf::from("home").join(".codex").join("sessions"));
+        assert_eq!(sessions_root_from(home.clone(), None), default);
+        assert_eq!(sessions_root_from(home, Some("".into())), default);
+        assert_eq!(sessions_root_from(None, None), None);
+    }
 
     /// Reproduce the real Codex rollout sequence observed in the wild:
     /// line 1 is `session_meta`, then a few state events, then the first
