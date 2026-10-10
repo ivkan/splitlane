@@ -385,9 +385,25 @@ impl SplitlaneApp {
         // counts: a first run that created a default container restored
         // nothing, and the indicator says nothing rather than "restored 1".
         let restore_summary = saved_session.as_ref().map(|_| {
+            // Every surface with a record, plus the slots holding a terminal
+            // that has none. A slot showing a recorded surface is that
+            // surface, not a second one - counting both is how two shells
+            // were announced as four sessions.
             let surfaces: usize = workspaces
                 .iter()
-                .map(|ws| ws.threads.len() + ws.root.as_ref().map_or(0, |root| root.leaf_count()))
+                .map(|ws| {
+                    let unrecorded = ws.root.as_ref().map_or(0, |root| {
+                        root.collect_leaves()
+                            .into_iter()
+                            .filter(|pane| {
+                                pane.read(cx)
+                                    .active_terminal_opt()
+                                    .is_some_and(|view| view.read(cx).agent_thread_id.is_none())
+                            })
+                            .count()
+                    });
+                    ws.threads.len() + unrecorded
+                })
                 .sum();
             crate::app::status_bar::RestoreSummary {
                 at_unix_ms: std::time::SystemTime::now()

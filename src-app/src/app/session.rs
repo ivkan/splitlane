@@ -741,6 +741,11 @@ impl SplitlaneApp {
                     // would look like the agent came back when it did not.
                     if surface.surface_type.as_deref() == Some("agent") {
                         let view = agent_views.get(&surface.surface_id?)?;
+                        if let Some(custom) = surface.custom_name.as_ref() {
+                            view.update(cx, |view, _cx| {
+                                view.terminal.custom_name = Some(custom.clone());
+                            });
+                        }
                         if surface.focus == Some(true) {
                             focus_idx = built;
                         }

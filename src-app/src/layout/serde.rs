@@ -67,7 +67,12 @@ impl LayoutTree {
                                 return SurfaceDefinition {
                                     surface_type: Some("agent".to_string()),
                                     name,
-                                    custom_name: None,
+                                    // The one thing the record does not
+                                    // hold: the name scripts address this
+                                    // pane by (`up`, `split --name`,
+                                    // `rename`). It belongs to the pane, so
+                                    // it travels with the reference.
+                                    custom_name: tv_ref.terminal.custom_name.clone(),
                                     command: None,
                                     prompt: None,
                                     cwd: None,
