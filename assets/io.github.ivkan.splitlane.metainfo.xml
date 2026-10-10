@@ -63,6 +63,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.3" date="2026-10-10">
+      <description>
+        <p>A Claude Code session opened by another session no longer
+        declines its task as pasted text, a question an agent asks before
+        its first prompt shows as waiting, "splitlane add" reports what
+        became of the prompt, and updates can be checked for on request.</p>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-10-10">
       <description>
         <p>A lead agent now hears when a session it opened has finished,

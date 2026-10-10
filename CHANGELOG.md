@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-10
+
 ### Added
 
 - A question Claude Code or Codex asks before it takes its first prompt -
@@ -44,7 +46,6 @@ Notable changes to Splitlane are recorded here. The format follows
   nothing before its first prompt, and the prompt waited for a report that
   could only follow it, so it was dropped after 30 seconds with the command
   long since answered `0`.
-
 - The context meter in a pane header no longer shows a count above its own
   ceiling, such as `334k / 228k`. The ceiling is the size the session last
   compacted at, and a session that has grown well past it without compacting
@@ -331,7 +332,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/ivkan/splitlane/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/ivkan/splitlane/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ivkan/splitlane/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ivkan/splitlane/compare/v0.1.4...v0.2.0
