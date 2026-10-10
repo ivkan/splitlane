@@ -29,6 +29,13 @@ Notable changes to Splitlane are recorded here. The format follows
   fresh shell, an agent stopped at a start-up question - read as empty, and
   `splitlane wait --pattern` could not see a line until it had scrolled off
   the screen. The MCP `read_pane` tool reads the same way.
+- A pane keeps the name scripts address it by across a restart. Names given
+  by `splitlane up`, `split --name` or `rename` came back as
+  `terminal@<project>`, so a script written against `left` and `right` found
+  neither. The status bar's "restored" line also counted every pane twice.
+- A resumed Claude Code session is no longer shown as working, then marked
+  as having finished a run, when the app starts. It happened when the end of
+  its transcript held a record too large to read.
 - A Codex session whose `CODEX_HOME` points somewhere other than `~/.codex`
   is followed like any other. Its record was looked for in `~/.codex` only,
   so the rail never learned that a turn had ended and `splitlane wait

@@ -432,9 +432,21 @@ pub(crate) fn classify(probe: &TranscriptProbe, worker: Worker, agent: AgentProc
         // The file's account of what is open is missing a piece, so it gets no
         // vote. Only the process does - and with nothing running, "the turn is
         // over" is the honest reading, not "someone is being waited on".
+        //
+        // `Unknown` is the process not voting either. Then what could be read
+        // decides: a call still open or a turn not yet ended is "working",
+        // and a window that shows neither says nothing is in flight. Without
+        // this a session resumed over such a window, before its first
+        // baseline, was "working" on no evidence at all - and when its status
+        // file caught up a few seconds later, a run was counted and marked
+        // unread that nobody had started.
         return match worker {
             Worker::Absent => AgentState::Finished,
-            Worker::Present | Worker::Unknown => AgentState::Thinking,
+            Worker::Present => AgentState::Thinking,
+            Worker::Unknown if probe.open_calls.is_empty() && probe.open_turn.is_none() => {
+                AgentState::Finished
+            }
+            Worker::Unknown => AgentState::Thinking,
         };
     }
     // Past the horizon a call stops being evidence **of anything**, which is
@@ -1072,6 +1084,25 @@ mod tests {
             classify(&p, Worker::Present, AgentProcess::Found),
             AgentState::Thinking
         );
+        assert_eq!(
+            classify(&p, Worker::Unknown, AgentProcess::Found),
+            AgentState::Thinking
+        );
+    }
+
+    /// A session resumed over a transcript with an oversized record in its
+    /// tail: nothing is open, no turn is in flight, and no baseline has been
+    /// taken yet. That is not a run.
+    #[test]
+    fn an_unreadable_record_alone_is_not_a_turn_in_flight() {
+        let mut p = probe(vec![]);
+        p.incomplete = true;
+        assert_eq!(
+            classify(&p, Worker::Unknown, AgentProcess::Found),
+            AgentState::Finished
+        );
+        // A turn the readable part shows as unfinished still is one.
+        p.open_turn = Some(Duration::from_secs(5));
         assert_eq!(
             classify(&p, Worker::Unknown, AgentProcess::Found),
             AgentState::Thinking
