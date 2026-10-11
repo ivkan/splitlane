@@ -771,8 +771,10 @@ impl SplitlaneApp {
             .map(|key| format!("attention-row-{:?}-{key}", row.kind))
             .unwrap_or_else(|| format!("attention-row-{:?}-{}", row.kind, row.name))
             .into();
+        // One step off hover, which is `subtle`: a row chosen with the keys
+        // and a row the pointer rests on must not look the same.
         let resting_background = if is_selected {
-            ui.subtle
+            ui.list_selection
         } else {
             ui.subtle.opacity(0.0)
         };
@@ -883,8 +885,18 @@ impl SplitlaneApp {
         let thread_id = row.thread_id;
         let (word, tone) = match row.kind {
             QueueKind::Failed => ("failed", ui.agent_error),
-            QueueKind::Waiting => ("waiting", ui.accent),
+            QueueKind::Waiting => ("waiting", ui.attention),
             QueueKind::Finished => ("finished", ui.faint),
+        };
+        // The rail's own marks: filled while the session stands, a ring in
+        // the accent for a result nobody has looked at.
+        let dot = div().flex_none().size(px(6.)).rounded_full();
+        let dot = match row.kind {
+            QueueKind::Finished => dot
+                // Physical: the ring's stroke, the rail's own 1.5px floor.
+                .border(px(1.5))
+                .border_color(ui.accent),
+            QueueKind::Failed | QueueKind::Waiting => dot.bg(tone),
         };
         div()
             .id(row_id)
@@ -896,7 +908,7 @@ impl SplitlaneApp {
             .py(tok::space::MD)
             .rounded(tok::radius::CONTROL)
             .bg(resting_background)
-            .child(div().flex_none().size(px(6.)).rounded_full().bg(tone))
+            .child(dot)
             .child(
                 div()
                     .flex_1()

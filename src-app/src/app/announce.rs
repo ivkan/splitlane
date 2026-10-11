@@ -167,7 +167,7 @@ impl Announcement {
 /// A dot's fill, and what the shape means.
 ///
 /// **Shape carries the kind, tone carries the rank** - that is the split, and
-/// the reason the halo may take the accent in every rank without claiming one.
+/// the reason the halo may take the attention hue in every rank without claiming one.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DotFill {
     /// Filled: the session is standing by itself.
@@ -186,12 +186,12 @@ pub(crate) enum DotFill {
 /// One dot, with the announcement's movement when this dot is the one being
 /// announced.
 ///
-/// `halo` is the accent, always, and `announcing` is the generation to key the
-/// movement on. Two things follow from the halo taking the accent in **both**
+/// `halo` is the attention hue, always, and `announcing` is the generation to
+/// key the movement on. Two things follow from the halo taking it in **both**
 /// ranks. The dot is a state and carries the rank; the halo is an event and
 /// carries none - one act, performed identically whether a question arrived or
 /// a result did, with the rank left in what stays on screen afterwards. And it
-/// is only legal because **the halo ends at zero**: the accent means "something
+/// is only legal because **the halo ends at zero**: that hue means "something
 /// wants you", and a mark that lives 480 ms and leaves nothing behind makes no
 /// standing claim. Let it settle on any non-zero value and the argument
 /// collapses, which is why "ends at zero" is load-bearing rather than tidy.
@@ -470,7 +470,7 @@ mod tests {
 
         let (scale, halo) = pulse_at(1.);
         assert!((scale - 1.).abs() < 1e-3, "the dot ends at rest");
-        // **Load-bearing, not tidy**: the accent is legal on the
+        // **Load-bearing, not tidy**: the attention hue is legal on the
         // halo only because the halo ends at nothing. Any residue and the
         // announcement would be making a standing claim.
         assert!(

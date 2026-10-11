@@ -110,16 +110,13 @@ fn harbor_dark_ui() -> UiColors {
         // "border 1px when focused, transparent otherwise", and the two header
         // fills that go with it.
         //
-        // Raised from the design's own `#33453f`, on our
-        // measurement: that value is 1.88 : 1 against the desk and 1.73 : 1
-        // against the pane fill, under the 3 : 1 Harbor Light's focus border
-        // is held to. `#44705f` clears the floor against **both** grounds - 3.40 and
-        // 3.13 - which `accent_border #3f6a5c` does not (2.87 against the
-        // fill, and the fill is what the border sits on for most of its
-        // length). `#3f6a5c` also already means the hovered divider and the
-        // composer's focused input row, and a focused pane is a stronger
-        // statement than a hovered divider.
-        focus_border: h(0x44705f),
+        // A neutral, and the brightest border in the palette. It was a dark
+        // green, `#44705f`, until the accent came to mean an agent at work:
+        // the outline and the dot of the agent inside it were then two greens
+        // saying different things. `#6b717a` is 3.58 : 1 against the pane
+        // fill and 3.90 : 1 against the desk, above the 3 : 1 floor and above
+        // what the green measured (3.13 and 3.40).
+        focus_border: h(0x6b717a),
         // Transparent, as the design's dark mockup draws it. An earlier fix gave
         // an unfocused pane a `border_strong` edge and that fix was measured
         // on Harbor **Light**, where it is worth 3.08 : 1; carried onto dark
@@ -145,6 +142,7 @@ fn harbor_dark_ui() -> UiColors {
         tool_card_header_bg: h(0x1d2724),
         vc_added: h(0x5ecfa8),
         vc_modified: h(0xe0b25f),
+        attention: h(0xe0b25f),
         vc_deleted: h(0xd98a72),
         // The design has two status hues - "warning (running, modified)" and
         // "danger (deletions, errors)" - and no third for a merge conflict.
@@ -302,12 +300,18 @@ fn harbor_light_ui() -> UiColors {
         // `border_strong` instead of nothing, so the signal is a **change**
         // between two borders rather than one hairline appearing on bare
         // ground. The pair itself measures 3.08 : 1.
-        focus_border: h(0x35785f),
+        //
+        // A neutral since the accent came to mean an agent at work; it was the
+        // green `#35785f`. The design's own neutral, `#7a7f7b`, is 2.40 : 1
+        // from the idle edge below - two grey hairlines again - so it is taken
+        // darker until the pair clears: `#666b67` is 3.19 : 1 from the idle
+        // edge, 5.43 on the fill and 4.43 on the backdrop.
+        focus_border: h(0x666b67),
         // Light keeps the drawn edge: white on `#e8e8e6` is 1.23 : 1, so an
         // unfocused pane has no shape at all without one.
         pane_border_idle: h(0xc6c7c1),
         slot_header: h(0xf0f0ed),
-        list_selection: h(0xe4e9e5),
+        list_selection: h(0xe4e5e1),
         slot_header_focus: h(0xeef2f0),
         text_body: h(0x2c2f2e),
         text_secondary: h(0x3f4442),
@@ -329,6 +333,7 @@ fn harbor_light_ui() -> UiColors {
         tool_card_header_bg: h(0xe2f2ec),
         vc_added: h(0x157f5f),
         vc_modified: h(0x9a6b12),
+        attention: h(0x9a6b12),
         vc_deleted: h(0xb3462f),
         // Same deliberate step off the design's letter as the dark half: it
         // gives two status hues and no third for a merge conflict, and warning

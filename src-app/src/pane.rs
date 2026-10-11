@@ -23,7 +23,6 @@ use gpui::{
     prelude::*, px, rgb, svg,
 };
 
-use crate::settings::components::with_alpha;
 use crate::ui_primitives::{AnimatedHoverExt, lerp_color};
 
 use crate::diff::DiffView;
@@ -488,7 +487,7 @@ const HEADER_LEVEL_RERUN: u8 = 2;
 /// the ladder is four steps rather than five.
 const HEADER_LEVEL_BADGE: u8 = 3;
 /// The square inside the Stop button - the whole button below 420px.
-const STOP_GLYPH: Pixels = px(7.);
+const STOP_GLYPH: Pixels = px(8.);
 /// Square size shared by tab-bar icon buttons.
 const ACTION_BUTTON_SIZE: f32 = 22.0;
 /// Full-distance duration for every tab-bar hover transition.
@@ -1382,8 +1381,10 @@ impl Pane {
                     .py(tok::space::XS)
                     .rounded(tok::radius::BADGE)
                     .text_size(tok::text::CAPTION)
-                    .bg(ui.vc_modified.opacity(0.15))
-                    .text_color(ui.vc_modified)
+                    // Plain: it states how Enter will behave, and asks for
+                    // nothing.
+                    .bg(ui.surface)
+                    .text_color(ui.dim)
                     .child("agent generating - Enter queues"),
             );
         }
@@ -1524,7 +1525,7 @@ impl Pane {
                 .overflow_hidden()
                 .bg(ui.overlay)
                 .border_1()
-                .border_color(ui.vc_conflict.opacity(0.6))
+                .border_color(ui.attention.opacity(0.6))
                 .rounded(tok::radius::SMALL)
                 .px_2()
                 .py_1()
@@ -2819,8 +2820,10 @@ impl Pane {
         let (branch, is_worktree) = self.active_surface_facts()?.branch.clone()?;
         let (label, color) = if is_worktree {
             (
+                // The glyph says "linked worktree"; a hue here was the waiting
+                // colour on something that waits for nobody.
                 SharedString::from(format!("\u{2442} {branch}")),
-                ui.vc_modified,
+                ui.dim,
             )
         } else {
             (branch, ui.muted)
@@ -2978,9 +2981,12 @@ impl Pane {
             .whitespace_nowrap()
             .font_family(tok::font::MONO)
             .text_size(tok::mono::HINT)
-            .text_color(ui.vc_deleted)
+            // Neutral. Stopping a run interrupts a turn and destroys nothing,
+            // so it is not the red of an irreversible action - and a red mark
+            // beside the green dot of a working agent read as an error.
+            .text_color(ui.dim)
             .cursor_pointer()
-            .hover(|style| style.bg(with_alpha(ui.vc_deleted, 0.12)))
+            .hover(|style| style.bg(ui.subtle).text_color(ui.text))
             .when(!self.menu_open, |b| {
                 b.tooltip(crate::ui_primitives::text_tooltip(
                     "Stop the run (ESC into the agent's terminal)",
@@ -2991,11 +2997,17 @@ impl Pane {
                 terminal.read(cx).send_text("\u{1b}");
                 cx.stop_propagation();
             }))
-            // Square, unrounded. The smallest radius token on a 7px glyph draws
-            // a disc, and a red disc beside the status dot reads as a second
-            // status dot - `failed` - which is precisely what the bare glyph
-            // below 420px is not. The shape is what says "stop".
-            .child(div().flex_none().size(STOP_GLYPH).bg(ui.vc_deleted));
+            // Square, unrounded and hollow. The smallest radius token on a
+            // glyph this size draws a disc, and a disc beside the status dot
+            // reads as a second status dot. The shape alone says "stop".
+            .child(
+                div()
+                    .flex_none()
+                    .size(STOP_GLYPH)
+                    // Physical: the stroke of a glyph, not a step of the scale.
+                    .border(px(1.5))
+                    .border_color(ui.dim),
+            );
         if wide {
             button = button.child("Stop");
         }
@@ -3325,7 +3337,7 @@ fn render_pane_launcher(pane: &Pane, cx: &mut Context<Pane>) -> gpui::AnyElement
                             .bottom_0()
                             .w(px(2.))
                             .rounded_l(tok::radius::SMALL)
-                            .bg(ui.accent),
+                            .bg(ui.text_body),
                     )
                 })
                 .when(!is_selected, |r| r.hover(|r| r.bg(hover_bg)))
@@ -3410,7 +3422,12 @@ fn render_pane_launcher(pane: &Pane, cx: &mut Context<Pane>) -> gpui::AnyElement
                             .whitespace_nowrap()
                             .font_family(tok::font::MONO)
                             .text_size(tok::mono::HINT)
-                            .text_color(if row.meta_accent { ui.accent } else { ui.muted })
+                            .text_color(match row.meta_tone {
+                                crate::app::launcher::MetaTone::Plain => ui.muted,
+                                crate::app::launcher::MetaTone::Accent => ui.accent,
+                                crate::app::launcher::MetaTone::Waiting => ui.attention,
+                                crate::app::launcher::MetaTone::Failed => ui.agent_error,
+                            })
                             .child(row.meta.clone()),
                     )
                 })

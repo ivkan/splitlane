@@ -443,28 +443,20 @@ pub(super) fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
 /// borders for most of its length, and the desk showing in the gap between
 /// panes.
 ///
-/// `mix(base, accent, 0.25)` stood here and cleared neither on One Dark
-/// (1.76 : 1 on the fill), and no fixed factor can, because how far a blend
-/// gets depends on the accent: One Dark's green reaches the floor around 0.6
-/// and a saturated blue never does at any ratio. So the blend walks up until
-/// it clears, and an accent that cannot carry the signal hands it to the
-/// theme's own `text`, which is readable on its own `base` by construction.
-fn derived_focus_border(base: Hsla, accent: Hsla, desk: Hsla, text: Hsla) -> Hsla {
+/// A fixed blend stood here and cleared neither ground on One Dark (1.76 : 1
+/// on the fill), and no fixed factor can across themes. So the blend walks up
+/// until it clears, toward the theme's own `text`, which is readable on its
+/// own `base` by construction.
+fn derived_focus_border(base: Hsla, desk: Hsla, text: Hsla) -> Hsla {
     let clears = |candidate: Hsla| {
         contrast_ratio(candidate, base) >= UI_CONTRAST_FLOOR
             && contrast_ratio(candidate, desk) >= UI_CONTRAST_FLOOR
     };
-    // Toward the accent first: a focus border that keeps the theme's own hue
-    // is the one the design draws, and the smallest blend that clears is the
-    // quietest border that still answers.
-    for step in 0..=15 {
-        let candidate = mix(base, accent, 0.25 + 0.05 * step as f32);
-        if clears(candidate) {
-            return candidate;
-        }
-    }
-    // The accent cannot get there. Walk toward the text instead - a colourless
-    // border that can be seen beats a tinted one that cannot.
+    // Toward the text, not the accent. The accent means an agent at work, and
+    // a focused pane drawn in it put two greens that say different things on
+    // one pane: the outline, and the dot of the agent inside. Focus is said
+    // by brightness, and the smallest step that clears is the quietest
+    // border that still answers.
     for step in 1..=20 {
         let candidate = mix(base, text, 0.05 * step as f32);
         if clears(candidate) {
@@ -561,7 +553,10 @@ pub struct UiColors {
     pub group_rule: Hsla,
     /// The border around the slot that takes input. The one border in the app
     /// that means "your keystrokes land here", which is why it is a role of
-    /// its own rather than the accent: focus is a state, not an accent.
+    /// its own rather than the accent: focus is a state, not an accent. It is
+    /// a neutral, brighter than any other border: the accent means an agent
+    /// at work, and an outline in it beside that agent's dot was two greens
+    /// saying different things.
     pub focus_border: Hsla,
     /// What an **unfocused** pane edge draws, so that focus reads as a change
     /// in the same place at the same weight rather than as one hairline
@@ -580,8 +575,10 @@ pub struct UiColors {
     /// The row a keyboard-navigated list has landed on - the launcher's list
     /// and the `\u{2318}K` palette.
     ///
-    /// One step above `subtle`, which is hover, plus a 2px accent bar on the
-    /// leading edge drawn by the row itself. Both halves are load-bearing:
+    /// One step above `subtle`, which is hover, plus a 2px bar in the text
+    /// colour on the leading edge drawn by the row itself. Neutral on both
+    /// counts: a selected row often holds a status dot, and the accent there
+    /// would be read as that row's status. Both halves are load-bearing:
     /// while the highlight was `subtle` it was **the same colour as hover**,
     /// so a selection and a pointer resting on some other row were
     /// indistinguishable - and a background alone is not enough to tell them
@@ -677,6 +674,22 @@ pub struct UiColors {
     // slots (no inline hex in render code). Both are deliberately
     // distinct from `vc_conflict` (the attention/waiting dot) so a crashed
     // agent never reads as "needs input".
+    /// **Waiting for you**, and nothing else that is routine: the dot, the
+    /// word, the Activity chip, the folded tallies, the announcement flash and
+    /// the frame of an agent's question. Its other uses are the same request,
+    /// look here: a usage limit about to run out, and in Settings a thing that
+    /// needs the person to act (notifications blocked, a bridge to repair).
+    ///
+    /// It can answer "is something waiting for me?" only while it is spent on
+    /// nothing else. The accent could not: it already meant on, here, pinned,
+    /// selected and a dozen more, so a waiting agent was one green among many.
+    /// Working is therefore the accent's, which says "going, in order" like
+    /// the rest of its uses, and this hue is kept off everything that merely
+    /// is - a worktree label, a search mark, a queued prompt.
+    ///
+    /// The same amber as `vc_modified` in the bundled themes and a role of
+    /// its own, because a modified file is not a request.
+    pub attention: Hsla,
     /// `AgentState::Errored` - tab dot + sidebar badge (red).
     pub agent_error: Hsla,
     /// `AgentState::Stalled` - sidebar badge (muted grey-blue:
@@ -776,7 +789,7 @@ impl UiColors {
             // Far enough into the accent to be read as "here", far enough from
             // it to stay a border rather than a highlight - and measured
             // rather than guessed at a fixed ratio, see the function.
-            focus_border: derived_focus_border(base, accent, mix(base, black, desk_shade), text),
+            focus_border: derived_focus_border(base, mix(base, black, desk_shade), text),
             // A theme that states nothing gets the answer its own half of the
             // world needs - see the field's own note for the measurements.
             pane_border_idle: if is_light {
@@ -824,6 +837,7 @@ impl UiColors {
             tool_card_header_bg: mix(surface, accent, 0.10),
             vc_added: mix(accent, h(0x57d992), 0.5),
             vc_modified: h(0xffd166),
+            attention: h(0xffd166),
             vc_deleted: h(0xff6f6a),
             vc_conflict: h(0xffa657),
             vc_added_background: ha(0x57d992, if is_light { 0.16 } else { 0.12 }),
@@ -944,6 +958,7 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             // saturated hues that read on a light surface.
             vc_added: h(0x40a02b),
             vc_modified: h(0xdf8e1d),
+            attention: h(0xdf8e1d),
             vc_deleted: h(0xd20f39),
             vc_conflict: h(0xfe640b),
             // Subtle line wash (Zed editor_diff_hunk_*_background, light a=0x29=0.16);
@@ -994,6 +1009,7 @@ pub fn ui_colors_with(theme: &TerminalTheme) -> UiColors {
             // softened to sit inside the blue-black terminal surface.
             vc_added: h(0x57d992),
             vc_modified: h(0xffd166),
+            attention: h(0xffd166),
             vc_deleted: h(0xff6f6a),
             vc_conflict: h(0xffa657),
             // Subtle line wash (Zed editor_diff_hunk_*_background, dark a=0x1f=0.12);
@@ -1461,7 +1477,7 @@ mod tests {
         assert!(ui.vc_deleted_background.l > ui.vc_deleted.l);
 
         // The three focus signals, stated rather than blended.
-        assert_eq!(ui.focus_border, h(0x35785f));
+        assert_eq!(ui.focus_border, h(0x666b67));
         assert_eq!(ui.slot_header, h(0xf0f0ed));
         assert_eq!(ui.slot_header_focus, h(0xeef2f0));
     }
@@ -1534,7 +1550,7 @@ mod tests {
         // Harbor states the design's own three values rather than blending
         // them.
         let harbor = ui_colors_with(&harbor_dark());
-        assert_eq!(harbor.focus_border, h(0x44705f));
+        assert_eq!(harbor.focus_border, h(0x6b717a));
         assert_eq!(harbor.slot_header, h(0x1c1f23));
         assert_eq!(harbor.slot_header_focus, h(0x20242a));
     }

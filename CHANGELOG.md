@@ -22,8 +22,21 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Changed
 
+- Status colours are swapped: a working agent is green and an agent waiting
+  for you is amber, everywhere a state is shown. Amber now means only "look
+  here" - a waiting agent, or a usage limit about to run out - and no longer
+  marks a linked worktree, the `+ worktree` button, search marks on the
+  scrollbar or the "Enter queues" note.
+- Focus is shown without colour: the focused pane's border, the focused row in
+  the sidebar and the row selected by keyboard in the launcher and the command
+  palette are neutral instead of green.
+- The Activity chip is tinted only for a failed run. Waiting shows as an amber
+  dot and an unread result as a green ring on the plain chip.
+- The Stop button in a pane header is a plain hollow square instead of red.
+- In the launcher's list of open sessions a failed session is marked in red;
+  it used to look like an idle one.
 - The count of background commands beside an idle session (`idle · 1 shell`)
-  is drawn in the amber of a running session, in the sidebar and in the pane
+  is drawn in the colour of a running session, in the sidebar and in the pane
   header. It was in the idle grey and easy to miss. The session still reads
   as idle: the word and the dot keep their tone.
 

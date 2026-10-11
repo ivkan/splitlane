@@ -18,8 +18,8 @@ session showed `idle` while `claude --resume <uuid>` sat on screen waiting for
 the CLI to paint.
 
 It is **muted text, not a state colour**, and its dot is a **hollow ring**, not
-a fifth fill. `running` is amber and `waiting` is the accent because both are
-claims on the user's attention, and `starting` claims nothing. The four settled
+a fifth fill. `running` is the accent and `waiting` is the attention hue because
+both are worth a colour, and `starting` claims nothing. The four settled
 states are filled dots, and the one unsettled state is the one left unfilled.
 
 **It comes down ahead of the ranking in `deposit_pty_flow`**, and that is the
@@ -693,19 +693,72 @@ pass, the second because the status file of a process that is not running is
 never opened. It is a property of an idle session: under any other word it is
 reported as zero.
 
+### What each colour means
+
+Four hues carry state, and each means one thing:
+
+| role | hue | means |
+|---|---|---|
+| `attention` | amber | waiting for you; a usage limit about to run out; in Settings, something that needs you to act |
+| `accent` | green | working; and on, here, active elsewhere in the app |
+| `agent_error` | red | failed; an action that cannot be undone |
+| `faint` | grey | idle, `starting` |
+
+**Working was amber and waiting was the accent, and they were swapped.** The
+rule the old scheme stood on is right and is kept: the colour that means
+"something is waiting for me" can only say so while it is spent on nothing
+else. A count of the interface showed the accent could never be that colour. It
+meant twelve things - a waiting agent, an unread result, the focused pane's
+border, the focused rail row, the row selected by keyboard, a switch that is
+on, a zoomed pane, a pinned session, a project with a repository, a dev server
+found, an agent in a pane, a list loading - and ten of the twelve say "on,
+here, going". Pulling those ten out of the accent was the expensive direction.
+Amber had six meanings and four were incidental, so amber was the hue that
+could be emptied: the linked-worktree label, the `+ worktree` button, the
+search marks on the scrollbar and the "Enter queues" note all went neutral.
+What is left on it is a waiting agent and a limit about to run out, which is
+the same request. Passages below that were written before the swap say "the
+accent" where they mean this hue; the argument in them is unchanged.
+
+It is also the scheme a person arrives with: green is going, amber is look
+here, red is broken. Red for waiting was considered and refused, because a
+failed session has to stand above a waiting one.
+
+**Focus and selection are neutral.** With the accent meaning an agent at work,
+an accent border on the focused pane and an accent bar on its rail row put two
+greens that say different things on one row. Focus is said by brightness: the
+pane's border, the rail row's fill and bar, and the keyboard-selected row in
+the launcher and the palette.
+
+**The ring of an unread result stays in the accent.** In the attention hue it
+would light on every finished turn and the hue would stop meaning "come here".
+An unread result is news, not a request; the ring, the word `finished` and its
+row in Activity already say it. Shape tells it from a working dot: filled is
+going, hollow is done. For the same reason the Activity chip tints its pill
+only for a failure. A waiting session is a filled attention dot on the neutral
+pill and an unread result a ring in the accent.
+
+**`running` stays grey in a folded project's tally.** The tally answers "is
+there something here for me", and a working session needs nobody.
+
+**Stop is a neutral hollow square.** It interrupts a turn and destroys nothing,
+so it is not the red of an irreversible action, and red beside a working
+agent's green dot read as an error.
+
 **It is not `running`, and it is not a sixth status word.** The row and the
 header say `idle · 1 shell` with the idle dot, where the header had `idle` and
 the rail row had the agent's name. `idle` is in the idle tone; the count is in
-the amber of `running`. It was first drawn all in the idle tone and was
+the colour of `running`. It was first drawn all in the idle tone and was
 reported as too pale to notice: the row read as a session with nothing going
 on. The CLI's own status line colours its `1 shell` for a dev server and a
 test run alike, because the count is a fact beside the state, not a state. A
-neutral step brighter was tried first and was still too quiet. Amber is the
-colour of something running, and a command is running; what keeps it from
-reading as a working agent is that the dot and the word `idle` do not change.
-The cost is accepted: a session with a dev server keeps one amber word for as
-long as the server lives. `running` would bring
-back the dev server that holds a session amber for ever, which is what another
+neutral step brighter was tried first and was still too quiet. The count takes
+the colour of something running, because a command is running; what keeps it
+from reading as a working agent is that the dot and the word `idle` do not
+change. A session with a dev server keeps that one coloured word for as long as
+the server lives, which cost something while running was amber and costs
+nothing now that it is the accent, a hue that asks for nobody. `running` would
+bring back the dev server that holds a session busy for ever, which is what another
 product shipped when it read this word as work. `waiting` is taken: it means a
 person is being waited on. The word the CLI itself uses is `shell`, so the row
 uses it. A folded project's tally does not count such a session: it is idle,
@@ -1223,7 +1276,8 @@ What the chip says, in `waiting::chip_state`:
 
 ```
 failed          error text  · error dot (filled)  · error fill  · error border
-unacknowledged  accent text · accent dot          · accent fill · accent border
+unacknowledged  text tone   · attention dot, or    · tinted fill · neutral border
+                              an accent ring
 quiet           dim text    · dim dot             · tinted fill · neutral border
 buttons         text tone   · no dot              · surf fill   · button border
 ```
@@ -1387,7 +1441,7 @@ not move** - an animated number reads as instability, and the count is a fact
 rather than an event - and **the icon's box does not move**: nothing should
 slosh, and displacement is what turns a movement into an interruption.
 
-**The halo takes the accent in every rung.** The motivating case is `finished`,
+**The halo takes the attention hue in every rung.** The motivating case is `finished`,
 which is correctly drawn muted, and a halo of 45% muted grey on a dark rail at
 10px is approximately nothing. A halo in the dot's own tone would give the
 weakest announcement in exactly the case this feature exists for. The resolution
@@ -1398,12 +1452,12 @@ is a distinction the design already uses everywhere:
 > question arrived or a result did; the rank is in what stays on screen
 > afterwards, and that does not change.
 
-**The accent is legal there only because the halo ends at zero.** The accent
+**That hue is legal there only because the halo ends at zero.** It
 means "something wants you", and a mark that lives 480 ms and leaves no trace
 makes no standing claim. If it settled on any non-zero value, the argument would
 collapse, so "the halo ends at zero" is load-bearing rather than tidy, and
 `the_pulse_starts_and_ends_at_rest` is the machine form of it. No new colour is
-introduced: the accent already exists in both themes. The dot's own fill is
+introduced: the hue already exists in both themes. The dot's own fill is
 untouched, so `finished` stays muted **as a state**.
 
 **What pulses.** The chip's dot, once, on the edge: eight finishes in one tick

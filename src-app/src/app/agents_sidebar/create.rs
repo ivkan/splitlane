@@ -90,10 +90,9 @@ impl SplitlaneApp {
                 SharedString::from(format!("rail-new-worktree-{container_id}")),
                 "+ worktree",
                 "Create a git worktree for this project",
-                // The branch role, the one the pane header uses for `\u{2442}`:
-                // a worktree is a second checkout, and that is what the
-                // colour says wherever it appears.
-                ui.vc_modified,
+                // An ordinary button. It was the amber the pane header gave a
+                // worktree's branch, which is now kept for a waiting agent.
+                ui.text_body,
                 ui,
                 cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.close_agents_menu(cx);

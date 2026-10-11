@@ -1737,7 +1737,7 @@ impl Element for TerminalElement {
             // the search at the same repaint (empty snapshot → no paint).
             paint::scrollbar::paint_match_ticks(
                 &self.search_rail_lines,
-                crate::theme::ui_colors().vc_modified,
+                crate::theme::ui_colors().text_body,
                 &layout,
                 &geom,
                 bounds,

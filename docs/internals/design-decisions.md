@@ -134,7 +134,7 @@ surface belongs to a directory, and crossing projects is what `⌘K` is for.
 **The launcher and the palette are keyboard-driven.** A pane opened by a
 keystroke that can only be finished with a mouse gives back what the keystroke
 was for. The highlight tone is `list_selection`, one step off `subtle`, plus a
-2px accent bar on the leading edge. Both halves matter - if the highlight were
+2px bar in the body text colour on the leading edge. Both halves matter - if the highlight were
 `subtle` it would be *exactly what hover paints*, and the row the arrows are on
 would read the same as a row under the pointer.
 
@@ -172,15 +172,17 @@ accent belongs to the right one.** `surface_type_glyph` paints `◆` agent, `▷
 shell and `◈` diff in **`dim`** - one neutral step, everywhere a type glyph
 appears: rail rows, the pane header, the launcher, the attention popover.
 Painting the agent's `◆` in `ui.accent` would put, in the same row and seven
-pixels to the right of the status dot, the colour that means **waiting for
-you**: one hue, two meanings, the left one lit permanently and the right one
+pixels to the right of the status dot, a colour that means a state there
+(waiting, when this was written; working, since the two were swapped): one
+hue, two meanings, the left one lit permanently and the right one
 rarely and for a reason. The always-on diamond would read as a state marker
 because it wore a state colour.
 
 The rule worth more than the fix: **"one word, one meaning" governs colour, not
-just wording.** **The accent answers one question in this app - *does something
+just wording.** **One colour answers one question in this app - *does something
 want me?* - and it can only keep answering it while it is never spent on
-anything else.** The practical half decides it anyway: `finished` is a frequent
+anything else.** That colour is the attention hue; it was the accent until a
+count showed the accent could not be kept to one meaning. The practical half decides it anyway: `finished` is a frequent
 state, and an accent lit most of the time has stopped being a signal, while
 `waiting` is rare and expensive to miss. And the general form: **when two states
 need telling apart, spend hue, shape or presence before brightness** -
@@ -321,7 +323,7 @@ and the window says `None` whenever focus rests anywhere but a pane - the rail,
 the palette, a dialog, an inline rename, the Files tree.
 `SplitlaneApp::focused_pane_as_shown` answers the second in three steps, and it
 is the answer the app **draws**: the pane border, the slot header's fill and the
-rail row's accent bar are all painted from it, so a person can always point at
+rail row's leading bar are all painted from it, so a person can always point at
 the pane it returns.
 
 The case that forced it: `split` asked the window, so **`Add pane` did nothing
@@ -389,16 +391,17 @@ compare - so the idle edge is `transparent`, and the signal is the outline
 **appearing**. `a_pane_edge_answers_focus_in_one_of_the_two_ways_that_work` is
 the machine form of the rule.
 
-The dark focus border itself is **`#44705f`**: 3.40 against the desk and 3.13
-against the fill, so it clears the 3 : 1 floor on both grounds (`#33453f`
-measured 1.88 : 1 against the desk). `accent_border #3f6a5c` was the other
-candidate and lost twice: 2.87 on the fill, and it already means the hovered
-divider and the composer's focused input row. A theme that states no
-`focus_border` does not take a fixed blend either - `derived_focus_border` walks
-the mix up until it clears, because how far an accent can get depends on the
-accent (One Dark's green reaches the floor at a mix of about 0.6 and a saturated blue never
-does), and an accent that cannot carry it hands the border to the theme's own
-`text`.
+The focus border is a neutral, the brightest border in the palette. It was a
+dark green until the accent came to mean an agent at work; an outline in it
+around a pane whose agent shows a green dot was two greens saying different
+things. Dark is **`#6b717a`**: 3.90 against the desk and 3.58 against the fill,
+above the 3 : 1 floor on both grounds and above what the green measured (3.40
+and 3.13). Light is **`#666b67`**, 3.19 : 1 from the idle edge. The design's own
+light value, `#7a7f7b`, measures 2.40 : 1 from that edge, which is the pair of
+grey hairlines the rule above forbids, so it was taken darker until the pair
+cleared. A theme that states no `focus_border` does not take a fixed blend
+either: `derived_focus_border` walks from the pane's fill toward the theme's own
+`text` until it clears both grounds.
 
 ## Naming a surface, and the capability tier beside an agent
 

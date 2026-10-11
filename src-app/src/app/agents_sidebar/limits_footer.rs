@@ -608,7 +608,7 @@ impl Level {
     fn color(self, ui: crate::theme::UiColors) -> Hsla {
         match self {
             Level::Quiet => ui.dim,
-            Level::NearlyOut => ui.vc_modified,
+            Level::NearlyOut => ui.attention,
             Level::Reached => ui.agent_error,
         }
     }
@@ -2122,7 +2122,7 @@ impl SplitlaneApp {
                         .with_highlights([(
                             0.."burning".len(),
                             gpui::HighlightStyle {
-                                color: Some(ui.vc_modified),
+                                color: Some(ui.attention),
                                 ..Default::default()
                             },
                         )]),

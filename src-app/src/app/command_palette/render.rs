@@ -231,7 +231,7 @@ impl SplitlaneApp {
         div()
             .id(SharedString::from(format!("command-palette-row-{idx}")))
             .relative()
-            // "inset 2px 0 0 accent" - GPUI has no inset shadow, so the bar is
+            // A 2px leading bar - GPUI has no inset shadow, so the bar is
             // a real child pinned to the leading edge, the way the rail's
             // focused row already draws one. It is what keeps the highlight
             // legible when the pointer is somewhere else on the list.
@@ -243,7 +243,7 @@ impl SplitlaneApp {
                         .top_0()
                         .bottom_0()
                         .w(px(2.))
-                        .bg(ui.accent),
+                        .bg(ui.text_body),
                 )
             })
             .flex()

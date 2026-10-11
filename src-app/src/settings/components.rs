@@ -338,7 +338,7 @@ pub fn setting_note(ui: crate::theme::UiColors, text: impl Into<SharedString>) -
 pub fn chip_skin(ui: crate::theme::UiColors, tone: ChipTone) -> Div {
     let (chip_fg, chip_bg, chip_border) = match tone {
         ChipTone::On => (ui.accent, ui.accent_surface, Some(ui.accent_border)),
-        ChipTone::Attention => (ui.vc_modified, with_alpha(ui.vc_modified, 0.12), None),
+        ChipTone::Attention => (ui.attention, with_alpha(ui.attention, 0.12), None),
         ChipTone::Off => (ui.muted, with_alpha(ui.muted, 0.0), None),
         ChipTone::Plain => (ui.text_body, ui.subtle, None),
     };

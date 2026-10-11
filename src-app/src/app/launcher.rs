@@ -76,6 +76,20 @@ pub(crate) enum LauncherAction {
 }
 
 /// One row, built by the app and read by the pane.
+/// What colours a row's trailing fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetaTone {
+    Plain,
+    /// "full control" among the agents' ladder words: the rarest rung is the
+    /// one worth pointing at, and four accents in a list are none.
+    Accent,
+    /// An open session that is waiting for the person.
+    Waiting,
+    /// An open session that failed. It used to be plain, so the one row that
+    /// most needed opening looked like an idle one.
+    Failed,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct LauncherRow {
     pub(crate) group: LauncherGroup,
@@ -88,9 +102,8 @@ pub(crate) struct LauncherRow {
     /// The trailing fact: the agent's ladder word for a new session, what a
     /// running one is doing, when a stored one was last touched.
     pub(crate) meta: SharedString,
-    /// Only "full control" is accented - the rarest rung is the one worth
-    /// pointing at, and four accents in a list are none.
-    pub(crate) meta_accent: bool,
+    /// The colour of `meta`. Plain unless the row has something to say.
+    pub(crate) meta_tone: MetaTone,
     /// The chord that reaches this row from anywhere, when it has one.
     pub(crate) keys: SharedString,
     pub(crate) action: LauncherAction,
@@ -203,7 +216,11 @@ impl SplitlaneApp {
                 label: SharedString::from(label),
                 detail: SharedString::default(),
                 meta: SharedString::from(tier.word()),
-                meta_accent: tier.is_advertised(),
+                meta_tone: if tier.is_advertised() {
+                    MetaTone::Accent
+                } else {
+                    MetaTone::Plain
+                },
                 keys: SharedString::default(),
                 action: LauncherAction::NewAgent(agent),
             });
@@ -214,7 +231,7 @@ impl SplitlaneApp {
             label: SharedString::from("New shell"),
             detail: SharedString::default(),
             meta: SharedString::default(),
-            meta_accent: false,
+            meta_tone: MetaTone::Plain,
             keys: new_shell_keys,
             action: LauncherAction::NewShell,
             haystack: "new shell terminal".into(),
@@ -249,7 +266,11 @@ impl SplitlaneApp {
                     haystack: thread.title.to_lowercase(),
                     label: SharedString::from(thread.title.clone()),
                     detail: project.clone(),
-                    meta_accent: thread.status == crate::project::ThreadStatus::WaitingForInput,
+                    meta_tone: match thread.status {
+                        crate::project::ThreadStatus::WaitingForInput => MetaTone::Waiting,
+                        crate::project::ThreadStatus::Failed => MetaTone::Failed,
+                        _ => MetaTone::Plain,
+                    },
                     meta,
                     keys: SharedString::default(),
                     action: LauncherAction::ShowSurface {
@@ -290,7 +311,7 @@ impl SplitlaneApp {
                 label: SharedString::from(row.title.clone()),
                 detail: SharedString::from(row.project.clone()),
                 meta: SharedString::from(last_touched_ago(row.last_activity_secs)),
-                meta_accent: false,
+                meta_tone: MetaTone::Plain,
                 keys: SharedString::default(),
                 action: LauncherAction::ResumeSession {
                     agent,

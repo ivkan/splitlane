@@ -431,7 +431,18 @@ pub(crate) fn failed_section_label(count: usize) -> String {
 /// `agent_error`, the role the rail's own failed dot has always used, and its
 /// pill is that hue through the same two blends `accent_surface` and
 /// `accent_border` are - so the top rung cannot drift from the one below it.
-fn chip_tones(rung: ChipRung, ui: crate::theme::UiColors) -> (Hsla, Hsla, Hsla, Hsla) {
+///
+/// **Only a failure tints the pill.** A waiting session and an unread result
+/// both sit on the neutral pill and say which they are with the dot: filled
+/// in the attention hue for "waiting for you", a ring in the accent for
+/// "finished, not looked at". The pill used to take the accent for both, back
+/// when the accent meant waiting; with the accent meaning work in progress a
+/// tinted pill would have read as "something is running".
+fn chip_tones(
+    rung: ChipRung,
+    dot: ChipDot,
+    ui: crate::theme::UiColors,
+) -> (Hsla, Hsla, Hsla, Hsla) {
     match rung {
         // Hue, not brightness, is what puts this above the accent - and the
         // accent deliberately never sat at the top of the range, precisely so
@@ -442,7 +453,15 @@ fn chip_tones(rung: ChipRung, ui: crate::theme::UiColors) -> (Hsla, Hsla, Hsla, 
             ui.tinted_border(ui.agent_error),
             ui.agent_error,
         ),
-        ChipRung::Unacknowledged => (ui.accent, ui.accent_surface, ui.accent_border, ui.accent),
+        ChipRung::Unacknowledged => (
+            ui.text,
+            ui.subtle,
+            ui.border_strong,
+            match dot {
+                ChipDot::Filled => ui.attention,
+                ChipDot::Hollow => ui.accent,
+            },
+        ),
         ChipRung::Quiet => (ui.text_tertiary, ui.subtle, ui.border_strong, ui.dim),
     }
 }
@@ -492,7 +511,7 @@ pub(crate) fn chip_body(
 ) -> gpui::Stateful<gpui::Div> {
     use gpui::{InteractiveElement, ParentElement, Styled, div, px};
 
-    let (text, fill, border, dot) = chip_tones(chip.rung, ui);
+    let (text, fill, border, dot) = chip_tones(chip.rung, chip.dot, ui);
     div()
         .id(id)
         .flex_none()
@@ -516,9 +535,10 @@ pub(crate) fn chip_body(
                 ChipDot::Filled => crate::app::announce::DotFill::Solid(dot),
                 ChipDot::Hollow => crate::app::announce::DotFill::Ring(dot),
             },
-            // The halo is the accent in every rung: the dot is the state and
-            // carries the rank, the halo is the event and carries none.
-            ui.accent,
+            // The halo is the attention hue in every rung: the dot is the
+            // state and carries the rank, the halo is the event and carries
+            // none.
+            ui.attention,
             announcing,
         ))
         .child(chip.label.clone())

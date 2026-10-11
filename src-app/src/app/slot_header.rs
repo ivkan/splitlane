@@ -91,7 +91,7 @@ pub(crate) fn slot_header_name(
 ///
 /// The design gives the header a "status text (mono 9.5px, coloured by status)"
 /// beside the dot, not instead of it: the dot is what carries across the room
-/// and the word is what says which of the two amber states this is. The copy
+/// and the word is what says it without relying on colour. The copy
 /// is the design's own, from its markup - "running", "waiting for you" - with
 /// "failed" for the state its prototype has no way to reach.
 ///
@@ -111,21 +111,20 @@ pub(crate) fn slot_header_status_word(
         // Still `idle`, and still its colour: the agent's turn is over and it
         // can be written to. What follows the word is why it may start again
         // unasked - or the dev server somebody asked for. Not `waiting`, which
-        // here means a person is being waited on, and not the accent. Where
-        // the word is drawn rather than listed, the count alone takes the amber
+        // here means a person is being waited on, and not its hue. Where
+        // the word is drawn rather than listed, the count alone takes the accent
         // (`idle_with_shells_label`).
         ThreadStatus::Idle if background_shells > 0 => {
             (idle_with_shells_word(background_shells), ui.faint)
         }
-        // Muted text, not a state colour. `running` is amber and
-        // `waiting` is the accent because they are claims on the user's
-        // attention - something is happening to their code, or something needs
-        // them. `starting` claims nothing: it exists only so the header does
+        // Muted text, not a state colour. `running` is the accent and
+        // `waiting` the attention hue because they are worth a colour -
+        // something is happening to their code, or something needs them. `starting` claims nothing: it exists only so the header does
         // not lie for two seconds, and a fifth hue would advertise it far past
         // its importance.
         ThreadStatus::Starting => (SharedString::from("starting"), ui.muted),
-        ThreadStatus::Thinking => (SharedString::from("running"), ui.vc_modified),
-        ThreadStatus::WaitingForInput => (SharedString::from("waiting for you"), ui.accent),
+        ThreadStatus::Thinking => (SharedString::from("running"), ui.accent),
+        ThreadStatus::WaitingForInput => (SharedString::from("waiting for you"), ui.attention),
         ThreadStatus::Failed => (SharedString::from("failed"), ui.agent_error),
         ThreadStatus::Idle => (SharedString::from("idle"), ui.faint),
     }
@@ -148,7 +147,7 @@ fn shells_word(background_shells: u32) -> SharedString {
     SharedString::from(format!("{background_shells} {noun}"))
 }
 
-/// The same words as an element, with the count in the amber of `running`.
+/// The same words as an element, with the count in the accent of `running`.
 ///
 /// The state is still idle, so `idle` keeps the idle tone and the dot beside
 /// it does not change. The count is a fact beside the state rather than a
@@ -177,7 +176,7 @@ pub(crate) fn idle_with_shells_label(
         )
         .child(
             div()
-                .text_color(ui.vc_modified)
+                .text_color(ui.accent)
                 .child(shells_word(background_shells)),
         )
         .into_any_element()

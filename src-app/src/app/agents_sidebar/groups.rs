@@ -865,7 +865,7 @@ impl SplitlaneApp {
         for word in fit.words {
             let tone = match word {
                 TallyWord::Failed(_) => ui.agent_error,
-                TallyWord::Waiting(_) => ui.accent,
+                TallyWord::Waiting(_) => ui.attention,
                 _ => ui.faint,
             };
             row = row.child(

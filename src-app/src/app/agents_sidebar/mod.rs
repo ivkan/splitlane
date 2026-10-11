@@ -1677,7 +1677,7 @@ fn folded_opener_tally(tally: FoldedTally, ui: crate::theme::UiColors) -> Option
             .map(|(word, tone)| {
                 let tone = match tone {
                     TallyTone::Failed => ui.agent_error,
-                    TallyTone::Waiting => ui.accent,
+                    TallyTone::Waiting => ui.attention,
                     TallyTone::Running => ui.faint,
                     TallyTone::Finished => ui.text_tertiary,
                 };
@@ -1885,15 +1885,17 @@ fn surface_row_frame(
 ) -> gpui::Stateful<gpui::Div> {
     // Three backgrounds, not two: nothing when the surface is only listed or
     // is loaded behind a tab, the neutral selected wash when it is the one its
-    // pane is showing, and the accent wash - plus a 2px bar - for the one the
-    // user is actually in.
+    // pane is showing, and one step brighter - plus a 2px bar - for the one the
+    // user is actually in. Both are neutral: the row holds a status dot, and
+    // an accent wash and bar beside a working agent's green dot were one hue
+    // saying two things.
     //
     // The middle one is `subtle`, which is the design's own "hover / selected
     // row" token. It used to be the CLI sidebar's selected-tab wash - white at
     // 11% over the rail - which is close to four times the step the design
     // draws, and made a merely-open surface shout as loud as the focused one.
     let background = if is_focused {
-        ui.accent_surface
+        ui.list_selection
     } else if is_open {
         ui.subtle
     } else {
@@ -1915,8 +1917,8 @@ fn surface_row_frame(
         .bg(background)
         .cursor_pointer()
         .when(is_focused, |row| {
-            // "inset 2px 0 0 accent": GPUI has no inset shadow, so the bar is
-            // a real 2px child pinned to the row's left edge.
+            // GPUI has no inset shadow, so the bar is a real 2px child pinned
+            // to the row's left edge.
             row.relative().child(
                 div()
                     .absolute()
@@ -1925,7 +1927,7 @@ fn surface_row_frame(
                     .bottom_0()
                     // Physical: a rule's thickness, not a step of the scale.
                     .w(px(2.))
-                    .bg(ui.accent),
+                    .bg(ui.text_body),
             )
         })
 }
@@ -2176,7 +2178,7 @@ impl NewsWord {
     }
 
     /// **Every word has a colour**, so the failure word takes the
-    /// failure colour. Not the accent: accent means *something wants you*, and
+    /// failure colour. Not the attention hue: it means *something wants you*, and
     /// a failed run wants nothing until the reader decides it does.
     fn tone(self, ui: crate::theme::UiColors) -> gpui::Hsla {
         match self {
@@ -2258,13 +2260,17 @@ fn status_dot(
     use crate::project::ThreadStatus;
     let fill = match status {
         Some(ThreadStatus::Starting) => DotFill::Ring(ui.muted),
-        // "running": the agent's turn is in flight.
-        Some(ThreadStatus::Thinking) => DotFill::Solid(ui.vc_modified),
+        // "running": the agent's turn is in flight. The accent, with
+        // everything else that says "on, going, in order".
+        Some(ThreadStatus::Thinking) => DotFill::Solid(ui.accent),
         // "waiting": the turn stopped on the user.
-        Some(ThreadStatus::WaitingForInput) => DotFill::Solid(ui.accent),
+        Some(ThreadStatus::WaitingForInput) => DotFill::Solid(ui.attention),
         Some(ThreadStatus::Failed) => DotFill::Solid(ui.agent_error),
-        // The run is over and honestly `idle` - and there is something here to
-        // accept, which is the accent's own question.
+        // The run is over and honestly `idle`, with a result nobody has
+        // looked at. The accent and not the waiting hue: it is news, not a
+        // request, and a ring on every finished turn would spend the one
+        // colour that means "come here". The shape tells it from a running
+        // dot - filled is going, hollow is done.
         Some(ThreadStatus::Idle) | None if unseen => DotFill::Ring(ui.accent),
         Some(ThreadStatus::Idle) | None => DotFill::Solid(ui.faint.opacity(0.5)),
     };
@@ -2272,7 +2278,7 @@ fn status_dot(
         SharedString::from(id),
         RAIL_STATUS_DOT,
         fill,
-        ui.accent,
+        ui.attention,
         announcing,
     )
 }
