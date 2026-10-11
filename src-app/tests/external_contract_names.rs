@@ -286,8 +286,29 @@ fn opening_a_session_keeps_its_published_names() {
         "\"no_interrupt\"",
         "\"unseen_by_person\"",
         "\"person_declined\"",
+        "\"script_ceiling\"",
+        "\"no_project_here\"",
     ] {
         assert!(rules.contains(word), "the refusal word {word} is published");
+    }
+    // What a program outside a pane holds a session by: the field `add`
+    // answers with, the parameter it is presented in, and the variable the
+    // CLI reads it from.
+    assert!(
+        rules.contains("pub(crate) const SESSION_KEY_PARAM: &str = \"session_key\""),
+        "the request parameter `session_key` was renamed"
+    );
+    assert!(
+        rules.contains("\"session_key\": session_key"),
+        "`surface.add_agent` no longer answers with `session_key`"
+    );
+    let client = read("crates/splitlane-ipc-client/src/lib.rs");
+    for name in [
+        "\"SPLITLANE_SESSION_KEY\"",
+        "\"session_key\"",
+        "\"caller_codex_thread\"",
+    ] {
+        assert!(client.contains(name), "the CLI no longer sends {name}");
     }
     // Stopping a turn: the method, how the stop is reported to the caller,
     // and the word the rail keeps for a run that ended that way.

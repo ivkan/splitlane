@@ -243,6 +243,11 @@
       "description": "Tell a session when a session it opened ends a turn. Null/true (default): if the opener is not already waiting on it with 'splitlane wait', Splitlane writes one line into the opener and submits it, once the opener is idle and its input line is empty. False: nothing is written.",
       "default": true
     },
+    "script_sessions": {
+      "type": ["boolean", "null"],
+      "description": "Let a program that is not running in a pane open agent sessions. Null/true (default): a script, a scheduled job or another program of yours may run 'splitlane add' in a directory of a project open in Splitlane, and write to and close the sessions it opened with the key 'add' gave it. At most 8 such sessions run at a time. False: a caller outside a pane needs the app to be launched with SPLITLANE_IPC_ORCHESTRATION=1, as before.",
+      "default": true
+    },
     "codex_drive": {
       "type": ["boolean", "null"],
       "description": "Let Codex sessions reach Splitlane. True: Splitlane keeps a permissions profile named 'splitlane' in Codex's config.toml that allows its socket and makes it Codex's default; on Codex this also gives the commands of a turn network access. Null/false (default): nothing is written and Codex's sandbox refuses the socket. macOS only. Settings > Agents writes this key after showing what it costs.",

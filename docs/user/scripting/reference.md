@@ -27,7 +27,7 @@ like a verb but is not one exits with code `2`.
 | `focus <target>` | | `surface.focus` | JSON |
 | `send <target> <text>` | `--submit`, `--paste`, `--broadcast`, `--report-file PATH` | `surface.send_text` | JSON |
 | `key <target> <keystroke>` | | `surface.send_keystroke` | JSON |
-| `add --agent <name>` | `--name NAME`, `--prompt TEXT` or `--prompt-file PATH`, `--submit`, `--parked` or `--pane`, `--json` | `surface.add_agent` | `<surface_id>`, a tab and where the session went (default), or JSON |
+| `add --agent <name>` | `--name NAME`, `--prompt TEXT` or `--prompt-file PATH`, `--submit`, `--parked` or `--pane`, `--as NAME`, `--json` | `surface.add_agent` | `<surface_id>`, a tab and where the session went (default), or JSON |
 | `park <target>` | `--json` | `surface.park` | A line (default) or JSON |
 | `show <target>` | `--beside TARGET`, `--direction h\|v`, `--json` | `surface.show` | A line (default) or JSON |
 | `close <target>` | `--stop-turn`, `--json` | `surface.close` | A line (default) or JSON |
@@ -52,7 +52,12 @@ configuration files:
 ### Verb details
 
 - `add` opens an agent session the way the launcher does, in the project of
-  the pane it is called from. The session goes into an empty pane, or a new
+  the pane it is called from. Called from outside a pane, it opens it in the
+  project the current directory is in, and its answer carries `session_key`
+  (also printed last on the default line, after `key`): pass it as `--key
+  KEY`, before or after the verb, or in `SPLITLANE_SESSION_KEY`, to `send`,
+  `key`, `interrupt` and `close` for that session. `--as NAME` is what the
+  session's row calls the program that opened it. The session goes into an empty pane, or a new
   pane where one fits, and otherwise into the rail with no pane; it never
   takes the place of what a pane is showing. `--parked` asks for the rail,
   `--pane` for a pane or a refusal. The answer carries `runs_ended`, the
@@ -261,9 +266,10 @@ The environment variables are read from the Splitlane process.
 | --- | --- |
 | Reads: `ls`, `read`, `search`, `ps`, `status`, `watch`, `wait`, `answer` | Always |
 | `new`, `select`, `focus`, `split` without spawn fields | Always |
-| `send`, `key`, `interrupt` (`surface.send_text`, `surface.send_keystroke`, `surface.interrupt`) | `SPLITLANE_IPC_SCRIPTING=1`. From a pane with nothing set: always when the target is a session the caller opened with `add`, and after a person said yes when it is an agent session they opened in the same project |
-| `add` (`surface.add_agent`) | From a pane: always. From outside a pane: `SPLITLANE_IPC_ORCHESTRATION=1`, and `SPLITLANE_IPC_SCRIPTING=1` to submit the prompt |
-| `park`, `show`, `close` | From a pane: for a session the caller opened. From outside a pane: `SPLITLANE_IPC_ORCHESTRATION=1` |
+| `send`, `key`, `interrupt` (`surface.send_text`, `surface.send_keystroke`, `surface.interrupt`) | `SPLITLANE_IPC_SCRIPTING=1`. From a pane with nothing set: always when the target is a session the caller opened with `add`, and after a person said yes when it is an agent session they opened in the same project. From outside a pane with nothing set: for the session whose key is presented |
+| `add` (`surface.add_agent`) | From a pane: always. From outside a pane: always, from a directory of an open project, unless `script_sessions` is `false`; then `SPLITLANE_IPC_ORCHESTRATION=1`, and `SPLITLANE_IPC_SCRIPTING=1` to submit the prompt |
+| `close` | From a pane: for a session the caller opened. From outside a pane: for the session whose key is presented; otherwise `SPLITLANE_IPC_ORCHESTRATION=1` |
+| `park`, `show` | From a pane: for a session the caller opened. From outside a pane: `SPLITLANE_IPC_ORCHESTRATION=1` |
 | `app.dispatch_action`, `surface.send_answer` | `SPLITLANE_IPC_SCRIPTING=1` |
 | `up`, `surface.split`, `workspace.up` with `command`, `prompt`, `context` or `env` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
 | `flow run` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
@@ -283,12 +289,14 @@ A call a rule refuses returns JSON-RPC error `-32004` with the reason under
 
 | Reason | Meaning |
 | --- | --- |
-| `not_from_a_pane` | The caller is in no pane of this app and the launch variable for the call is not set |
+| `not_from_a_pane` | The caller is in no pane of this app, presented no key for the target, and the launch variable for the call is not set |
+| `no_project_here` | `add` from outside a pane: the current directory is in no project open in Splitlane |
+| `script_ceiling` | `add` from outside a pane: eight sessions opened that way are already running |
 | `not_yours` | The target is not a session the caller opened |
 | `self` | The target is the caller's own session |
 | `waiting` | The target is waiting for a person. Only a person answers that; a key from another session would be an answer |
 | `worker_ceiling` | The caller already has eight sessions it opened running |
-| `opened_session_cannot_open` | The caller was itself opened by a session |
+| `opened_session_cannot_open` | The caller was itself opened by a session, or by a program outside a pane |
 | `no_room` | A pane was required and there is none to give |
 | `other_project` | `close`: the target is in another project |
 | `turn_in_flight` | `close`: the target is in the middle of a turn or waiting for a person; pass `--stop-turn` to close it anyway |

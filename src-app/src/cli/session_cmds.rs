@@ -24,6 +24,8 @@ pub struct AddOptions {
     pub parked: bool,
     pub pane: bool,
     pub json: bool,
+    /// What a program outside a pane calls itself.
+    pub opened_as: Option<String>,
 }
 
 /// Turn a server error into the exit code it stands for: a refusal by a rule
@@ -176,6 +178,18 @@ fn add_with_sleep(
     } else if options.pane {
         params["placement"] = json!("pane");
     }
+    if let Some(label) = &options.opened_as {
+        params["as"] = json!(label);
+    }
+    // Where this program is running. From outside a pane it is what says
+    // which project the session belongs in; a caller in a pane is placed by
+    // its pane and this is not looked at.
+    if let Ok(dir) = std::env::current_dir() {
+        if let Ok(resolved) = dir.canonicalize() {
+            params["cwd_resolved"] = json!(resolved);
+        }
+        params["cwd"] = json!(dir);
+    }
     let mut result = super::reject_legacy_error(
         client
             .call("surface.add_agent", params)
@@ -238,7 +252,13 @@ fn add_summary(result: &Value) -> String {
         Some("pending") => "; prompt not written yet",
         _ => "",
     };
-    format!("{surface}\t{agent} opened {place}; runs_ended {runs_ended}{prompt}")
+    // Last on the line, so a script can cut it and a person can ignore it.
+    let key = result
+        .get("session_key")
+        .and_then(Value::as_str)
+        .map(|key| format!("; key {key}"))
+        .unwrap_or_default();
+    format!("{surface}\t{agent} opened {place}; runs_ended {runs_ended}{prompt}{key}")
 }
 
 /// `splitlane park <target> [--json]`: take a session out of its pane. It
@@ -491,6 +511,7 @@ mod tests {
             parked: false,
             pane: false,
             json: true,
+            opened_as: None,
         }
     }
 
@@ -500,7 +521,21 @@ mod tests {
         assert_eq!(add(&fake, options("claude_code")).expect("ok"), EXIT_OK);
         let calls = fake.calls.borrow();
         assert_eq!(calls[0].0, "surface.add_agent");
-        assert_eq!(calls[0].1, json!({ "agent": "claude_code" }));
+        assert_eq!(asked_for(&calls[0].1), json!({ "agent": "claude_code" }));
+        // Where the program runs goes with every `add`: outside a pane it is
+        // what says which project the session belongs in.
+        assert!(calls[0].1.get("cwd").is_some_and(Value::is_string));
+    }
+
+    /// The request without where it was sent from, which is the test
+    /// process's own directory.
+    fn asked_for(params: &Value) -> Value {
+        let mut params = params.clone();
+        if let Some(object) = params.as_object_mut() {
+            object.remove("cwd");
+            object.remove("cwd_resolved");
+        }
+        params
     }
 
     #[test]
@@ -514,7 +549,7 @@ mod tests {
         assert_eq!(add(&fake, asked).expect("ok"), EXIT_OK);
         let calls = fake.calls.borrow();
         assert_eq!(
-            calls[0].1,
+            asked_for(&calls[0].1),
             json!({
                 "agent": "codex",
                 "name": "api-docs",

@@ -72,6 +72,7 @@ impl IpcTransport for IpcClient {
     fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let params = naming_the_codex_session(params, std::env::var(CODEX_THREAD_ENV).ok());
+        let params = presenting_the_session_key(params, session_key());
         let request = build_request(id, method, params);
         let line = send_and_receive(&self.socket, &request)
             .map_err(|e| unreachable_message(&self.socket, &e, under_codex_sandbox()))?;
@@ -98,6 +99,39 @@ fn naming_the_codex_session(mut params: Value, thread: Option<String>) -> Value 
         object
             .entry(CALLER_CODEX_THREAD)
             .or_insert(Value::String(thread));
+    }
+    params
+}
+
+/// The variable a program outside a pane keeps a session's key in.
+pub const SESSION_KEY_ENV: &str = "SPLITLANE_SESSION_KEY";
+
+/// The request parameter that carries it.
+pub const SESSION_KEY_PARAM: &str = "session_key";
+
+static SESSION_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Present `key` with every request this process makes. For the CLI's
+/// `--key`; a key in [`SESSION_KEY_ENV`] is presented without this.
+pub fn present_session_key(key: String) {
+    let _ = SESSION_KEY.set(key);
+}
+
+fn session_key() -> Option<String> {
+    SESSION_KEY
+        .get()
+        .cloned()
+        .or_else(|| std::env::var(SESSION_KEY_ENV).ok())
+}
+
+/// Add the key of a session this program opened from outside a pane. The app
+/// lets whoever presents it write to that session and close it.
+fn presenting_the_session_key(mut params: Value, key: Option<String>) -> Value {
+    let key = key.filter(|key| !key.is_empty());
+    if let (Some(object), Some(key)) = (params.as_object_mut(), key) {
+        object
+            .entry(SESSION_KEY_PARAM)
+            .or_insert(Value::String(key));
     }
     params
 }
@@ -829,6 +863,14 @@ mod tests {
         assert_eq!(
             naming_the_codex_session(json!({"target": "a"}), Some("t-1".into())),
             json!({"target": "a", "caller_codex_thread": "t-1"})
+        );
+        assert_eq!(
+            presenting_the_session_key(json!({"surface_id": 3}), Some("k".into())),
+            json!({"surface_id": 3, "session_key": "k"})
+        );
+        assert_eq!(
+            presenting_the_session_key(json!({"surface_id": 3}), None),
+            json!({"surface_id": 3})
         );
         // Outside Codex a request is what it always was.
         assert_eq!(

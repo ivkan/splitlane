@@ -530,6 +530,10 @@ pub struct Thread {
     /// persisted, because agents come back after a restart and the question
     /// "where did these eight rows come from" is asked exactly then.
     pub opened_by: Option<splitlane_config::schema::OpenedBy>,
+    /// The program outside a pane that opened this session, with the key it
+    /// was given. `None` for every other session. Persisted for the reason
+    /// [`Self::opened_by`] is.
+    pub opened_by_script: Option<splitlane_config::schema::OpenedByScript>,
     /// The terminal's count of keyboard submits when this session's opener
     /// last wrote text into it, or `None` if it never has.
     ///
@@ -578,6 +582,7 @@ impl Thread {
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
+            opened_by_script: None,
             opener_wrote_at: None,
         }
     }
@@ -661,6 +666,7 @@ impl Thread {
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
+            opened_by_script: None,
             opener_wrote_at: None,
         }
     }
@@ -714,6 +720,7 @@ pub fn thread_to_surface(t: &Thread, slot: Option<usize>) -> ProjectSurface {
             session_id: t.session_id.clone(),
             title_user_set: t.title_user_set,
             opened_by: t.opened_by.clone(),
+            opened_by_script: t.opened_by_script.clone(),
         }),
     }
 }
@@ -856,6 +863,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         // An id is all a file can say; whether the opener still exists is
         // asked of the live records when it matters.
         opened_by: payload.opened_by.clone(),
+        opened_by_script: payload.opened_by_script.clone(),
         opener_wrote_at: None,
     })
 }
@@ -977,6 +985,20 @@ pub fn agent_kind_from_str(tag: &str) -> Option<AgentKind> {
         "claude_code" => Some(AgentKind::ClaudeCode),
         "codex" => Some(AgentKind::Codex),
         _ => None,
+    }
+}
+
+impl Thread {
+    /// What to call the program outside a pane that opened this session:
+    /// the name it gave, or `script` when it gave none. `None` for a session
+    /// no such program opened.
+    pub(crate) fn script_opener_name(&self) -> Option<String> {
+        let by = self.opened_by_script.as_ref()?;
+        Some(
+            clean_sidebar_title(&by.label)
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| "script".to_string()),
+        )
     }
 }
 
@@ -1221,6 +1243,7 @@ mod tests {
                 session_id: None,
                 title_user_set: false,
                 opened_by: None,
+                opened_by_script: None,
             }),
         }
     }

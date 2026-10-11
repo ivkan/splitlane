@@ -56,6 +56,7 @@ impl SplitlaneApp {
         let fence = config.ai_injection_fence_enabled();
         let fleet_skill = config.fleet_skill_enabled();
         let tell_opener = config.tell_opener_enabled();
+        let script_sessions = config.script_sessions_enabled();
         let codex_drive = config.codex_drive_enabled();
 
         let mut agents = div().flex().flex_col();
@@ -159,6 +160,24 @@ impl SplitlaneApp {
             }),
         ));
 
+        access = access.child(setting_toggle_row(
+            ui,
+            "agents-script-sessions",
+            "Let scripts open sessions",
+            Some(SharedString::from(
+                "a program outside a pane may open sessions here, up to 8 at a time",
+            )),
+            script_sessions,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.persist_setting(
+                    false,
+                    "script_sessions",
+                    serde_json::Value::Bool(!script_sessions),
+                    cx,
+                );
+            }),
+        ));
+
         access = access.child(caption(
             ui,
             "Bypass permissions launches Claude Code with no protection against prompt \
@@ -168,7 +187,10 @@ impl SplitlaneApp {
              directory, written at every start; an agent uses it only when you ask for \
              sessions in Splitlane, and a copy you edited is never replaced. Telling the opener \
              writes one line into a session whose own session ended a turn it was not \
-             waiting on, once that session is idle and its input line is empty.",
+             waiting on, once that session is idle and its input line is empty. A script \
+             opens a session with `splitlane add` from a directory of a project open here; \
+             the row says `by` and the name it gave, and it can write only to sessions it \
+             opened.",
         ));
 
         // Codex allows a socket by name on macOS only, so the switch is drawn

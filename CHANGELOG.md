@@ -6,6 +6,23 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A script or a scheduled job can start an agent on a task with nothing set
+  where Splitlane was launched: `splitlane add` from a directory of a project
+  that is open. The session opens in that project, its row says `by` and the
+  name given with `--as`, and `add` returns a key (`session_key`) that lets
+  the program `send` to it, stop its turn and `close` it, as `--key` or in
+  `SPLITLANE_SESSION_KEY`. Eight such sessions run at a time. On by default;
+  `"script_sessions": false` or Settings > Agents turns it off.
+
+### Changed
+
+- `splitlane add` from outside a pane opens the session in the project its
+  current directory is in, not in the project on screen. With
+  `SPLITLANE_IPC_ORCHESTRATION=1` a call from no project still gets the one
+  on screen.
+
 ### Fixed
 
 - Codex sessions report their state again. Codex now runs a session in a

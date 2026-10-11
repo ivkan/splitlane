@@ -227,6 +227,12 @@ pub(crate) enum Refusal {
     /// A person was asked whether the caller may write into the target, and
     /// said no.
     PersonDeclined,
+    /// [`MAX_SCRIPT_SESSIONS`] sessions opened from outside a pane are
+    /// already running.
+    ScriptCeiling,
+    /// The caller is outside a pane and its directory is in no project open
+    /// in this app.
+    NoProjectHere,
 }
 
 impl Refusal {
@@ -248,21 +254,26 @@ impl Refusal {
             Refusal::NoInterrupt => "no_interrupt",
             Refusal::UnseenByPerson => "unseen_by_person",
             Refusal::PersonDeclined => "person_declined",
+            Refusal::ScriptCeiling => "script_ceiling",
+            Refusal::NoProjectHere => "no_project_here",
         }
     }
 
     fn sentence(self) -> String {
         match self {
-            Refusal::NotFromAPane => "the caller is not running in a pane of this app; a script \
-                 outside one needs SPLITLANE_IPC_ORCHESTRATION=1 (SPLITLANE_IPC_SCRIPTING=1 to \
-                 submit) set where Splitlane was launched"
+            Refusal::NotFromAPane => "the caller is not running in a pane of this app. For a \
+                 session this program opened with `add`, pass the key `add` printed as \
+                 --key. Without one, a call from outside a pane needs \
+                 SPLITLANE_IPC_ORCHESTRATION=1 (SPLITLANE_IPC_SCRIPTING=1 to write) set where \
+                 Splitlane was launched; so does `add` when Settings > Agents > Let scripts \
+                 open sessions is off"
                 .to_string(),
             Refusal::WorkerCeiling => format!(
                 "this session already has {MAX_OPENED_SESSIONS} sessions it opened still \
                  running; close one first"
             ),
-            Refusal::OpenedSessionCannotOpen => "a session opened by another session cannot \
-                 open sessions; do the task in this one"
+            Refusal::OpenedSessionCannotOpen => "a session opened by another session or by a \
+                 script cannot open sessions; do the task in this one"
                 .to_string(),
             Refusal::NoRoom => "no pane is empty and another would not fit; ask without \
                  requiring a pane to open the session in the rail"
@@ -291,6 +302,14 @@ impl Refusal {
             Refusal::PersonDeclined => "a person was asked whether the calling session may \
                  send messages to the target, and said no; they are not asked again until \
                  Splitlane restarts"
+                .to_string(),
+            Refusal::ScriptCeiling => format!(
+                "{MAX_SCRIPT_SESSIONS} sessions opened from outside a pane are already \
+                 running; close one first"
+            ),
+            Refusal::NoProjectHere => "the caller's directory is not inside a project that is \
+                 open in Splitlane; run it from a project's directory, or open the project \
+                 first"
                 .to_string(),
         }
     }
@@ -324,7 +343,67 @@ pub(crate) enum Caller {
     /// process table could not place.
     Outside,
     Pane(PaneCaller),
+    /// A process in no pane that presented the key of a session a program
+    /// outside a pane opened. It stands for that program, which has no pane
+    /// to be known by and may be a different process each time it calls.
+    Keyholder {
+        /// The surface record of the session the key belongs to.
+        thread_id: u64,
+    },
 }
+
+/// The request parameter in which a caller outside a pane presents the key
+/// of a session it opened.
+pub(crate) const SESSION_KEY_PARAM: &str = "session_key";
+
+/// Whether a presented key is the session's. Compared whole, without leaving
+/// early on the first byte that differs.
+fn keys_match(held: &str, presented: &str) -> bool {
+    held.len() == presented.len()
+        && held
+            .bytes()
+            .zip(presented.bytes())
+            .fold(0u8, |differ, (a, b)| differ | (a ^ b))
+            == 0
+}
+
+/// The project a directory is in: the one whose own directory is `dir` or
+/// the nearest above it. The index into `roots`.
+///
+/// `dir` has to be a plain absolute path. One with `..` in it names a
+/// directory by way of another, and matching it by its leading components
+/// would place it in a project it only passes through.
+pub(crate) fn project_containing(dir: &str, roots: &[&str]) -> Option<usize> {
+    let dir = std::path::Path::new(dir);
+    let plain = dir.is_absolute()
+        && !dir
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir));
+    if !plain {
+        return None;
+    }
+    roots
+        .iter()
+        .enumerate()
+        .filter(|(_, root)| !root.is_empty() && dir.starts_with(root))
+        .max_by_key(|(_, root)| std::path::Path::new(root).components().count())
+        .map(|(idx, _)| idx)
+}
+
+/// What a caller outside a pane is allowed without a launch variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScriptLeave {
+    /// The setting that lets a program outside a pane open sessions.
+    pub enabled: bool,
+    /// How many sessions opened that way are running now.
+    pub running: usize,
+}
+
+/// How many sessions opened from outside a pane may run at once, across the
+/// whole app. Any program of the person's can open one without being seen
+/// to, and each spends their tokens; the count is what bounds that. The same
+/// number one session may have open.
+pub(crate) const MAX_SCRIPT_SESSIONS: usize = 8;
 
 /// The variables the app was launched with. They are what a caller outside a
 /// pane is allowed by, and a pane cannot change them.
@@ -347,11 +426,15 @@ impl LaunchGates {
 ///
 /// A caller in a pane needs nothing switched on. It is bounded instead: by a
 /// count, and by depth - a session that was opened by one opens none.
+///
+/// A caller outside one is let in by the setting, bounded by a count across
+/// the app, and where the setting is off by the launch variables as before.
 pub(crate) fn may_open(
     caller: &Caller,
     already_open: usize,
     gates: LaunchGates,
     submit: bool,
+    scripts: ScriptLeave,
 ) -> Result<(), Refusal> {
     match caller {
         Caller::Pane(pane) => {
@@ -363,7 +446,7 @@ pub(crate) fn may_open(
             }
             Ok(())
         }
-        Caller::Outside => {
+        Caller::Outside | Caller::Keyholder { .. } => {
             let open = if submit {
                 gates.scripting
             } else {
@@ -371,8 +454,12 @@ pub(crate) fn may_open(
             };
             if open {
                 Ok(())
-            } else {
+            } else if !scripts.enabled {
                 Err(Refusal::NotFromAPane)
+            } else if scripts.running >= MAX_SCRIPT_SESSIONS {
+                Err(Refusal::ScriptCeiling)
+            } else {
+                Ok(())
             }
         }
     }
@@ -403,6 +490,10 @@ pub(crate) enum WriteLeave {
     /// what let a write through before sessions could own sessions. Nothing
     /// about such a write changes.
     LaunchVariable,
+    /// The caller presented the key of the target, which a program outside
+    /// a pane opened. The text goes as that program wrote it: it is the
+    /// person's own program, as a launch-variable write is.
+    Keyholder,
 }
 
 /// Why a write is not let through.
@@ -453,12 +544,23 @@ pub(crate) fn may_write(
     target: WriteTarget,
     gate_open: bool,
 ) -> Result<WriteLeave, WriteDenied> {
-    let Caller::Pane(pane) = caller else {
-        return if gate_open {
-            Ok(WriteLeave::LaunchVariable)
-        } else {
-            Err(WriteDenied::GateClosed)
-        };
+    let pane = match caller {
+        Caller::Pane(pane) => pane,
+        Caller::Keyholder { thread_id } if target.thread_id == Some(*thread_id) => {
+            // The question on its screen was put to a person here too.
+            return if target.waiting {
+                Err(WriteDenied::Refused(Refusal::Waiting))
+            } else {
+                Ok(WriteLeave::Keyholder)
+            };
+        }
+        Caller::Outside | Caller::Keyholder { .. } => {
+            return if gate_open {
+                Ok(WriteLeave::LaunchVariable)
+            } else {
+                Err(WriteDenied::GateClosed)
+            };
+        }
     };
     if target.thread_id == Some(pane.thread_id) {
         return if gate_open {
@@ -635,7 +737,11 @@ pub(crate) fn may_close(
                 return Err(Refusal::UnseenByPerson);
             }
         }
-        Caller::Outside => {
+        // Its own session, and the unseen mark does not hold it back: a
+        // program that opens a session, reads the answer and closes it has
+        // taken the result where the person asked for it to go.
+        Caller::Keyholder { thread_id } if target.thread_id == *thread_id => {}
+        Caller::Outside | Caller::Keyholder { .. } => {
             if !gates.orchestration {
                 return Err(Refusal::NotFromAPane);
             }
@@ -843,7 +949,10 @@ impl SplitlaneApp {
                     thread_id,
                     ws_idx,
                     title: thread.title.clone(),
-                    opened: thread.opened_by.is_some(),
+                    // A session a program outside a pane opened opens none
+                    // either: the count that bounds such sessions would
+                    // otherwise bound nothing.
+                    opened: thread.opened_by.is_some() || thread.opened_by_script.is_some(),
                 })
             });
         found.map_or(Caller::Outside, Caller::Pane)
@@ -1262,7 +1371,7 @@ impl SplitlaneApp {
         let turn_in_flight = self
             .rail_snapshot_for(&terminal, Some(thread_id), cx)
             .is_some_and(|rail| closing_loses_a_turn(&rail));
-        let caller = self.caller_of(lineage, cx);
+        let caller = self.caller_with_key(lineage, params, cx);
         let close_target = CloseTarget {
             thread_id,
             ws_idx,
@@ -1307,7 +1416,7 @@ impl SplitlaneApp {
             Ok(found) => found,
             Err(response) => return response,
         };
-        let caller = self.caller_of(lineage, cx);
+        let caller = self.caller_with_key(lineage, params, cx);
         let target = WriteTarget {
             drive: self.drive_between(&caller, target),
             ..target
@@ -1488,7 +1597,9 @@ impl SplitlaneApp {
                 let opener = match &caller {
                     Caller::Pane(pane) => pane.thread_id,
                     // A script outside a pane opened nothing it could give up.
-                    Caller::Outside => return Refusal::NoRoom.into_value(METHOD),
+                    Caller::Outside | Caller::Keyholder { .. } => {
+                        return Refusal::NoRoom.into_value(METHOD);
+                    }
                 };
                 let facts: Vec<PaneFacts> = leaves
                     .iter()
@@ -1641,6 +1752,60 @@ impl SplitlaneApp {
             .count()
     }
 
+    /// How many sessions opened from outside a pane are running.
+    fn running_script_sessions(&self, cx: &App) -> usize {
+        let running: std::collections::HashSet<u64> = self
+            .held_terminals(cx)
+            .into_iter()
+            .filter(|(terminal, _)| terminal.read(cx).terminal.exited.is_none())
+            .filter_map(|(_, thread_id)| thread_id)
+            .collect();
+        self.workspaces
+            .iter()
+            .flat_map(|container| container.threads.iter())
+            .filter(|thread| {
+                thread.opened_by_script.is_some()
+                    && !thread.rail.agent_exited
+                    && running.contains(&thread.id)
+            })
+            .count()
+    }
+
+    /// The caller a request comes from, given what it presented.
+    ///
+    /// A process in no pane that presents the key of a session opened from
+    /// outside a pane stands for the program that opened it. A caller in a
+    /// pane is that pane whatever it presents: ancestry is not the caller's
+    /// to choose, and a key is.
+    pub(crate) fn caller_with_key(
+        &self,
+        lineage: &CallerLineage,
+        params: &serde_json::Value,
+        cx: &App,
+    ) -> Caller {
+        match self.caller_of(lineage, cx) {
+            Caller::Outside => params
+                .get(SESSION_KEY_PARAM)
+                .and_then(|key| key.as_str())
+                .filter(|key| !key.is_empty())
+                .and_then(|key| {
+                    self.workspaces
+                        .iter()
+                        .flat_map(|container| container.threads.iter())
+                        .find(|thread| {
+                            thread
+                                .opened_by_script
+                                .as_ref()
+                                .is_some_and(|by| keys_match(&by.key, key))
+                        })
+                })
+                .map_or(Caller::Outside, |thread| Caller::Keyholder {
+                    thread_id: thread.id,
+                }),
+            caller => caller,
+        }
+    }
+
     /// `surface.add_agent`: open an agent session the way the launcher does,
     /// for a caller that is another session or a person's script.
     pub(crate) fn handle_add_agent(
@@ -1701,9 +1866,14 @@ impl SplitlaneApp {
         let caller = self.caller_of(lineage, cx);
         let already_open = match &caller {
             Caller::Pane(pane) => self.running_sessions_opened_by(pane.thread_id, cx),
-            Caller::Outside => 0,
+            Caller::Outside | Caller::Keyholder { .. } => 0,
         };
-        if let Err(refusal) = may_open(&caller, already_open, LaunchGates::read(), submit) {
+        let gates = LaunchGates::read();
+        let scripts = ScriptLeave {
+            enabled: self.cached_config.script_sessions_enabled(),
+            running: self.running_script_sessions(cx),
+        };
+        if let Err(refusal) = may_open(&caller, already_open, gates, submit, scripts) {
             return refusal.into_value(METHOD);
         }
         if !agent.is_installed() {
@@ -1713,11 +1883,31 @@ impl SplitlaneApp {
             ))
             .into_value();
         }
-        // The caller's own project. A script outside a pane has none, and
-        // gets the one on screen, like every other call without a target.
+        // The caller's own project. A program outside a pane has none, so
+        // it gets the one its directory is in: the project on screen is
+        // whatever the person happened to leave there, and a job that runs
+        // at night would open its session in that. With the launch variable
+        // a call from no project still gets the one on screen, as it did.
         let ws_idx = match &caller {
             Caller::Pane(pane) => pane.ws_idx,
-            Caller::Outside => self.active_idx,
+            Caller::Outside | Caller::Keyholder { .. } => {
+                let roots: Vec<&str> = self.workspaces.iter().map(|ws| ws.cwd.as_str()).collect();
+                // The directory is the caller's own word, and it is only
+                // asked which of the person's open projects it means: a
+                // program chooses its directory anyway. Given both as typed
+                // and resolved, because a project's own path may be either;
+                // the nearest project either of them names is the one.
+                let here = ["cwd", "cwd_resolved"]
+                    .into_iter()
+                    .filter_map(|key| params.get(key).and_then(|dir| dir.as_str()))
+                    .filter_map(|dir| project_containing(dir, &roots))
+                    .max_by_key(|idx| std::path::Path::new(roots[*idx]).components().count());
+                match here {
+                    Some(ws_idx) => ws_idx,
+                    None if gates.orchestration => self.active_idx,
+                    None => return Refusal::NoProjectHere.into_value(METHOD),
+                }
+            }
         };
         let Some(container) = self.workspaces.get(ws_idx) else {
             return JsonRpcError::invalid_params("No project to open the session in").into_value();
@@ -1752,10 +1942,24 @@ impl SplitlaneApp {
                 id: pane.thread_id,
                 title: pane.title.clone(),
             }),
-            Caller::Outside => None,
+            Caller::Outside | Caller::Keyholder { .. } => None,
         };
+        // A program outside a pane gets a key for the session instead of a
+        // place to be known by.
+        let opened_by_script = (!matches!(caller, Caller::Pane(_))).then(|| {
+            splitlane_config::schema::OpenedByScript {
+                key: uuid::Uuid::new_v4().simple().to_string(),
+                label: params
+                    .get("as")
+                    .and_then(|label| label.as_str())
+                    .and_then(crate::app::ipc_handler::sanitize_pane_name)
+                    .unwrap_or_default(),
+            }
+        });
+        let session_key = opened_by_script.as_ref().map(|by| by.key.clone());
         if let Some(thread) = self.thread_by_id_mut(thread_id) {
             thread.opened_by = opened_by;
+            thread.opened_by_script = opened_by_script;
             // A name the opener chose is a name somebody chose: the agent's
             // own title must not replace it, or the opener could no longer
             // find the session by the name it gave.
@@ -1767,7 +1971,7 @@ impl SplitlaneApp {
         let from_opener = matches!(caller, Caller::Pane(_));
         let opening_text = prompt.map(|prompt| match &caller {
             Caller::Pane(pane) => format!("{}\n\n{prompt}", provenance_line(&pane.title)),
-            Caller::Outside => prompt.to_string(),
+            Caller::Outside | Caller::Keyholder { .. } => prompt.to_string(),
         });
         // Left for the agent's shim before the launch command is typed, so
         // the file is there by the time the shell has started and run it.
@@ -1862,8 +2066,11 @@ impl SplitlaneApp {
             "placement_reason": placement_reason,
             "opened_by": match &caller {
                 Caller::Pane(pane) => Some(pane.surface_id),
-                Caller::Outside => None,
+                Caller::Outside | Caller::Keyholder { .. } => None,
             },
+            // What a program outside a pane presents to write to this
+            // session or close it. Absent for a caller in a pane.
+            "session_key": session_key,
             // `pending` when a prompt was given: it is written once the agent
             // is there to read it, and `surface.status` says what became of it.
             "opening_prompt": rail
@@ -2176,13 +2383,176 @@ mod tests {
         scripting: false,
     };
 
+    /// The setting that lets a program outside a pane open sessions, off:
+    /// what the launch variables alone decide.
+    const NO_SCRIPTS: ScriptLeave = ScriptLeave {
+        enabled: false,
+        running: 0,
+    };
+
+    /// A program outside a pane opens a session with nothing set where the
+    /// app was launched, and submits its prompt: the session is its own.
+    #[test]
+    fn a_script_opens_sessions_with_nothing_switched_on() {
+        let scripts = |running| ScriptLeave {
+            enabled: true,
+            running,
+        };
+        assert_eq!(
+            may_open(&Caller::Outside, 0, NO_GATES, false, scripts(0)),
+            Ok(())
+        );
+        assert_eq!(
+            may_open(&Caller::Outside, 0, NO_GATES, true, scripts(0)),
+            Ok(())
+        );
+        // A program that already holds a key is still a program outside a pane.
+        assert_eq!(
+            may_open(
+                &Caller::Keyholder { thread_id: 4 },
+                0,
+                NO_GATES,
+                true,
+                scripts(7)
+            ),
+            Ok(())
+        );
+        // The count is across the app, not per program: there is no telling
+        // two programs apart.
+        assert_eq!(
+            may_open(
+                &Caller::Outside,
+                0,
+                NO_GATES,
+                false,
+                scripts(MAX_SCRIPT_SESSIONS)
+            ),
+            Err(Refusal::ScriptCeiling)
+        );
+        // The launch variable is the person's own switch and is not counted.
+        let orchestration = LaunchGates {
+            orchestration: true,
+            scripting: false,
+        };
+        assert_eq!(
+            may_open(
+                &Caller::Outside,
+                0,
+                orchestration,
+                false,
+                scripts(MAX_SCRIPT_SESSIONS)
+            ),
+            Ok(())
+        );
+    }
+
+    /// The key is for one session. It writes to that one and closes it, and
+    /// is nothing anywhere else.
+    #[test]
+    fn a_key_reaches_its_own_session_and_no_other() {
+        let holder = Caller::Keyholder { thread_id: 9 };
+        let own = WriteTarget {
+            thread_id: Some(9),
+            opened_by: None,
+            waiting: false,
+            drive: Drive::NotOffered,
+        };
+        let another = WriteTarget {
+            thread_id: Some(10),
+            ..own
+        };
+        assert_eq!(may_write(&holder, own, false), Ok(WriteLeave::Keyholder));
+        assert_eq!(
+            may_interrupt(&holder, own, false),
+            Ok(WriteLeave::Keyholder)
+        );
+        assert_eq!(
+            may_write(&holder, another, false),
+            Err(WriteDenied::GateClosed)
+        );
+        // A question on its screen is a person's to answer here too.
+        assert_eq!(
+            may_write(
+                &holder,
+                WriteTarget {
+                    waiting: true,
+                    ..own
+                },
+                false
+            ),
+            Err(WriteDenied::Refused(Refusal::Waiting))
+        );
+
+        let close = |thread_id, turn_in_flight, unseen_by_person| CloseTarget {
+            thread_id,
+            ws_idx: 0,
+            opened_by: None,
+            turn_in_flight,
+            unseen_by_person,
+        };
+        assert_eq!(
+            may_close(&holder, close(9, false, false), NO_GATES, false),
+            Ok(())
+        );
+        // It read the answer where the person asked for it to go.
+        assert_eq!(
+            may_close(&holder, close(9, false, true), NO_GATES, false),
+            Ok(())
+        );
+        assert_eq!(
+            may_close(&holder, close(9, true, false), NO_GATES, false),
+            Err(Refusal::TurnInFlight)
+        );
+        assert_eq!(
+            may_close(&holder, close(10, false, false), NO_GATES, false),
+            Err(Refusal::NotFromAPane)
+        );
+    }
+
+    #[test]
+    fn a_program_is_placed_in_the_project_its_directory_is_in() {
+        let roots = ["/w/app", "/w/app/packages/site", "/w/other", ""];
+        assert_eq!(project_containing("/w/app", &roots), Some(0));
+        assert_eq!(project_containing("/w/app/src/x", &roots), Some(0));
+        // The nearest one above it.
+        assert_eq!(
+            project_containing("/w/app/packages/site/src", &roots),
+            Some(1)
+        );
+        // By whole components: a directory beside a project is not in it.
+        assert_eq!(project_containing("/w/app-old", &roots), None);
+        assert_eq!(project_containing("/elsewhere", &roots), None);
+        assert_eq!(project_containing("/w/app/../../etc", &roots), None);
+        assert_eq!(project_containing("w/app", &roots), None);
+    }
+
+    #[test]
+    fn a_key_is_compared_whole() {
+        assert!(keys_match("abc123", "abc123"));
+        assert!(!keys_match("abc123", "abc124"));
+        assert!(!keys_match("abc123", "abc12"));
+        assert!(!keys_match("abc123", ""));
+    }
+
     /// The point of the whole arrangement: nothing has to be switched on.
     #[test]
     fn a_session_in_a_pane_opens_sessions_with_nothing_switched_on() {
-        assert_eq!(may_open(&pane(false), 0, NO_GATES, false), Ok(()));
-        assert_eq!(may_open(&pane(false), 0, NO_GATES, true), Ok(()));
         assert_eq!(
-            may_open(&pane(false), MAX_OPENED_SESSIONS - 1, NO_GATES, true),
+            may_open(&pane(false), 0, NO_GATES, false, NO_SCRIPTS),
+            Ok(())
+        );
+        assert_eq!(
+            may_open(&pane(false), 0, NO_GATES, true, NO_SCRIPTS),
+            Ok(())
+        );
+        assert_eq!(
+            may_open(
+                &pane(false),
+                MAX_OPENED_SESSIONS - 1,
+                NO_GATES,
+                true,
+                NO_SCRIPTS
+            ),
             Ok(())
         );
     }
@@ -2190,7 +2560,13 @@ mod tests {
     #[test]
     fn the_ninth_session_is_refused() {
         assert_eq!(
-            may_open(&pane(false), MAX_OPENED_SESSIONS, NO_GATES, false),
+            may_open(
+                &pane(false),
+                MAX_OPENED_SESSIONS,
+                NO_GATES,
+                false,
+                NO_SCRIPTS
+            ),
             Err(Refusal::WorkerCeiling)
         );
     }
@@ -2204,11 +2580,11 @@ mod tests {
             scripting: true,
         };
         assert_eq!(
-            may_open(&pane(true), 0, NO_GATES, false),
+            may_open(&pane(true), 0, NO_GATES, false, NO_SCRIPTS),
             Err(Refusal::OpenedSessionCannotOpen)
         );
         assert_eq!(
-            may_open(&pane(true), 0, all, false),
+            may_open(&pane(true), 0, all, false, NO_SCRIPTS),
             Err(Refusal::OpenedSessionCannotOpen)
         );
     }
@@ -2393,17 +2769,23 @@ mod tests {
             scripting: true,
         };
         assert_eq!(
-            may_open(&Caller::Outside, 0, NO_GATES, false),
+            may_open(&Caller::Outside, 0, NO_GATES, false, NO_SCRIPTS),
             Err(Refusal::NotFromAPane)
         );
-        assert_eq!(may_open(&Caller::Outside, 0, orchestration, false), Ok(()));
+        assert_eq!(
+            may_open(&Caller::Outside, 0, orchestration, false, NO_SCRIPTS),
+            Ok(())
+        );
         // Submitting is typing Enter into a pane, which the narrower variable
         // has never opened.
         assert_eq!(
-            may_open(&Caller::Outside, 0, orchestration, true),
+            may_open(&Caller::Outside, 0, orchestration, true, NO_SCRIPTS),
             Err(Refusal::NotFromAPane)
         );
-        assert_eq!(may_open(&Caller::Outside, 0, scripting, true), Ok(()));
+        assert_eq!(
+            may_open(&Caller::Outside, 0, scripting, true, NO_SCRIPTS),
+            Ok(())
+        );
     }
 
     const MINE: WriteTarget = WriteTarget {

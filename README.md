@@ -94,8 +94,9 @@ approval UI to keep in sync.
   agent read another pane's output, and a local CLI and JSON-RPC socket
   (`splitlane ls`, `read`, `send`, `wait`, `watch`) script the app. An agent
   in a pane can open sessions of its own and work through them - the next
-  section. A script outside a pane types into one only when you start
-  Splitlane with that switched on.
+  section. A script outside a pane can open sessions too and write to the
+  ones it opened; into any other pane it types only when you start Splitlane
+  with that switched on.
 
 Supported agents: Claude Code, Codex, OpenCode, Gemini, Cursor, Copilot, Amp,
 Pi, Hermes Agent, Grok, Kiro, Antigravity, CodeBuddy, Factory, Qoder and
@@ -267,8 +268,9 @@ DirectX on Windows.
 Neither. The agents are the CLIs installed on your machine, signed in with your
 own accounts, running in ordinary terminals. Splitlane never sends a prompt on
 its own. An agent can send one to a session it opened itself, and to a session
-you opened only after you say it may; a script outside a pane types into one
-only when you start Splitlane with that switched on.
+you opened only after you say it may. A script of yours can open a session
+with a task and write to the sessions it opened; into any other pane it
+types only when you start Splitlane with that switched on.
 
 **Can other agents read my terminals?**
 Only agents you register with the MCP bridge, and only to read. Output it hands

@@ -1334,6 +1334,70 @@ times it then has to be sent again. It is set aside as
 `terminal-resize.log.old` at 256 KB. The next occurrence says which of the
 two happened.
 
+## A program outside a pane opens sessions, and holds them by a key
+
+**The rule.** A script, a scheduled job or any other program of the person's
+opens an agent session with `splitlane add`, with nothing set where the app
+was launched. The session opens in the project the program's directory is in.
+The program is given a key for it, and whoever presents the key may write to
+that session, stop its turn and close it. Nothing else changes for a caller
+outside a pane: into any other session it writes only with the launch
+variable, as before.
+
+**Why it stopped needing a switch.** The launch variables were the only way
+in for a caller outside a pane, and an app started from the Dock cannot be
+given one. So the case the CLI is most obviously for - a job that starts an
+agent while nobody is at the keyboard - did not work for anyone who had not
+learned to launch the app from a shell. And it protected nothing: a program
+of the same user can start the same agent in a process of its own. What the
+app adds is that the session is somewhere a person will see it.
+
+**Why a key and not who the caller is.** A caller in a pane is known by
+ancestry, which it cannot choose. A program outside one has no pane, and a
+scheduled job is a different process every time it runs, often gone before
+the agent finishes. Nothing about the process lasts long enough to be an
+identity. The key lasts: it is the session's, the program keeps it between
+runs, and it is saved with the session so that it still works after a
+restart. It guards nothing from a process that can read the session file,
+which could do as much without it; what it does is keep one program's
+sessions apart from another's and from the person's.
+
+A caller in a pane is that pane whatever it presents. A key never widens what
+a pane may do.
+
+**The project is the directory's, not the one on screen.** A call from
+outside a pane used to land in whichever project was showing. For a job that
+runs at night that is whatever the person left open, so the session opens in
+the project the caller's directory is in, and a directory in none is refused.
+With the launch variable a call from no project still gets the one on screen:
+that is what such callers were written against.
+
+**Eight at a time, across the app.** Any program can open one without being
+seen to, and each spends the person's tokens. Programs cannot be told apart,
+so the count is not per program. A session opened this way opens none of its
+own, or the count would bound nothing. The launch variable is the person's
+own switch and is not counted.
+
+**The row says where it came from.** `by` and the name the program gave, or
+`by script`. The name is the program's own word and only a caption. The end
+of its turn is told to the person like any session they started: nobody else
+is waiting for it in the app.
+
+**Its own session is its to close, unseen or not.** A session an agent
+opened is not closed over an answer a person has not looked at. A program
+that opens a session, reads the answer and closes it has taken the answer
+where the person asked for it to go.
+
+**It can be turned off** (`script_sessions`), and is on without being asked
+for. Off, a caller outside a pane has the launch variables and nothing else.
+
+**Not offered.** Writing into a session a person opened. Inside the app an
+agent asks, in a strip under its own pane's header; a program has no pane to
+ask from, so it is refused.
+
+**What it does not do.** The app has to be running. A job that fires while
+it is closed opens nothing.
+
 ## Codex reaches the app only when a person turns that on
 
 Codex runs every command of a turn in a sandbox that refuses a connection to a

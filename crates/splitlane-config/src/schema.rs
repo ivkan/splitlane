@@ -225,6 +225,15 @@ pub struct SplitlaneConfig {
     /// non-boolean value resolves to `None` (on) with a warn.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub tell_opener: Option<bool>,
+    /// Let a program that is not running in a pane open agent sessions.
+    /// `Some(true)` / `None` (the default): a script, a scheduled job or any
+    /// other program of the person's may open a session in a project that is
+    /// open here, and write to and close the sessions it opened. `Some(false)`:
+    /// a caller outside a pane is let in only by the variables the app was
+    /// launched with, as before. A non-boolean value resolves to `None` (on)
+    /// with a warn.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub script_sessions: Option<bool>,
     /// The person asked for Codex sessions to reach this app. `Some(true)`:
     /// the app keeps a permissions profile in Codex's own config that allows
     /// its socket, which on Codex also opens the network to the commands of a
@@ -489,6 +498,12 @@ impl SplitlaneConfig {
     /// only an explicit `false` turns it off.
     pub fn tell_opener_enabled(&self) -> bool {
         self.tell_opener.unwrap_or(true)
+    }
+
+    /// Whether a program outside a pane may open sessions. Default ON: only
+    /// an explicit `false` turns it off.
+    pub fn script_sessions_enabled(&self) -> bool {
+        self.script_sessions.unwrap_or(true)
     }
 
     /// Whether the person asked for Codex to reach this app. Default OFF:
@@ -1868,6 +1883,9 @@ pub struct AgentSurface {
     /// a person. Absent for a session a person opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_by: Option<OpenedBy>,
+    /// The program outside a pane that opened this session, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by_script: Option<OpenedByScript>,
 }
 
 /// Which session opened another.
@@ -1882,6 +1900,23 @@ pub struct OpenedBy {
     /// The opener's name as it last was.
     #[serde(default)]
     pub title: String,
+}
+
+/// A program outside a pane that opened a session.
+///
+/// Such a program has no pane to be known by and may exit before the agent
+/// does, so the session is its by a key: whoever presents the key may write
+/// to the session and close it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenedByScript {
+    /// The key the opener was given. Kept so that it still opens the session
+    /// after a restart; it guards nothing from a process that can read this
+    /// file, which can do as much without it.
+    pub key: String,
+    /// What the opener called itself, shown beside the session. Its own
+    /// word, and only a caption.
+    #[serde(default)]
+    pub label: String,
 }
 
 fn default_true() -> bool {
@@ -2093,6 +2128,7 @@ pub mod legacy_v1 {
                 session_id: t.session_id,
                 title_user_set: t.title_user_set,
                 opened_by: None,
+                opened_by_script: None,
             }),
         }
     }
@@ -2317,6 +2353,7 @@ mod tests {
             ai_injection_fence: Some(false),
             fleet_skill: Some(false),
             tell_opener: Some(false),
+            script_sessions: Some(false),
             codex_drive: Some(true),
             claude_code_button_visible: Some(true),
             codex_button_visible: Some(true),
@@ -2716,6 +2753,13 @@ mod tests {
         // Anything that is not `true` leaves the network closed.
         let cfg: SplitlaneConfig = serde_json::from_str(r#"{"codex_drive": "yes"}"#).unwrap();
         assert!(!cfg.codex_drive_enabled());
+    }
+
+    #[test]
+    fn a_script_may_open_sessions_unless_that_is_turned_off() {
+        assert!(SplitlaneConfig::default().script_sessions_enabled());
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"script_sessions": false}"#).unwrap();
+        assert!(!cfg.script_sessions_enabled());
     }
 
     #[test]

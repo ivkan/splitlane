@@ -516,6 +516,10 @@ impl SplitlaneApp {
                     // A session a person let another drive says so where its
                     // agent's name was; the icon still names the agent.
                     SharedString::from(format!("by {driver}"))
+                } else if let Some(script) = thread.script_opener_name() {
+                    // Opened by a program outside a pane: nobody was looking
+                    // when it appeared, so the row says where it came from.
+                    SharedString::from(format!("by {script}"))
                 } else {
                     SharedString::from(
                         thread

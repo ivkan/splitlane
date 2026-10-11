@@ -381,6 +381,10 @@ impl SplitlaneApp {
                                     None => (gpui::SharedString::from(by.title.clone()), false),
                                 }
                             }),
+                        opened_by_script: thread_id
+                            .and_then(|id| self.thread_by_id(id))
+                            .and_then(|thread| thread.script_opener_name())
+                            .map(gpui::SharedString::from),
                     },
                 );
             }

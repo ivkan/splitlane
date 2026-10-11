@@ -100,8 +100,12 @@ const VERBS: &[&str] = &[
 
 /// True when `argv[1]` names one of our subcommands (including the MCP-tool
 /// aliases above).
+///
+/// Also true for the one option that may come before a verb, `--key`:
+/// without that, `splitlane --key K send ...` would be taken for a launch of
+/// the app.
 pub fn is_cli_verb(arg: Option<&str>) -> bool {
-    matches!(arg, Some(v) if VERBS.contains(&v))
+    matches!(arg, Some(v) if VERBS.contains(&v) || v == "--key" || v.starts_with("--key="))
 }
 
 /// True when `argv[1]` is shaped like a subcommand (present, non-empty, and not
@@ -130,6 +134,12 @@ pub fn looks_like_unknown_verb(arg: Option<&str>) -> bool {
     arg_required_else_help = false
 )]
 struct Cli {
+    /// The key of a session this program opened from outside a pane, as
+    /// `add` printed it. It lets `send`, `key`, `interrupt` and `close` act
+    /// on that session without anything set where Splitlane was launched.
+    /// `SPLITLANE_SESSION_KEY` does the same.
+    #[arg(long, global = true, value_name = "KEY")]
+    key: Option<String>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -247,9 +257,14 @@ enum Commands {
     /// Run from a pane, it needs nothing switched on: the session opens in
     /// that pane's project and belongs to the session that opened it, which
     /// may then write to it. A session opened this way cannot open sessions
-    /// itself, and one session may have 8 running at a time. From outside a
-    /// pane it requires `SPLITLANE_IPC_ORCHESTRATION=1` on the running
-    /// instance (`SPLITLANE_IPC_SCRIPTING=1` with `--submit`).
+    /// itself, and one session may have 8 running at a time.
+    ///
+    /// Run from outside a pane - a script, a scheduled job - it needs
+    /// nothing switched on either: the session opens in the project the
+    /// current directory is in, which has to be open in Splitlane, and the
+    /// output carries a key. Pass that key as `--key` to `send`, `key`,
+    /// `interrupt` and `close` to act on the session later. 8 such sessions
+    /// may run at a time.
     Add {
         /// Which agent: `claude_code`, `codex`, ... or the binary name.
         #[arg(long)]
@@ -277,9 +292,13 @@ enum Commands {
         #[arg(long)]
         pane: bool,
         /// Emit `{surface_id, thread_id, agent, tier, session_id, runs_ended,
-        /// placement, placement_reason, opened_by}` as JSON.
+        /// placement, placement_reason, opened_by, session_key}` as JSON.
         #[arg(long)]
         json: bool,
+        /// From outside a pane: what to call the program that opened the
+        /// session, shown beside it in the rail (`by nightly`).
+        #[arg(long = "as", value_name = "NAME")]
+        opened_as: Option<String>,
     },
     /// Take a session out of its pane. It keeps running and keeps its row in
     /// the rail, as when its pane is closed by hand.
@@ -589,6 +608,9 @@ pub fn run() -> i32 {
     let Some(command) = cli.command else {
         return EXIT_OK;
     };
+    if let Some(key) = cli.key {
+        splitlane_ipc_client::present_session_key(key);
+    }
 
     let client = match connect() {
         Ok(client) => client,
@@ -674,6 +696,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             parked,
             pane,
             json,
+            opened_as,
         } => session_cmds::add(
             client,
             session_cmds::AddOptions {
@@ -685,6 +708,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
                 parked,
                 pane,
                 json,
+                opened_as,
             },
         ),
         Commands::Park { target, json } => session_cmds::park(client, &target, json),
@@ -921,6 +945,8 @@ mod tests {
         assert!(is_cli_verb(Some("key")));
         assert!(!is_cli_verb(Some("mcp")));
         assert!(!is_cli_verb(Some("--version")));
+        assert!(is_cli_verb(Some("--key")));
+        assert!(is_cli_verb(Some("--key=abc")));
         assert!(!is_cli_verb(None));
     }
 

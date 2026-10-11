@@ -158,8 +158,10 @@ fn send_to(
         }
         // The scripting gate is off on the running instance.
         Err(e) if is_send_text_disabled_error(&e) => Err(CliError::runtime(format!(
-            "send is disabled on the running Splitlane instance; relaunch it with \
-             SPLITLANE_IPC_SCRIPTING=1 to enable text injection (server said: {e})"
+            "send is disabled on the running Splitlane instance for a caller outside a \
+             pane. For a session this program opened with `add`, pass the key `add` \
+             printed as --key. To write into any session, relaunch Splitlane with \
+             SPLITLANE_IPC_SCRIPTING=1 (server said: {e})"
         ))),
         // A rule refused it (exit 8): not a session the caller opened, or one
         // that is waiting for a person.
@@ -299,8 +301,10 @@ pub fn key(client: &impl IpcTransport, target: &str, keystroke: &str) -> Result<
             Ok(EXIT_OK)
         }
         Err(e) if is_send_keystroke_disabled_error(&e) => Err(CliError::runtime(format!(
-            "key is disabled on the running Splitlane instance; relaunch it with \
-             SPLITLANE_IPC_SCRIPTING=1 to enable keystroke injection (server said: {e})"
+            "key is disabled on the running Splitlane instance for a caller outside a \
+             pane. For a session this program opened with `add`, pass the key `add` \
+             printed as --key. To send keys into any session, relaunch Splitlane with \
+             SPLITLANE_IPC_SCRIPTING=1 (server said: {e})"
         ))),
         Err(e) => Err(super::session_cmds::call_error(e)),
     }

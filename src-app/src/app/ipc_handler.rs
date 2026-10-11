@@ -748,7 +748,10 @@ fn orchestration_disabled_error(method: &str) -> JsonRpcError {
 pub(crate) fn write_gate_refusal(method: &str) -> serde_json::Value {
     JsonRpcError {
         code: -32601,
-        message: format!("{method} disabled; set SPLITLANE_IPC_SCRIPTING=1 to enable"),
+        message: format!(
+            "{method} disabled; set SPLITLANE_IPC_SCRIPTING=1 to enable, or pass the key of a \
+             session this program opened with `add` as --key"
+        ),
     }
     .into_value()
 }
@@ -3479,7 +3482,7 @@ impl SplitlaneApp {
                 // Whether this is that is known once the target is; a caller
                 // in no pane has only the gate, and is answered here as it
                 // always was.
-                let who = self.caller_of(caller, cx);
+                let who = self.caller_with_key(caller, params, cx);
                 if !gate_open && who == crate::app::orchestration::Caller::Outside {
                     return write_gate_refusal("surface.send_text");
                 }
@@ -3723,7 +3726,7 @@ impl SplitlaneApp {
                 // bytes are rejected so a multi-keystroke payload
                 // cannot smuggle a newline-terminated PTY command.
                 let gate_open = ipc_scripting_enabled();
-                let who = self.caller_of(caller, cx);
+                let who = self.caller_with_key(caller, params, cx);
                 if !gate_open && who == crate::app::orchestration::Caller::Outside {
                     return write_gate_refusal("surface.send_keystroke");
                 }

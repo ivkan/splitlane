@@ -416,6 +416,7 @@ impl SplitlaneApp {
                 .map(name)
                 .unwrap_or_else(|| by.title.clone())
         });
+        let opener = opener.or_else(|| thread.script_opener_name());
         queue_origin(&asks_for, opener.as_deref())
     }
 

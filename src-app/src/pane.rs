@@ -115,6 +115,9 @@ pub struct SurfaceFacts {
     /// The name of the session that opened this one, and whether that
     /// session is still open.
     pub opened_by: Option<(SharedString, bool)>,
+    /// What the program outside a pane that opened this session called
+    /// itself, when one did.
+    pub opened_by_script: Option<SharedString>,
 }
 
 /// The header's line about where a session came from, in its parts: the
@@ -132,7 +135,11 @@ pub(crate) fn surface_origin_words(
             Some(("opened by ", opener.clone(), false, Some(" \u{b7} closed")))
         }
         (None, Some(driver)) => Some(("driven by ", driver.clone(), true, None)),
-        (None, None) => None,
+        // A program is not a row: its name leads nowhere.
+        (None, None) => facts
+            .opened_by_script
+            .as_ref()
+            .map(|script| ("opened by ", script.clone(), false, None)),
     }
 }
 

@@ -168,8 +168,13 @@ start Splitlane from a shell that has them set.
 
 A flow that submits checks `SPLITLANE_IPC_SCRIPTING` only.
 
-These variables are for a caller outside a pane: your own script. An agent
-running **in** a pane needs none of them for the sessions it opens itself.
+These variables are for a caller outside a pane that wants to act on any
+pane. Two callers need none of them for sessions of their own: a program
+outside a pane that opens agent sessions
+([Opening sessions from a script](#opening-sessions-from-a-script)), and an
+agent running **in** a pane.
+
+An agent in a pane needs none of them for the sessions it opens itself.
 It opens agent sessions with `splitlane add`, and those are its own: it may
 send them text and keys, stop their turns, move them in and out of panes
 and close them, with nothing switched on. Splitlane tells which pane a call
@@ -206,6 +211,51 @@ splitlane key backend ctrl-c
 - `key` sends one named keystroke. Keystrokes that would submit a line
   (`enter`, `ctrl-m`, `ctrl-j`) are refused; use `send --submit`.
 - One `send` is limited to 64 KiB of text.
+
+## Opening sessions from a script
+
+A shell script, a scheduled job or any other program of yours can start an
+agent on a task and collect the answer, with nothing set where Splitlane was
+launched. Splitlane has to be running, and the project has to be open in it.
+
+```bash
+cd ~/work/atlas                     # a directory of a project open in Splitlane
+out=$(splitlane add --agent claude_code --name nightly-audit --as nightly \
+        --parked --submit --prompt "List the dependencies with known advisories." --json)
+id=$(printf '%s' "$out" | jq -r .surface_id)
+export SPLITLANE_SESSION_KEY=$(printf '%s' "$out" | jq -r .session_key)
+
+splitlane wait "$id" --until turn-end --after 0 --timeout 600
+splitlane answer "$id" > audit.txt
+splitlane close "$id"
+```
+
+- **The project is the one the current directory is in.** `add` run from a
+  directory that is in no open project is refused (`no_project_here`); it does
+  not fall back to whichever project is on screen.
+- **The session is the program's by a key.** `add` prints it at the end of
+  its line and returns it as `session_key` in JSON. `send`, `key`,
+  `interrupt` and `close` act on that session when the key is given as
+  `--key KEY` or in `SPLITLANE_SESSION_KEY`. The key is saved with the
+  session and is the same after Splitlane restarts; a session that came back
+  in the rail without a pane is reachable again once you open it. `wait`, `answer`, `status` and `read` need no key. The key opens
+  that one session: a program outside a pane does not write into a session
+  you opened, or one another program opened, and is not offered a way to ask.
+- **You can see where it came from.** The session's row says `by nightly`,
+  the name given with `--as`, or `by script` without one; its pane header
+  says `opened by nightly`. When its turn ends it is marked and announced
+  like a session you started yourself.
+- **Eight at a time.** Sessions opened this way are counted across the app,
+  and the ninth `add` is refused (`script_ceiling`) until one is closed or
+  its agent exits. A session opened this way cannot open sessions itself.
+
+`--parked` keeps the session out of your layout: a job that runs while you
+work should not take a pane. Without it the session takes an empty pane when
+there is one.
+
+Settings > Agents > **Let scripts open sessions** (`script_sessions` in
+`splitlane.json`) turns this off. A program outside a pane then needs the
+launch variables above, as it did before.
 
 ## Opening panes from a file: `splitlane up`
 
