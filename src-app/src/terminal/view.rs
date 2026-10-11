@@ -1037,6 +1037,12 @@ impl TerminalView {
     /// that needs it live before then. Idempotent: the thunk is taken on the
     /// first call, so re-showing a surface never re-forks a shell and never
     /// re-runs an agent's launch command.
+    /// Whether this surface's process has not been started yet: it was
+    /// restored as a description and nothing has shown it or written to it.
+    pub(crate) fn backend_not_started(&self) -> bool {
+        self.deferred_backend_start.is_some()
+    }
+
     pub(crate) fn ensure_backend_started(&mut self, cx: &mut Context<Self>) {
         let Some(start) = self.deferred_backend_start.take() else {
             return;

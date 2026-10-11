@@ -6,6 +6,20 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A session a script opened is reachable with its key after Splitlane
+  restarts, while it is still a row with no terminal: the call that presents
+  the key selects it. `send` to such a session starts its agent and writes
+  once the agent takes text.
+
+### Fixed
+
+- `send` to an agent session that has not been started since Splitlane was
+  no longer writes at once, into the shell the agent is being launched from,
+  where the text was lost or ran as a command. It is kept until the agent is
+  ready, and the answer says `queued`.
+
 ## [0.2.6] - 2026-10-11
 
 ### Added

@@ -94,6 +94,7 @@ pub(crate) fn method_asks_who_calls(method: &str) -> bool {
             | "surface.send_text"
             | "surface.send_keystroke"
             | "surface.park"
+            | "surface.wake"
             | "surface.show"
             | "surface.close"
             | "surface.interrupt"

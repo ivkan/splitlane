@@ -138,6 +138,28 @@ fn send_to(
             if let Some(runs_ended) = before.as_ref().and_then(|b| b.runs_ended) {
                 result["runs_ended"] = json!(runs_ended);
             }
+            // The session had to be started first, and the text is kept for
+            // its agent. What became of it is waited for and reported the
+            // way `add` reports a prompt.
+            if result.get("queued").and_then(serde_json::Value::as_bool) == Some(true) {
+                let (word, reason) = super::session_cmds::await_opening_prompt(
+                    client,
+                    surface_id,
+                    super::session_cmds::OPENING_PROMPT_WAIT,
+                    std::thread::sleep,
+                )?;
+                let (code, trouble) =
+                    super::session_cmds::opening_prompt_exit(&word, reason.as_deref());
+                result["opening_prompt"] = json!(word);
+                result["opening_prompt_reason"] = json!(reason);
+                return match trouble {
+                    Some(trouble) => Err(CliError {
+                        code,
+                        message: trouble.to_string(),
+                    }),
+                    None => Ok(result),
+                };
+            }
             if should_wait_for_submit_start(&result) {
                 match wait_for_submit_start(client, surface_id, before.as_ref()) {
                     SubmitStart::Confirmed(reason) => {

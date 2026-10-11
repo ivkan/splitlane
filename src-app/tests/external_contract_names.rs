@@ -212,7 +212,12 @@ fn opening_a_session_keeps_its_published_names() {
         handler.contains("\"surface.add_agent\""),
         "IPC method `surface.add_agent` disappeared"
     );
-    for method in ["surface.park", "surface.show", "surface.close"] {
+    for method in [
+        "surface.park",
+        "surface.show",
+        "surface.close",
+        "surface.wake",
+    ] {
         assert!(
             handler.contains(&format!("\"{method}\"")),
             "IPC method `{method}` disappeared"

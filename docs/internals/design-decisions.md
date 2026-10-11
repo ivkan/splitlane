@@ -1388,6 +1388,32 @@ opened is not closed over an answer a person has not looked at. A program
 that opens a session, reads the answer and closes it has taken the answer
 where the person asked for it to go.
 
+**After a restart the key is what selects the session.** A session that was
+in the rail without a pane comes back as a row and nothing else: no terminal,
+so no surface a call could name. That stays - what was not on screen costs
+nothing until somebody selects it - and a program presenting the session's
+key is somebody selecting it. The session gets its terminal then, and not its
+agent: closing it or reading its last answer should not start one.
+
+Writing to it does start one, and the write is not made at once. A session
+started again on an old conversation is, for its first moments, a shell with
+a launch command being typed into it; text written then was lost, and
+submitted it ran as a command. So the text is kept the way a new session's
+first prompt is, and written when the agent takes text. The sign for that is
+not the one a new session uses: a new session's own file does not exist until
+its agent has written it, while a resumed one has the file from before and it
+is read while the shell is still starting. For a resumed session the file
+counts only with the agent's process found, and for an agent whose cursor
+says when it takes text the cursor is waited for instead. This holds for any
+caller's write into a session that had not been started, not only a
+keyholder's.
+
+While such a text is waiting, another write to the session is refused: the
+agent is no readier for the second than for the first, and the second is the
+one that would reach the shell. What is not covered: a session a person has
+just shown after a restart, written to in the seconds before its agent is up.
+Nothing is queued there, and the write goes where it always went.
+
 **It can be turned off** (`script_sessions`), and is on without being asked
 for. Off, a caller outside a pane has the launch variables and nothing else.
 

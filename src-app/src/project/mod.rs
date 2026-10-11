@@ -506,6 +506,11 @@ pub struct Thread {
     /// agent: a session file created inside it may be this surface's even
     /// after it was closed. Transient.
     pub agent_seen_secs: Option<i64>,
+    /// This surface's agent was started again on a conversation that
+    /// already existed, by a write that found it not running. Its own file
+    /// then speaks before the agent does, so the file is not what says the
+    /// agent is ready for text. Transient.
+    pub resumed_for_a_write: bool,
     /// Who told the person about the wait this surface is standing in, when
     /// somebody has. Transient, like the two fields above.
     ///
@@ -579,6 +584,7 @@ impl Thread {
             // restamps it.
             launched_at_secs: Some(now_unix_secs()),
             agent_seen_secs: None,
+            resumed_for_a_write: false,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
@@ -663,6 +669,7 @@ impl Thread {
             // restamps it.
             launched_at_secs: Some(now_unix_secs()),
             agent_seen_secs: None,
+            resumed_for_a_write: false,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
@@ -858,6 +865,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         opening_prompt_key: None,
         launched_at_secs: None,
         agent_seen_secs: None,
+        resumed_for_a_write: false,
         wait_announced: None,
         rail: crate::rail_state::RailRecord::default(),
         // An id is all a file can say; whether the opener still exists is

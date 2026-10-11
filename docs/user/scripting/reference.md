@@ -585,6 +585,7 @@ Leave the key out to get the default.
 | `surface.send_keystroke` | `keystroke` (for example `escape`, `ctrl-c`, `alt-f`) | `{sent}` |
 | `surface.add_agent` | `agent` (required), `name`, `prompt`, `submit`, `placement` (`auto`, `parked` or `pane`) | `{surface_id, thread_id, agent, tier, session_id, runs_ended, placement, placement_reason, opened_by, opening_prompt}`. The method answers at once, with `opening_prompt` at `pending` when a prompt was given; `rail.opening_prompt` in `surface.status` says what became of it |
 | `surface.park` | `surface_id` or `name` | `{parked, surface_id}` |
+| `surface.wake` | `session_key` | `{surface_id, woke}`. Gives the session the key belongs to a terminal when it has none after a restart, without starting its agent. The CLI calls it when a target matches nothing and a key is held. Refused (`not_from_a_pane`) without a key that is some session's |
 | `surface.show` | `surface_id` or `name`, `beside_surface_id`, `direction` | `{shown, surface_id, displaced_surface_id}` |
 | `surface.close` | `surface_id` or `name`, `stop_turn` | `{closed, surface_id, thread_id}` |
 | `surface.interrupt` | `surface_id` or `name` | `{sent, surface_id, rail_status_at_send, runs_ended, last_outcome}`. Answers as soon as the key is written; the stop is confirmed by `rail.runs_ended` passing the value given here with `rail.last_outcome` `interrupted` |

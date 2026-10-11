@@ -237,8 +237,12 @@ splitlane close "$id"
   its line and returns it as `session_key` in JSON. `send`, `key`,
   `interrupt` and `close` act on that session when the key is given as
   `--key KEY` or in `SPLITLANE_SESSION_KEY`. The key is saved with the
-  session and is the same after Splitlane restarts; a session that came back
-  in the rail without a pane is reachable again once you open it. `wait`, `answer`, `status` and `read` need no key. The key opens
+  session and is the same after Splitlane restarts. A session that came back
+  in the rail without a pane has no terminal until something selects it, and
+  a call that presents its key is what selects it: the session can be named
+  again, and `send` starts its agent, waits until it takes text and then
+  writes, answering like `add` does for a prompt (`opening_prompt`, exit `5`
+  or `7` when the text was not written). `wait`, `answer`, `status` and `read` need no key. The key opens
   that one session: a program outside a pane does not write into a session
   you opened, or one another program opened, and is not offered a way to ask.
 - **You can see where it came from.** The session's row says `by nightly`,

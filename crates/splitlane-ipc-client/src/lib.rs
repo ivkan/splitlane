@@ -117,6 +117,11 @@ pub fn present_session_key(key: String) {
     let _ = SESSION_KEY.set(key);
 }
 
+/// Whether this process has a session key to present.
+pub fn holds_session_key() -> bool {
+    session_key().is_some_and(|key| !key.is_empty())
+}
+
 fn session_key() -> Option<String> {
     SESSION_KEY
         .get()

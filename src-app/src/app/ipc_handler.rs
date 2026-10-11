@@ -3603,7 +3603,69 @@ impl SplitlaneApp {
                 // demand for a live surface, so mount it here rather than let
                 // the payload sit in `pending_input` until the user happens to
                 // open that pane.
+                // For an agent session that is the moment its launch command
+                // is typed into a new shell, and text written now is read by
+                // that shell: lost, or run as a command when it is submitted.
+                // So the session is started and the text is kept for the
+                // agent, the way a prompt given to a new session is: written
+                // once the agent is there to read it, with what became of it
+                // on the session's record.
+                // And while such a text is still waiting, a second one is
+                // refused: the agent is no readier for it than for the
+                // first, and it would be the one that reaches the shell.
+                let prompt_pending = write_target
+                    .thread_id
+                    .and_then(|id| self.thread_by_id(id))
+                    .is_some_and(|thread| {
+                        thread.rail.opening_prompt
+                            == Some(crate::rail_state::OpeningPrompt::Pending)
+                    });
+                if prompt_pending {
+                    return JsonRpcError::input_not_taken(
+                        "A message is already waiting for this session's agent, which is \
+                         still starting; nothing was sent. Send again once `splitlane status` \
+                         shows what became of it (`rail.opening_prompt`)",
+                    )
+                    .into_value();
+                }
+                let starts_an_agent = terminal.read(cx).backend_not_started()
+                    && write_target
+                        .thread_id
+                        .and_then(|id| self.thread_by_id(id))
+                        .is_some_and(|thread| thread.terminal_agent.is_some());
                 terminal.update(cx, |view, cx| view.ensure_backend_started(cx));
+                if starts_an_agent {
+                    let Some(thread_id) = write_target.thread_id.filter(|_| !text.is_empty())
+                    else {
+                        // A bare Enter has nothing to keep.
+                        return JsonRpcError::input_not_taken(
+                            "The session had not been started since Splitlane was; its agent \
+                             is starting now and nothing was sent",
+                        )
+                        .into_value();
+                    };
+                    if let Some(thread) = self.thread_by_id_mut(thread_id) {
+                        thread.resumed_for_a_write = true;
+                    }
+                    self.schedule_opening_prompt(
+                        thread_id,
+                        &terminal,
+                        text.to_string(),
+                        submit,
+                        from_opener,
+                        cx,
+                    );
+                    return serde_json::json!({
+                        "sent": false,
+                        // Not written yet: `surface.status` says what became
+                        // of it, under `rail.opening_prompt`.
+                        "queued": true,
+                        "opening_prompt": "pending",
+                        "length": sent_length,
+                        "rail_status_at_send": rail_status_at_send,
+                        "submitted": submit,
+                    });
+                }
                 if let Err(e) = pane_takes_input(&terminal, cx) {
                     return e.into_value();
                 }
@@ -3939,6 +4001,7 @@ impl SplitlaneApp {
                 })
             }
             "surface.add_agent" => self.handle_add_agent(params, caller, cx),
+            "surface.wake" => self.handle_wake(params, caller, cx),
             "surface.park" => self.handle_park(params, caller, cx),
             "surface.show" => self.handle_show(params, caller, cx),
             "surface.close" => self.handle_close(params, caller, cx),

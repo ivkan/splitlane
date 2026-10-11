@@ -149,6 +149,28 @@ pub(crate) struct OpeningLook {
     pub waiting: bool,
 }
 
+/// Whether what has spoken for a session says its agent is there to read
+/// text.
+///
+/// For a new session it does: the agent's file does not exist until the
+/// agent has written it. A session started again on an old conversation has
+/// that file from before, and it is read while the launch command is still
+/// being typed into the shell - text written then is the shell's. So for
+/// such a session the file counts only with the agent's process found, and
+/// not at all for an agent whose cursor says when it takes text, which is
+/// the better sign and is waited for instead.
+fn spoken_for_text(
+    spoken_for: bool,
+    resumed: bool,
+    agent_found: bool,
+    cursor_marks_text_entry: bool,
+) -> bool {
+    if !resumed {
+        return spoken_for;
+    }
+    spoken_for && agent_found && !cursor_marks_text_entry
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpeningStep {
     Write,
@@ -1806,6 +1828,50 @@ impl SplitlaneApp {
         }
     }
 
+    /// `surface.wake`: give the session a presented key belongs to a
+    /// terminal, if it has none, and say which surface it is.
+    ///
+    /// After a restart a session that was in the rail without a pane is a
+    /// row and nothing else: no terminal, so no surface to name in a call.
+    /// That is deliberate - what was not on screen costs nothing until
+    /// somebody selects it - and a program holding the session's key is
+    /// somebody selecting it. Only the terminal is made; its agent starts
+    /// when something is written to it or it is shown, as for a session a
+    /// person selects.
+    pub(crate) fn handle_wake(
+        &mut self,
+        params: &serde_json::Value,
+        lineage: &CallerLineage,
+        cx: &mut Context<Self>,
+    ) -> serde_json::Value {
+        const METHOD: &str = "surface.wake";
+        let Caller::Keyholder { thread_id } = self.caller_with_key(lineage, params, cx) else {
+            return Refusal::NotFromAPane.into_value(METHOD);
+        };
+        if let Some(terminal) = self.terminal_of(thread_id, cx) {
+            return serde_json::json!({
+                "surface_id": terminal.entity_id().as_u64(),
+                "woke": false,
+            });
+        }
+        let target = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, container)| {
+                let thread_idx = container.threads.iter().position(|t| t.id == thread_id)?;
+                Some(crate::project::AgentsTarget::Thread { ws_idx, thread_idx })
+            });
+        match target.and_then(|target| self.mount_agents_terminal_for_target(target, cx)) {
+            Some(view) => {
+                cx.notify();
+                serde_json::json!({ "surface_id": view.entity_id().as_u64(), "woke": true })
+            }
+            None => JsonRpcError::invalid_params("The session could not be given a terminal")
+                .into_value(),
+        }
+    }
+
     /// `surface.add_agent`: open an agent session the way the launcher does,
     /// for a caller that is another session or a person's script.
     pub(crate) fn handle_add_agent(
@@ -2193,7 +2259,7 @@ impl SplitlaneApp {
     /// written used to leave nothing but a line in the log.
     /// It goes through the same write as `surface.send_text`: a paste, and
     /// when it is to be submitted, a carriage return of its own afterwards.
-    fn schedule_opening_prompt(
+    pub(crate) fn schedule_opening_prompt(
         &mut self,
         thread_id: u64,
         terminal: &Entity<TerminalView>,
@@ -2347,15 +2413,22 @@ impl SplitlaneApp {
         cx: &App,
     ) -> Option<OpeningLook> {
         let thread = self.thread_by_id(thread_id)?;
+        let agent_found = self
+            .pty_flow
+            .get(&thread_id)
+            .is_some_and(|flow| flow.agent_found);
+        let cursor_marks_text_entry = thread
+            .terminal_agent
+            .is_some_and(crate::agent_launcher::TerminalAgent::cursor_marks_text_entry);
         Some(OpeningLook {
-            spoken_for: thread.detector_read_at.is_some() || thread.hook_has_spoken,
-            agent_found: self
-                .pty_flow
-                .get(&thread_id)
-                .is_some_and(|flow| flow.agent_found),
-            cursor_marks_text_entry: thread
-                .terminal_agent
-                .is_some_and(crate::agent_launcher::TerminalAgent::cursor_marks_text_entry),
+            spoken_for: spoken_for_text(
+                thread.detector_read_at.is_some() || thread.hook_has_spoken,
+                thread.resumed_for_a_write,
+                agent_found,
+                cursor_marks_text_entry,
+            ),
+            agent_found,
+            cursor_marks_text_entry,
             entry: crate::agent_state::TextEntry::from_modes(
                 view.read(cx).terminal.session_backend().modes(),
             ),
@@ -2532,6 +2605,18 @@ mod tests {
         assert_eq!(found("elsewhere"), None);
         assert_eq!(found("app/../../etc"), None);
         assert_eq!(project_containing("w/app", &roots), None);
+    }
+
+    #[test]
+    fn a_resumed_sessions_old_file_does_not_say_its_agent_is_ready() {
+        // New session: the file speaking is the agent speaking.
+        assert!(spoken_for_text(true, false, false, true));
+        // Resumed: the file is from before. An agent with a telling cursor
+        // is waited for by the cursor; another needs its process found.
+        assert!(!spoken_for_text(true, true, true, true));
+        assert!(!spoken_for_text(true, true, false, false));
+        assert!(spoken_for_text(true, true, true, false));
+        assert!(!spoken_for_text(false, true, true, false));
     }
 
     #[test]

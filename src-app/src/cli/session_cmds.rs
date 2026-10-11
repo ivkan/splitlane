@@ -56,7 +56,7 @@ pub(super) fn call_error(message: String) -> CliError {
 
 /// How long `add` waits to learn what became of the prompt it was given.
 /// Longer than the instance takes to decide, which is what ends the wait.
-const OPENING_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+pub(super) const OPENING_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 const OPENING_PROMPT_POLL: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// What became of an opening prompt, as `surface.status` words it: the word,
@@ -79,7 +79,7 @@ fn opening_prompt_settled(rail: &Value) -> Option<(String, Option<String>)> {
 /// The session is open either way. A caller that goes on to wait for a turn
 /// after a prompt that was never written waits for nothing, so the three ways
 /// it can fail are not exit 0.
-fn opening_prompt_exit(word: &str, reason: Option<&str>) -> (i32, Option<&'static str>) {
+pub(super) fn opening_prompt_exit(word: &str, reason: Option<&str>) -> (i32, Option<&'static str>) {
     match (word, reason) {
         ("written" | "submitted", _) => (EXIT_OK, None),
         ("not_written", Some("waiting")) => (
@@ -118,7 +118,7 @@ fn opening_prompt_exit(word: &str, reason: Option<&str>) -> (i32, Option<&'stati
 /// Returns the word and the reason; `pending` when `timeout` ran out first.
 ///
 /// `sleep` is a parameter so the loop is tested without a clock.
-fn await_opening_prompt(
+pub(super) fn await_opening_prompt(
     client: &impl IpcTransport,
     surface_id: u64,
     timeout: std::time::Duration,

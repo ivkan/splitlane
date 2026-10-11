@@ -70,9 +70,26 @@ pub fn fetch_surfaces(client: &impl IpcTransport) -> Result<Vec<Surface>, CliErr
 }
 
 /// Resolve a `<target>` string to a `surface_id` against the live surface list.
+///
+/// A session a program opened from outside a pane has no terminal after a
+/// restart until somebody selects it, and so is not in the list. When
+/// nothing matches and this process holds such a session's key, the app is
+/// asked to give that session a terminal and the list is read once more.
 pub fn resolve_target(client: &impl IpcTransport, target: &str) -> Result<u64, CliError> {
     let surfaces = fetch_surfaces(client)?;
-    resolve(parse_selector(target)?, &surfaces)
+    let selector = parse_selector(target)?;
+    // Only when nothing matched at all: a target that matches two surfaces
+    // is the caller's to narrow, and nothing is asked of the app for it.
+    if matches_for(&selector, &surfaces).is_empty()
+        && splitlane_ipc_client::holds_session_key()
+        // Unknown to an older instance, or the key is no session's: either
+        // way the answer below is the one without it.
+        && client.call("surface.wake", json!({})).is_ok()
+    {
+        let surfaces = fetch_surfaces(client)?;
+        return resolve(parse_selector(target)?, &surfaces);
+    }
+    resolve(selector, &surfaces)
 }
 
 /// All `surface_id`s matching the selector (for `wait --any/--all`).
