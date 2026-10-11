@@ -1452,6 +1452,11 @@ struct SplitlaneApp {
     opener_tells: std::collections::HashMap<u64, Vec<app::opener_tell::Tell>>,
     /// When each opener was last written such a line.
     opener_told_at: std::collections::HashMap<u64, std::time::Instant>,
+    /// Settings -> Agents: the card asking whether Codex may reach this app
+    /// is up (`app::codex_drive`).
+    codex_drive_confirm: bool,
+    /// What the last press of that switch came to, shown under it.
+    codex_drive_note: Option<String>,
     /// Openers whose sessions the person folded away in the rail, by surface
     /// record id. The fold is theirs alone: nothing folds or unfolds a
     /// session by itself, except that going to a folded session opens the
@@ -3006,6 +3011,9 @@ impl Render for SplitlaneApp {
         }
         if let Some(intent) = self.pending_exit {
             app_content = app_content.child(self.render_exit_confirm_dialog(intent, ui, cx));
+        }
+        if self.codex_drive_confirm {
+            app_content = app_content.child(self.render_codex_drive_confirm(ui, cx));
         }
         // The branch picker: a container's menu, not a panel's, so it renders
         // here with the other context menus and anchors where it was opened.

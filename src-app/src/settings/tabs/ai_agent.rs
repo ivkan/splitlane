@@ -56,6 +56,7 @@ impl SplitlaneApp {
         let fence = config.ai_injection_fence_enabled();
         let fleet_skill = config.fleet_skill_enabled();
         let tell_opener = config.tell_opener_enabled();
+        let codex_drive = config.codex_drive_enabled();
 
         let mut agents = div().flex().flex_col();
         for agent in TerminalAgent::ALL {
@@ -169,6 +170,30 @@ impl SplitlaneApp {
              writes one line into a session whose own session ended a turn it was not \
              waiting on, once that session is idle and its input line is empty.",
         ));
+
+        // Codex allows a socket by name on macOS only, so the switch is drawn
+        // only where it can do what it says.
+        if crate::app::codex_drive::AVAILABLE {
+            access = access.child(setting_toggle_row(
+                ui,
+                "agents-codex-drive",
+                "Let Codex drive sessions",
+                Some(SharedString::from(
+                    "also gives Codex's commands internet access \u{2014} asks before turning on",
+                )),
+                codex_drive,
+                cx.listener(|this, _: &ClickEvent, _w, cx| this.toggle_codex_drive(cx)),
+            ));
+            access = access.child(caption(
+                ui,
+                "Codex runs its commands in a sandbox that blocks Splitlane, so a Codex \
+                 session cannot open or read other sessions until this is on. Codex can \
+                 allow Splitlane only together with the network.",
+            ));
+            if let Some(note) = self.codex_drive_note.clone() {
+                access = access.child(caption(ui, note));
+            }
+        }
 
         // AC #3: once the fence is OFF, surface the active risk in the danger
         // role so the trade-off is explicit and impossible to miss.
@@ -413,11 +438,11 @@ fn capability_ladder(ui: crate::theme::UiColors) -> impl IntoElement {
 
 /// The paragraph a row cannot hold, under the group it belongs to. Same
 /// treatment as the closing note in Limits and General.
-fn caption(ui: crate::theme::UiColors, text: &'static str) -> impl IntoElement {
+fn caption(ui: crate::theme::UiColors, text: impl Into<SharedString>) -> impl IntoElement {
     div()
         .max_w(px(SETTING_ROW_MAX_WIDTH))
         .pt(tok::space::XL)
         .text_size(tok::text::CAPTION)
         .text_color(ui.text_tertiary)
-        .child(text)
+        .child(text.into())
 }

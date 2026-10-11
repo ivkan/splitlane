@@ -36,6 +36,7 @@
 pub mod agents;
 pub mod api;
 pub mod cli;
+pub mod codex_permissions;
 pub mod detect;
 pub mod hooks;
 pub mod io;

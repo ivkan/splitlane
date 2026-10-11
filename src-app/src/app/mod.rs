@@ -10,6 +10,7 @@ pub mod announce;
 pub mod attention_queue;
 pub mod bootstrap;
 pub mod broadcast;
+pub mod codex_drive;
 pub mod command_palette;
 pub mod composer;
 pub mod confirm_dialog;

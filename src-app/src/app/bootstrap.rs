@@ -887,6 +887,7 @@ impl SplitlaneApp {
         crate::fleet_skill::keep_installed_at_start(
             telemetry_config_snapshot.fleet_skill_enabled(),
         );
+        crate::app::codex_drive::keep_at_start(telemetry_config_snapshot.codex_drive_enabled());
         let telemetry_enabled_last = telemetry_config_snapshot
             .telemetry
             .as_ref()
@@ -1192,6 +1193,8 @@ impl SplitlaneApp {
             drive: crate::app::drive::DriveBook::default(),
             opener_tells: std::collections::HashMap::new(),
             opener_told_at: std::collections::HashMap::new(),
+            codex_drive_confirm: false,
+            codex_drive_note: None,
             folded_openers: std::collections::HashSet::new(),
             openers_explained: std::collections::HashSet::new(),
             drive_status_before: std::collections::HashMap::new(),

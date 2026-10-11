@@ -72,14 +72,42 @@ impl IpcTransport for IpcClient {
     fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = build_request(id, method, params);
-        let line = send_and_receive(&self.socket, &request).map_err(|e| {
-            format!(
-                "cannot reach the app at {} ({e}); is Splitlane running?",
-                self.socket.display()
-            )
-        })?;
+        let line = send_and_receive(&self.socket, &request)
+            .map_err(|e| unreachable_message(&self.socket, &e, under_codex_sandbox()))?;
         parse_response(&line)
     }
+}
+
+/// Whether this process was started by Codex inside its sandbox. Codex sets
+/// one of these on every command it runs for a turn.
+fn under_codex_sandbox() -> bool {
+    ["CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// What to say when the app could not be reached.
+///
+/// A refused connection under Codex's sandbox is not a missing app, and
+/// saying "is Splitlane running?" sent the agent reading it to check a
+/// process that was up all along. The sandbox refuses every Unix socket, so
+/// the message says who refused and where the person can allow it.
+fn unreachable_message(socket: &Path, error: &io::Error, under_codex_sandbox: bool) -> String {
+    if under_codex_sandbox && error.kind() == io::ErrorKind::PermissionDenied {
+        return format!(
+            "Codex's sandbox blocked the connection to Splitlane at {} ({error}). \
+             Splitlane is running; this is not something to retry or work around. \
+             Tell the person: Codex can reach Splitlane only if they allow it in \
+             Splitlane > Settings > Agents > \"Let Codex drive sessions\" (macOS), \
+             which also gives Codex's commands network access, and then start a \
+             new Codex session.",
+            socket.display()
+        );
+    }
+    format!(
+        "cannot reach the app at {} ({error}); is Splitlane running?",
+        socket.display()
+    )
 }
 
 /// Build a JSON-RPC 2.0 request frame.
@@ -828,6 +856,25 @@ mod tests {
             .expect("read")
             .expect("line");
         assert_eq!(line, "{\"type\":\"ai.stop\"}");
+    }
+
+    #[test]
+    fn a_connection_refused_by_codexs_sandbox_is_not_reported_as_a_missing_app() {
+        let socket = Path::new("/tmp/splitlane/splitlane.sock");
+        let refused = io::Error::from(io::ErrorKind::PermissionDenied);
+        let sandboxed = unreachable_message(socket, &refused, true);
+        assert!(sandboxed.contains("Codex's sandbox blocked"), "{sandboxed}");
+        assert!(
+            sandboxed.contains("Let Codex drive sessions"),
+            "{sandboxed}"
+        );
+        assert!(!sandboxed.contains("is Splitlane running?"), "{sandboxed}");
+
+        // The same refusal outside Codex, and a missing socket inside it, keep
+        // the ordinary message: neither is the sandbox's doing.
+        assert!(unreachable_message(socket, &refused, false).contains("is Splitlane running?"));
+        let missing = io::Error::from(io::ErrorKind::NotFound);
+        assert!(unreachable_message(socket, &missing, true).contains("is Splitlane running?"));
     }
 
     #[test]

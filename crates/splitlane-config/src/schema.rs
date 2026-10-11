@@ -225,6 +225,14 @@ pub struct SplitlaneConfig {
     /// non-boolean value resolves to `None` (on) with a warn.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub tell_opener: Option<bool>,
+    /// The person asked for Codex sessions to reach this app. `Some(true)`:
+    /// the app keeps a permissions profile in Codex's own config that allows
+    /// its socket, which on Codex also opens the network to the commands of a
+    /// turn. `None` / `Some(false)` (the default): nothing is written, and
+    /// Codex's sandbox refuses the socket. The one switch that is off until
+    /// asked for, because of that cost. macOS only.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub codex_drive: Option<bool>,
     /// Show the built-in "Claude Code" command button in the tab bar.
     /// `Some(true)` always renders the button, `Some(false)` hides it, and
     /// `None` (default) renders it only when the CLI binary is installed.
@@ -481,6 +489,12 @@ impl SplitlaneConfig {
     /// only an explicit `false` turns it off.
     pub fn tell_opener_enabled(&self) -> bool {
         self.tell_opener.unwrap_or(true)
+    }
+
+    /// Whether the person asked for Codex to reach this app. Default OFF:
+    /// only an explicit `true` turns it on.
+    pub fn codex_drive_enabled(&self) -> bool {
+        self.codex_drive.unwrap_or(false)
     }
 }
 
@@ -2303,6 +2317,7 @@ mod tests {
             ai_injection_fence: Some(false),
             fleet_skill: Some(false),
             tell_opener: Some(false),
+            codex_drive: Some(true),
             claude_code_button_visible: Some(true),
             codex_button_visible: Some(true),
             opencode_button_visible: Some(true),
@@ -2691,6 +2706,16 @@ mod tests {
         let cfg: SplitlaneConfig = serde_json::from_str("{}").expect("empty config");
         assert!(cfg.submit_paste_delay_ms.is_none());
         assert_eq!(cfg.resolved_submit_paste_delay_ms(), 70);
+    }
+
+    #[test]
+    fn codex_reaches_the_app_only_when_asked_for() {
+        assert!(!SplitlaneConfig::default().codex_drive_enabled());
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"codex_drive": true}"#).unwrap();
+        assert!(cfg.codex_drive_enabled());
+        // Anything that is not `true` leaves the network closed.
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"codex_drive": "yes"}"#).unwrap();
+        assert!(!cfg.codex_drive_enabled());
     }
 
     #[test]

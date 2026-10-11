@@ -13,6 +13,13 @@ Notable changes to Splitlane are recorded here. The format follows
   into the opener and submits it, once the opener is idle and its input line
   is empty, so the work carries on without you relaying the news. On by
   default; `"tell_opener": false` or Settings > Agents turns it off.
+- A Codex session can open and read other sessions on macOS. Codex's sandbox
+  blocks Splitlane, and Codex can allow it only together with network access
+  for its commands, so this is off until you turn it on: Settings > Agents >
+  Let Codex drive sessions shows what it costs and asks first, then adds a
+  permissions profile to Codex's config. Turning it off removes the profile.
+- `splitlane` run by Codex inside its sandbox says that the sandbox blocked
+  it and where to allow it, instead of asking whether Splitlane is running.
 - Notifications about an agent waiting for you, a crashed or stalled session
   and a limit running out arrive with the system's notification sound. A
   finished run stays silent. Settings > Notifications > Play a sound chooses

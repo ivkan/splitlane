@@ -1333,3 +1333,44 @@ collapse; and one each time the kernel's size is found apart, however many
 times it then has to be sent again. It is set aside as
 `terminal-resize.log.old` at 256 KB. The next occurrence says which of the
 two happened.
+
+## Codex reaches the app only when a person turns that on
+
+Codex runs every command of a turn in a sandbox that refuses a connection to a
+Unix socket, so `splitlane` run by Codex cannot reach the app and a Codex
+session cannot open or read another one. Codex offers one way to allow a
+socket: a permissions profile with the network enabled and the socket listed
+under it. Measured with live turns on Codex 0.158: the list alone opens
+nothing, and with the network enabled the commands of a turn reach the whole
+internet, with or without a list of allowed domains.
+
+**So allowing the socket costs the network, and that decides the default.**
+Every other switch in the app starts on, because a feature that needs enabling
+is one most people never meet. This one starts off, because on by default it
+would open the internet to Codex's commands for everyone who has Codex,
+unasked. The profile also extends Codex's workspace profile and becomes its
+default, so a project Codex was not told to trust goes from read-only to
+writable inside its folder.
+
+**The cost is read before the write, not found out after.** The switch opens a
+card that says it in three short paragraphs: the network, the writes, and what
+is added to which file and how it is taken out. The card takes no keyboard
+answer, so a held `enter` cannot agree to it. The setting is recorded only
+after the profile is in Codex's config, so the switch never shows an access
+Codex does not have, and what the press came to is written under the switch
+and stays there.
+
+**A config with its own choice is left alone.** `default_permissions` naming
+another profile, or the older `sandbox_mode`, is something the person set.
+Replacing it would change what Codex may do in ways they did not ask for, so
+the switch stays off and says which key is in the way.
+
+**The refusal names its cause.** A sandboxed `splitlane` used to end with "is
+Splitlane running?", and an agent reading that went to check a process that
+was up all along. Under Codex's sandbox a permission error on the socket now
+says the sandbox refused it, that retrying will not help, and which switch
+allows it.
+
+macOS only: Codex allows a socket by name on that platform alone, so the
+switch is not drawn elsewhere. What Codex's sandbox does to the socket on
+Linux and Windows has not been measured.

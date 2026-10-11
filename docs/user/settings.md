@@ -84,6 +84,7 @@ Under **What an agent may do**:
 | Injection fence | Keeps pane text that an agent reads wrapped as untrusted output. On by default; turning it off shows a warning. | `ai_injection_fence` |
 | Fleet skill | Keeps the skill that teaches Claude Code and Codex the `splitlane` commands installed: written at every start for each agent found, never over a copy you edited. On by default; turning it off removes the copies Splitlane wrote. | `fleet_skill` |
 | Tell the opener | When a session that another session opened ends a turn, and the opener is not already waiting on it with `splitlane wait`, the app writes one line into the opener and submits it, so the opener reads the answer without you relaying it. The line waits while the opener is busy, is asking you something, or has text of yours on its input line. On by default. | `tell_opener` |
+| Let Codex drive sessions | macOS only, off by default. Codex runs its commands in a sandbox that blocks Splitlane, so a Codex session cannot open or read other sessions. Turning this on adds a permissions profile to Codex's own `config.toml`. Codex can allow Splitlane only together with the network, so its commands also get internet access, in every project; the app shows this and asks before writing. It applies to Codex sessions started afterwards. Turning it off removes the profile. | `codex_drive` |
 
 ## MCP
 
