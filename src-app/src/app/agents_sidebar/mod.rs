@@ -494,6 +494,7 @@ impl SplitlaneApp {
                 // pulses each time the order changed.
                 announcing: self.thread_announcement(thread.id),
                 under,
+                background_shells: thread.rail.shells_beside_idle(thread.status),
                 // The design spends the row's right side on what the session
                 // *is* rather than on how old it is: the agent's name, or the
                 // word "shell".
@@ -1317,6 +1318,7 @@ impl SplitlaneApp {
             unseen,
             announcing,
             meta,
+            background_shells,
             under: RowUnderOpener { bracket, opened },
         } = args;
         let is_renaming = rename_input.is_some();
@@ -1398,6 +1400,15 @@ impl SplitlaneApp {
                 // where its agent's name was: the icon still names the
                 // agent, and nothing else says what is going on under it.
                 tally
+            } else if background_shells > 0 {
+                div()
+                    .flex_none()
+                    .text_size(tok::mono::HINT)
+                    .child(crate::app::slot_header::idle_with_shells_label(
+                        background_shells,
+                        ui,
+                    ))
+                    .into_any_element()
             } else {
                 surface_row_meta(meta, ui)
             })
@@ -1788,6 +1799,9 @@ struct ThreadRowArgs {
     is_shell: bool,
     /// What the surface is, in one word: the agent's name, or "shell".
     meta: SharedString,
+    /// Background commands alive beside an idle turn. Above zero the meta
+    /// slot draws them itself, in two tones, and `meta` is not shown.
+    background_shells: u32,
     /// Whether this surface's run ended while nobody could see it.
     ///
     /// Not a status - the dot already says `idle`, honestly. This is the

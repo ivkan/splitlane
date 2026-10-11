@@ -111,7 +111,9 @@ pub(crate) fn slot_header_status_word(
         // Still `idle`, and still its colour: the agent's turn is over and it
         // can be written to. What follows the word is why it may start again
         // unasked - or the dev server somebody asked for. Not `waiting`, which
-        // here means a person is being waited on, and not the accent.
+        // here means a person is being waited on, and not the accent. Where
+        // the word is drawn rather than listed, the count alone takes the amber
+        // (`idle_with_shells_label`).
         ThreadStatus::Idle if background_shells > 0 => {
             (idle_with_shells_word(background_shells), ui.faint)
         }
@@ -133,12 +135,52 @@ pub(crate) fn slot_header_status_word(
 /// commands of its own still alive, in the word Claude Code's own status line
 /// uses for them.
 pub(crate) fn idle_with_shells_word(background_shells: u32) -> SharedString {
+    SharedString::from(format!("idle \u{b7} {}", shells_word(background_shells)))
+}
+
+/// `1 shell` / `2 shells`.
+fn shells_word(background_shells: u32) -> SharedString {
     let noun = if background_shells == 1 {
         "shell"
     } else {
         "shells"
     };
-    SharedString::from(format!("idle \u{b7} {background_shells} {noun}"))
+    SharedString::from(format!("{background_shells} {noun}"))
+}
+
+/// The same words as an element, with the count in the amber of `running`.
+///
+/// The state is still idle, so `idle` keeps the idle tone and the dot beside
+/// it does not change. The count is a fact beside the state rather than a
+/// state: a command is alive, whichever kind it is. Drawn in the idle tone it
+/// was reported as too pale to notice, on a row that otherwise reads as a
+/// session with nothing going on, and a neutral step brighter was still too
+/// quiet. Amber says something is running, which is true of the command; the
+/// grey dot and the word `idle` are what say it is not the agent.
+///
+/// Font and size are the caller's; this only splits the tones.
+pub(crate) fn idle_with_shells_label(
+    background_shells: u32,
+    ui: crate::theme::UiColors,
+) -> gpui::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .whitespace_nowrap()
+        .child(
+            div()
+                .text_color(ui.faint)
+                // No-break spaces: the gap belongs to the words, not to the
+                // layout, and must not be trimmed at the end of a run.
+                .child(SharedString::from("idle\u{a0}\u{b7}\u{a0}")),
+        )
+        .child(
+            div()
+                .text_color(ui.vc_modified)
+                .child(shells_word(background_shells)),
+        )
+        .into_any_element()
 }
 
 /// The `⋯` at the right end of a slot header: the active surface's own menu.
@@ -188,8 +230,8 @@ mod tests {
     use super::{idle_with_shells_word, slot_header_status_word};
     use crate::project::ThreadStatus;
 
-    /// The count changes the idle word and nothing else: not its colour, and
-    /// not any other status, which is what keeps a session with a dev server
+    /// The count changes the idle word and nothing else: not the status's
+    /// colour, and not any other status, which is what keeps a session with a dev server
     /// from reading as working.
     #[test]
     fn background_shells_are_named_beside_idle_only() {

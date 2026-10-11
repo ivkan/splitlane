@@ -6,6 +6,13 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The count of background commands beside an idle session (`idle · 1 shell`)
+  is drawn in the amber of a running session, in the sidebar and in the pane
+  header. It was in the idle grey and easy to miss. The session still reads
+  as idle: the word and the dot keep their tone.
+
 ## [0.2.4] - 2026-10-11
 
 ### Fixed

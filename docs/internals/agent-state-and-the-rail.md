@@ -694,8 +694,17 @@ never opened. It is a property of an idle session: under any other word it is
 reported as zero.
 
 **It is not `running`, and it is not a sixth status word.** The row and the
-header say `idle · 1 shell`, in the idle tone with the idle dot, where the
-header had `idle` and the rail row had the agent's name. `running` would bring
+header say `idle · 1 shell` with the idle dot, where the header had `idle` and
+the rail row had the agent's name. `idle` is in the idle tone; the count is in
+the amber of `running`. It was first drawn all in the idle tone and was
+reported as too pale to notice: the row read as a session with nothing going
+on. The CLI's own status line colours its `1 shell` for a dev server and a
+test run alike, because the count is a fact beside the state, not a state. A
+neutral step brighter was tried first and was still too quiet. Amber is the
+colour of something running, and a command is running; what keeps it from
+reading as a working agent is that the dot and the word `idle` do not change.
+The cost is accepted: a session with a dev server keeps one amber word for as
+long as the server lives. `running` would bring
 back the dev server that holds a session amber for ever, which is what another
 product shipped when it read this word as work. `waiting` is taken: it means a
 person is being waited on. The word the CLI itself uses is `shell`, so the row

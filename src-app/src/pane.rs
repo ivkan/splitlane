@@ -2923,7 +2923,13 @@ impl Pane {
                 .font_family(tok::font::MONO)
                 .text_size(tok::mono::HINT)
                 .text_color(color)
-                .child(word)
+                .child(
+                    if status == crate::project::ThreadStatus::Idle && background_shells > 0 {
+                        crate::app::slot_header::idle_with_shells_label(background_shells, ui)
+                    } else {
+                        word.into_any_element()
+                    },
+                )
                 .into_any_element(),
         )
     }
