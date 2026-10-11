@@ -412,6 +412,12 @@ pub struct TerminalView {
     needs_initial_clear: Arc<std::sync::atomic::AtomicBool>,
     /// Last window size measured by `TerminalElement::build_layout`.
     terminal_window_size: Arc<Mutex<Option<TerminalWindowSize>>>,
+    /// When the kernel's size for this PTY was last compared with the size
+    /// sent, the sent size that comparison found the kernel apart from, and
+    /// whether the record already has a line for this spell of being apart.
+    pty_size_checked_at: Option<std::time::Instant>,
+    pty_size_apart_from: Option<TerminalWindowSize>,
+    pty_size_apart_recorded: bool,
     /// Backend start held until this surface is first shown. `None` once
     /// started - and for a display-only test view, which never starts one -
     /// which is what makes [`Self::ensure_backend_started`] idempotent.
@@ -493,6 +499,54 @@ impl TerminalView {
             .terminal_window_size
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Send the size again when the kernel does not hold the one last sent.
+    ///
+    /// The element sends a size once and remembers it as sent; nothing told
+    /// it whether the PTY took it. A pane was found one column wide for
+    /// twenty minutes with the pane itself at full width, and no later frame
+    /// could repair that, because each one computed the size already
+    /// remembered. Two readings apart, because a size just sent is applied by
+    /// the PTY's own thread and one reading can catch it in between.
+    fn reconcile_pty_size(&mut self) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+        let now = std::time::Instant::now();
+        if self
+            .pty_size_checked_at
+            .is_some_and(|at| now.duration_since(at) < EVERY)
+        {
+            return;
+        }
+        self.pty_size_checked_at = Some(now);
+        let (Some(sent), Some(held)) = (
+            self.recorded_window_size(),
+            self.terminal.kernel_window_size(),
+        ) else {
+            self.pty_size_apart_from = None;
+            return;
+        };
+        if held == (sent.cols, sent.rows) {
+            self.pty_size_apart_from = None;
+            self.pty_size_apart_recorded = false;
+            return;
+        }
+        // The second reading has to be against the same sent size, or a size
+        // sent in between would count as the first reading of its own lag.
+        if self.pty_size_apart_from != Some(sent) {
+            self.pty_size_apart_from = Some(sent);
+            return;
+        }
+        // One line per spell: a PTY that cannot be repaired would otherwise
+        // write the record over with this.
+        if !self.pty_size_apart_recorded {
+            self.pty_size_apart_recorded = true;
+            crate::terminal::resize_journal::record(&format!(
+                "apart pid={} kernel={}x{} sent={}x{}: sending again",
+                self.terminal.child_pid, held.0, held.1, sent.cols, sent.rows,
+            ));
+        }
+        self.terminal.notify_window_size(sent);
     }
 
     fn current_window_size(&self) -> TerminalWindowSize {
@@ -1295,6 +1349,9 @@ impl TerminalView {
             ime_marked_text: String::new(),
             needs_initial_clear: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             terminal_window_size: Arc::new(Mutex::new(None)),
+            pty_size_checked_at: None,
+            pty_size_apart_from: None,
+            pty_size_apart_recorded: false,
             deferred_backend_start: None,
             // Set by the agent-surface mount, the only place that knows a
             // thread produced this PTY.
@@ -2141,6 +2198,7 @@ impl Render for TerminalView {
         );
         self.cell_width = frame_metrics.dimensions.cell_width;
         self.line_height = frame_metrics.dimensions.line_height;
+        self.reconcile_pty_size();
 
         #[cfg(debug_assertions)]
         let keystroke_at = self.terminal.last_keystroke_at.take();

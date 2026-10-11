@@ -3829,6 +3829,25 @@ impl TerminalState {
         }
     }
 
+    /// The columns and rows the kernel holds for this PTY, which is what the
+    /// program in it is told. `None` where the master is not kept to ask:
+    /// only macOS keeps it.
+    pub(crate) fn kernel_window_size(&self) -> Option<(usize, usize)> {
+        #[cfg(target_os = "macos")]
+        {
+            let fd = self.pty_master_fd?;
+            // SAFETY: `winsize` is plain integers, so all-zero is a valid value.
+            let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+            // SAFETY: `fd` is the master this session duplicated at spawn and
+            // closes in `Drop`; the call writes one `winsize` through a valid
+            // pointer.
+            let read = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) };
+            (read == 0).then_some((usize::from(size.ws_col), usize::from(size.ws_row)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
+    }
+
     /// Best-effort foreground command of this surface, cached by the off-thread
     /// pane process scanner. Returns the shell command while idle or the current
     /// child approximation while busy. `None` means callers fall back to the OSC

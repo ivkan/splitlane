@@ -799,12 +799,43 @@ impl TerminalElement {
         // resized snapshot. The layout below must use the snapshot dimensions,
         // never combine old cells with the newly requested GPUI dimensions.
         let cursor_color = self.cursor_color_override.unwrap_or(theme.cursor);
-        let window_size = TerminalWindowSize::new(
+        let computed_size = TerminalWindowSize::new(
             desired_cols,
             desired_rows,
             terminal_metric_to_u16(dims.cell_width.as_f32()),
             terminal_metric_to_u16(dims.line_height.as_f32()),
         );
+        // Bounds too small for one cell are a layout passing through, not a
+        // size anyone chose: keep the size the terminal already has. Sending
+        // one column makes a full-screen program redraw itself one character
+        // per line, and its scrollback keeps that.
+        let journal_key = self.terminal_view.entity_id().as_u64();
+        let collapsed = available_width < dims.cell_width || available_height < dims.line_height;
+        let held_size = collapsed
+            .then(|| {
+                *self
+                    .terminal_window_size
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            })
+            .flatten();
+        if collapsed {
+            crate::terminal::resize_journal::record_change(
+                journal_key,
+                &format!(
+                    "collapsed view={journal_key} bounds={:.0}x{:.0} viewport={:.0}x{:.0} held={}",
+                    bounds.size.width.as_f32(),
+                    bounds.size.height.as_f32(),
+                    window.viewport_size().width.as_f32(),
+                    window.viewport_size().height.as_f32(),
+                    held_size.map_or_else(
+                        || "none".to_string(),
+                        |size| format!("{}x{}", size.cols, size.rows)
+                    ),
+                ),
+            );
+        }
+        let window_size = held_size.unwrap_or(computed_size);
 
         // A provisional layout can still match the 120x40 bootstrap grid. Keep
         // the one-shot armed until a backend actually resizes and clears, or the
@@ -822,7 +853,10 @@ impl TerminalElement {
             self.needs_initial_clear
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
-        let notify_resize = {
+        // Collapsed with nothing to hold is a first layout that has no room
+        // yet: say nothing and remember nothing, so the first layout with
+        // room is the first size the PTY hears.
+        let notify_resize = !(collapsed && held_size.is_none()) && {
             let mut last = self
                 .terminal_window_size
                 .lock()
@@ -835,6 +869,19 @@ impl TerminalElement {
             }
         };
         if notify_resize {
+            crate::terminal::resize_journal::record_change(
+                journal_key,
+                &format!(
+                    "send view={journal_key} size={}x{} bounds={:.0}x{:.0} viewport={:.0}x{:.0} window_active={}",
+                    window_size.cols,
+                    window_size.rows,
+                    bounds.size.width.as_f32(),
+                    bounds.size.height.as_f32(),
+                    window.viewport_size().width.as_f32(),
+                    window.viewport_size().height.as_f32(),
+                    window.is_window_active(),
+                ),
+            );
             self.backend.notify_window_size(window_size);
         }
 

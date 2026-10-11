@@ -6,6 +6,16 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A pane could be left with its terminal one column wide while the pane
+  itself was full width, so an agent working in it drew one character per
+  line. Seen in one session, each time a prompt was submitted and until the
+  turn ended; the cause is not established. A size too small for one cell is no
+  longer sent to the terminal, on macOS the size the terminal holds is
+  compared with the size sent and sent again when they differ, and every
+  size sent is recorded in `terminal-resize.log` in the app's data directory.
+
 ## [0.2.3] - 2026-10-10
 
 ### Added

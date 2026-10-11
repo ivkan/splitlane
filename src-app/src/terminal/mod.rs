@@ -37,6 +37,7 @@ mod marks;
 #[cfg(all(test, target_os = "linux"))]
 mod portable_pty_probe;
 mod pty_session;
+mod resize_journal;
 mod search;
 mod service_detector;
 pub mod shell;

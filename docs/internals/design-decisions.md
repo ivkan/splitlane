@@ -1220,3 +1220,47 @@ write it lets through neither asks nor is stopped by an earlier no.
 the rail is sampled: a session that began waiting for a person within the
 last two seconds can still be written into. That is true of every write this
 app lets through and is not new here.
+
+## A terminal's size is checked against the PTY, not only sent
+
+The terminal element works out columns and rows from its bounds on every
+frame and sends them to the PTY when they differ from the last pair it sent.
+That made the last pair sent the only record of the PTY's size, and nothing
+compared it with what the PTY held.
+
+**The case.** A pane opened by another session had its PTY at 55 rows by 1
+column while the pane was half a full-screen window wide and the pane beside
+it was correct. The agent in it redrew its whole interface one character per
+line. It happened each time a prompt was submitted in that session, within a
+fifth of a second, and went away when the turn ended. Moving the divider
+between the panes in the middle of a turn repaired it for the rest of that
+turn, so the layout was computing the right width all along and the size
+last sent was the right one: the one column did not come through the element.
+What set it is not established. A release build logs nowhere, so nothing on
+disk could say. A session opened the same way in another project did not
+show it.
+
+Three things follow, and none of them claims to be the cause.
+
+**Bounds too small for one cell are not sent.** When the element's bounds
+leave no room for a single cell in either direction, it keeps the size the
+terminal already has, and a terminal that has no size yet is told nothing
+until a layout has room. Such bounds are a layout passing through. A pane a
+person can use is never that small, and one column sent to a full-screen
+program is kept in its scrollback for good.
+
+**The size sent is compared with the size held.** Every two seconds, on a
+frame, the view reads the PTY's size from the kernel and, when two readings
+in a row differ from the size sent, sends it again. Two readings, because the
+PTY's own thread applies a size a moment after it is sent. Sending a size the
+PTY already has changes nothing for the program in it. This runs on macOS
+only: it is the one platform where the app keeps the PTY's master to ask.
+Linux and Windows have the first rule and the record below.
+
+**Every size is written down.** `terminal-resize.log` in the app's data
+directory gets one line per size sent, with the element's bounds, the
+window's size and whether the window was active; one line when bounds
+collapse; and one each time the kernel's size is found apart, however many
+times it then has to be sent again. It is set aside as
+`terminal-resize.log.old` at 256 KB. The next occurrence says which of the
+two happened.
