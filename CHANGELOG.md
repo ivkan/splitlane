@@ -27,6 +27,12 @@ Notable changes to Splitlane are recorded here. The format follows
   header. It was in the idle grey and easy to miss. The session still reads
   as idle: the word and the dot keep their tone.
 
+### Fixed
+
+- The context meter in a pane header no longer reads full after a session
+  compacts its own context. It showed the last turn before the compaction
+  until the agent answered again, which could be minutes or hours later.
+
 ## [0.2.4] - 2026-10-11
 
 ### Fixed

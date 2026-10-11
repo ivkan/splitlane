@@ -1325,6 +1325,16 @@ pub fn read_tail_facts(path: &Path) -> Option<TailFacts> {
             if automatic {
                 auto_compacted_at = Some(pre);
             }
+            // The context is now what the compaction left. The next turn's
+            // own figure can be minutes or hours away - the record is written
+            // when the compaction ends, the turn when the model next answers -
+            // and until then the last turn before it would read as a context
+            // sitting exactly at the ceiling this same record just measured.
+            if let Some(post) = meta.get("postTokens").and_then(|v| v.as_u64())
+                && post > 0
+            {
+                context_tokens = Some(post);
+            }
             compaction = Some(CompactionSeen {
                 at: value
                     .get("timestamp")
@@ -3954,6 +3964,43 @@ mod tests {
             facts.context_tokens,
             Some(600_102),
             "the newest turn's carry, not 500k + 600k"
+        );
+    }
+
+    #[test]
+    fn a_compaction_lowers_the_context_before_the_next_turn_says_so() {
+        // Traced on one session: the last turn before an automatic compaction
+        // carried 293 517 tokens, the compaction fired at 295 318 and left
+        // 21 717, and the next turn was written two minutes later - in other
+        // sessions an hour later. For that whole gap the meter read the old
+        // turn against the ceiling the compaction had just measured: full.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("compacted.jsonl");
+        let turn = |uuid: &str, read: u64| {
+            format!(
+                r#"{{"type":"assistant","uuid":"{uuid}","timestamp":"2026-09-06T10:00:00.000Z","message":{{"id":"{uuid}","model":"claude-opus-4-1-20250805","usage":{{"input_tokens":0,"output_tokens":10,"cache_read_input_tokens":{read},"cache_creation_input_tokens":0}}}}}}"#
+            )
+        };
+        let compaction = r#"{"type":"system","compactMetadata":{"trigger":"auto","preTokens":295318,"postTokens":21717}}"#;
+        std::fs::write(&path, format!("{}\n{compaction}\n", turn("a", 293_517)))
+            .expect("write fixture");
+        let facts = read_tail_facts(&path).expect("facts");
+        assert_eq!(facts.context_tokens, Some(21_717));
+        assert_eq!(facts.auto_compacted_at, Some(295_318));
+
+        // The next turn's own figure replaces it.
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{compaction}\n{}\n",
+                turn("a", 293_517),
+                turn("b", 73_744)
+            ),
+        )
+        .expect("write fixture");
+        assert_eq!(
+            read_tail_facts(&path).expect("facts").context_tokens,
+            Some(73_744)
         );
     }
 
