@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-11
+
 ### Added
 
 - A script or a scheduled job can start an agent on a task with nothing set
@@ -432,7 +434,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/ivkan/splitlane/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/ivkan/splitlane/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/ivkan/splitlane/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ivkan/splitlane/compare/v0.2.2...v0.2.3

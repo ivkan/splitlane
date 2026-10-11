@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.6" date="2026-10-11">
+      <description>
+        <p>Codex sessions report their state again, and a Codex session can
+        open sessions and work through them. A script or a scheduled job can
+        start an agent on a task with nothing set up first, from a directory
+        of an open project. A finished run is no longer reported as longer
+        than it took.</p>
+      </description>
+    </release>
     <release version="0.2.5" date="2026-10-11">
       <description>
         <p>A working agent is now green and an agent waiting for you is amber,
