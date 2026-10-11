@@ -93,9 +93,13 @@ running.
   foreground shell call from an agent is usually cut off at ten minutes - and
   on exit `4` run the same `wait` again. Stay in your turn until it returns.
 
-If you must end your turn with a session still working and no wait running,
-say so to the person in plain words: you will not hear when it finishes, and
-they will have to tell you.
+If you end your turn with a session still working and no wait running,
+Splitlane tells you itself: when that session's turn ends, a line beginning
+`[Splitlane]` arrives as your next message, naming the session and its
+surface id. It was sent by the app, not typed by a person: read the answer
+with `splitlane answer <surface>` and carry on with the task you were given.
+The line waits while you are busy or while the person is typing to you, and a
+person can turn it off, so the wait above stays the way to be sure.
 
 ### What the wait tells you
 

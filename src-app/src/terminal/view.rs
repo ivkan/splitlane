@@ -440,6 +440,12 @@ pub struct TerminalView {
     /// since - which is how a run's end is told apart as answering a person
     /// or answering the session that opened this one.
     pub(crate) keyboard_submits: u64,
+    /// Text has been typed or pasted here from the keyboard since Enter was
+    /// last pressed, so the input line may hold something a person has not
+    /// sent. Wrong in the safe direction when it is wrong: text a person
+    /// deleted again still counts, and the app then holds back a line of its
+    /// own rather than submit it on top of theirs.
+    pub(crate) keyboard_draft: bool,
     /// Whether this surface is an **agent**, as opposed to merely having a
     /// record in the container's rail.
     ///
@@ -1357,6 +1363,7 @@ impl TerminalView {
             // thread produced this PTY.
             agent_thread_id: None,
             keyboard_submits: 0,
+            keyboard_draft: false,
             surface_is_agent: false,
             record_title: None,
         }
@@ -1400,6 +1407,9 @@ impl TerminalView {
 
     /// Commit composed text to the PTY.
     pub fn commit_text(&mut self, text: &str, _cx: &mut Context<Self>) {
+        if !text.is_empty() {
+            self.keyboard_draft = true;
+        }
         #[cfg(any(
             all(target_os = "linux", feature = "libghostty-linux"),
             all(

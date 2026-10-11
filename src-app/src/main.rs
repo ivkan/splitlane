@@ -1446,6 +1446,11 @@ struct SplitlaneApp {
     /// Which session a person has let drive which, and what is still being
     /// asked. In memory only; see `app::drive`.
     drive: app::drive::DriveBook,
+    /// Ended turns each opener has still to be told about, by the opener's
+    /// record id. In memory only; see `app::opener_tell`.
+    opener_tells: std::collections::HashMap<u64, Vec<app::opener_tell::Tell>>,
+    /// When each opener was last written such a line.
+    opener_told_at: std::collections::HashMap<u64, std::time::Instant>,
     /// Openers whose sessions the person folded away in the rail, by surface
     /// record id. The fold is theirs alone: nothing folds or unfolds a
     /// session by itself, except that going to a folded session opens the

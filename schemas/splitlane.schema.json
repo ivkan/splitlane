@@ -238,6 +238,11 @@
       "description": "Keep the fleet skill installed. Null/true (default): each start writes the skill that teaches an agent the splitlane commands into the skills directory of every agent found on this machine (Claude Code, Codex, ~/.agents), never over a copy edited by hand. False: Splitlane writes nothing; 'splitlane skill install' still works by hand.",
       "default": true
     },
+    "tell_opener": {
+      "type": ["boolean", "null"],
+      "description": "Tell a session when a session it opened ends a turn. Null/true (default): if the opener is not already waiting on it with 'splitlane wait', Splitlane writes one line into the opener and submits it, once the opener is idle and its input line is empty. False: nothing is written.",
+      "default": true
+    },
     "claude_code_button_visible": {
       "type": ["boolean", "null"],
       "description": "Show the built-in 'Claude Code' command button. Null/omitted auto-detects the CLI binary.",

@@ -3260,6 +3260,13 @@ impl SplitlaneApp {
                 // the caller: `null` until a person is asked on its behalf,
                 // and `not_offered` when nobody ever would be.
                 let who = self.caller_of(caller, cx);
+                // An opener reading the status of its own session has the
+                // news a held line would bring it.
+                if let crate::app::orchestration::Caller::Pane(pane) = &who
+                    && let Some(looked_at) = terminal.read(cx).agent_thread_id
+                {
+                    self.opener_looked_at(pane.thread_id, looked_at);
+                }
                 let target = self.write_target_for(&who, &terminal, cx);
                 value["drive"] = serde_json::json!(target.drive.word());
                 value["driven_by"] = serde_json::json!(
@@ -4436,6 +4443,15 @@ impl SplitlaneApp {
                     {
                         t.rail
                             .record_run_end(crate::rail_state::RunOutcome::Finished);
+                    }
+                    // The opener is told instead, unless it is waiting on
+                    // this session already.
+                    if !interrupt_stop
+                        && !detector_will_announce
+                        && self.last_message_was_openers(thread_id, cx)
+                    {
+                        self.tell_opener_of(thread_id, cx);
+                        self.flush_opener_tells(cx);
                     }
                     // Nor is the end of a run its opener started news for
                     // the person: the opener reads that result.

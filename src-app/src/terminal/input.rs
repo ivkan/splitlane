@@ -481,6 +481,11 @@ impl TerminalView {
         // is the safe way for it to be wrong.
         if keystroke.key == "enter" {
             self.keyboard_submits = self.keyboard_submits.saturating_add(1);
+            self.keyboard_draft = false;
+        }
+        // Ctrl-C empties the input line of every agent this app launches.
+        if keystroke.key == "c" && keystroke.modifiers.control {
+            self.keyboard_draft = false;
         }
 
         // End key (no modifiers) while scrolled back - snap to bottom instead of
@@ -1323,6 +1328,7 @@ impl TerminalView {
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
+        self.keyboard_draft = true;
 
         // File(s) copied in the OS file manager (Nautilus/Finder/
         // Explorer/Thunar) arrive as `ExternalPaths`. Insert the shell-quoted

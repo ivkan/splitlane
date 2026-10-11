@@ -327,13 +327,22 @@ earlier version is replaced; one you edited is left alone. An agent session
 started afterwards picks it up, and uses it when you ask for sessions in
 Splitlane: "open a reviewer session in Splitlane and give it this diff".
 
-A lead agent hears that a session it opened has finished only through a
-`splitlane wait` that is running at that moment: nothing is written into the
-lead's pane when the other session's turn ends. The skill tells the agent to
-start that wait in the same turn as the task, as a background command where
-its harness reports one ending (Claude Code does), so that it is called back
-without anyone prompting it. If a lead ended its turn with no wait running,
-tell it the session has finished.
+A lead agent hears that a session it opened has finished in one of two
+ways. The skill tells it to start `splitlane wait` in the same turn as the
+task, as a background command where its harness reports one ending (Claude
+Code does), so that it is called back. If it ended its turn with no wait
+running, Splitlane writes one line into the lead's pane and submits it:
+
+```
+[Splitlane] "reviewer" (surface 4294967336), a session this one opened, has ended its turn. Read its answer with: splitlane answer 4294967336. Sent by the app, not typed by a person.
+```
+
+The line goes in only when the lead is idle and shows an empty input line.
+While the lead is working, is asking you something, or has text you typed and
+have not sent, the line waits. It is not written at all when something is
+already waiting on that session by id, and never into a pane whose agent has
+exited. Turn it off with `"tell_opener": false` in `splitlane.json`, or under
+Settings > Agents.
 
 A session opened this way is told that its task came from another agent
 session and not from a person, and may ask before it commits, pushes or

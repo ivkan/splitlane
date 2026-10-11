@@ -55,6 +55,7 @@ impl SplitlaneApp {
         // The injection fence. Default ON.
         let fence = config.ai_injection_fence_enabled();
         let fleet_skill = config.fleet_skill_enabled();
+        let tell_opener = config.tell_opener_enabled();
 
         let mut agents = div().flex().flex_col();
         for agent in TerminalAgent::ALL {
@@ -139,6 +140,24 @@ impl SplitlaneApp {
             }),
         ));
 
+        access = access.child(setting_toggle_row(
+            ui,
+            "agents-tell-opener",
+            "Tell the opener",
+            Some(SharedString::from(
+                "a session hears when one it opened ends its turn",
+            )),
+            tell_opener,
+            cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                this.persist_setting(
+                    false,
+                    "tell_opener",
+                    serde_json::Value::Bool(!tell_opener),
+                    cx,
+                );
+            }),
+        ));
+
         access = access.child(caption(
             ui,
             "Bypass permissions launches Claude Code with no protection against prompt \
@@ -146,7 +165,9 @@ impl SplitlaneApp {
              reads out of another pane wrapped as untrusted; it protects the agent rather \
              than restricting it. The fleet skill is a file in each agent's skills \
              directory, written at every start; an agent uses it only when you ask for \
-             sessions in Splitlane, and a copy you edited is never replaced.",
+             sessions in Splitlane, and a copy you edited is never replaced. Telling the opener \
+             writes one line into a session whose own session ended a turn it was not \
+             waiting on, once that session is idle and its input line is empty.",
         ));
 
         // AC #3: once the fence is OFF, surface the active risk in the danger

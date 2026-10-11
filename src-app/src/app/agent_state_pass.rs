@@ -971,6 +971,9 @@ impl SplitlaneApp {
         // Unconditionally, not under `changed`: a counted run moves nothing
         // the rail draws, and it is exactly what a waiting script watches.
         self.publish_rail_changes(cx);
+        // Every pass, not only one that saw a run end: a line held back for
+        // a busy opener goes in on the pass that finds it idle.
+        self.flush_opener_tells(cx);
         // A Claude session alive while the limits read said there was no
         // usable login is what signing in inside a pane looks like from here.
         // Floored inside; a no-op whenever the last read succeeded.
@@ -1071,6 +1074,10 @@ impl SplitlaneApp {
             run.ran_for,
         );
         if !news {
+            // What a person is not told, the opener is.
+            if facts.detector_speaks && !facts.interrupted && facts.last_message_from_opener {
+                self.tell_opener_of(run.thread_id, cx);
+            }
             return;
         }
         let Some(agent) = thread.terminal_agent else {

@@ -6,6 +6,14 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A session is told when a session it opened ends its turn. If the opener is
+  not already waiting on it with `splitlane wait`, Splitlane writes one line
+  into the opener and submits it, once the opener is idle and its input line
+  is empty, so the work carries on without you relaying the news. On by
+  default; `"tell_opener": false` or Settings > Agents turns it off.
+
 ### Changed
 
 - The count of background commands beside an idle session (`idle · 1 shell`)

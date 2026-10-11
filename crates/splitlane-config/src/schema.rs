@@ -217,6 +217,14 @@ pub struct SplitlaneConfig {
     /// resolves to `None` (installed) with a warn.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub fleet_skill: Option<bool>,
+    /// Tell a session when a session it opened ends a turn it is not
+    /// waiting on. `Some(true)` / `None` (the default): the app writes one
+    /// line into the opener and submits it, so the opener takes the result
+    /// up without a person relaying it. `Some(false)`: nothing is written,
+    /// and an opener that is not running `splitlane wait` does not hear. A
+    /// non-boolean value resolves to `None` (on) with a warn.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub tell_opener: Option<bool>,
     /// Show the built-in "Claude Code" command button in the tab bar.
     /// `Some(true)` always renders the button, `Some(false)` hides it, and
     /// `None` (default) renders it only when the CLI binary is installed.
@@ -467,6 +475,12 @@ impl SplitlaneConfig {
     /// explicit `false` turns it off.
     pub fn fleet_skill_enabled(&self) -> bool {
         self.fleet_skill.unwrap_or(true)
+    }
+
+    /// Whether a session is told when one it opened ends a turn. Default ON:
+    /// only an explicit `false` turns it off.
+    pub fn tell_opener_enabled(&self) -> bool {
+        self.tell_opener.unwrap_or(true)
     }
 }
 
@@ -2217,6 +2231,7 @@ mod tests {
             check_for_updates: Some(false),
             ai_injection_fence: Some(false),
             fleet_skill: Some(false),
+            tell_opener: Some(false),
             claude_code_button_visible: Some(true),
             codex_button_visible: Some(true),
             opencode_button_visible: Some(true),
@@ -2604,6 +2619,13 @@ mod tests {
         let cfg: SplitlaneConfig = serde_json::from_str("{}").expect("empty config");
         assert!(cfg.submit_paste_delay_ms.is_none());
         assert_eq!(cfg.resolved_submit_paste_delay_ms(), 70);
+    }
+
+    #[test]
+    fn an_opener_is_told_unless_that_is_turned_off() {
+        assert!(SplitlaneConfig::default().tell_opener_enabled());
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"tell_opener": false}"#).unwrap();
+        assert!(!cfg.tell_opener_enabled());
     }
 
     #[test]

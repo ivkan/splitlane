@@ -1221,6 +1221,72 @@ the rail is sampled: a session that began waiting for a person within the
 last two seconds can still be written into. That is true of every write this
 app lets through and is not new here.
 
+## An opener is told when its session's turn ends
+
+The end of a run its opener started is not announced to a person: the opener
+reads that result. That left a gap the first real work through other sessions
+fell into at once. A lead opened a session, handed it a task and ended its own
+turn; the session finished; nothing happened until the person told the lead.
+An opener blocked in `splitlane wait` hears, and the skill tells every lead to
+start one, but a rule kept only in a skill's text is kept only by an agent
+that follows it, and an agent whose harness does not call it back when a
+background command ends cannot follow it at all.
+
+So the app says it: one line, written into the opener and submitted, naming
+the session and the command that reads its answer. Neither of the two
+products this was compared with wakes an idle lead. One writes nothing into
+the lead's pane; the other leaves a note in the lead's history without
+starting a turn.
+
+**It is submitted, not left on the input line.** A line that waits for a
+person to press Enter is the same gap with one keypress less.
+
+**It goes in only where Enter would start a clean turn.** The opener's agent
+is under the pane, the rail says `idle`, its interface shows the text cursor,
+and nothing has been typed there from the keyboard since Enter was last
+pressed. Anything else holds the line, and every state pass looks again. The
+keyboard test errs toward holding: text a person typed and deleted still
+counts, until they press Enter or Ctrl-C. Submitting the app's line on top of
+half a sentence of theirs is the failure this must not have; a line that
+arrives late is only late.
+
+**Never into a shell.** An opener whose agent has exited and is not back
+under the pane is dropped from the book. A shell would run the line as a
+command.
+
+**Not when the opener is already waiting.** A `splitlane wait` on that
+session ends on the same event, and a harness that calls its agent back would
+then start two turns for one. The server cannot see who is waiting, only that
+some subscriber asked for this surface's rail events by id, and that is the
+test: a script of the person's own waiting on the session silences the line
+too. A subscriber that takes every surface's events is a dashboard and does
+not count. The wait's polling fallback, used where the stream cannot be
+opened, is not seen at all, and there the opener is told twice.
+
+**Not when the opener has looked for itself.** A line can be held while the
+opener is still in its turn, and in that turn the opener may start its wait a
+moment late, or read the answer outright. Both begin by reading the session's
+status, so an opener that reads the status of a session it is owed a line
+about is owed it no longer. Found in review: a quick session ends before its
+opener's wait starts, the wait returns at once, and the line would arrive
+afterwards as a turn about something already read.
+
+**Lines to one opener are five seconds apart.** The rail is sampled, and for
+a moment after a line is submitted the opener still reads `idle`.
+
+**One line for several sessions.** What is owed to one opener is written
+together, and a session that is working again by then is left out: whoever
+gave it the next task knows.
+
+**It can be turned off** (`tell_opener`), and is on without being asked for.
+
+What it does not cover: a session that ends its turn by asking a person
+something is `waiting`, not ended, and the opener is not told; the person is.
+An opener that is itself a Codex session takes the line like any other, but
+whether it can then reach the app from its sandbox is a separate matter.
+Windows writes the line as a paste, as it does every text one session sends
+another, and was not run.
+
 ## A terminal's size is checked against the PTY, not only sent
 
 The terminal element works out columns and rows from its bounds on every

@@ -201,6 +201,17 @@ impl EventBus {
         }
     }
 
+    /// Whether a subscriber asked for events of `type_` about `surface_id` by
+    /// naming that surface. One that takes every surface's events is a
+    /// dashboard and is not waiting on this one.
+    pub fn is_watched(&self, type_: &str, surface_id: u64) -> bool {
+        self.subscribers.lock().is_ok_and(|subs| {
+            subs.iter().any(|sub| {
+                sub.filter.surfaces.is_some() && sub.filter.matches(type_, Some(surface_id))
+            })
+        })
+    }
+
     /// True if at least one subscriber is registered. Lets the GPUI hot paths
     /// skip building events when nobody is watching.
     pub fn has_subscribers(&self) -> bool {
