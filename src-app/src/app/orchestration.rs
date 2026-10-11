@@ -2511,18 +2511,26 @@ mod tests {
 
     #[test]
     fn a_program_is_placed_in_the_project_its_directory_is_in() {
-        let roots = ["/w/app", "/w/app/packages/site", "/w/other", ""];
-        assert_eq!(project_containing("/w/app", &roots), Some(0));
-        assert_eq!(project_containing("/w/app/src/x", &roots), Some(0));
+        // Absolute where the test runs: a path without a drive is not one on
+        // Windows.
+        let at = |tail: &str| {
+            let base = if cfg!(windows) { "C:\\w" } else { "/w" };
+            std::path::Path::new(base)
+                .join(tail)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let (app, site, other) = (at("app"), at("app/packages/site"), at("other"));
+        let roots = [app.as_str(), site.as_str(), other.as_str(), ""];
+        let found = |dir: &str| project_containing(&at(dir), &roots);
+        assert_eq!(found("app"), Some(0));
+        assert_eq!(found("app/src/x"), Some(0));
         // The nearest one above it.
-        assert_eq!(
-            project_containing("/w/app/packages/site/src", &roots),
-            Some(1)
-        );
+        assert_eq!(found("app/packages/site/src"), Some(1));
         // By whole components: a directory beside a project is not in it.
-        assert_eq!(project_containing("/w/app-old", &roots), None);
-        assert_eq!(project_containing("/elsewhere", &roots), None);
-        assert_eq!(project_containing("/w/app/../../etc", &roots), None);
+        assert_eq!(found("app-old"), None);
+        assert_eq!(found("elsewhere"), None);
+        assert_eq!(found("app/../../etc"), None);
         assert_eq!(project_containing("w/app", &roots), None);
     }
 
