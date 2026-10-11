@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.5" date="2026-10-11">
+      <description>
+        <p>A working agent is now green and an agent waiting for you is amber,
+        and focus is shown without colour. A session is told when a session it
+        opened ends its turn. Notifications about a waiting agent or a broken
+        session play the system sound. On macOS a Codex session can open and
+        read other sessions once you allow it in Settings.</p>
+      </description>
+    </release>
     <release version="0.2.4" date="2026-10-11">
       <description>
         <p>A terminal left one column wide inside a full-width pane is now
