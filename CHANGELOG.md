@@ -21,6 +21,9 @@ Notable changes to Splitlane are recorded here. The format follows
   tree and they were refused as calls from outside. On macOS this still needs
   Settings > Agents > Let Codex drive sessions, which lets Codex's sandbox
   reach Splitlane.
+- A finished run is no longer reported as about three seconds longer than
+  it took, so a turn just under ten seconds no longer sends a notification
+  meant for longer ones.
 
 ## [0.2.5] - 2026-10-11
 

@@ -686,6 +686,10 @@ The price has two parts:
 
 - a finish is reported late: four seconds after the first idle reading, up to
   six after the agent stopped;
+  The lateness is not part of the run, though. A run is measured up to the
+  reading that first said it had ended, the one the hold started on. Measured
+  to the moment the hold let go, a seven-second turn was announced as ten and
+  crossed the floor a notification waits for;
 - a turn followed by another within the span counts as one run, so the first is
   never announced. From the status file, that sequence cannot be told apart from
   the blip. The cases that produce it are a Stop hook continuing the agent and a

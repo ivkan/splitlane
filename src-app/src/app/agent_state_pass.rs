@@ -797,10 +797,18 @@ impl SplitlaneApp {
                     // the moment it happens, three seconds before this.
                     let file_says_interrupted =
                         watch.current.as_ref().is_some_and(|end| end.interrupted);
-                    let ended = run_ended(&mut self.running_since, thread).map(|run| FinishedRun {
-                        interrupted: file_says_interrupted,
-                        ..run
-                    });
+                    // When the end now deposited was first read. Taken out
+                    // only here, so a held end keeps its clock.
+                    let ended_at = (thread.status != crate::project::ThreadStatus::Thinking)
+                        .then(|| self.run_end_seen_at.remove(&reading.thread_id))
+                        .flatten();
+                    let ended =
+                        run_ended_at(&mut self.running_since, thread, ended_at).map(|run| {
+                            FinishedRun {
+                                interrupted: file_says_interrupted,
+                                ..run
+                            }
+                        });
                     // A turn that ended with a background command alive is
                     // held instead of announced: the agent may be waiting on
                     // that command and about to carry on. A turn a person
@@ -1445,9 +1453,24 @@ impl ShellWait {
 /// WaitingForInput`, not `Thinking` - which is why the transition test asks
 /// only what the status is **now** and lets the clock's presence carry the
 /// rest: an entry exists exactly for a surface that has been in a run.
+#[cfg(test)]
 fn run_ended(
     running_since: &mut std::collections::HashMap<u64, std::time::Instant>,
     thread: &crate::project::Thread,
+) -> Option<FinishedRun> {
+    run_ended_at(running_since, thread, None)
+}
+
+/// [`run_ended`], for a run whose end was first read at `ended_at` and held
+/// since.
+///
+/// The hold is the detector making sure, not the agent working, so it is not
+/// part of how long the run took. Counted in, a seven-second turn was
+/// announced as ten and crossed the floor a notification waits for.
+fn run_ended_at(
+    running_since: &mut std::collections::HashMap<u64, std::time::Instant>,
+    thread: &crate::project::Thread,
+    ended_at: Option<std::time::Instant>,
 ) -> Option<FinishedRun> {
     use crate::project::ThreadStatus;
     if thread.status == ThreadStatus::Thinking {
@@ -1479,7 +1502,9 @@ fn run_ended(
     // of a permission ask, which is the commonest way a long run finishes.
     (started.is_some() && thread.status == ThreadStatus::Idle).then(|| FinishedRun {
         thread_id: thread.id,
-        ran_for: started.map_or(std::time::Duration::ZERO, |at| at.elapsed()),
+        ran_for: started.map_or(std::time::Duration::ZERO, |at| {
+            ended_at.map_or_else(|| at.elapsed(), |ended| ended.saturating_duration_since(at))
+        }),
         interrupted: false,
         background_shells: 0,
     })
@@ -1552,7 +1577,8 @@ fn confirm_run_end(
         );
         return Some(AgentState::Thinking);
     }
-    seen_at.remove(&thread.id);
+    // Left standing: it is when the run ended, which whoever measures the
+    // run takes from here. The next reading clears it either way.
     state
 }
 
@@ -2898,7 +2924,43 @@ mod tests {
     ) -> bool {
         let state = confirm_run_end(seen_at, thread, read_at, Some(state));
         deposit(thread, read_at, state);
-        run_ended(clock, thread).is_some()
+        let ended_at = (thread.status != ThreadStatus::Thinking)
+            .then(|| seen_at.remove(&thread.id))
+            .flatten();
+        super::run_ended_at(clock, thread, ended_at).is_some()
+    }
+
+    /// The hold is the detector making sure, not the agent working. A run
+    /// that was first read as finished seven seconds in is a seven-second
+    /// run, whenever the hold lets it be said.
+    #[test]
+    fn the_hold_is_not_part_of_how_long_a_run_took() {
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let mut seen_at = std::collections::HashMap::new();
+        let mut clock = std::collections::HashMap::new();
+        let mut thread = surface();
+        thread.status = ThreadStatus::Thinking;
+        clock.insert(thread.id, at(0));
+
+        // First read as finished at seven seconds: held.
+        let held = confirm_run_end(&mut seen_at, &thread, at(7_000), Some(AgentState::Finished));
+        deposit(&mut thread, at(7_000), held);
+        assert_eq!(thread.status, ThreadStatus::Thinking);
+
+        // Still finished after the hold: the run ends now, and ended then.
+        let confirmed = confirm_run_end(
+            &mut seen_at,
+            &thread,
+            at(7_000) + RUN_END_CONFIRM,
+            Some(AgentState::Finished),
+        );
+        deposit(&mut thread, at(7_000) + RUN_END_CONFIRM, confirmed);
+        assert_eq!(thread.status, ThreadStatus::Idle);
+        let ended_at = seen_at.remove(&thread.id);
+        assert_eq!(ended_at, Some(at(7_000)), "the hold keeps when it began");
+        let run = super::run_ended_at(&mut clock, &thread, ended_at).expect("the run ended");
+        assert_eq!(run.ran_for, std::time::Duration::from_secs(7));
     }
 
     /// The case that was reported: a session still working, whose status file
