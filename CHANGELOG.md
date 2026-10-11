@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-11
+
 ### Fixed
 
 - A pane could be left with its terminal one column wide while the pane
@@ -342,7 +344,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/ivkan/splitlane/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ivkan/splitlane/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/ivkan/splitlane/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ivkan/splitlane/compare/v0.2.0...v0.2.1

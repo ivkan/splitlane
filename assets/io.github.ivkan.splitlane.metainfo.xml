@@ -63,6 +63,13 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.4" date="2026-10-11">
+      <description>
+        <p>A terminal left one column wide inside a full-width pane is now
+        put back to its size within a few seconds on macOS, and every size
+        sent to a terminal is recorded for diagnosis.</p>
+      </description>
+    </release>
     <release version="0.2.3" date="2026-10-10">
       <description>
         <p>A Claude Code session opened by another session no longer
