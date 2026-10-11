@@ -39,6 +39,9 @@ Notable changes to Splitlane are recorded here. The format follows
   palette are neutral instead of green.
 - The Activity chip is tinted only for a failed run. Waiting shows as an amber
   dot and an unread result as a green ring on the plain chip.
+- A working session whose agent has not been heard from for as long as the
+  "may be stuck" notification waits says `no activity 14m` in the sidebar and
+  the pane header, in place of the agent's name. Its dot does not change.
 - The Stop button in a pane header is a plain hollow square instead of red.
 - In the launcher's list of open sessions a failed session is marked in red;
   it used to look like an idle one.

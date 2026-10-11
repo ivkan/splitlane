@@ -130,6 +130,30 @@ pub(crate) fn slot_header_status_word(
     }
 }
 
+/// `no activity 14m`: what a working session says once its agent has not been
+/// heard from for as long as the "may be stuck" notification waits.
+///
+/// It replaces the word and not the dot. The dot stays the colour of a
+/// working agent, because the agent has not failed and the app does not know
+/// what it is waiting on; a colour of its own would turn a guess into a
+/// state. The word is plain for the same reason.
+///
+/// "activity", the notification's own word, and not "output": the measure is
+/// how long the agent has reported nothing, and a long build can be printing
+/// the whole time.
+pub(crate) fn quiet_word(minutes: u64) -> SharedString {
+    SharedString::from(format!("no activity {}m", minutes.max(1)))
+}
+
+/// Whether the quiet word is what a session's status slot shows: only a
+/// working session can be one that has gone quiet.
+pub(crate) fn shows_quiet(
+    status: crate::project::ThreadStatus,
+    quiet_minutes: Option<u64>,
+) -> Option<u64> {
+    quiet_minutes.filter(|_| status == crate::project::ThreadStatus::Thinking)
+}
+
 /// `idle · 1 shell` / `idle · 2 shells`: an idle session with background
 /// commands of its own still alive, in the word Claude Code's own status line
 /// uses for them.
@@ -227,6 +251,29 @@ pub(crate) fn slot_overflow_button(
 #[cfg(test)]
 mod tests {
     use super::{idle_with_shells_word, slot_header_status_word};
+
+    #[test]
+    fn only_a_working_session_says_it_has_gone_quiet() {
+        use crate::project::ThreadStatus;
+        assert_eq!(
+            super::shows_quiet(ThreadStatus::Thinking, Some(14)),
+            Some(14)
+        );
+        assert_eq!(super::shows_quiet(ThreadStatus::Thinking, None), None);
+        // A turn that ended or stopped on a question has a word of its own,
+        // and a stale count must not replace it.
+        for status in [
+            ThreadStatus::Idle,
+            ThreadStatus::WaitingForInput,
+            ThreadStatus::Failed,
+            ThreadStatus::Starting,
+        ] {
+            assert_eq!(super::shows_quiet(status, Some(14)), None, "{status:?}");
+        }
+        assert_eq!(super::quiet_word(14).as_ref(), "no activity 14m");
+        // The threshold can be under a minute; the word never says zero.
+        assert_eq!(super::quiet_word(0).as_ref(), "no activity 1m");
+    }
     use crate::project::ThreadStatus;
 
     /// The count changes the idle word and nothing else: not the status's

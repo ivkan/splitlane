@@ -96,6 +96,9 @@ pub struct SurfaceFacts {
     /// Background commands the agent left alive beside an idle turn. Zero for
     /// every other status and for a shell.
     pub background_shells: u32,
+    /// Minutes the agent has not been heard from, when that is long enough to
+    /// say. See [`crate::project::Thread::quiet_minutes`].
+    pub quiet_minutes: Option<u64>,
     /// The branch the surface's container is on, and whether that checkout is
     /// a linked git worktree. `None` outside a repository, which is the
     /// design's rule: a header with nothing to say about git says nothing.
@@ -2916,8 +2919,11 @@ impl Pane {
         } else {
             0
         };
-        let (word, color) =
-            crate::app::slot_header::slot_header_status_word(status, background_shells, ui);
+        let (word, color) = match crate::app::slot_header::shows_quiet(status, facts.quiet_minutes)
+        {
+            Some(minutes) => (crate::app::slot_header::quiet_word(minutes), ui.dim),
+            None => crate::app::slot_header::slot_header_status_word(status, background_shells, ui),
+        };
         Some(
             div()
                 .flex_none()

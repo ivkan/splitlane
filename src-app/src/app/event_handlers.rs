@@ -1197,6 +1197,41 @@ impl SplitlaneApp {
                 changed = true;
             }
         }
+        // What the rail and the pane header say about a session that has gone
+        // quiet: the minutes since its agent was last heard from, for every
+        // session this sweep holds as stalled. Written here, off the same
+        // state the notification fires on.
+        let quiet: std::collections::HashMap<u64, u64> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.agent_sessions.values())
+            .filter(|session| session.state == ai_types::AgentState::Stalled)
+            .filter_map(|session| {
+                Some((
+                    session.surface_id?,
+                    session.last_activity.elapsed().as_secs() / 60,
+                ))
+            })
+            .collect();
+        let quiet_by_thread: std::collections::HashMap<u64, u64> = self
+            .held_terminals(cx)
+            .into_iter()
+            .filter_map(|(terminal, thread_id)| {
+                Some((thread_id?, *quiet.get(&terminal.entity_id().as_u64())?))
+            })
+            .collect();
+        for thread in self
+            .workspaces
+            .iter_mut()
+            .flat_map(|container| container.threads.iter_mut())
+        {
+            let minutes = quiet_by_thread.get(&thread.id).copied();
+            if thread.quiet_minutes != minutes {
+                thread.quiet_minutes = minutes;
+                // A repaint and nothing more: no session changed state.
+                cx.notify();
+            }
+        }
         if changed {
             // A swept session may have been
             // driving a pane glow - resync so no orphan attention survives.

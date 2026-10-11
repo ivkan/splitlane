@@ -352,6 +352,10 @@ impl SplitlaneApp {
                         model: model.filter(|_| is_agent),
                         status,
                         background_shells,
+                        quiet_minutes: thread_id
+                            .and_then(|id| self.thread_by_id(id))
+                            .filter(|_| is_agent)
+                            .and_then(|thread| thread.quiet_minutes),
                         branch: branch.clone(),
                         context: context.filter(|_| is_agent),
                         drive_questions: thread_id

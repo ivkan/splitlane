@@ -495,6 +495,10 @@ impl SplitlaneApp {
                 announcing: self.thread_announcement(thread.id),
                 under,
                 background_shells: thread.rail.shells_beside_idle(thread.status),
+                quiet_minutes: crate::app::slot_header::shows_quiet(
+                    thread.status,
+                    thread.quiet_minutes,
+                ),
                 // The design spends the row's right side on what the session
                 // *is* rather than on how old it is: the agent's name, or the
                 // word "shell".
@@ -1319,6 +1323,7 @@ impl SplitlaneApp {
             announcing,
             meta,
             background_shells,
+            quiet_minutes,
             under: RowUnderOpener { bracket, opened },
         } = args;
         let is_renaming = rename_input.is_some();
@@ -1400,6 +1405,13 @@ impl SplitlaneApp {
                 // where its agent's name was: the icon still names the
                 // agent, and nothing else says what is going on under it.
                 tally
+            } else if let Some(minutes) = quiet_minutes {
+                div()
+                    .flex_none()
+                    .text_size(tok::mono::HINT)
+                    .text_color(ui.dim)
+                    .child(crate::app::slot_header::quiet_word(minutes))
+                    .into_any_element()
             } else if background_shells > 0 {
                 div()
                     .flex_none()
@@ -1802,6 +1814,9 @@ struct ThreadRowArgs {
     /// Background commands alive beside an idle turn. Above zero the meta
     /// slot draws them itself, in two tones, and `meta` is not shown.
     background_shells: u32,
+    /// Minutes a working agent has not been heard from. When set the meta
+    /// slot says so in place of the agent's name.
+    quiet_minutes: Option<u64>,
     /// Whether this surface's run ended while nobody could see it.
     ///
     /// Not a status - the dot already says `idle`, honestly. This is the

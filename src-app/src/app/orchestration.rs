@@ -770,7 +770,7 @@ pub(crate) fn place_opened(
 impl SplitlaneApp {
     /// Every terminal this app holds, on screen or not, with the id of its
     /// surface record when it has one.
-    fn held_terminals(&self, cx: &App) -> Vec<(Entity<TerminalView>, Option<u64>)> {
+    pub(crate) fn held_terminals(&self, cx: &App) -> Vec<(Entity<TerminalView>, Option<u64>)> {
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         for container in &self.workspaces {

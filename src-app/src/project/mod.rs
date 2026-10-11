@@ -401,6 +401,12 @@ pub struct Thread {
     /// which is how a changed plan corrects itself without anybody being asked.
     /// Runtime only, like the two facts beside it.
     pub context_ceiling: Option<u64>,
+    /// Whole minutes the agent's turn has gone without a sign of life, once
+    /// that is long enough for the "may be stuck" notification. `None` while
+    /// the agent is heard from. Written by the sweep that sends that
+    /// notification, so the word in the rail and the notification cannot
+    /// disagree about when a session went quiet. Runtime only.
+    pub quiet_minutes: Option<u64>,
     /// The newest compaction this app has seen in the surface's transcript.
     ///
     /// Carries the ring's whole content: whether it is still on
@@ -547,6 +553,7 @@ impl Thread {
             spend: None,
             context_tokens: None,
             context_ceiling: None,
+            quiet_minutes: None,
             last_compaction: None,
             compactions_seen: 0,
             finished_unseen: None,
@@ -625,6 +632,7 @@ impl Thread {
             spend: None,
             context_tokens: None,
             context_ceiling: None,
+            quiet_minutes: None,
             last_compaction: None,
             compactions_seen: 0,
             finished_unseen: None,
@@ -785,6 +793,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         last_compaction: None,
         compactions_seen: 0,
         context_ceiling: None,
+        quiet_minutes: None,
         context_tokens: None,
         spend: None,
         id: s.id,

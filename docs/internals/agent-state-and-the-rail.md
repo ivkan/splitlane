@@ -741,6 +741,18 @@ pill and an unread result a ring in the accent.
 **`running` stays grey in a folded project's tally.** The tally answers "is
 there something here for me", and a working session needs nobody.
 
+**A session that has gone quiet says so in a word, not a colour.** A working
+session whose agent has not been heard from for as long as the "may be stuck"
+notification waits shows `no activity 14m` where its agent's name was, in the
+rail and in the pane header, in a plain tone. The dot stays the colour of a
+working agent: it has not failed, and the app does not know what it is waiting
+on, so a colour of its own would turn a guess into a state. The minutes are
+written by the sweep that sends the notification, so the two cannot disagree
+about when a session went quiet. The word is "activity", the notification's
+own, and not "output": what is measured is how long the agent has reported
+nothing, and a long build can be printing the whole time. The sweep runs every
+thirty seconds, so the word can outlast the silence by that much.
+
 **Stop is a neutral hollow square.** It interrupts a turn and destroys nothing,
 so it is not the red of an irreversible action, and red beside a working
 agent's green dot read as an error.
