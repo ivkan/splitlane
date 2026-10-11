@@ -541,6 +541,7 @@ impl SplitlaneApp {
                 .filter(|thread| starting.contains(&thread.id))
             {
                 thread.status = crate::project::ThreadStatus::Starting;
+                thread.launched_at_secs = Some(crate::project::now_unix_secs());
             }
 
             let mut workspace = if let Some(layout) = restored_layout {

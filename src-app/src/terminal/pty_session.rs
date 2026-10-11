@@ -1501,6 +1501,12 @@ pub struct TerminalState {
     /// visible). Atomic because `write_to_pty` takes `&self`. Mirrors Zed's
     /// keyboard_input_sent (crates/terminal/src/terminal.rs:2572-2576).
     keyboard_input_sent: std::sync::atomic::AtomicBool,
+    /// When input was last written for a person or a caller, Unix seconds;
+    /// `0` for never. Stamped wherever `keyboard_input_sent` is set, so it
+    /// means the same on both backends. What it is for: a session file an
+    /// agent started writing can only be this pane's if something was
+    /// written into this pane just before.
+    input_sent_at_secs: std::sync::atomic::AtomicI64,
     /// How many writes were dropped because the input queue was full. Input
     /// is written through several layers that return nothing, so a caller
     /// that has to know - an IPC write answering `sent` - compares this
@@ -2912,6 +2918,7 @@ impl TerminalState {
             marks: Arc::new(std::sync::Mutex::new(Default::default())),
             exited: None,
             keyboard_input_sent: std::sync::atomic::AtomicBool::new(false),
+            input_sent_at_secs: std::sync::atomic::AtomicI64::new(0),
             refused_input: std::sync::atomic::AtomicU64::new(0),
             exit_signal: None,
             child_pid: 0,
@@ -3472,10 +3479,25 @@ impl TerminalState {
         // session user-initiated so a later exit closes the pane. Automated
         // protocol writes (focus reports, search RIS reset, OSC responses)
         // deliberately bypass this by calling `self.notifier.notify` directly.
-        self.keyboard_input_sent
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.mark_input_sent();
         let input = input.into();
         self.notify_or_buffer(input);
+    }
+
+    fn mark_input_sent(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.keyboard_input_sent.store(true, Relaxed);
+        self.input_sent_at_secs
+            .store(crate::project::now_unix_secs(), Relaxed);
+    }
+
+    /// When input was last written into this terminal for a person or a
+    /// caller, Unix seconds. `None` when nothing has been.
+    pub(crate) fn input_sent_at_secs(&self) -> Option<i64> {
+        let at = self
+            .input_sent_at_secs
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (at > 0).then_some(at)
     }
 
     pub(super) fn set_terminal_focused(&mut self, focused: bool) {
@@ -3540,8 +3562,7 @@ impl TerminalState {
             match input.try_send(ghostty) {
                 GhosttyInputSendResult::Sent => {
                     if user_initiated {
-                        self.keyboard_input_sent
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        self.mark_input_sent();
                     }
                     return BackendInputResult::Accepted;
                 }
@@ -3552,8 +3573,7 @@ impl TerminalState {
 
         pending.push_back(input);
         if user_initiated {
-            self.keyboard_input_sent
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.mark_input_sent();
         }
         BackendInputResult::Accepted
     }

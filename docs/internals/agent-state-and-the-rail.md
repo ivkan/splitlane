@@ -80,10 +80,61 @@ without the hook no session id is ever bound, the reader never gets a file, and
 that surface never shows `running`, even during real turns. The other choice
 was to keep the counter for Codex and show `running` over an idle prompt, which
 is a false answer on the one agent where a better source is usually present.
-A missing word is the cheaper error. What would re-open it is a way to find a
-Codex rollout without the hook - for example matching the rollout's own
-`session_meta` (working directory and start time) to the surface - which would
-make the no-hook case read turns properly instead of falling back to bytes.
+A missing word is the cheaper error.
+
+**That price stopped being a corner case, and the rollout is now found without
+the hook.** Codex began running sessions in a background server (measured on
+CLI 0.158 with server 0.162.1, macOS). The interface in the pane is then a
+client; the turn, the rollout and the hooks all run in the server, whose
+parent is not the pane. A hook there has the environment of whichever pane
+first started the server, so its frame names that pane or reaches nobody, and
+every Codex session sat at the lowest tier: no `running`, no turn end, no
+answer to read.
+
+So a Codex surface with no session looks for the rollout that can only be its
+own, from the first record of each file: it names this directory, it is an
+interactive session and not a sub-agent or a `codex exec` run, no surface has
+it, and it was created after this surface was launched. The id is proposed and
+adopted when two passes agree, the same way a renamed Claude Code session is.
+
+Three refusals, each for a case where a guess would read another session's
+turns into this row:
+
+- **The rollout was created while another Codex surface in the same directory,
+  itself without a session, was alive.** The file could be either's. The
+  earlier surface can still claim a rollout created before the later one was
+  launched, and once it is bound the later one is alone. Two launched close
+  together and prompted in the same seconds both stay unbound. Closing one of
+  them changes nothing about a file it may have created: a closed surface keeps
+  the span it was alive for, taken from the last pass that saw its terminal
+  running. Without that, closing one of two unbound surfaces handed its file to
+  the survivor.
+- **Two rollouts qualify.** A second Codex started in the same directory from
+  another terminal, or a new session started inside the pane before the first
+  was bound.
+- **Nothing was written into the pane just before the file was.** Under the
+  server the file is first written when the first prompt is submitted; without
+  it, as the session starts, which follows the launch command or an answer to
+  a start-up question. A file that appears while this pane has been left alone
+  belongs to a Codex started elsewhere. Only the pane's latest input is known,
+  so the test is that it is not well before the file's first write.
+
+What these do not catch, and it binds wrongly: a Codex started from another
+terminal in the same directory, or a new session started inside an already
+bound pane, within a few seconds of input into a pane that has no session of
+its own yet. Telling those apart needs something only the vendor has - which
+client a session belongs to - and nothing on disk or in the process table says
+it (looked for on 0.158: the client holds no file of the session open, and the
+state database records no client).
+
+A session found this way was created after the surface started, so its file is
+taken as seen empty at adoption. Without that the first turn, when it is short
+enough to end before two passes agree, would be adopted as history and never
+counted: `wait --until turn-end` on a freshly opened session would report that
+no turn ran.
+
+Not measured: Linux and Windows, and a Codex whose server was started outside
+Splitlane.
 
 **A loader over the pane body was considered and refused.** The pane is the
 CLI's own terminal, so a curtain would hide the only two seconds that explain a

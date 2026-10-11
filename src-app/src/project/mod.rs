@@ -495,6 +495,17 @@ pub struct Thread {
     /// command ([`crate::agent_launcher::TerminalAgent::takes_prompt_at_launch`]).
     /// Set and cleared around the one launch it is for; never saved.
     pub opening_prompt_key: Option<String>,
+    /// When this surface's agent was last launched, Unix seconds. What a
+    /// session file written by the agent is dated against when nothing else
+    /// says whose it is ([`crate::codex_state::rollout_for_launch`]).
+    /// Transient: a restored surface is launched again.
+    pub launched_at_secs: Option<i64>,
+    /// When the detector's periodic pass last found a running terminal behind
+    /// this surface, Unix seconds. With [`Self::launched_at_secs`] it is the
+    /// span this surface's agent has been alive for, which outlasts the
+    /// agent: a session file created inside it may be this surface's even
+    /// after it was closed. Transient.
+    pub agent_seen_secs: Option<i64>,
     /// Who told the person about the wait this surface is standing in, when
     /// somebody has. Transient, like the two fields above.
     ///
@@ -560,6 +571,10 @@ impl Thread {
             detector_read_at: None,
             hook_has_spoken: false,
             opening_prompt_key: None,
+            // A new surface is launched as it is made; a later launch
+            // restamps it.
+            launched_at_secs: Some(now_unix_secs()),
+            agent_seen_secs: None,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
@@ -639,6 +654,10 @@ impl Thread {
             detector_read_at: None,
             hook_has_spoken: false,
             opening_prompt_key: None,
+            // A new surface is launched as it is made; a later launch
+            // restamps it.
+            launched_at_secs: Some(now_unix_secs()),
+            agent_seen_secs: None,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
@@ -830,6 +849,8 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         detector_read_at: None,
         hook_has_spoken: false,
         opening_prompt_key: None,
+        launched_at_secs: None,
+        agent_seen_secs: None,
         wait_announced: None,
         rail: crate::rail_state::RailRecord::default(),
         // An id is all a file can say; whether the opener still exists is
@@ -957,6 +978,11 @@ pub fn agent_kind_from_str(tag: &str) -> Option<AgentKind> {
         "codex" => Some(AgentKind::Codex),
         _ => None,
     }
+}
+
+/// The wall clock, Unix seconds: the frame an agent dates its own files in.
+pub(crate) fn now_unix_secs() -> i64 {
+    (now_unix_millis() / 1000) as i64
 }
 
 fn now_unix_millis() -> u64 {

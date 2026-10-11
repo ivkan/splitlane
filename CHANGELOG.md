@@ -6,6 +6,16 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex sessions report their state again. Codex now runs a session in a
+  background server, where its hooks no longer reach Splitlane, so a Codex
+  session showed neither `running` nor the end of a turn, `splitlane wait`
+  could not wait for it and `splitlane answer` had nothing to read.
+  Splitlane now finds the session's file by the directory and the time the
+  pane was launched. Two Codex sessions started in the same directory within
+  the same few seconds may still stay without a state.
+
 ## [0.2.5] - 2026-10-11
 
 ### Added

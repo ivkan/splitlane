@@ -861,6 +861,7 @@ impl SplitlaneApp {
         );
         if let Some(thread) = self.agents_thread_mut_by_id(thread_id) {
             thread.status = crate::project::ThreadStatus::Starting;
+            thread.launched_at_secs = Some(crate::project::now_unix_secs());
         } else {
             // The write is an invariant, not an optimisation: a surface that
             // launched and is not in the list is a bug somewhere above.

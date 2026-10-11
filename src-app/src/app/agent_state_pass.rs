@@ -85,6 +85,12 @@ const RUN_END_CONFIRM: Duration = Duration::from_secs(3);
 /// builds and short enough to still be news.
 const SHELL_HOLD: Duration = Duration::from_secs(120);
 
+/// How long past the last pass that saw it running a closed Codex surface is
+/// still taken to have been alive. The passes are two seconds apart, so this
+/// covers one; longer would keep a session opened right after another was
+/// closed from ever finding its file.
+const RIVAL_GRACE_SECS: i64 = 4;
+
 /// One agent surface to ask about.
 struct StateTarget {
     thread_id: u64,
@@ -132,6 +138,10 @@ struct StateTarget {
     /// Whether the program in the pane is taking typed text, read off the
     /// pane's terminal modes as this pass began.
     text_entry: TextEntry,
+    /// What a Codex surface with no session yet knows about its own launch,
+    /// for finding the rollout written for it. `None` for every surface that
+    /// has a session or is not Codex.
+    codex_claim: Option<crate::codex_state::LaunchClaim>,
     /// The surface's name, for the trace and nothing else.
     ///
     /// Filled only when [`TRACE`] logging is actually on, because a pass that
@@ -278,6 +288,7 @@ impl SplitlaneApp {
                 loop {
                     let targets = cx.update(|cx| {
                         this.update(cx, |app: &mut Self, cx: &mut gpui::Context<Self>| {
+                            app.note_running_agents(cx);
                             let targets = app.agent_state_targets(None, cx);
                             // This is the one place that sees every surface at
                             // once, so it is the one place that can free a
@@ -392,6 +403,55 @@ impl SplitlaneApp {
         .detach();
     }
 
+    /// Stamp every surface that has a running terminal behind it, so that a
+    /// surface closed later is known to have been alive until about now.
+    fn note_running_agents(&mut self, cx: &gpui::App) {
+        let mut running = std::collections::HashSet::new();
+        self.each_agent_terminal(cx, &mut |view| {
+            if let Some(thread_id) = view.agent_thread_id
+                && view.terminal.child_pid != 0
+            {
+                running.insert(thread_id);
+            }
+        });
+        let now = crate::project::now_unix_secs();
+        for thread in self
+            .workspaces
+            .iter_mut()
+            .flat_map(|container| container.threads.iter_mut())
+            .filter(|thread| running.contains(&thread.id))
+        {
+            thread.agent_seen_secs = Some(now);
+        }
+    }
+
+    /// Every terminal view that may hold an agent: the ones in panes first,
+    /// then the ones the surface cache holds, in id order so that what a
+    /// pass reads does not depend on the map's iteration.
+    fn each_agent_terminal(
+        &self,
+        cx: &gpui::App,
+        visit: &mut dyn FnMut(&crate::terminal::view::TerminalView),
+    ) {
+        for container in &self.workspaces {
+            let Some(root) = container.root.as_ref() else {
+                continue;
+            };
+            for pane in root.collect_leaves() {
+                for tab in &pane.read(cx).tabs {
+                    if let Some(view) = tab.as_terminal() {
+                        visit(view.read(cx));
+                    }
+                }
+            }
+        }
+        let mut cached: Vec<_> = self.agents_view.agents_terminal_view_cache.iter().collect();
+        cached.sort_unstable_by_key(|(thread_id, _)| **thread_id);
+        for (_, view) in cached {
+            visit(view.read(cx));
+        }
+    }
+
     /// Every mounted agent surface the detector can read, across every
     /// container - or just `only`, when one frame asked about one surface.
     ///
@@ -424,6 +484,71 @@ impl SplitlaneApp {
     fn agent_state_targets(&self, only: Option<u64>, cx: &gpui::App) -> Vec<StateTarget> {
         let mut seen = std::collections::HashSet::new();
         let mut targets = Vec::new();
+        // Built over every surface rather than this pass's targets: a pass
+        // asked about one surface still has to know who else could own a
+        // rollout, and which ones are spoken for.
+        // A closed session keeps its row and has no process to own anything.
+        let mut running = std::collections::HashSet::new();
+        self.each_agent_terminal(cx, &mut |view| {
+            if let Some(thread_id) = view.agent_thread_id
+                && view.terminal.child_pid != 0
+            {
+                running.insert(thread_id);
+            }
+        });
+        let codex_threads = || {
+            self.workspaces
+                .iter()
+                .flat_map(|container| container.threads.iter())
+                .filter(|t| t.terminal_agent == Some(crate::agent_launcher::TerminalAgent::Codex))
+        };
+        let codex_taken: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
+            codex_threads()
+                .filter_map(|t| t.session_id.clone())
+                .collect(),
+        );
+        let codex_claim_of = |thread: &crate::project::Thread| {
+            if thread.terminal_agent != Some(crate::agent_launcher::TerminalAgent::Codex)
+                || thread.session_id.is_some()
+            {
+                return None;
+            }
+            Some(crate::codex_state::LaunchClaim {
+                launched_secs: thread.launched_at_secs?,
+                rivals: codex_threads()
+                    .filter(|other| {
+                        other.id != thread.id
+                            && other.session_id.is_none()
+                            && crate::agent_sessions::cwd_matches(&other.cwd, &thread.cwd)
+                    })
+                    .filter_map(|other| {
+                        let alive = running.contains(&other.id);
+                        Some(crate::codex_state::RivalSpan {
+                            // A running one whose launch nobody stamped is
+                            // taken to have been there all along.
+                            from_secs: match other.launched_at_secs {
+                                Some(launched) => launched,
+                                None if alive => 0,
+                                // Restored and not launched in this run.
+                                None => return None,
+                            },
+                            until_secs: if alive {
+                                i64::MAX
+                            } else {
+                                // Closed, or made a moment ago and not yet
+                                // seen by a pass.
+                                other
+                                    .agent_seen_secs
+                                    .or(other.launched_at_secs)
+                                    .map_or(i64::MAX, |seen| seen + RIVAL_GRACE_SECS)
+                            },
+                        })
+                    })
+                    .collect(),
+                input_sent_secs: None,
+                taken: codex_taken.clone(),
+            })
+        };
         let mut consider = |view: &crate::terminal::view::TerminalView| {
             let Some(thread_id) = view.agent_thread_id else {
                 return;
@@ -460,6 +585,10 @@ impl SplitlaneApp {
                 output_generation: view.terminal.output_generation,
                 text_entry: TextEntry::from_modes(view.terminal.session_backend().modes()),
                 cwd: thread.cwd.clone(),
+                codex_claim: codex_claim_of(thread).map(|claim| crate::codex_state::LaunchClaim {
+                    input_sent_secs: view.terminal.input_sent_at_secs(),
+                    ..claim
+                }),
                 reads_status_file: thread.terminal_agent
                     == Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
                 turn_end_len: self
@@ -470,25 +599,7 @@ impl SplitlaneApp {
                     .then(|| thread.title.clone()),
             });
         };
-        for container in &self.workspaces {
-            let Some(root) = container.root.as_ref() else {
-                continue;
-            };
-            for pane in root.collect_leaves() {
-                for tab in &pane.read(cx).tabs {
-                    if let Some(view) = tab.as_terminal() {
-                        consider(view.read(cx));
-                    }
-                }
-            }
-        }
-        // The cached ones in id order, so what a pass reads does not depend
-        // on the map's iteration.
-        let mut cached: Vec<_> = self.agents_view.agents_terminal_view_cache.iter().collect();
-        cached.sort_unstable_by_key(|(thread_id, _)| **thread_id);
-        for (_, view) in cached {
-            consider(view.read(cx));
-        }
+        self.each_agent_terminal(cx, &mut consider);
         targets
     }
 
@@ -599,6 +710,22 @@ impl SplitlaneApp {
                             reading.thread_id,
                             thread.session_id,
                         );
+                        // A Codex session found by its launch was created
+                        // after this surface started, so every turn in its
+                        // file is this surface's. The file is taken as seen
+                        // empty: a first turn short enough to end before the
+                        // two passes agreed is then counted, not adopted as
+                        // history.
+                        if thread.session_id.is_none()
+                            && thread.terminal_agent
+                                == Some(crate::agent_launcher::TerminalAgent::Codex)
+                        {
+                            // A watch of its own, not the row's: the row
+                            // may have held another session before.
+                            let mut watch = crate::rail_state::TurnEndWatch::default();
+                            watch.observe(0, None);
+                            self.turn_ends.insert(reading.thread_id, watch);
+                        }
                         thread.session_id = Some(proposed);
                         changed = true;
                         adopted_any = true;
@@ -1733,6 +1860,14 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs() as i64);
+    // The Codex store is read once for the pass, and only when a surface
+    // has to look for its session in it.
+    let earliest_codex_launch = targets
+        .iter()
+        .filter_map(|target| target.codex_claim.as_ref())
+        .map(|claim| claim.launched_secs)
+        .min();
+    let codex_heads = std::cell::OnceCell::new();
     let states = targets
         .into_iter()
         .map(|target| {
@@ -1802,6 +1937,16 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                     }
                     exists
                 });
+            // A Codex surface nothing has named a session for looks for the
+            // rollout that can only be its own. A proposal like the one
+            // above, and adopted the same way: by two passes agreeing.
+            let proposed_session = proposed_session.or_else(|| {
+                let claim = target.codex_claim.as_ref()?;
+                let heads = codex_heads.get_or_init(|| {
+                    crate::codex_state::heads_since(earliest_codex_launch.unwrap_or(i64::MAX))
+                });
+                crate::codex_state::rollout_for_launch(&target.cwd, claim, heads)
+            });
             if let Some(proposed) = proposed_session.as_deref() {
                 log::debug!(
                     target: TRACE,

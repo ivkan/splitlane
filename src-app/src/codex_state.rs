@@ -113,6 +113,233 @@ pub fn rollout_path_for(session_id: &str) -> Option<PathBuf> {
     None
 }
 
+/// A session's first record: enough to tell whose rollout this is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RolloutHead {
+    pub id: String,
+    pub cwd: String,
+    /// When Codex created the session, Unix seconds.
+    pub created_secs: i64,
+    /// When this record was written, Unix seconds.
+    pub written_secs: i64,
+}
+
+/// How many of the newest day directories are searched for a session that
+/// has not been bound yet. A session's directory is the day it was created,
+/// and one launched just before midnight is the only reason this is not 1.
+const UNBOUND_SEARCH_DAYS: usize = 2;
+
+/// The longest first record this reader takes. The record carries the
+/// agent's whole base instructions, so it is tens of kilobytes.
+const HEAD_LINE_MAX_BYTES: u64 = 1024 * 1024;
+
+/// How long after the pane's last input a session file may first be written
+/// and still be that input's doing. Measured at well under a second; the
+/// slack is for a busy machine.
+const INPUT_TO_FILE_SLACK_SECS: i64 = 5;
+
+/// The span another Codex surface in the same directory has been alive for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RivalSpan {
+    /// When it was launched, Unix seconds.
+    pub from_secs: i64,
+    /// When it was last known to be running; [`i64::MAX`] while it is.
+    pub until_secs: i64,
+}
+
+/// What a pane's launch knows about itself, for finding the rollout Codex
+/// wrote for it when no hook frame said which one it is.
+#[derive(Debug, Clone)]
+pub(crate) struct LaunchClaim {
+    /// When the launch command was issued, Unix seconds.
+    pub launched_secs: i64,
+    /// The other Codex surfaces in the same directory that never got a
+    /// session, closed ones included. A rollout created while one of them
+    /// was alive could be that surface's just as well, and closing it does
+    /// not make the file anybody else's.
+    pub rivals: Vec<RivalSpan>,
+    /// When input was last written into the pane, Unix seconds.
+    pub input_sent_secs: Option<i64>,
+    /// Sessions already bound to a surface.
+    pub taken: std::sync::Arc<std::collections::HashSet<String>>,
+}
+
+/// The one rollout that can only be this launch's, or `None`.
+///
+/// Codex has no flag to force a session id, so the id normally arrives in a
+/// hook frame. It does not when Codex runs the session in its background
+/// server (measured on CLI 0.158 with server 0.162.1): the hook then runs
+/// under the server, with the environment of whichever pane first started
+/// it, and the frame names that pane or reaches nobody.
+///
+/// What is left is the rollout's own first record. It has to name this
+/// directory, be an interactive session of a person rather than a sub-agent
+/// or a `codex exec` run, belong to no surface yet, and have been created
+/// after this launch and not while a rival was alive. Two that qualify is no answer:
+/// a surface without its word is the cheaper error than one reading another
+/// session's turns.
+///
+/// And something has to have been written into the pane just before the
+/// file was. Under the background server the file is first written when the
+/// first prompt is submitted; without it, as the session starts, which
+/// follows the launch command or an answer to a start-up question. A file
+/// that appears while this pane has been left alone belongs to a Codex
+/// started somewhere else in the same directory. Only the pane's latest
+/// input is known, so the test is that the latest is not well before the
+/// file.
+///
+/// What this cannot tell apart, and binds wrongly: a Codex started from
+/// another terminal in this directory, or a new session started inside a
+/// bound pane, within [`INPUT_TO_FILE_SLACK_SECS`] of input into a pane that
+/// has no session of its own yet.
+///
+/// `heads` is one pass's read of the store, shared by its surfaces.
+pub(crate) fn rollout_for_launch(
+    cwd: &str,
+    claim: &LaunchClaim,
+    heads: &[RolloutHead],
+) -> Option<String> {
+    // The store records the resolved directory; the surface may hold the
+    // path as it was typed.
+    let resolved = std::fs::canonicalize(cwd)
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_owned));
+    the_only_rollout_of(cwd, resolved.as_deref(), claim, heads)
+}
+
+/// The first records of the rollouts written since `since_secs`.
+pub(crate) fn heads_since(since_secs: i64) -> Vec<RolloutHead> {
+    crate::codex_sessions::sessions_root()
+        .map(|root| recent_heads(&root, since_secs))
+        .unwrap_or_default()
+}
+
+fn the_only_rollout_of(
+    cwd: &str,
+    resolved_cwd: Option<&str>,
+    claim: &LaunchClaim,
+    heads: &[RolloutHead],
+) -> Option<String> {
+    let mut mine = heads.iter().filter(|head| {
+        (crate::agent_sessions::cwd_matches(&head.cwd, cwd)
+            || resolved_cwd
+                .is_some_and(|resolved| crate::agent_sessions::cwd_matches(&head.cwd, resolved)))
+            && head.created_secs >= claim.launched_secs
+            && !claim.rivals.iter().any(|rival| {
+                rival.from_secs <= head.created_secs && head.created_secs <= rival.until_secs
+            })
+            && !claim.taken.contains(&head.id)
+            && claim
+                .input_sent_secs
+                .is_some_and(|sent| sent + INPUT_TO_FILE_SLACK_SECS >= head.written_secs)
+    });
+    let first = mine.next()?;
+    if mine.next().is_some() {
+        // Loud, like every refusal of the detector: a surface left without
+        // a session looks exactly like one that is idle.
+        log::debug!(
+            target: crate::app::agent_state_pass::TRACE,
+            "more than one Codex rollout under {cwd} could be this launch's - binding none",
+        );
+        return None;
+    }
+    Some(first.id.clone())
+}
+
+/// The first records of the rollouts written since `since_secs`, newest
+/// days only.
+fn recent_heads(root: &Path, since_secs: i64) -> Vec<RolloutHead> {
+    let mut days: Vec<PathBuf> = Vec::new();
+    for year in read_dir_sorted(root) {
+        for month in read_dir_sorted(&year) {
+            days.extend(read_dir_sorted(&month));
+        }
+    }
+    let mut heads = Vec::new();
+    for day in days.into_iter().rev().take(UNBOUND_SEARCH_DAYS) {
+        let Ok(entries) = std::fs::read_dir(&day) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let named_rollout = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"));
+            if !named_rollout {
+                continue;
+            }
+            // A file last written before the launch is another session's,
+            // and this is what keeps the pass from opening every rollout of
+            // the day twice a second.
+            let written_secs = entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_secs() as i64);
+            if written_secs.is_none_or(|written| written < since_secs) {
+                continue;
+            }
+            match read_head(&path) {
+                Some(head) => heads.push(head),
+                // A sub-agent's or an `exec` run's, or a first record this
+                // build cannot read. The second looks exactly like a surface
+                // that is idle, so it is said.
+                None => log::debug!(
+                    target: crate::app::agent_state_pass::TRACE,
+                    "no interactive session read from the head of {}",
+                    path.display(),
+                ),
+            }
+        }
+    }
+    heads
+}
+
+fn read_head(path: &Path) -> Option<RolloutHead> {
+    use std::io::{BufRead, Read};
+    let file = std::fs::File::open(path).ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(file)
+        .take(HEAD_LINE_MAX_BYTES)
+        .read_line(&mut line)
+        .ok()?;
+    head_from_line(&line)
+}
+
+fn head_from_line(line: &str) -> Option<RolloutHead> {
+    let record: serde_json::Value = serde_json::from_str(line).ok()?;
+    if record.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
+        return None;
+    }
+    let payload = record.get("payload")?;
+    let text = |key: &str| payload.get(key).and_then(|v| v.as_str());
+    // A sub-agent's rollout belongs to its parent's surface, and a
+    // `codex exec` run has no pane at all.
+    if text("thread_source") == Some("subagent") || text("source") == Some("exec") {
+        return None;
+    }
+    let id = text("id")?;
+    if !crate::agent_sessions::is_valid_session_id(id) {
+        return None;
+    }
+    let created_secs = crate::agent_sessions::last_activity_secs_from_iso(text("timestamp")?);
+    // An older Codex stamps only the payload.
+    let written_secs = record
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .map(crate::agent_sessions::last_activity_secs_from_iso)
+        .filter(|secs| *secs > 0)
+        .unwrap_or(created_secs);
+    (created_secs > 0).then(|| RolloutHead {
+        id: id.to_owned(),
+        cwd: text("cwd").unwrap_or_default().to_owned(),
+        created_secs,
+        written_secs,
+    })
+}
+
 /// Immediate subdirectories of `dir`, sorted by name - which for `YYYY`, `MM`
 /// and `DD` is chronological order.
 fn read_dir_sorted(dir: &Path) -> Vec<PathBuf> {
@@ -968,6 +1195,169 @@ mod tests {
     }
 
     /// The path cannot be composed, so a bad id must not become a walk.
+    fn head(id: &str, cwd: &str, created_secs: i64) -> RolloutHead {
+        RolloutHead {
+            id: id.to_owned(),
+            cwd: cwd.to_owned(),
+            created_secs,
+            written_secs: created_secs,
+        }
+    }
+
+    /// A claim whose pane was written into at its launch and not since.
+    fn claim(launched_secs: i64, rivals: &[(i64, i64)], taken: &[&str]) -> LaunchClaim {
+        LaunchClaim {
+            launched_secs,
+            rivals: rivals
+                .iter()
+                .map(|(from_secs, until_secs)| RivalSpan {
+                    from_secs: *from_secs,
+                    until_secs: *until_secs,
+                })
+                .collect(),
+            // Late enough for every head these tests write.
+            input_sent_secs: Some(1_000),
+            taken: std::sync::Arc::new(taken.iter().map(|id| (*id).to_owned()).collect()),
+        }
+    }
+
+    const ALIVE: i64 = i64::MAX;
+
+    #[test]
+    fn a_launch_takes_the_one_rollout_created_after_it_in_its_directory() {
+        let heads = vec![
+            head("before", "/p", 90),
+            head("mine", "/p", 110),
+            head("elsewhere", "/q", 120),
+        ];
+        assert_eq!(
+            the_only_rollout_of("/p", None, &claim(100, &[], &[]), &heads).as_deref(),
+            Some("mine")
+        );
+    }
+
+    #[test]
+    fn the_directory_may_be_recorded_resolved() {
+        let heads = vec![head("mine", "/private/tmp/p", 110)];
+        assert_eq!(
+            the_only_rollout_of(
+                "/tmp/p",
+                Some("/private/tmp/p"),
+                &claim(100, &[], &[]),
+                &heads
+            )
+            .as_deref(),
+            Some("mine")
+        );
+    }
+
+    #[test]
+    fn two_rollouts_that_qualify_are_no_answer() {
+        let heads = vec![head("one", "/p", 110), head("two", "/p", 120)];
+        assert_eq!(
+            the_only_rollout_of("/p", None, &claim(100, &[], &[]), &heads),
+            None
+        );
+    }
+
+    #[test]
+    fn a_rollout_bound_to_another_surface_is_not_a_candidate() {
+        let heads = vec![head("theirs", "/p", 110), head("mine", "/p", 120)];
+        assert_eq!(
+            the_only_rollout_of("/p", None, &claim(100, &[], &["theirs"]), &heads).as_deref(),
+            Some("mine")
+        );
+    }
+
+    /// Two surfaces in one directory, neither bound. A rollout created
+    /// between the two launches can only be the first one's; one created
+    /// after both could be either, and is nobody's until the other is bound.
+    #[test]
+    fn a_rollout_created_while_a_rival_was_alive_is_nobodys() {
+        let first = claim(100, &[(200, ALIVE)], &[]);
+        let second = claim(200, &[(100, ALIVE)], &[]);
+        let between = vec![head("early", "/p", 150)];
+        assert_eq!(
+            the_only_rollout_of("/p", None, &first, &between).as_deref(),
+            Some("early")
+        );
+        assert_eq!(the_only_rollout_of("/p", None, &second, &between), None);
+
+        let after_both = vec![head("late", "/p", 250)];
+        assert_eq!(the_only_rollout_of("/p", None, &first, &after_both), None);
+        assert_eq!(the_only_rollout_of("/p", None, &second, &after_both), None);
+        // The first surface bound its own: the second is alone now.
+        let alone = claim(200, &[], &["early"]);
+        assert_eq!(
+            the_only_rollout_of("/p", None, &alone, &after_both).as_deref(),
+            Some("late")
+        );
+    }
+
+    /// Closing the other surface does not make its file this one's. What it
+    /// created while alive stays out of reach; what is created after it was
+    /// last seen is not its.
+    #[test]
+    fn a_closed_rival_still_keeps_what_it_may_have_created() {
+        let survivor = claim(100, &[(200, 300)], &[]);
+        let the_closed_ones = vec![head("theirs", "/p", 250)];
+        assert_eq!(
+            the_only_rollout_of("/p", None, &survivor, &the_closed_ones),
+            None
+        );
+        let later = vec![head("mine", "/p", 350)];
+        assert_eq!(
+            the_only_rollout_of("/p", None, &survivor, &later).as_deref(),
+            Some("mine")
+        );
+    }
+
+    /// A file that appears while nothing has been written into this pane is
+    /// a Codex started elsewhere in the same directory.
+    #[test]
+    fn a_rollout_needs_input_in_the_pane_just_before_it_was_written() {
+        let theirs = vec![RolloutHead {
+            written_secs: 160,
+            ..head("theirs", "/p", 110)
+        }];
+        let found = |sent| {
+            let claim = LaunchClaim {
+                input_sent_secs: sent,
+                ..claim(100, &[], &[])
+            };
+            the_only_rollout_of("/p", None, &claim, &theirs)
+        };
+        assert_eq!(found(None), None, "nothing was ever written here");
+        assert_eq!(found(Some(105)), None, "the last input was long before");
+        assert_eq!(found(Some(159)).as_deref(), Some("theirs"));
+        // Later input says nothing against it: only the latest is known.
+        assert_eq!(found(Some(400)).as_deref(), Some("theirs"));
+    }
+
+    #[test]
+    fn only_a_persons_interactive_session_has_a_head() {
+        let line = |extra: &str| {
+            format!(
+                r#"{{"timestamp":"2026-10-11T18:42:27.566Z","type":"session_meta","payload":{{"id":"01a12c45-b621-75c2-9f76-1cbcba2dbc92","timestamp":"2026-10-11T18:42:08.582Z","cwd":"/p"{extra}}}}}"#
+            )
+        };
+        let interactive = head_from_line(&line(r#","source":"vscode","thread_source":"user""#))
+            .expect("an interactive session");
+        assert_eq!(interactive.id, "01a12c45-b621-75c2-9f76-1cbcba2dbc92");
+        assert_eq!(interactive.cwd, "/p");
+        assert!(interactive.created_secs > 0);
+        assert_eq!(interactive.written_secs, interactive.created_secs + 19);
+        assert_eq!(
+            head_from_line(&line(r#","source":"exec","thread_source":"user""#)),
+            None
+        );
+        assert_eq!(
+            head_from_line(&line(r#","thread_source":"subagent""#)),
+            None
+        );
+        assert_eq!(head_from_line(r#"{"type":"event_msg","payload":{}}"#), None);
+    }
+
     #[test]
     fn an_invalid_session_id_finds_nothing() {
         assert_eq!(rollout_path_for("../../etc"), None);
