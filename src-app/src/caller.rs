@@ -49,6 +49,38 @@ pub(crate) enum CallerLineage {
     Unknown,
     /// The caller's pid followed by each ancestor's, nearest first.
     Chain(Vec<u32>),
+    /// The same chain, with a Codex process in it, for a request that named
+    /// the Codex session it runs for.
+    ///
+    /// Codex runs a turn's commands in a background server whose parent is
+    /// not a pane, so the chain reaches no pane however honest the caller.
+    /// What the chain still proves is that the caller is a command Codex
+    /// ran; the session id is the caller's own word, and it is used only to
+    /// pick which Codex pane - never to make a caller out of a process that
+    /// is not under Codex.
+    UnderCodex { chain: Vec<u32>, session: String },
+}
+
+/// The request parameter in which a command run by Codex names its session.
+pub(crate) const CALLER_CODEX_THREAD: &str = "caller_codex_thread";
+
+/// Whether `exe` is Codex's own program. By file name: the server is
+/// installed under Codex's home in a directory named after its release, and
+/// that is all it has in common with the CLI. A program of the same user
+/// could carry the name; what this keeps out is everything that does not.
+fn is_codex_executable(exe: &std::path::Path) -> bool {
+    exe.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("codex"))
+}
+
+/// The Codex session a caller runs for, when its chain proved it runs under
+/// Codex.
+pub(crate) fn codex_session_of(lineage: &CallerLineage) -> Option<&str> {
+    match lineage {
+        CallerLineage::UnderCodex { session, .. } => Some(session),
+        _ => None,
+    }
 }
 
 /// The methods whose answer depends on which pane called.
@@ -71,13 +103,55 @@ pub(crate) fn method_asks_who_calls(method: &str) -> bool {
 }
 
 /// Read the caller's ancestors now. Blocking; call it off the render thread.
-pub(crate) fn lineage_now(peer: Option<Peer>) -> CallerLineage {
+///
+/// `named_codex_session` is what the request said under
+/// [`CALLER_CODEX_THREAD`]. It is kept only when a process in the chain is
+/// Codex's.
+pub(crate) fn lineage_now(peer: Option<Peer>, named_codex_session: Option<&str>) -> CallerLineage {
     let Some(peer) = peer else {
         return CallerLineage::Unknown;
     };
-    match ProcessSnapshot::capture() {
-        Some(snapshot) => lineage_in(&snapshot, peer),
-        None => CallerLineage::Unknown,
+    let Some(snapshot) = ProcessSnapshot::capture() else {
+        return CallerLineage::Unknown;
+    };
+    let lineage = under_codex(lineage_in(&snapshot, peer), named_codex_session, |pid| {
+        let is_codex =
+            crate::process_tree::exe_path_of(pid).is_some_and(|exe| is_codex_executable(&exe));
+        // The program is read after the table was, so the pid has to be the
+        // same process still: a number handed on in between would lend its
+        // new owner's name to a chain that never held it.
+        is_codex
+            && snapshot.identity_of(pid)
+                == crate::process_tree::start_token(pid).map(|start| (pid, start))
+    });
+    if named_codex_session.is_some() && codex_session_of(&lineage).is_none() {
+        // A refusal nobody can see otherwise: the caller is simply told it
+        // is not in a pane.
+        log::info!(
+            target: "splitlane::caller",
+            "a request named a Codex session, but nothing above pid {} is Codex - not placed by it",
+            peer.pid,
+        );
+    }
+    lineage
+}
+
+fn under_codex(
+    lineage: CallerLineage,
+    named_codex_session: Option<&str>,
+    is_codex: impl Fn(u32) -> bool,
+) -> CallerLineage {
+    match (lineage, named_codex_session) {
+        (CallerLineage::Chain(chain), Some(session))
+            if crate::agent_sessions::is_valid_session_id(session)
+                && chain.iter().any(|pid| is_codex(*pid)) =>
+        {
+            CallerLineage::UnderCodex {
+                chain,
+                session: session.to_owned(),
+            }
+        }
+        (lineage, _) => lineage,
     }
 }
 
@@ -111,7 +185,7 @@ pub(crate) fn pane_of<T: Copy>(
     lineage: &CallerLineage,
     pty_children: &HashMap<u32, T>,
 ) -> Option<T> {
-    let CallerLineage::Chain(chain) = lineage else {
+    let (CallerLineage::Chain(chain) | CallerLineage::UnderCodex { chain, .. }) = lineage else {
         return None;
     };
     chain.iter().find_map(|pid| pty_children.get(pid).copied())
@@ -170,6 +244,37 @@ mod tests {
 
     /// A process that left its tree hangs off init. Its chain names no pane,
     /// and that is a refusal: it is not treated as the pane it started in.
+    /// A session id is taken from a caller only when its chain has a Codex
+    /// process in it; from anybody else it is a word and nothing more.
+    #[test]
+    fn a_named_codex_session_counts_only_under_codex() {
+        const SESSION: &str = "01a12c5e-231d-7120-a6f8-ac20926b6fe6";
+        let chain = || CallerLineage::Chain(vec![900, 800, INIT]);
+        assert_eq!(
+            under_codex(chain(), Some(SESSION), |pid| pid == 800),
+            CallerLineage::UnderCodex {
+                chain: vec![900, 800, INIT],
+                session: SESSION.to_owned(),
+            }
+        );
+        assert_eq!(under_codex(chain(), Some(SESSION), |_| false), chain());
+        assert_eq!(under_codex(chain(), None, |_| true), chain());
+        assert_eq!(under_codex(chain(), Some("../x"), |_| true), chain());
+        assert_eq!(
+            under_codex(CallerLineage::Unknown, Some(SESSION), |_| true),
+            CallerLineage::Unknown
+        );
+
+        assert!(is_codex_executable(std::path::Path::new(
+            "/h/.codex/packages/app-server-daemon/releases/0.162.1/bin/codex"
+        )));
+        assert!(is_codex_executable(std::path::Path::new("C:/x/Codex.exe")));
+        assert!(!is_codex_executable(std::path::Path::new(
+            "/bin/codex-helper"
+        )));
+        assert!(!is_codex_executable(std::path::Path::new("/bin/zsh")));
+    }
+
     #[test]
     fn a_detached_process_is_in_no_pane() {
         let snapshot = table();
@@ -243,7 +348,7 @@ mod tests {
     fn this_process_is_found_in_the_real_table() {
         let me = std::process::id();
         let peer = Peer::connected(Some(i64::from(me)));
-        let lineage = lineage_now(peer);
+        let lineage = lineage_now(peer, None);
         // A platform this build cannot read a start token on answers
         // `Unknown`, which is the refusal the rule asks for. The two this
         // test runs on can.

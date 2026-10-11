@@ -15,6 +15,12 @@ Notable changes to Splitlane are recorded here. The format follows
   Splitlane now finds the session's file by the directory and the time the
   pane was launched. Two Codex sessions started in the same directory within
   the same few seconds may still stay without a state.
+- `splitlane` run by a Codex session is recognised as coming from that
+  session's pane, so Codex can open sessions and drive the ones it opened
+  like any other agent. Codex runs its commands outside the pane's process
+  tree and they were refused as calls from outside. On macOS this still needs
+  Settings > Agents > Let Codex drive sessions, which lets Codex's sandbox
+  reach Splitlane.
 
 ## [0.2.5] - 2026-10-11
 

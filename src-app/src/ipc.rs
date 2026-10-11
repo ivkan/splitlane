@@ -1637,7 +1637,12 @@ fn dispatch_to_gpui(
     // Blocking, and this is the thread it may block: the handler runs on the
     // one that draws the window.
     let caller = if crate::caller::method_asks_who_calls(&method) {
-        crate::caller::lineage_now(peer)
+        crate::caller::lineage_now(
+            peer,
+            params
+                .get(crate::caller::CALLER_CODEX_THREAD)
+                .and_then(Value::as_str),
+        )
     } else {
         crate::caller::CallerLineage::NotAsked
     };

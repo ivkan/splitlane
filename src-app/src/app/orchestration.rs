@@ -805,7 +805,30 @@ impl SplitlaneApp {
                 (terminal.entity_id().as_u64(), thread_id),
             );
         }
-        let Some((surface_id, Some(thread_id))) = crate::caller::pane_of(lineage, &pty_children)
+        // A command Codex ran is under Codex's server and under no pane. Its
+        // pane is the live Codex surface showing the session it named.
+        let codex_pane = || {
+            let session = crate::caller::codex_session_of(lineage)?;
+            let mut showing = pty_children.values().copied().filter(|(_, held)| {
+                held.and_then(|thread_id| self.thread_by_id(thread_id))
+                    .is_some_and(|thread| {
+                        thread.terminal_agent == Some(crate::agent_launcher::TerminalAgent::Codex)
+                            && thread.session_id.as_deref() == Some(session)
+                    })
+            });
+            // One pane or none: with two showing the same session there is
+            // no telling which of them the command ran for.
+            let pane = showing.next().filter(|_| showing.next().is_none());
+            if pane.is_none() {
+                log::info!(
+                    target: "splitlane::caller",
+                    "a command under Codex named session {session}, which is not shown by exactly one live Codex pane - not placed",
+                );
+            }
+            pane
+        };
+        let Some((surface_id, Some(thread_id))) =
+            crate::caller::pane_of(lineage, &pty_children).or_else(codex_pane)
         else {
             return Caller::Outside;
         };

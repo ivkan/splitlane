@@ -71,11 +71,35 @@ impl IpcClient {
 impl IpcTransport for IpcClient {
     fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let params = naming_the_codex_session(params, std::env::var(CODEX_THREAD_ENV).ok());
         let request = build_request(id, method, params);
         let line = send_and_receive(&self.socket, &request)
             .map_err(|e| unreachable_message(&self.socket, &e, under_codex_sandbox()))?;
         parse_response(&line)
     }
+}
+
+/// The variable Codex sets on every command of a turn, naming the session
+/// the turn belongs to.
+const CODEX_THREAD_ENV: &str = "CODEX_THREAD_ID";
+
+/// The request parameter that carries it.
+pub const CALLER_CODEX_THREAD: &str = "caller_codex_thread";
+
+/// Add the Codex session this command runs for, when there is one.
+///
+/// Codex runs a turn's commands in a background server, so nothing above this
+/// process is the pane the session is shown in, and the app cannot place the
+/// call by ancestry alone. The app checks for itself that the caller runs
+/// under Codex; this only says which of its sessions.
+fn naming_the_codex_session(mut params: Value, thread: Option<String>) -> Value {
+    let thread = thread.filter(|thread| !thread.is_empty());
+    if let (Some(object), Some(thread)) = (params.as_object_mut(), thread) {
+        object
+            .entry(CALLER_CODEX_THREAD)
+            .or_insert(Value::String(thread));
+    }
+    params
 }
 
 /// Whether this process was started by Codex inside its sandbox. Codex sets
@@ -802,6 +826,15 @@ mod tests {
         assert_eq!(req["id"], 7);
         assert_eq!(req["method"], "surface.list");
         assert_eq!(req["params"], json!({}));
+        assert_eq!(
+            naming_the_codex_session(json!({"target": "a"}), Some("t-1".into())),
+            json!({"target": "a", "caller_codex_thread": "t-1"})
+        );
+        // Outside Codex a request is what it always was.
+        assert_eq!(
+            naming_the_codex_session(json!({"target": "a"}), None),
+            json!({"target": "a"})
+        );
     }
 
     #[test]

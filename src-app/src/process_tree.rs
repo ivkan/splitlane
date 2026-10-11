@@ -691,7 +691,7 @@ fn is_ours(pid: u32, shim_dir: &Path) -> bool {
 /// Deliberately the executable and not `argv[0]`: the shim is invoked through
 /// `$PATH` under the agent's own name, so its `argv[0]` is `claude` and tells
 /// us nothing, while its executable path is the file we wrote.
-fn exe_path_of(pid: u32) -> Option<PathBuf> {
+pub(crate) fn exe_path_of(pid: u32) -> Option<PathBuf> {
     if pid == 0 {
         return None;
     }

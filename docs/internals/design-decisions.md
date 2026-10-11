@@ -1374,3 +1374,50 @@ allows it.
 macOS only: Codex allows a socket by name on that platform alone, so the
 switch is not drawn elsewhere. What Codex's sandbox does to the socket on
 Linux and Windows has not been measured.
+
+## A command Codex ran is placed by its session, once its ancestry says Codex
+
+A caller is placed in a pane by ancestry: the server reads the pid on the
+other end of the connection and walks up to the pane's shell. A variable would
+be the caller's own word, and any process of the same user can set one.
+
+Codex broke the ancestry. It runs a turn's commands in a background server
+whose parent is not the pane (measured on CLI 0.158 with server 0.162.1), so
+the walk from `splitlane` run by Codex reaches no pane, and the call was
+refused as one from outside. The variables the command sees are no help
+either: the server keeps the environment of whichever pane first started it,
+so its surface id is some other pane's, often a closed one.
+
+What Codex does give each command is `CODEX_THREAD_ID`, the session the turn
+belongs to, and the rail knows which pane shows which session. So the CLI
+sends that id with every request, and the server uses it under two conditions
+that keep the old rule's point:
+
+- **The ancestry has to contain Codex's own program.** That part is still read
+  off the process table and is not the caller's to choose. A script that sets
+  the variable and is not run by Codex is placed nowhere, as before.
+- **The id only picks the pane.** It selects among live Codex surfaces by the
+  session each one is bound to. It grants nothing a pane's own caller did not
+  already have.
+
+What this gives up: Codex's program is recognised by its file name, so a
+program of the same user named `codex` passes the first condition, and one
+Codex session could name another's id. Both are a process of the person's own
+choosing acting as an agent pane - which can open sessions and write to the
+ones it opened, and cannot write into a session a person opened. The
+alternative was no Codex lead at all.
+
+Matching the pid Codex's server records in its own home was considered for
+the first condition and refused: it is stricter, and it ties the rule to a
+file whose place and shape the vendor was changing in the same week. A rule
+that stops working on the vendor's next release, for a gain against a process
+that can already write that file, is the worse trade.
+
+A session shown by two panes places the caller in neither, and each refusal
+on this path is logged: to the caller they all read as "not in a pane".
+
+It depends on the surface having its session, which under the server comes
+from the rollout and not from a hook
+(`docs/internals/agent-state-and-the-rail.md`). A Codex pane that has not run
+a turn yet has no session and is still placed nowhere; by the time Codex runs
+a command it has.
