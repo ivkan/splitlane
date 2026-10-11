@@ -1357,10 +1357,10 @@ only the third wants a noise:
 | away from the machine entirely | the sticky mark, which already works |
 | at the machine, not looking at the display | **only here** does sound help |
 
-The reported case was the first. Sound remains a legitimate future on this same
-edge, and it inherits two properties from serving only the third case: off by
-default, and **never the only announcement**. A product whose finishes are
-inaudible with sound off has to stay visible.
+The reported case was the first, so the chip moves and makes no sound. The third
+audience is served by the system notification, below, and sound is **never the
+only announcement**: a product whose finishes are inaudible with sound off has
+to stay visible.
 
 **The movement, exactly:**
 
@@ -1486,6 +1486,28 @@ an existing affordance, and specifically not into `pinned`.
 `agent_panel.notify_level`, default `Waiting`. That file's header explains why
 three positions do not break "One switch" and why the absent bottom rung
 replaces a lock.
+
+**A notification about a waiting agent or a breakage arrives with a sound; a
+finished run does not.** `agent_panel.notify_sound`, default `Waiting`, with
+`Never` and `Every` beside it. Sound was first written down as off by default.
+What changed the default: a person at the machine with the display out of sight
+is served by nothing else here, the two classes that get the sound are rare and
+cost time when missed, and a feature that needs switching on is one most people
+never meet. What kept it narrow: with several agents working, a run finishes
+every few minutes, and a sound on each is the complaint that makes people turn
+sound off altogether.
+
+The sound is the operating system's notification sound, asked for on the
+notification itself, and never something the app plays. Three things follow. It
+obeys the system's volume, Do Not Disturb and per-app notification settings, so
+a person who silenced the machine is not overruled by this app. A notification
+that was not sent - the session is on screen, the class is below the chosen
+rung - makes no sound, so the setting can only subtract from the ladder. And it
+is stated both ways on every notification, because left unsaid the platforms
+disagree: Windows and macOS stay silent, and a Linux notification service
+decides for itself. Linux has no "default sound" to ask for, so the app names
+the freedesktop sound theme's incoming-message sound; a service with no sound
+theme stays silent, and the app cannot tell.
 
 **An in-app toast per completion was refused**, and that is a decision, not a
 gap. There are already three channels - the status dot, the title bar's chip, and

@@ -974,6 +974,13 @@ pub struct AgentPanelConfig {
     /// deliberate opt-out is not simply overridden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_level: Option<NotifyLevel>,
+
+    /// Which notifications arrive with the system's notification sound.
+    ///
+    /// `None` resolves to [`NotifySound::Waiting`] through
+    /// [`AgentPanelConfig::resolved_notify_sound`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_sound: Option<NotifySound>,
 }
 
 /// The notification ladder: **three rungs, no zero rung.**
@@ -997,7 +1004,7 @@ pub struct AgentPanelConfig {
 ///
 /// # Why a ladder and not four switches
 ///
-/// One control, three positions, and "One switch" is not broken by it - that
+/// One control over what is sent, three positions, and "One switch" is not broken by it - that
 /// was a promise about **count**, and a switch is not obliged to be binary.
 /// What would break it is a row *plus* a threshold, a row *plus* per-class
 /// ticks, a row *plus* a per-session flag. The admission condition is therefore
@@ -1042,6 +1049,65 @@ impl<'de> Deserialize<'de> for NotifyLevel {
                     target: "splitlane_config::agent_panel",
                     value = other,
                     "agent_panel.notify_level value not recognized, defaulting to Waiting",
+                );
+                Ok(Self::Waiting)
+            }
+        }
+    }
+}
+
+/// Which notifications are heard as well as shown.
+///
+/// The sound is the notification's own, played by the operating system, never
+/// a sound this app plays by itself: it follows the system's volume, its "do
+/// not disturb" and its per-app notification settings, and a notification
+/// that was not sent makes no sound. So this setting cannot make the app
+/// louder than [`NotifyLevel`] lets it be.
+///
+/// The default is the middle one. An agent standing on an answer and a
+/// session that broke are the two cases where an unheard notification costs
+/// the person their time, and both are rare. A finished run is neither: with
+/// several agents working it happens every few minutes, and a sound on each
+/// is what makes a person turn sound off altogether.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "PascalCase")]
+pub enum NotifySound {
+    /// Notifications are silent.
+    Never,
+    /// A sound when an agent is waiting for you or something broke. The default.
+    #[default]
+    Waiting,
+    /// A sound with every notification, a finished run included.
+    Every,
+}
+
+impl NotifySound {
+    /// Whether a notification about this kind of event is sent with a sound.
+    /// `urgent` is an agent waiting or a breakage; a finished run is not.
+    pub fn accompanies(self, urgent: bool) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Waiting => urgent,
+            Self::Every => true,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NotifySound {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(d)?;
+        match raw.as_str() {
+            "Never" => Ok(Self::Never),
+            "Waiting" => Ok(Self::Waiting),
+            "Every" => Ok(Self::Every),
+            other => {
+                tracing::warn!(
+                    target: "splitlane_config::agent_panel",
+                    value = other,
+                    "agent_panel.notify_sound value not recognized, defaulting to Waiting",
                 );
                 Ok(Self::Waiting)
             }
@@ -1226,6 +1292,11 @@ impl AgentPanelConfig {
             }
             None => NotifyLevel::default(),
         }
+    }
+
+    /// Which notifications are sent with a sound; the default when unset.
+    pub fn resolved_notify_sound(&self) -> NotifySound {
+        self.notify_sound.unwrap_or_default()
     }
 
     /// Resolve the configured `max_content_width` to a usable pixel
@@ -2270,6 +2341,7 @@ mod tests {
                 default_profile: Some("Write".to_string()),
                 notify_when_agent_waiting: Some(NotifyWhenAgentWaiting::PrimaryScreen),
                 notify_level: Some(NotifyLevel::Waiting),
+                notify_sound: Some(NotifySound::Waiting),
             }),
             tool_permissions: permissions,
         };
@@ -2680,6 +2752,34 @@ mod tests {
 
     /// The ladder answers what the person had, and only then what we would
     /// choose for them.
+    /// Sound is on without a step by the person, and only for the two kinds
+    /// of notification that cost them time when missed.
+    #[test]
+    fn sound_defaults_to_waiting_and_breakage_and_reads_all_three_values() {
+        let cfg: AgentPanelConfig = serde_json::from_str("{}").expect("valid config");
+        assert_eq!(cfg.resolved_notify_sound(), NotifySound::Waiting);
+        assert!(NotifySound::Waiting.accompanies(true));
+        assert!(!NotifySound::Waiting.accompanies(false));
+
+        for (raw, sound, on_finish) in [
+            ("Never", NotifySound::Never, false),
+            ("Waiting", NotifySound::Waiting, false),
+            ("Every", NotifySound::Every, true),
+        ] {
+            let cfg: AgentPanelConfig =
+                serde_json::from_str(&format!(r#"{{"notify_sound": "{raw}"}}"#))
+                    .expect("valid config");
+            assert_eq!(cfg.resolved_notify_sound(), sound, "{raw}");
+            assert_eq!(sound.accompanies(false), on_finish, "{raw}");
+        }
+        assert!(!NotifySound::Never.accompanies(true));
+
+        // A value from a newer build is not an error; it reads as the default.
+        let cfg: AgentPanelConfig =
+            serde_json::from_str(r#"{"notify_sound": "Loud"}"#).expect("valid config");
+        assert_eq!(cfg.resolved_notify_sound(), NotifySound::Waiting);
+    }
+
     #[test]
     fn the_ladder_migrates_an_older_config_to_the_rung_that_behaves_the_same() {
         // A fresh install: the default, which is the behaviour the product

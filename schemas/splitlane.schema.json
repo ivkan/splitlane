@@ -357,6 +357,12 @@
           "description": "How far up the notification ladder to be told. There is no off: a session that fell over always reaches you.",
           "enum": ["Broke", "Waiting", "Finished", null],
           "default": "Waiting"
+        },
+        "notify_sound": {
+          "type": ["string", "null"],
+          "description": "Which notifications arrive with the system's notification sound: none, an agent waiting or a breakage, or every one.",
+          "enum": ["Never", "Waiting", "Every", null],
+          "default": "Waiting"
         }
       }
     },

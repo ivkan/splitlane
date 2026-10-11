@@ -24,16 +24,29 @@
 //! count, and a switch is not obliged to be binary. What would break it is a
 //! row *plus* a threshold, a row *plus* per-class ticks, a row *plus* a
 //! per-session flag. So the admission condition is that the ladder is the only
-//! **control** in this section, and it is: everything else here is a stated
-//! fact, and each of those says which rung covers it.
+//! control over **what is sent**, and it is: the class rows below are stated
+//! facts, each saying which rung covers it, and the sound row (see below)
+//! decides nothing about what arrives.
 //!
 //! **The threshold does not become a knob.** It is a number nobody has an
 //! opinion about until they have been annoyed by the wrong one, and if it turns
 //! out to be wrong it is a number to change rather than a question to ask.
 //!
-//! Two facts this page states and does not offer: sound answers "never",
-//! because we never do; and the forecast row names the projection rather than
-//! the 85% threshold, which lives in Settings -> Limits, where the footer is.
+//! One fact this page states and does not offer: the forecast row names the
+//! projection rather than the 85% threshold, which lives in Settings -> Limits,
+//! where the footer is.
+//!
+//! **Sound is the second control, and it is not a second ladder.** The row
+//! used to state "never". It is a choice now because the ladder answers *what
+//! reaches me* and cannot answer *through which sense*: somebody at the
+//! machine but not looking at the display is served by nothing else here, and
+//! somebody in a shared room needs the same notifications without the noise.
+//! It stays honest to the ladder in two ways. It can only subtract: a sound is
+//! the system's own, attached to a notification the ladder already sent, so no
+//! position makes the app speak more often. And its positions are the ladder's
+//! own distinctions, not new ones - never, the two classes that cost time when
+//! missed, or all of them. The default is the middle one, so sound works
+//! without anybody switching it on and a finished run stays quiet.
 //!
 //! **And on macOS, a third: what the operating system will actually do.** The
 //! rungs are a claim about what this app will send; they were being read as a
@@ -58,7 +71,7 @@ use gpui::{
     Styled, div, prelude::*,
 };
 use serde_json::Value;
-use splitlane_config::schema::NotifyLevel;
+use splitlane_config::schema::{NotifyLevel, NotifySound};
 
 use crate::SplitlaneApp;
 use crate::agents::notifications::{NotificationClass, class_is_covered};
@@ -76,6 +89,24 @@ const RUNGS: [(NotifyLevel, &str); 3] = [
     (NotifyLevel::Waiting, "When an agent is waiting for me"),
     (NotifyLevel::Finished, "And when work has finished"),
 ];
+
+/// The sound row's positions. Each finishes the sentence "Play a sound ...".
+const SOUNDS: [(NotifySound, &str); 3] = [
+    (NotifySound::Never, "Never"),
+    (
+        NotifySound::Waiting,
+        "When an agent is waiting or something breaks",
+    ),
+    (NotifySound::Every, "With every notification"),
+];
+
+fn sound_label(sound: NotifySound) -> &'static str {
+    SOUNDS
+        .iter()
+        .find(|(position, _)| *position == sound)
+        .map(|(_, label)| *label)
+        .unwrap_or("When an agent is waiting or something breaks")
+}
 
 /// Will a notification this app sends actually reach the reader - **yes, no, or
 /// we do not know yet**?
@@ -202,8 +233,8 @@ impl SplitlaneApp {
             .flex_col()
             .child(setting_note(
                 ui,
-                "One switch. Only agent state changes notify \u{2014} shell output never does, \
-                 that is what the status dots are for.",
+                "Only agent state changes notify \u{2014} shell output never does, that is \
+                 what the status dots are for.",
             ))
             .child(self.notify_level_row(level, ui, cx))
             .children(platform_permission_row(ui))
@@ -269,13 +300,7 @@ impl SplitlaneApp {
                     tone,
                 )
             })
-            .child(setting_row(
-                ui,
-                "Play a sound",
-                None,
-                "never",
-                ChipTone::Off,
-            ))
+            .child(self.notify_sound_row(ui, cx))
             .child(setting_note(
                 ui,
                 "A notification asks whether you can see that session, not whether you can \
@@ -356,6 +381,79 @@ impl SplitlaneApp {
         )
         .into_any_element()
     }
+
+    /// Which notifications are heard. The same anatomy as the ladder above.
+    fn notify_sound_row(
+        &self,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let sound = self
+            .cached_config
+            .agent_panel
+            .as_ref()
+            .map_or_else(NotifySound::default, |agent_panel| {
+                agent_panel.resolved_notify_sound()
+            });
+        let is_open = self.general_dropdown == Some(crate::GeneralDropdown::NotifySound);
+        let menu = is_open.then(|| {
+            let mut menu = select_menu("notifications-sound-list", ui).on_mouse_down_out(
+                cx.listener(|this, _, _w, cx| {
+                    if this.general_dropdown == Some(crate::GeneralDropdown::NotifySound) {
+                        this.general_dropdown = None;
+                        cx.notify();
+                    }
+                }),
+            );
+            for (index, (position, label)) in SOUNDS.iter().enumerate() {
+                let position = *position;
+                menu = menu.child(
+                    select_item(("notify-sound", index), position == sound, ui)
+                        .cursor(CursorStyle::Arrow)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                            this.general_dropdown = None;
+                            this.persist_agent_panel_setting(
+                                "notify_sound",
+                                Value::String(format!("{position:?}")),
+                                cx,
+                            );
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(ui.text)
+                                .child(*label),
+                        ),
+                );
+            }
+            menu.into_any_element()
+        });
+
+        setting_choice_row(
+            ui,
+            "notifications-sound",
+            "Play a sound",
+            Some(SharedString::from(
+                "the system's notification sound, so its volume and Do Not Disturb apply",
+            )),
+            value_chip(ui, sound_label(sound), ChipTone::Plain),
+            menu,
+            // The render-time snapshot, for the reason given on the ladder.
+            cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.general_dropdown = if is_open {
+                    None
+                } else {
+                    Some(crate::GeneralDropdown::NotifySound)
+                };
+                this.settings_focus.focus(window, cx);
+                cx.notify();
+            }),
+        )
+        .into_any_element()
+    }
 }
 
 #[cfg(test)]
@@ -365,6 +463,17 @@ mod tests {
     /// The rungs are written in the product's words and in one order, and the
     /// serialised value is the schema's own spelling - a mismatch would write a
     /// key the loader warns about and silently resolves to the default.
+    #[test]
+    fn every_sound_position_has_a_line_and_a_value_the_schema_answers_to() {
+        for (position, label) in SOUNDS {
+            assert_eq!(sound_label(position), label);
+            let written = Value::String(format!("{position:?}"));
+            let parsed: NotifySound =
+                serde_json::from_value(written).expect("the schema reads what the row writes");
+            assert_eq!(parsed, position);
+        }
+    }
+
     #[test]
     fn every_rung_has_a_line_and_a_value_the_schema_answers_to() {
         assert_eq!(RUNGS.len(), 3, "three rungs, and no zero rung");

@@ -13,6 +13,12 @@ Notable changes to Splitlane are recorded here. The format follows
   into the opener and submits it, once the opener is idle and its input line
   is empty, so the work carries on without you relaying the news. On by
   default; `"tell_opener": false` or Settings > Agents turns it off.
+- Notifications about an agent waiting for you, a crashed or stalled session
+  and a limit running out arrive with the system's notification sound. A
+  finished run stays silent. Settings > Notifications > Play a sound chooses
+  between never, these, and every notification
+  (`agent_panel.notify_sound`). The sound follows the system volume and Do
+  Not Disturb.
 
 ### Changed
 

@@ -168,6 +168,7 @@ The log states the outcome for each terminal in a line beginning
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `agent_panel.notify_level` | string or null | `Waiting` | Which desktop notifications you get. `Broke`: only when something breaks (a session crashed or stalled, a usage limit will run out before it resets). `Waiting`: also when an agent is waiting for you. `Finished`: also when a run has finished. There is no "off". Settings -> Notifications writes this key. |
+| `agent_panel.notify_sound` | string or null | `Waiting` | Which notifications arrive with the system's notification sound. `Never`: none. `Waiting`: an agent waiting for you, or something broken. `Every`: a finished run too. A notification that is not sent makes no sound. Settings -> Notifications writes this key. |
 | `agent_panel.notify_when_agent_waiting` | string or null | none | Older setting, read only when `notify_level` is absent: `PrimaryScreen` or `AllScreens` counts as `Finished`, `Never` as `Broke`. |
 | `agent_panel.max_content_width` | integer or null | `760` | Accepted; currently has no effect. |
 | `agent_panel.thinking_display` | string or null | `Auto` | Accepted (`Auto`, `Preview`, `AlwaysExpanded`, `AlwaysCollapsed`); currently has no effect. |

@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::BackgroundExecutor;
-use splitlane_config::schema::{AgentPanelConfig, NotifyLevel, SplitlaneConfig};
+use splitlane_config::schema::{AgentPanelConfig, NotifyLevel, NotifySound, SplitlaneConfig};
 
 use crate::agent_launcher::TerminalAgent;
 #[cfg(target_os = "windows")]
@@ -306,12 +306,30 @@ pub(crate) fn fire_desktop_notification(
         return false;
     }
 
+    let with_sound = config
+        .agent_panel
+        .as_ref()
+        .map_or_else(
+            NotifySound::default,
+            AgentPanelConfig::resolved_notify_sound,
+        )
+        .accompanies(class_is_urgent(notification.class));
     executor
         .spawn(async move {
-            let _ = smol::unblock(move || show_desktop_notification(notification)).await;
+            let _ =
+                smol::unblock(move || show_desktop_notification(notification, with_sound)).await;
         })
         .detach();
     true
+}
+
+/// The two classes a person loses time by not hearing: an agent standing on
+/// an answer, and a breakage. A finished run waits for them without cost.
+fn class_is_urgent(class: NotificationClass) -> bool {
+    match class {
+        NotificationClass::Broke | NotificationClass::Waiting => true,
+        NotificationClass::Finished => false,
+    }
 }
 
 /// Two questions, and both have to answer yes.
@@ -460,8 +478,19 @@ pub(crate) fn stalled_notification_body(subject: &str, silent_secs: u64) -> Stri
 /// The `Result` is what the caller may believe, and on macOS it is now worth
 /// believing: the macOS arm asks the system whether a notification will arrive
 /// before it claims to have sent one.
+///
+/// **The sound is the platform's notification sound, asked for or refused
+/// explicitly on each one.** Left unsaid, the three platforms disagree: a
+/// Windows toast and a macOS notification are silent, and a Linux notification
+/// service decides for itself, usually by urgency. So `with_sound` is stated
+/// both ways. Linux has no "the default sound" to name, so it gets the
+/// freedesktop sound theme's name for an incoming message; a service without
+/// a sound theme stays silent, which this app cannot detect.
 #[cfg(not(target_os = "macos"))]
-fn show_desktop_notification(notification: DesktopNotification) -> Result<(), String> {
+fn show_desktop_notification(
+    notification: DesktopNotification,
+    with_sound: bool,
+) -> Result<(), String> {
     let mut builder = notify_rust::Notification::new();
     builder
         .summary(&notification.summary)
@@ -473,13 +502,24 @@ fn show_desktop_notification(notification: DesktopNotification) -> Result<(), St
     builder.urgency(notification_urgency_for_platform(notification.urgency));
 
     #[cfg(unix)]
-    builder.hint(notify_rust::Hint::DesktopEntry("splitlane".to_string()));
+    {
+        builder.hint(notify_rust::Hint::DesktopEntry("splitlane".to_string()));
+        if with_sound {
+            builder.sound_name("message-new-instant");
+        } else {
+            builder.hint(notify_rust::Hint::SuppressSound(true));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     {
         let _ = crate::windows_app_identity::ensure_process_app_user_model_id();
         let _ = ensure_windows_app_user_model_id_registered();
         builder.app_id(SPLITLANE_WINDOWS_AUMID);
+        // Without a name the toast is built silent.
+        if with_sound {
+            builder.sound_name("Default");
+        }
     }
 
     builder.show().map(|_| ()).map_err(|err| err.to_string())
@@ -490,8 +530,11 @@ fn show_desktop_notification(notification: DesktopNotification) -> Result<(), St
 /// ad-hoc signature - the one this track measured and stands on - carries no
 /// entitlements.
 #[cfg(target_os = "macos")]
-fn show_desktop_notification(notification: DesktopNotification) -> Result<(), String> {
-    crate::agents::mac_notifications::deliver(&notification.summary, &notification.body)
+fn show_desktop_notification(
+    notification: DesktopNotification,
+    with_sound: bool,
+) -> Result<(), String> {
+    crate::agents::mac_notifications::deliver(&notification.summary, &notification.body, with_sound)
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -107,7 +107,7 @@ Cards for the skills found in `~/.claude/skills`, `~/.codex/skills` and
 | Tell me | Only when something breaks / When an agent is waiting for me (default) / And when work has finished. There is no "off": a session that breaks always notifies. | `agent_panel.notify_level` |
 | macOS permission | macOS only: what macOS will do with a notification. See below. | none |
 | Agent needs input, Run finished, Session crashed, Agent stalled, Limit burning fast | Whether each kind of notification reaches you at the chosen level: **covered**, **silent** (below your level), **blocked** (the platform will not deliver it) or **unconfirmed** (the platform has not answered yet). Short runs never send "Run finished"; the row states the minimum length. | none |
-| Play a sound | Never. | none |
+| Play a sound | Never / When an agent is waiting or something breaks (default) / With every notification. It is the system's notification sound, so the system volume, Do Not Disturb and the per-app notification settings apply. | `agent_panel.notify_sound` |
 
 Notifications are only about agents, never about shell output. A notification
 is skipped when the session it is about is already on screen in the active

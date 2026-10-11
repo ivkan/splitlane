@@ -35,10 +35,11 @@
 //! catching movement**, since the chip is permanently on screen; somebody who
 //! has left the machine is served by the sticky mark, which already works; only
 //! somebody sitting in front of the machine and not looking at the display
-//! needs a noise. The case found in use was the first. Sound stays a legitimate
-//! future on this same edge, and inherits two properties from "only the third
-//! case": off by default, and **never the only announcement** - a product whose
-//! finishes are inaudible with sound off has to stay visible.
+//! needs a noise. The case found in use was the first, so this edge moves and
+//! makes no sound. The third audience is served by the system notification,
+//! which carries the sound (`agent_panel.notify_sound`); it is **never the
+//! only announcement** - a product whose finishes are inaudible with sound off
+//! has to stay visible.
 //!
 //! # The trap, and it is the reason this is state and not a mount
 //!

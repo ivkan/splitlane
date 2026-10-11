@@ -234,9 +234,10 @@ pub(crate) enum GeneralDropdown {
     /// project that has never been asked. One dropdown state serves both
     /// pages; the row anatomy is the same and so is the open/close rule.
     DefaultAgent,
-    /// Settings -> Notifications: the ladder, and the only control in its
-    /// section.
+    /// Settings -> Notifications: the ladder, which decides what is sent.
     NotifyLevel,
+    /// Settings -> Notifications: which of those are heard.
+    NotifySound,
 }
 
 #[derive(Clone, Copy)]

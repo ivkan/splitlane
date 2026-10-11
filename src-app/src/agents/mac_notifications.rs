@@ -353,13 +353,23 @@ fn claim_the_question(claim: &AtomicBool) -> bool {
 /// signature does not carry, and ad-hoc is the signature this track measured
 /// and chose to stand on. A level we cannot claim would be dropped by the OS
 /// without a word.
-pub(crate) fn deliver(summary: &str, body: &str) -> Result<(), String> {
+///
+/// `with_sound` asks for the system's default notification sound. macOS plays
+/// it only if the person allows sounds for this app in System Settings and no
+/// Focus is silencing it, so asking is never louder than they chose.
+pub(crate) fn deliver(summary: &str, body: &str, with_sound: bool) -> Result<(), String> {
     let permission = refresh();
     if !permission.channel_is_open() {
         let (word, _) = permission.stated();
         return Err(format!("macOS notifications are {word}"));
     }
-    blocking::send(Notification::new().title(summary).message(body))
+    let notification = Notification::new().title(summary).message(body);
+    let notification = if with_sound {
+        notification.default_sound()
+    } else {
+        notification
+    };
+    blocking::send(notification)
         .map(|_id| ())
         .map_err(|err| err.to_string())
 }
