@@ -810,6 +810,7 @@ fn open_session(
     // SAFETY: `master_fd` belongs to `pair.master`, which is alive for the
     // whole borrow.
     let master_ref = unsafe { BorrowedFd::borrow_raw(master_fd) };
+    expect_utf8_input(master_ref);
     let read_fd = clone_fd(master_ref, "reader")?;
     let write_fd = clone_fd(master_ref, "writer")?;
     let (wake_rx, wake_tx) = wake_pipe().map_err(|e| format!("cannot open a pipe: {e}"))?;
@@ -835,6 +836,32 @@ fn open_session(
         guard,
     })
 }
+
+/// Tell the terminal that what is typed into it is UTF-8.
+///
+/// A new PTY does not assume so. Without the flag the line discipline
+/// erases one byte for a backspace, which leaves the first bytes of a
+/// multi-byte character on the line a program is about to read. The
+/// window's own PTYs have it set by the emulator that opens them; a failure
+/// here is not worth refusing a session over.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn expect_utf8_input(master: BorrowedFd<'_>) {
+    // SAFETY: `termios` is plain integers, so all-zero is a valid value,
+    // and both calls get a descriptor that is open for their duration and
+    // a valid pointer to it.
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(master.as_raw_fd(), &mut termios) == 0 {
+            termios.c_iflag |= libc::IUTF8;
+            libc::tcsetattr(master.as_raw_fd(), libc::TCSANOW, &termios);
+        }
+    }
+}
+
+/// The flag is not everywhere, and where it is missing the terminal is left
+/// as it was opened.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn expect_utf8_input(_master: BorrowedFd<'_>) {}
 
 fn thread<T: Send + 'static>(
     role: &str,
