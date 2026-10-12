@@ -195,10 +195,12 @@ app state.
 
 A terminal session today lives in the window's process: quit the app, update
 it or crash it, and every agent running in a pane ends with it. The session
-host is the process meant to take that ownership over. **The window does not
-use it yet.** What exists is the host itself, a client library and two CLI
-verbs (`splitlane host status`, `splitlane host stop`); every pane still owns
-its PTY as described above.
+host is the process meant to take that ownership over. **By default the window
+does not use it:** every pane owns its PTY as described above. On macOS a
+window started with `SPLITLANE_SESSION_HOST=1` opens its panes in the host
+instead, which is described under [A pane in the host](#a-pane-in-the-host).
+That switch moves where a pane's PTY lives and nothing else yet: quitting the
+window still ends its sessions.
 
 The host is the app binary started as `splitlane __splitlane-host`. It leaves
 `main` before anything of the app is initialised and never loads GPUI; the
@@ -304,6 +306,77 @@ after ten seconds with no running session and no connected client. A session
 that has exited stays listed with its log until a client forgets it, but does
 not keep the host alive once nobody is connected. Its log goes to `host.log`
 in the app's cache directory.
+
+### A pane in the host
+
+On macOS, a window started with `SPLITLANE_SESSION_HOST=1` opens every new
+pane in the host. The variable is read once, at start; it is an environment
+variable and not a setting because the path is new and a setting is a promise
+to keep. Linux and Windows ignore it: the host has no answering emulator
+there.
+
+The emulator, the view and the renderer of such a pane are the ones every
+pane uses. What differs is the two ends of the byte stream:
+
+- **The shell is the host's child.** The window asks the host to start the
+  shell it would have started itself: the same argv, the same directory, and
+  the same environment sent whole - a snapshot of the window's own, with what
+  the emulator's spawn adds and removes, and the pane's variables on top. A
+  test runs `env` in both kinds of pane and compares.
+- **Output arrives as stream events** and is fed through the same scanners and
+  the same parser, in the same order, as output read from a PTY. The child's
+  end arrives as the events a local child's end produces.
+- **The window's emulator does not answer the program.** It sees the same
+  questions in the stream, and its replies are dropped where it emits them,
+  because the host has given them. What only the window knows - its colors and
+  the size of a cell - it tells the host when a pane is opened and again when
+  the theme, the cursor color or the cell size changes.
+- **Input and resizes are queued** for a thread of the pane's own, because a
+  request to the host waits for its reply and the thread that draws the window
+  must not. Input waits there up to a limit and is refused beyond it.
+
+Each pane has a connection of its own for its stream, its input and its
+resizes. Starting, ending and forgetting sessions goes over one connection the
+whole window shares, because a pane's own can be held up: input a program
+does not read is not taken off the socket by the host, and what the pane says
+afterwards, a resize included, waits behind it. Ending the session never does.
+
+A host that cannot be reached, has no room for another connection or refuses
+the shell leaves the pane to the window, which opens it with a PTY of its own
+as it would without the switch; the host is then left alone for half a minute
+so that a window restoring many panes waits for it once. After the host has
+started the shell there is no falling back - that would be a second shell - so
+if the pane cannot be attached the session is ended and the pane shows the
+error.
+
+Closing a pane ends its session: the host is asked to terminate the process
+group, and to forget the session once the child is reaped. The window also
+starts its own watcher for every session's child, so a window that quits, is
+killed or is replaced by an update takes its sessions with it, exactly as it
+does for the PTYs it owns.
+
+A terminal can also be attached to a session that was already running. It
+then replays the session's log first, and a replay rebuilds the grid without
+acting on anything: the output is as old as the session, so the window is not
+woken, nothing is copied to the clipboard, no bell rings, and of the titles,
+working directories and command marks the log holds only the last is kept.
+The host says where its log ended when the attach was made, and that position
+is where old output ends and new begins. The code and its tests exist; nothing
+in the window attaches this way yet.
+
+Not there yet:
+
+- **Sessions do not outlive the window.** Keeping them when the window quits,
+  and finding and reattaching them when it starts, is what the switch is a
+  step towards.
+- **A pane is told the window's colors when it is drawn.** After a theme
+  change, a pane that is not on screen answers color queries with the old
+  theme until it is shown again.
+- **A closed pane's shell is not hung up on.** A PTY the window owns is closed
+  under its shell, which gets SIGHUP and a chance to save its history before
+  it is terminated. A session in the host is only terminated.
+- **Clearing the scrollback clears the window's copy.** The host's log still
+  holds it.
 
 ## Self-update
 

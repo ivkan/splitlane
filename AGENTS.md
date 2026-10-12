@@ -22,7 +22,7 @@ It targets Linux (Wayland and X11), macOS and Windows.
 | `crates/splitlane-terminal-ghostty/`, `crates/splitlane-libghostty-sys/` | The libghostty backend and its FFI |
 | `crates/splitlane-shim/`, `crates/splitlane-ai-hook/` | The `PATH` shim around agent CLIs and the hook payloads it reports |
 | `crates/splitlane-mcp/`, `crates/splitlane-mcp-install/` | The read-only MCP bridge and its installer |
-| `crates/splitlane-host/` | The session host: PTYs, their output logs and the answers to their terminal queries, in a process without a window. Not used by the window yet |
+| `crates/splitlane-host/` | The session host: PTYs, their output logs and the answers to their terminal queries, in a process without a window. The window opens panes in it only on macOS and only when started with `SPLITLANE_SESSION_HOST=1` |
 | `crates/splitlane-ipc-client/`, `crates/splitlane-process/`, `crates/splitlane-telemetry/`, `crates/splitlane-acp/` | Small shared libraries |
 | `native/libghostty/` | Vendored libghostty sources and checksum-pinned prebuilts - do not edit by hand |
 | `docs/` | User documentation; `docs/internals/` holds the reasoning behind UI and agent-state behaviour |
