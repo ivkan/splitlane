@@ -100,10 +100,6 @@ pub(super) struct RemoteGate {
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 impl RemoteGate {
     /// The window owns the PTY and its emulator answers the program.
     pub(super) const LOCAL: u8 = 0;
@@ -207,10 +203,6 @@ impl ZedListener {
     /// A listener for a terminal that may be given a PTY in the session
     /// host. See [`RemoteGate`].
     #[cfg(target_os = "macos")]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "no pane is opened in the session host yet")
-    )]
     pub(super) fn with_gates(
         events: UnboundedSender<AlacEvent>,
         clipboard_gate: Arc<ClipboardGate>,

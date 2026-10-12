@@ -105,6 +105,11 @@ fn should_start_ghostty(requested: TerminalBackendConfig) -> bool {
 
 enum BackgroundSpawnOutcome {
     Alacritty(anyhow::Result<super::pty_session::SpawnedPty>),
+    /// The shell was started by the session host. An error here is a shell
+    /// the host started and the pane could not be attached to: there is
+    /// no falling back from that, only saying so.
+    #[cfg(target_os = "macos")]
+    Hosted(anyhow::Result<super::host_session::SpawnedRemote>),
     #[cfg(any(
         all(target_os = "linux", feature = "libghostty-linux"),
         all(
@@ -141,6 +146,17 @@ enum BackgroundSpawnOutcome {
         child_pid: u32,
         failure: TerminalBackendFailureDiagnostics,
     },
+}
+
+/// What the facts a window states to the session host depend on: when one
+/// of these changes, the host is told again.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq)]
+struct StatedWindowFacts {
+    theme_generation: u64,
+    cursor_color_override: Option<Hsla>,
+    /// Width and height of a cell in pixels, once a frame has laid one out.
+    cell: Option<(u16, u16)>,
 }
 
 /// The deferred half of a surface's construction - shell resolution, the
@@ -418,6 +434,10 @@ pub struct TerminalView {
     pty_size_checked_at: Option<std::time::Instant>,
     pty_size_apart_from: Option<TerminalWindowSize>,
     pty_size_apart_recorded: bool,
+    /// What the session host was last told about this window. `None`
+    /// until it was told anything.
+    #[cfg(target_os = "macos")]
+    host_facts_stated: Option<StatedWindowFacts>,
     /// Backend start held until this surface is first shown. `None` once
     /// started - and for a display-only test view, which never starts one -
     /// which is what makes [`Self::ensure_backend_started`] idempotent.
@@ -553,6 +573,39 @@ impl TerminalView {
             ));
         }
         self.terminal.notify_window_size(sent);
+    }
+
+    /// Tell the session host what this window would answer a program with,
+    /// whenever that has changed: the theme, the cursor color, the size of
+    /// a cell.
+    ///
+    /// A pane whose PTY the window owns looks these up at the moment a
+    /// program asks. For a pane in the host the host answers, at once and
+    /// without the window, so it has to have been told beforehand.
+    #[cfg(target_os = "macos")]
+    fn state_window_facts(&mut self) {
+        if !self.terminal.is_in_host() {
+            return;
+        }
+        let cell = self
+            .recorded_window_size()
+            .map(|size| (size.cell_width, size.cell_height))
+            .filter(|(width, height)| *width > 0 && *height > 0);
+        let stated = StatedWindowFacts {
+            theme_generation: crate::theme::theme_generation(),
+            cursor_color_override: self.cursor_color_override,
+            cell,
+        };
+        if self.host_facts_stated == Some(stated) {
+            return;
+        }
+        self.host_facts_stated = Some(stated);
+        self.terminal
+            .tell_host(crate::terminal::pty_session::window_facts(
+                &crate::theme::active_theme(),
+                self.cursor_color_override,
+                cell,
+            ));
     }
 
     fn current_window_size(&self) -> TerminalWindowSize {
@@ -780,6 +833,12 @@ impl TerminalView {
         // - no view-side rewiring needed.
         let mut view = Self::from_terminal_state(workspace_id, terminal, cx);
 
+        // Decided here, when the pane is made, and not when its shell is
+        // started: a pane restored now and shown an hour later is still the
+        // pane it was made as.
+        #[cfg(target_os = "macos")]
+        let in_host = super::host_session::enabled();
+
         view.deferred_backend_start = Some(Box::new(move |cx: &mut Context<Self>| {
             // Capture the foreground signal mask on the MAIN thread so the
             // background-spawned child still gets correct Ctrl-C / Ctrl-Z
@@ -787,6 +846,21 @@ impl TerminalView {
             // thread (render, or an IPC call already hopped onto it).
             let signal_mask = crate::terminal::pty_session::capture_foreground_signal_mask();
             let executor = cx.background_executor().clone();
+            // What the host has to know to answer the shell's first
+            // questions, which come before the first frame can say it. The
+            // size of a cell is not known before that frame either.
+            #[cfg(target_os = "macos")]
+            let hosted = in_host.then(|| {
+                let cursor = cursor_color_override_from_config(
+                    &splitlane_config::loader::load_config()
+                        .terminal
+                        .unwrap_or_default(),
+                );
+                (
+                    super::host_session::process_endpoint(),
+                    super::pty_session::window_facts(&crate::theme::active_theme(), cursor, None),
+                )
+            });
             cx.spawn(
                 async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                     // Blocking PTY open (`tty::new` forks) runs off the render thread,
@@ -893,6 +967,7 @@ impl TerminalView {
                                 )
                             };
                             #[cfg(not(any(
+                                target_os = "macos",
                                 all(target_os = "linux", feature = "libghostty-linux"),
                                 all(
                                     target_os = "windows",
@@ -904,6 +979,36 @@ impl TerminalView {
                             let outcome = BackgroundSpawnOutcome::Alacritty(
                                 TerminalState::open_pty_and_eventloop(params, pending, signal_mask),
                             );
+                            #[cfg(target_os = "macos")]
+                            let outcome = match hosted {
+                                Some((endpoint, facts)) => {
+                                    use super::host_session::Opened;
+                                    match super::host_session::open(
+                                        endpoint.as_ref(),
+                                        facts,
+                                        params,
+                                        pending,
+                                        signal_mask,
+                                    ) {
+                                        Opened::InHost(spawned) => {
+                                            BackgroundSpawnOutcome::Hosted(Ok(spawned))
+                                        }
+                                        Opened::InWindow(spawned) => {
+                                            BackgroundSpawnOutcome::Alacritty(spawned)
+                                        }
+                                        Opened::Lost(error) => {
+                                            BackgroundSpawnOutcome::Hosted(Err(error))
+                                        }
+                                    }
+                                }
+                                None => BackgroundSpawnOutcome::Alacritty(
+                                    TerminalState::open_pty_and_eventloop(
+                                        params,
+                                        pending,
+                                        signal_mask,
+                                    ),
+                                ),
+                            };
                             (shell_quoting, outcome)
                         })
                         .await;
@@ -926,6 +1031,24 @@ impl TerminalView {
                                     target: "splitlane::terminal::backend",
                                     "Alacritty startup failed: reason_code=alacritty_startup_failed os_error={:?}",
                                     raw_os_error_from_anyhow(&error),
+                                );
+                                view.needs_initial_clear
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                view.terminal
+                                    .write_output(spawn_error_message(&error).as_bytes());
+                            }
+                            #[cfg(target_os = "macos")]
+                            BackgroundSpawnOutcome::Hosted(Ok(spawned)) => {
+                                view.terminal.promote_remote(spawned);
+                                if let Some(size) = view.recorded_window_size() {
+                                    view.terminal.notify_window_size(size);
+                                }
+                            }
+                            #[cfg(target_os = "macos")]
+                            BackgroundSpawnOutcome::Hosted(Err(error)) => {
+                                log::error!(
+                                    target: "splitlane::terminal::host",
+                                    "the session host started a shell and the pane lost it: {error:#}"
                                 );
                                 view.needs_initial_clear
                                     .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1364,6 +1487,8 @@ impl TerminalView {
             pty_size_checked_at: None,
             pty_size_apart_from: None,
             pty_size_apart_recorded: false,
+            #[cfg(target_os = "macos")]
+            host_facts_stated: None,
             deferred_backend_start: None,
             // Set by the agent-surface mount, the only place that knows a
             // thread produced this PTY.
@@ -2215,6 +2340,8 @@ impl Render for TerminalView {
         self.cell_width = frame_metrics.dimensions.cell_width;
         self.line_height = frame_metrics.dimensions.line_height;
         self.reconcile_pty_size();
+        #[cfg(target_os = "macos")]
+        self.state_window_facts();
 
         #[cfg(debug_assertions)]
         let keystroke_at = self.terminal.last_keystroke_at.take();
