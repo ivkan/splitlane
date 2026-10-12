@@ -5998,6 +5998,7 @@ dependencies = [
 name = "splitlane-host"
 version = "0.2.6"
 dependencies = [
+ "alacritty_terminal",
  "interprocess",
  "libc",
  "log",

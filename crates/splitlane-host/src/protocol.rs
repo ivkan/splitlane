@@ -18,6 +18,41 @@
 //! - [`KIND_OUTPUT`]: 16-byte session id, `u64` little-endian log sequence
 //!   number of the first byte, then the bytes.
 //! - [`KIND_INPUT`]: 16-byte session id, then the bytes. It has no reply.
+//! - [`KIND_PREAMBLE`]: 16-byte session id, then bytes for the client's
+//!   emulator that are not part of the log and take no sequence numbers.
+//!
+//! # A stream that does not start at the session's start
+//!
+//! A client rebuilds the screen by replaying the log through its emulator.
+//! When the replay cannot begin where the session began - the log is a ring
+//! and has dropped its oldest output - the emulator has missed every mode
+//! the program switched on before that point. The host then sends a
+//! [`KIND_PREAMBLE`] frame: bytes that put any emulator into the modes in
+//! effect where the stream starts or resumes, whatever state it was in. It
+//! is sent after the reply to an `attach` whose `gap` is true, before the
+//! first stream frame, and again right after every `gap` event.
+//!
+//! The preamble restores modes, not the screen. A client that received one
+//! feeds it, replays what follows and then asks for `redraw`, which makes
+//! the program repaint by resizing its terminal by one row and back. What
+//! scrolled out of the log before that is gone.
+//!
+//! `redraw` is for that moment and not for routine use. A program on the
+//! alternate screen repaints all of it and nothing else changes. A program
+//! that draws on the main screen repaints over whatever was above its own
+//! frame, for every attached client, and a shell only prints its prompt
+//! again: there the tail of the log is all a late client gets.
+//!
+//! # Who answers the program
+//!
+//! Programs ask their terminal questions and wait for the answer: where the
+//! cursor is, what it supports, what its colours are. The host answers them
+//! itself, client or no client, from an emulator of its own that follows
+//! the session's output. A client's emulator sees the same questions in the
+//! stream and must not answer them a second time. What only a window knows,
+//! its colours and the size of a cell in pixels, a client tells the host as
+//! [`Facts`]; until it has, questions about those go unanswered, as they do
+//! in a terminal that does not support them.
 //!
 //! # Handshake
 //!
@@ -78,6 +113,7 @@ pub const KIND_EVENT: u8 = 4;
 pub const KIND_ERROR: u8 = 5;
 pub const KIND_OUTPUT: u8 = 16;
 pub const KIND_INPUT: u8 = 17;
+pub const KIND_PREAMBLE: u8 = 18;
 
 pub const OP_SPAWN: &str = "spawn";
 pub const OP_LIST: &str = "list";
@@ -87,6 +123,8 @@ pub const OP_RESIZE: &str = "resize";
 pub const OP_KILL: &str = "kill";
 pub const OP_FORGET: &str = "forget";
 pub const OP_SHUTDOWN: &str = "shutdown";
+pub const OP_REDRAW: &str = "redraw";
+pub const OP_SET_FACTS: &str = "set_facts";
 
 pub const EVENT_RESIZED: &str = "resized";
 pub const EVENT_EXITED: &str = "exited";
@@ -322,6 +360,20 @@ pub fn decode_input(body: &[u8]) -> Result<(SessionId, &[u8]), FrameError> {
     split_session(body)
 }
 
+/// Body of a [`KIND_PREAMBLE`] frame: the session it belongs to and the
+/// bytes for its emulator.
+pub fn write_preamble<W: Write>(
+    writer: &mut W,
+    session: SessionId,
+    bytes: &[u8],
+) -> io::Result<()> {
+    write_frame(writer, KIND_PREAMBLE, &[&session.0, bytes])
+}
+
+pub fn decode_preamble(body: &[u8]) -> Result<(SessionId, &[u8]), FrameError> {
+    split_session(body)
+}
+
 fn split_session(body: &[u8]) -> Result<(SessionId, &[u8]), FrameError> {
     match body.split_first_chunk::<SESSION_ID_LEN>() {
         Some((id, rest)) => Ok((SessionId(*id), rest)),
@@ -421,6 +473,77 @@ pub struct ReplyEnvelope {
     pub result: Value,
 }
 
+/// A colour, written `#rrggbb` in JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Rgb(pub u8, pub u8, pub u8);
+
+impl fmt::Display for Rgb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
+    }
+}
+
+impl FromStr for Rgb {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let channel = |at: usize| {
+            s.get(at..at + 2)
+                // `from_str_radix` alone would take a sign.
+                .filter(|pair| pair.bytes().all(|digit| digit.is_ascii_hexdigit()))
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        };
+        match (
+            s.len(),
+            s.as_bytes().first(),
+            channel(1),
+            channel(3),
+            channel(5),
+        ) {
+            (7, Some(b'#'), Some(r), Some(g), Some(b)) => Ok(Rgb(r, g, b)),
+            _ => Err(format!("{s:?} is not a colour of the form #rrggbb")),
+        }
+    }
+}
+
+impl Serialize for Rgb {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Rgb {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// What only a window knows about the terminal a session is shown in, and
+/// the host needs to answer the program's questions about it.
+///
+/// Every part is optional. A question about a part that was not given is
+/// not answered, which is what a terminal without that feature does and
+/// what programs already handle.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Facts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<Rgb>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<Rgb>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<Rgb>,
+    /// Colours of the indexed palette, by index. Indices that are absent
+    /// are not answered for; the host has no palette of its own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub palette: BTreeMap<u8, Rgb>,
+    /// Size of one character cell in pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_height: Option<u16>,
+}
+
 /// What to start and how.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnSpec {
@@ -446,6 +569,10 @@ pub struct SpawnSpec {
     /// window that starts later can find its sessions again.
     #[serde(default)]
     pub exported: BTreeMap<String, String>,
+    /// What the window knows about the terminal, if a window is starting
+    /// the session. Can be given or replaced later with `set_facts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts: Option<Facts>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -491,6 +618,13 @@ pub struct AttachResult {
     pub cols: u16,
     #[serde(default)]
     pub rows: u16,
+    /// Only with `gap`: the log had to drop output that offered no place
+    /// to cut, so the stream starts with the rest of an escape sequence, a
+    /// character or a synchronized update. The preamble makes the emulator
+    /// drop a sequence it is in the middle of; what was cut through shows
+    /// as stray text until the program repaints.
+    #[serde(default)]
+    pub torn: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +634,20 @@ pub struct ResizeArgs {
     pub cols: u16,
     #[serde(default)]
     pub rows: u16,
+    /// Size of the whole text area in pixels, for the PTY's window size
+    /// and for the size of a cell the host answers with. Absent leaves the
+    /// cell size as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_height: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetFactsArgs {
+    pub session: SessionId,
+    #[serde(default)]
+    pub facts: Facts,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -553,6 +701,10 @@ pub struct SessionInfo {
     pub attached: u32,
     #[serde(default)]
     pub exported: BTreeMap<String, String>,
+    /// Answers to the program's terminal queries that were thrown away
+    /// because the program was not reading its input.
+    #[serde(default)]
+    pub dropped_replies: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -752,6 +904,15 @@ mod tests {
         let frame = read_frame(&mut wire.as_slice()).unwrap();
         assert_eq!(decode_input(&frame.body).unwrap(), (session, &b"in"[..]));
 
+        let mut wire = Vec::new();
+        write_preamble(&mut wire, session, b"\x18\x1b[?25h").unwrap();
+        let frame = read_frame(&mut wire.as_slice()).unwrap();
+        assert_eq!(frame.kind, KIND_PREAMBLE);
+        assert_eq!(
+            decode_preamble(&frame.body).unwrap(),
+            (session, &b"\x18\x1b[?25h"[..])
+        );
+
         assert!(decode_input(&[0u8; 15]).is_err());
         assert!(decode_output(&[0u8; 23]).is_err());
     }
@@ -792,6 +953,48 @@ mod tests {
         let info: SessionInfo = decode_json(format!(r#"{{"id":"{id}"}}"#).as_bytes()).unwrap();
         assert_eq!(info.id, id);
         assert!(info.exited.is_none());
+    }
+
+    #[test]
+    fn facts_travel_as_readable_json_and_every_part_is_optional() {
+        let facts = Facts {
+            background: Some(Rgb(0x12, 0x34, 0xab)),
+            palette: BTreeMap::from([(1, Rgb(255, 0, 0))]),
+            cell_width: Some(9),
+            ..Facts::default()
+        };
+        let json = serde_json::to_string(&facts).unwrap();
+        assert_eq!(
+            json,
+            r##"{"background":"#1234ab","palette":{"1":"#ff0000"},"cell_width":9}"##
+        );
+        assert_eq!(serde_json::from_str::<Facts>(&json).unwrap(), facts);
+        assert_eq!(
+            serde_json::from_str::<Facts>("{}").unwrap(),
+            Facts::default()
+        );
+        for bad in [
+            "\"1234ab\"",
+            "\"#12345\"",
+            "\"#12345g\"",
+            "\"#+12345\"",
+            "\"#1234567\"",
+            "\"#é345\"",
+        ] {
+            assert!(serde_json::from_str::<Rgb>(bad).is_err(), "{bad}");
+        }
+
+        // A resize from a client that knows nothing of pixels, and a spawn
+        // from one that knows nothing of facts.
+        let id = SessionId::new_random();
+        let resize: ResizeArgs =
+            decode_json(format!(r#"{{"session":"{id}","cols":80,"rows":24}}"#).as_bytes()).unwrap();
+        assert_eq!((resize.pixel_width, resize.pixel_height), (None, None));
+        let spec: SpawnSpec = decode_json(br#"{"argv":["sh"]}"#).unwrap();
+        assert_eq!(spec.facts, None);
+        let attached: AttachResult =
+            decode_json(format!(r#"{{"session":"{id}","gap":true}}"#).as_bytes()).unwrap();
+        assert!(!attached.torn);
     }
 
     #[test]

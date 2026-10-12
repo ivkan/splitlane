@@ -27,9 +27,9 @@ use serde_json::Value;
 
 use crate::lock;
 use crate::protocol::{
-    self, AttachArgs, AttachResult, EventBody, ExitStatus, FrameError, Hello, ListResult,
-    ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId, SessionInfo, ShutdownArgs,
-    SpawnArgs, SpawnResult, SpawnSpec, WireError,
+    self, AttachArgs, AttachResult, EventBody, ExitStatus, Facts, FrameError, Hello, ListResult,
+    ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId, SessionInfo, SetFactsArgs,
+    ShutdownArgs, SpawnArgs, SpawnResult, SpawnSpec, WireError,
 };
 use crate::HostError;
 
@@ -66,6 +66,13 @@ pub enum StreamEvent {
     /// The log moved past this stream. Everything from `lost_from` up to
     /// `resumes_at` is gone and the stream goes on from `resumes_at`.
     Gap { lost_from: u64, resumes_at: u64 },
+    /// Bytes to feed the emulator before the output that follows: they put
+    /// it into the terminal modes in effect where the stream starts, or
+    /// resumes after a gap. Not part of the log; no sequence number.
+    ///
+    /// It restores modes and not the screen. After feeding it and the
+    /// output behind it, ask for [`Client::redraw`].
+    Preamble(Vec<u8>),
     /// The child ended and all of its output was delivered. Last event.
     Exited(ExitStatus),
 }
@@ -77,8 +84,13 @@ pub struct Attachment {
     pub session: SessionId,
     /// Sequence number the stream begins at.
     pub start_seq: u64,
-    /// True when the stream begins later than was asked for.
+    /// True when the stream begins later than was asked for. Its first
+    /// event is then a [`StreamEvent::Preamble`].
     pub gap: bool,
+    /// With `gap`: the stream begins in the middle of an escape sequence, a
+    /// character or a synchronized update, because the log had to drop
+    /// output that offered no better place.
+    pub torn: bool,
     /// Terminal size in effect at `start_seq`.
     pub cols: u16,
     pub rows: u16,
@@ -95,6 +107,7 @@ impl std::fmt::Debug for Attachment {
             .field("session", &self.session)
             .field("start_seq", &self.start_seq)
             .field("gap", &self.gap)
+            .field("torn", &self.torn)
             .field("cols", &self.cols)
             .field("rows", &self.rows)
             .finish_non_exhaustive()
@@ -382,6 +395,7 @@ impl Client {
                 session,
                 start_seq: result.start_seq,
                 gap: result.gap,
+                torn: result.torn,
                 cols: result.cols,
                 rows: result.rows,
                 events: events_rx,
@@ -422,12 +436,58 @@ impl Client {
     }
 
     pub fn resize(&self, session: SessionId, cols: u16, rows: u16) -> Result<(), HostError> {
+        self.resize_args(ResizeArgs {
+            session,
+            cols,
+            rows,
+            pixel_width: None,
+            pixel_height: None,
+        })
+    }
+
+    /// [`Client::resize`] for a caller that knows the size of the text area
+    /// in pixels. The program can ask its terminal for that, and the host
+    /// derives the size of a cell from it.
+    pub fn resize_with_pixels(
+        &self,
+        session: SessionId,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> Result<(), HostError> {
+        self.resize_args(ResizeArgs {
+            session,
+            cols,
+            rows,
+            pixel_width: Some(pixel_width),
+            pixel_height: Some(pixel_height),
+        })
+    }
+
+    fn resize_args(&self, args: ResizeArgs) -> Result<(), HostError> {
+        self.request::<_, Value>(protocol::OP_RESIZE, &args)
+            .map(drop)
+    }
+
+    /// Make the session's program repaint its screen, by resizing its
+    /// terminal by one row and back. For after a [`StreamEvent::Preamble`]:
+    /// the preamble restored the modes, this restores the picture. Refused
+    /// for a session that has exited.
+    pub fn redraw(&self, session: SessionId) -> Result<(), HostError> {
+        self.request::<_, Value>(protocol::OP_REDRAW, &SessionArgs { session })
+            .map(drop)
+    }
+
+    /// Tell the host what this window knows about the terminal the session
+    /// is shown in, replacing what was known before. The host answers the
+    /// program's questions about colours and pixel sizes from it.
+    pub fn set_facts(&self, session: SessionId, facts: &Facts) -> Result<(), HostError> {
         self.request::<_, Value>(
-            protocol::OP_RESIZE,
-            &ResizeArgs {
+            protocol::OP_SET_FACTS,
+            &SetFactsArgs {
                 session,
-                cols,
-                rows,
+                facts: facts.clone(),
             },
         )
         .map(drop)
@@ -496,6 +556,12 @@ fn read_loop(mut recv: RecvHalf, inner: Arc<Inner>) {
                         bytes: output.bytes.to_vec(),
                     },
                 );
+            }
+            protocol::KIND_PREAMBLE => {
+                let Ok((session, bytes)) = protocol::decode_preamble(&frame.body) else {
+                    break;
+                };
+                deliver(&inner, session, StreamEvent::Preamble(bytes.to_vec()));
             }
             protocol::KIND_EVENT => {
                 let Ok(event) = protocol::decode_json::<EventBody>(&frame.body) else {

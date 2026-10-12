@@ -60,7 +60,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "afc13dc8
 collections = { git = "https://github.com/zed-industries/zed", rev = "afc13dc8e054705a42e2931b0840ed03ccfa583a" }
 
 # Alacritty terminal emulation (upstream crates.io - migrated from Zed fork)
-alacritty_terminal = "0.26"
+alacritty_terminal = { workspace = true }
 # Named directly because the `TeePty` byte tap implements
 # alacritty_terminal's public `tty::EventedReadWrite` traits, whose
 # signatures expose `polling` types (not re-exported by the crate). Same

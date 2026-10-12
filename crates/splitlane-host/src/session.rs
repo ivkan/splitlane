@@ -7,6 +7,18 @@
 //! feeds input to the PTY, so a child that does not read its input blocks
 //! that one thread and not the connection that sent it. The waiter reaps
 //! the child.
+//!
+//! The reader also shows every byte to the session's [`Engine`], the
+//! emulator that answers the program's terminal queries, and hands the
+//! answers to the writer. It never waits for that either: an answer the
+//! writer has no room for is dropped.
+//!
+//! # Lock order
+//!
+//! `terminal`, then `engine`, then `shared`. A resize holds all three so
+//! that the PTY, the engine and the log see it at the same point of the
+//! output; the reader holds the last two for the same reason. No other
+//! lock of a session is held together with any of these.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -14,19 +26,21 @@ use std::io::{self, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use portable_pty::{native_pty_system, MasterPty, PtySize, SlavePty};
 
 use crate::descriptors;
+use crate::engine::{self, Engine};
 use crate::lock;
 use crate::log::SessionLog;
-use crate::protocol::{ExitStatus, SessionId, SessionInfo, SpawnSpec};
+use crate::protocol::{ExitStatus, Facts, SessionId, SessionInfo, SpawnSpec};
 
 /// Argv[1] of the watcher process that kills a child's process group when
 /// the process that started the watcher dies. The app binary implements it;
@@ -43,6 +57,11 @@ pub(crate) const KILL_GRACE: Duration = Duration::from_millis(100);
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(1);
 /// Silence that ends the drain early.
 const DRAIN_QUIET_MS: i32 = 20;
+
+/// How far apart the two resizes of a redraw are. Long enough for a program
+/// to have seen the first size before the second arrives, so that it gets
+/// two changes and not one that cancels itself.
+const REDRAW_GAP: Duration = Duration::from_millis(50);
 
 const READ_BUF: usize = 64 * 1024;
 /// Input chunks that may wait for the PTY. Bounded, so a sender is slowed
@@ -94,8 +113,9 @@ impl LogBudget {
         let Ok(members) = self.members.try_lock() else {
             return;
         };
-        let sessions: Vec<Arc<Session>> = members.iter().filter_map(Weak::upgrade).collect();
-        // Each pass at least halves the largest log, so this ends.
+        let mut sessions: Vec<Arc<Session>> = members.iter().filter_map(Weak::upgrade).collect();
+        // Each pass at least halves the largest log or sets it aside, so
+        // this ends.
         for _ in 0..64 {
             let excess = self.total.load(Ordering::Relaxed).saturating_sub(self.cap);
             if excess == 0 {
@@ -103,21 +123,28 @@ impl LogBudget {
             }
             let largest = sessions
                 .iter()
-                .map(|session| (lock(&session.shared).log.stored_bytes(), session))
+                .enumerate()
+                .map(|(at, session)| (lock(&session.shared).log.stored_bytes(), at))
                 .max_by_key(|(stored, _)| *stored);
-            let Some((stored, session)) = largest else {
+            let Some((stored, at)) = largest else {
                 break;
             };
             if stored == 0 {
                 break;
             }
             let target = stored.saturating_sub(excess).max(stored / 2);
+            let session = sessions[at].clone();
             let mut shared = lock(&session.shared);
             let before = shared.log.stored_bytes();
             let dropped = shared.log.trim_to(target);
             self.account(before, shared.log.stored_bytes());
             drop(shared);
-            if dropped > 0 {
+            if dropped == 0 {
+                // A log is cut only where its output may be, and this one
+                // offers no such place right now. The next largest pays
+                // instead; this one is bounded by twice its own capacity.
+                sessions.swap_remove(at);
+            } else {
                 // Debug, not info: a session printing at the limit gets
                 // here on every read.
                 log::debug!(
@@ -148,6 +175,53 @@ pub(crate) struct Shared {
     pub(crate) attached: u32,
 }
 
+/// A terminal size as the PTY is told it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Size {
+    cols: u16,
+    rows: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+}
+
+impl Size {
+    fn pty(self) -> PtySize {
+        PtySize {
+            rows: self.rows,
+            cols: self.cols,
+            pixel_width: self.pixel_width,
+            pixel_height: self.pixel_height,
+        }
+    }
+
+    /// The nearest other size: what a redraw resizes to before it resizes
+    /// back. One row less, because a program repaints everything when its
+    /// height changes and may only re-wrap when its width does.
+    fn nudged(self) -> Self {
+        let (cols, rows) = match (self.cols, self.rows) {
+            (cols, rows) if rows > 1 => (cols, rows - 1),
+            (cols, rows) if cols > 1 => (cols - 1, rows),
+            (cols, rows) => (cols, rows + 1),
+        };
+        Size { cols, rows, ..self }
+    }
+}
+
+/// The PTY's master side and what the host tells it. One lock, held for
+/// the whole of a resize, so that resizes reach the PTY, the engine and
+/// the log in one order.
+struct Terminal {
+    /// Dropped when the session ends.
+    master: Option<Box<dyn MasterPty + Send>>,
+    /// The size a client asked for last. A redraw moves the PTY away from
+    /// it for a moment and comes back to this, not to where it started.
+    asked: Size,
+    /// Size of a character cell in pixels, once a client has said.
+    cell: Option<(u16, u16)>,
+    /// A redraw is between its two resizes.
+    redrawing: bool,
+}
+
 pub(crate) struct Session {
     pub(crate) id: SessionId,
     pub(crate) pid: u32,
@@ -159,8 +233,11 @@ pub(crate) struct Session {
     pub(crate) shared: Mutex<Shared>,
     pub(crate) changed: Condvar,
     budget: Arc<LogBudget>,
-    /// Held to resize. Dropped when the session ends.
-    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    terminal: Mutex<Terminal>,
+    /// Answers the program's terminal queries. `None` on a platform that
+    /// has no engine, after the session ended, and after an engine failed.
+    engine: Mutex<Option<Box<dyn Engine>>>,
+    dropped_replies: AtomicU64,
     /// Held so the PTY keeps unread output; see where it is stored. With a
     /// slave open here the master never reports the end of output, which
     /// is why a session ends when its child is reaped and not when the
@@ -198,6 +275,21 @@ impl Session {
             ));
         }
 
+        let cell = spec
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.cell_width.zip(facts.cell_height));
+        let size = Size {
+            cols: spec.cols,
+            rows: spec.rows,
+            pixel_width: cell.map_or(0, |(width, _)| width.saturating_mul(spec.cols)),
+            pixel_height: cell.map_or(0, |(_, height)| height.saturating_mul(spec.rows)),
+        };
+        let mut engine = engine::for_this_platform(spec.cols, spec.rows);
+        if let (Some(engine), Some(facts)) = (engine.as_mut(), spec.facts.as_ref()) {
+            engine.set_facts(facts);
+        }
+
         let opened = {
             // One session is opened at a time. Opening PTYs from several
             // threads at once is not safe on macOS, where `openpty` keeps
@@ -208,7 +300,7 @@ impl Session {
             // close-on-exec, during which a child forked for another
             // session would inherit it and keep that PTY open.
             let _opening = lock(&OPENING);
-            open_session(&spec, &program, settings.guard_exe.as_deref())?
+            open_session(&spec, size, &program, settings.guard_exe.as_deref())?
         };
         let Opened {
             master,
@@ -242,7 +334,14 @@ impl Session {
             }),
             changed: Condvar::new(),
             budget: settings.budget.clone(),
-            master: Mutex::new(Some(master)),
+            terminal: Mutex::new(Terminal {
+                master: Some(master),
+                asked: size,
+                cell,
+                redrawing: false,
+            }),
+            engine: Mutex::new(engine),
+            dropped_replies: AtomicU64::new(0),
             slave: Mutex::new(Some(slave)),
             input: Mutex::new(Some(input_tx)),
             guard: Mutex::new(guard),
@@ -297,8 +396,9 @@ impl Session {
         signal_group(self.pid, libc::SIGKILL);
         lock(&self.guard).take();
         lock(&self.slave).take();
-        lock(&self.master).take();
+        lock(&self.terminal).master.take();
         lock(&self.input).take();
+        lock(&self.engine).take();
     }
 
     /// Body of the reader thread: move output into the log until the child
@@ -306,6 +406,7 @@ impl Session {
     /// it too, though while the host holds the slave that does not happen.
     fn pump_output(&self, pty: OwnedFd, wake: OwnedFd) {
         let mut buf = vec![0u8; READ_BUF];
+        let mut replies = Vec::new();
         let mut reaped_at: Option<Instant> = None;
         loop {
             if reaped_at.is_none() && self.reaped.load(Ordering::SeqCst) {
@@ -314,7 +415,7 @@ impl Session {
             let timeout_ms = if reaped_at.is_some() {
                 DRAIN_QUIET_MS
             } else {
-                -1
+                self.held_output_wait_ms()
             };
             let mut fds = [
                 libc::pollfd {
@@ -344,15 +445,20 @@ impl Session {
                 break;
             }
             if ready == 0 {
-                // Only the drain has a timeout: the child is gone and the
-                // PTY has nothing more.
-                break;
+                if reaped_at.is_some() {
+                    // The child is gone and the PTY has nothing more.
+                    break;
+                }
+                // The other timeout: the program began a synchronized
+                // update and went quiet without ending it.
+                self.release_held_output(&mut replies);
+                continue;
             }
             if fds[0].revents & libc::POLLIN != 0 {
                 // SAFETY: `buf` is valid for `buf.len()` bytes.
                 let n = unsafe { libc::read(pty.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
                 if n > 0 {
-                    self.append_output(&buf[..n as usize]);
+                    self.append_output(&buf[..n as usize], &mut replies);
                 } else if n == 0 {
                     break;
                 } else {
@@ -372,14 +478,83 @@ impl Session {
         }
     }
 
-    fn append_output(&self, bytes: &[u8]) {
+    fn append_output(&self, bytes: &[u8], replies: &mut Vec<u8>) {
+        // The engine first and under the same locks as the log: a resize
+        // then falls between the same two bytes for both.
+        let mut engine = lock(&self.engine);
+        self.run_engine(&mut engine, |engine| engine.advance(bytes, replies));
         let mut shared = lock(&self.shared);
         let before = shared.log.stored_bytes();
         shared.log.append_output(bytes);
         self.budget.account(before, shared.log.stored_bytes());
         drop(shared);
+        drop(engine);
         self.changed.notify_all();
+        self.answer(replies);
         self.budget.enforce();
+    }
+
+    /// Run `step` on the engine if there is one. An engine that panics is
+    /// dropped and the session goes on without answers: the alternative is
+    /// a reader thread that is gone and a session that never ends.
+    fn run_engine(&self, engine: &mut Option<Box<dyn Engine>>, step: impl FnOnce(&mut dyn Engine)) {
+        let Some(running) = engine.as_mut() else {
+            return;
+        };
+        if catch_unwind(AssertUnwindSafe(|| step(running.as_mut()))).is_err() {
+            log::error!(
+                "session {}: the terminal engine failed; its queries go unanswered from here",
+                self.id
+            );
+            *engine = None;
+        }
+    }
+
+    /// Hand the engine's answers to the writer and empty `replies`.
+    ///
+    /// Never waits. The queue is full only when the program has stopped
+    /// reading its input, and a program in that state is not waiting for
+    /// an answer; blocking here would stop its output from being logged.
+    fn answer(&self, replies: &mut Vec<u8>) {
+        if replies.is_empty() {
+            return;
+        }
+        let bytes = std::mem::take(replies);
+        let len = bytes.len();
+        if let Some(Err(TrySendError::Full(_))) = lock(&self.input)
+            .as_ref()
+            .map(|input| input.try_send(bytes))
+        {
+            self.dropped_replies.fetch_add(1, Ordering::Relaxed);
+            log::debug!(
+                "session {}: dropped {len} bytes of answers to terminal queries; the program is not reading its input",
+                self.id
+            );
+        }
+    }
+
+    /// How long the reader may wait for output, in milliseconds as `poll`
+    /// takes them: for ever, unless the engine is holding output back for
+    /// a synchronized update.
+    fn held_output_wait_ms(&self) -> i32 {
+        let deadline = lock(&self.engine)
+            .as_ref()
+            .and_then(|engine| engine.sync_deadline());
+        match deadline {
+            // Rounded up, so that the wait is over when the deadline is.
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                i32::try_from(left.as_millis()).map_or(i32::MAX, |ms| ms.saturating_add(1))
+            }
+            None => -1,
+        }
+    }
+
+    fn release_held_output(&self, replies: &mut Vec<u8>) {
+        let mut engine = lock(&self.engine);
+        self.run_engine(&mut engine, |engine| engine.end_sync(replies));
+        drop(engine);
+        self.answer(replies);
     }
 
     /// Record the end of the session. Runs after the last output is in the
@@ -387,8 +562,9 @@ impl Session {
     fn finish(&self, status: ExitStatus) {
         lock(&self.guard).take();
         lock(&self.slave).take();
-        lock(&self.master).take();
+        lock(&self.terminal).master.take();
         lock(&self.input).take();
+        lock(&self.engine).take();
         lock(&self.shared).exit = Some(status);
         self.changed.notify_all();
         match (status.code, status.signal) {
@@ -416,33 +592,118 @@ impl Session {
         }
     }
 
-    pub(crate) fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+    /// Resize the terminal to what a client asked for. `pixels` is the size
+    /// of the text area in pixels, when the client knows it.
+    pub(crate) fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixels: Option<(u16, u16)>,
+    ) -> Result<(), String> {
         if cols == 0 || rows == 0 {
             return Err(format!("terminal size {cols}x{rows} is empty"));
         }
-        // Held across both steps, so two resizes reach the log in the order
-        // they reached the PTY.
-        let master = lock(&self.master);
-        let Some(pty) = master.as_ref() else {
+        let mut terminal = lock(&self.terminal);
+        // An area smaller than its own grid has no cell size to speak of;
+        // answering a program with zero would be worse than not answering.
+        let pixels = pixels.filter(|(width, height)| *width >= cols && *height >= rows);
+        if let Some((width, height)) = pixels {
+            terminal.cell = Some((width / cols, height / rows));
+        }
+        // Without pixels of its own a resize keeps the cell it had, so the
+        // PTY does not go back to reporting none.
+        let (pixel_width, pixel_height) = pixels.unwrap_or_else(|| {
+            terminal.cell.map_or((0, 0), |(width, height)| {
+                (width.saturating_mul(cols), height.saturating_mul(rows))
+            })
+        });
+        let size = Size {
+            cols,
+            rows,
+            pixel_width,
+            pixel_height,
+        };
+        self.apply_size(&terminal, size)?;
+        terminal.asked = size;
+        Ok(())
+    }
+
+    /// Tell the PTY, the engine and the log about a size. The caller holds
+    /// `terminal`, which is what puts two resizes into all three in the
+    /// same order.
+    fn apply_size(&self, terminal: &Terminal, size: Size) -> Result<(), String> {
+        let Some(pty) = terminal.master.as_ref() else {
             return Err("the session has ended".into());
         };
-        pty.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("cannot resize the PTY: {e:#}"))?;
+        pty.resize(size.pty())
+            .map_err(|e| format!("cannot resize the PTY: {e:#}"))?;
+        let mut engine = lock(&self.engine);
+        self.run_engine(&mut engine, |engine| {
+            engine.resize(size.cols, size.rows, terminal.cell)
+        });
         let mut shared = lock(&self.shared);
         let before = shared.log.stored_bytes();
-        shared.log.append_resize(cols, rows);
+        shared.log.append_resize(size.cols, size.rows);
         self.budget.account(before, shared.log.stored_bytes());
-        shared.cols = cols;
-        shared.rows = rows;
+        shared.cols = size.cols;
+        shared.rows = size.rows;
         drop(shared);
-        drop(master);
+        drop(engine);
         self.changed.notify_all();
         Ok(())
+    }
+
+    /// Make the program repaint its screen.
+    ///
+    /// A program repaints when its terminal changes size and at no other
+    /// time it can be asked to, so the terminal is resized by one row and,
+    /// a moment later, back. Both are ordinary resizes: the program gets
+    /// the signal twice and both are in the log.
+    ///
+    /// The second step goes to whatever size a client asked for last, so a
+    /// real resize that arrives between the two is not undone. A redraw
+    /// asked for while one is under way is that one.
+    pub(crate) fn redraw(self: &Arc<Self>) -> Result<(), String> {
+        let mut terminal = lock(&self.terminal);
+        if terminal.redrawing && terminal.master.is_some() {
+            return Ok(());
+        }
+        self.apply_size(&terminal, terminal.asked.nudged())?;
+        terminal.redrawing = true;
+        drop(terminal);
+        let session = self.clone();
+        let spawned = thread("redraw", move || {
+            std::thread::sleep(REDRAW_GAP);
+            session.finish_redraw();
+        });
+        if spawned.is_err() {
+            // Back at once rather than never.
+            self.finish_redraw();
+        }
+        Ok(())
+    }
+
+    fn finish_redraw(&self) {
+        let mut terminal = lock(&self.terminal);
+        terminal.redrawing = false;
+        // The session may have ended in between, and then there is nothing
+        // to put back.
+        let _ = self.apply_size(&terminal, terminal.asked);
+    }
+
+    /// Replace what the host knows about the window showing this session.
+    ///
+    /// A new cell size changes the answers from here on. The PTY's own
+    /// pixel size follows at the next resize, as it does in a terminal
+    /// whose font changed without its grid changing: telling the PTY now
+    /// would signal the program about a resize that did not happen.
+    pub(crate) fn set_facts(&self, facts: &Facts) {
+        let mut terminal = lock(&self.terminal);
+        if let Some(cell) = facts.cell_width.zip(facts.cell_height) {
+            terminal.cell = Some(cell);
+        }
+        let mut engine = lock(&self.engine);
+        self.run_engine(&mut engine, |engine| engine.set_facts(facts));
     }
 
     /// Ask the session's process group to end, and make it after a grace.
@@ -504,6 +765,7 @@ impl Session {
             log_bytes: shared.log.stored_bytes() as u64,
             attached: shared.attached,
             exported: self.exported.clone(),
+            dropped_replies: self.dropped_replies.load(Ordering::Relaxed),
         }
     }
 
@@ -511,7 +773,7 @@ impl Session {
     pub(crate) fn release_log(&self) {
         let mut shared = lock(&self.shared);
         let before = shared.log.stored_bytes();
-        shared.log.trim_to(0);
+        shared.log.clear();
         self.budget.account(before, shared.log.stored_bytes());
     }
 }
@@ -534,16 +796,12 @@ struct Opened {
 
 fn open_session(
     spec: &SpawnSpec,
+    size: Size,
     program: &str,
     guard_exe: Option<&Path>,
 ) -> Result<Opened, String> {
     let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: spec.rows,
-            cols: spec.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
+        .openpty(size.pty())
         .map_err(|e| format!("cannot open a PTY: {e:#}"))?;
     let master_fd = pair
         .master
@@ -809,4 +1067,26 @@ fn signal_group(pgid: u32, signal: libc::c_int) -> bool {
     // SAFETY: a negative pid addresses the process group; range checked
     // above.
     unsafe { libc::kill(-pgid, signal) == 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_redraw_always_has_another_size_to_go_to() {
+        let size = |cols, rows| Size {
+            cols,
+            rows,
+            pixel_width: 720,
+            pixel_height: 432,
+        };
+        let cells = |size: Size| (size.cols, size.rows);
+        assert_eq!(cells(size(80, 24).nudged()), (80, 23));
+        // One row cannot lose a row, and one cell cannot lose anything.
+        assert_eq!(cells(size(80, 1).nudged()), (79, 1));
+        assert_eq!(cells(size(1, 1).nudged()), (1, 2));
+        // The pixels are the window's and stay.
+        assert_eq!(size(80, 24).nudged().pixel_height, 432);
+    }
 }

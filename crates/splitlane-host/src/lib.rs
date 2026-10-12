@@ -5,12 +5,19 @@
 //! A client connects over a local socket, asks for a session's output log
 //! from some position, replays it through its own terminal emulator and then
 //! follows the live bytes. The host keeps raw output, not a screen, so it
-//! needs no emulator to serve a late client and no agreement with the client
-//! about how a screen is represented.
+//! needs no agreement with the client about how a screen is represented.
+//!
+//! It does run an emulator of its own for each session, for one purpose: a
+//! program asks its terminal questions and waits for the answers, and it
+//! must get them when no window is attached. The host answers; a client's
+//! emulator only draws.
 //!
 //! - [`protocol`]: the wire contract, versioned on its own because a host
 //!   and its clients are routinely different releases.
 //! - [`log`]: the bounded per-session output log.
+//! - [`scan`]: where that log may be cut, and which terminal modes a client
+//!   that starts reading there has to be put into.
+//! - [`engine`]: the emulator that answers the program.
 //! - [`client`]: a blocking client, and [`client::ensure_running`] to start a
 //!   host when none answers.
 //! - [`run`]: the host itself.
@@ -22,8 +29,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub mod client;
+pub mod engine;
 pub mod log;
 pub mod protocol;
+pub mod scan;
 
 #[cfg(unix)]
 mod descriptors;
@@ -35,7 +44,7 @@ mod session;
 pub use client::{ensure_running, AttachFrom, Attachment, Client, StreamEvent};
 #[cfg(unix)]
 pub use descriptors::close_inherited_descriptors;
-pub use protocol::{ExitStatus, SessionId, SessionInfo, SpawnSpec};
+pub use protocol::{ExitStatus, Facts, Rgb, SessionId, SessionInfo, SpawnSpec};
 
 /// Lock a mutex, carrying on after a panic in another holder. Everything
 /// guarded in this crate stays consistent between statements, and a host

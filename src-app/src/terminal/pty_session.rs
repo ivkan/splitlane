@@ -1028,6 +1028,33 @@ pub(super) enum ClipboardOp {
     Load(std::sync::Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
 }
 
+/// The color a pane answers a color query with. `index` is the terminal
+/// backend's own numbering: the palette as 0..=255, then foreground,
+/// background and cursor (see the caller). `None` for anything else, which
+/// gets no answer.
+///
+/// A function of its own so that the session host, which answers these
+/// queries when no window is attached, can be held to the same mapping by
+/// a test.
+pub(super) fn queried_color(
+    index: usize,
+    theme: &crate::theme::TerminalTheme,
+    cursor_color_override: Option<gpui::Hsla>,
+) -> Option<gpui::Hsla> {
+    use alacritty_terminal::vte::ansi::NamedColor;
+    if index == NamedColor::Foreground as usize {
+        Some(theme.foreground)
+    } else if index == NamedColor::Background as usize {
+        Some(theme.ansi_background)
+    } else if index == NamedColor::Cursor as usize {
+        Some(cursor_color_override.unwrap_or(theme.cursor))
+    } else if index < 256 {
+        Some(palette_color_at(index as u8, theme))
+    } else {
+        None
+    }
+}
+
 /// Convert GPUI Hsla to alacritty Rgb for color query responses.
 pub(super) fn hsla_to_alac_rgb(hsla: gpui::Hsla) -> AlacRgb {
     let rgba = gpui::Rgba::from(hsla);
@@ -3202,18 +3229,7 @@ impl TerminalState {
                 // cover OSC 4 (`OSC 4 ; n ; ?` color-palette queries) which
                 // some apps (vim, neovim, python-rich) use to detect themes.
                 let theme = crate::theme::active_theme();
-                use alacritty_terminal::vte::ansi::NamedColor;
-                let color = if index == NamedColor::Foreground as usize {
-                    Some(theme.foreground)
-                } else if index == NamedColor::Background as usize {
-                    Some(theme.ansi_background)
-                } else if index == NamedColor::Cursor as usize {
-                    Some(self.cursor_color_override.unwrap_or(theme.cursor))
-                } else if index < 256 {
-                    Some(palette_color_at(index as u8, &theme))
-                } else {
-                    None
-                };
+                let color = queried_color(index, &theme, self.cursor_color_override);
                 if let Some(hsla) = color {
                     let rgb = hsla_to_alac_rgb(hsla);
                     let response = format_fn(rgb);
@@ -6735,6 +6751,124 @@ mod tests {
         assert!(
             advanced,
             "output_generation must advance once the PTY emits output"
+        );
+    }
+
+    /// The session host answers a program's terminal queries when no
+    /// window is attached, from a terminal of its own, and a program must
+    /// not be able to tell which of the two answered. This asks both the
+    /// same questions: a terminal built the way a pane's is built, by the
+    /// same code, and the host's engine.
+    ///
+    /// The pane's side stops at the events its terminal emits, because
+    /// what turns them into bytes for the PTY needs a live PTY. Answers
+    /// the terminal writes itself are compared as they are. For a color or
+    /// a pixel size the terminal only supplies the wording, so the test
+    /// fills in the value as a pane does - the same `queried_color` and
+    /// `alacritty_window_size` - and gives the host those values as facts.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_session_host_answers_queries_like_a_pane_does() {
+        use alacritty_terminal::vte::ansi::NamedColor;
+        use splitlane_host::{Facts, Rgb};
+
+        let theme = crate::theme::active_theme();
+        let cursor_override = None;
+        let facts_color = |index: usize| {
+            let rgb = hsla_to_alac_rgb(queried_color(index, &theme, cursor_override)?);
+            Some(Rgb(rgb.r, rgb.g, rgb.b))
+        };
+        let size = TerminalWindowSize::new(80, 24, 9, 18);
+        // What a window would tell the host about itself.
+        let facts = Facts {
+            foreground: facts_color(NamedColor::Foreground as usize),
+            background: facts_color(NamedColor::Background as usize),
+            cursor: facts_color(NamedColor::Cursor as usize),
+            palette: (0..=255u8)
+                .filter_map(|index| Some((index, facts_color(index as usize)?)))
+                .collect(),
+            cell_width: Some(size.cell_width),
+            cell_height: Some(size.cell_height),
+        };
+
+        let mut pane = TerminalState::new_display_only(24, 80);
+        let mut host = splitlane_host::engine::for_this_platform(80, 24)
+            .expect("the session host has an engine on macOS");
+        host.set_facts(&facts);
+
+        let queries: &[&[u8]] = &[
+            // Cursor position and status, at the start and after output.
+            b"\x1b[6n",
+            b"\x1b[5n",
+            b"some text\r\nmore\x1b[6n",
+            // Device attributes and the terminal's name.
+            b"\x1b[c",
+            b"\x1b[>c",
+            b"\x1b[=c",
+            b"\x1b[>q",
+            // The keyboard protocol: asked about, switched on, asked again.
+            b"\x1b[?u",
+            b"\x1b[>1u\x1b[?u",
+            b"\x1b[=5;1u\x1b[?u\x1b[<u",
+            // Modes, known and unknown, private and not.
+            b"\x1b[?1$p\x1b[?7$p\x1b[?12$p\x1b[?25$p\x1b[?1000$p\x1b[?1004$p",
+            b"\x1b[?1006$p\x1b[?1049$p\x1b[?2004$p\x1b[?2026$p\x1b[?2027$p\x1b[?2031$p",
+            b"\x1b[?2004h\x1b[?1049h\x1b[?2004$p\x1b[?1049$p\x1b[6n\x1b[?1049l",
+            b"\x1b[4$p\x1b[20$p\x1b[99$p",
+            // Sizes, in cells and in pixels.
+            b"\x1b[18t",
+            b"\x1b[14t",
+            b"\x1b[16t\x1b[19t",
+            // Colors, ended both ways, and the palette.
+            b"\x1b]10;?\x07",
+            b"\x1b]11;?\x1b\\",
+            b"\x1b]12;?\x07",
+            b"\x1b]4;0;?\x07\x1b]4;9;?\x07\x1b]4;16;?\x07\x1b]4;231;?\x07\x1b]4;255;?\x07",
+            b"\x1b]4;256;?\x07\x1b]13;?\x07\x1b]19;?\x07",
+            // The clipboard, and a string nobody knows.
+            b"\x1b]52;c;?\x07",
+            b"\x1bP+q544e\x1b\\\x1bP$qm\x1b\\",
+            // A question inside a synchronized update, answered at its end.
+            b"\x1b[?2026h\x1b[6n\x1b[?2026l",
+            // Everything a program asks at start-up, in one write.
+            b"\x1b[?u\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[6n\x1b[c",
+        ];
+        let mut answered = 0;
+        for query in queries {
+            pane.write_output(query);
+            let mut from_pane = Vec::new();
+            let mut events = pane.events_rx.take().expect("a pane has an event channel");
+            while let Ok(event) = events.try_recv() {
+                match event {
+                    AlacEvent::PtyWrite(text) => from_pane.extend_from_slice(text.as_bytes()),
+                    AlacEvent::ColorRequest(index, format) => {
+                        if let Some(color) = queried_color(index, &theme, cursor_override) {
+                            from_pane.extend_from_slice(format(hsla_to_alac_rgb(color)).as_bytes());
+                        }
+                    }
+                    AlacEvent::TextAreaSizeRequest(format) => {
+                        from_pane.extend_from_slice(format(alacritty_window_size(size)).as_bytes());
+                    }
+                    _ => {}
+                }
+            }
+            pane.events_rx = Some(events);
+
+            let mut from_host = Vec::new();
+            host.advance(query, &mut from_host);
+            let show = |bytes: &[u8]| String::from_utf8_lossy(bytes).replace('\x1b', "^");
+            assert_eq!(
+                show(&from_host),
+                show(&from_pane),
+                "the session host and a pane answer {:?} differently",
+                show(query)
+            );
+            answered += usize::from(!from_pane.is_empty());
+        }
+        // Not a comparison of two silences.
+        assert!(
+            answered >= 15,
+            "only {answered} of the queries were answered"
         );
     }
 }

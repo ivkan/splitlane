@@ -31,7 +31,7 @@ focused library crates:
 | `splitlane-ai-hook` | `crates/splitlane-ai-hook/` | The hook binary agent CLIs invoke to report session events back over IPC |
 | `splitlane-ipc-client` | `crates/splitlane-ipc-client/` | Blocking JSON-RPC client for the local IPC socket (shared by the MCP bridge and the CLI) |
 | `splitlane-mcp` | `crates/splitlane-mcp/` | Stdio MCP server exposing read-only pane access (`list_panes`, `read_pane`, `search_pane`) |
-| `splitlane-host` | `crates/splitlane-host/` | The session host: owns PTYs and their output logs outside the window process, plus the client that talks to it |
+| `splitlane-host` | `crates/splitlane-host/` | The session host: owns PTYs and their output logs outside the window process and answers their terminal queries, plus the client that talks to it |
 | `splitlane-mcp-install` | `crates/splitlane-mcp-install/` | GPU-free install engine for the MCP bridge: per-agent detection, idempotent config merge, backup + atomic write |
 | `splitlane-process` | `crates/splitlane-process/` | Bounded external-process execution (wall-clock deadline + stdout cap) shared across crates |
 | `splitlane-acp` | `crates/splitlane-acp/` | Legacy Claude/Codex identity enum plus the `CLAUDECODE` environment scrub |
@@ -223,7 +223,7 @@ starts the same watcher process the app starts for the PTYs it owns, keyed on
 the host's pid, so a host that is killed outright still takes its children
 with it.
 
-**Attaching is replaying a log.** The host does not hold a screen. It holds
+**Attaching is replaying a log.** The host does not hand out a screen. It holds
 each session's raw output in a bounded ring (8 MiB by default), and a client
 that attaches asks for that log from a position, feeds it through its own
 terminal emulator, and then receives new bytes as they arrive. Output and
@@ -235,11 +235,58 @@ behind the ring is told which range it lost and continues from the oldest
 byte still held. When all logs together exceed their shared limit, the largest
 one is cut first.
 
-Two things are deliberately left open. A trim may land in the middle of an
-escape sequence, so a replay that starts at a trimmed head can begin with a
-torn sequence and unknown terminal modes. And nothing answers a terminal query
-(cursor position, device attributes) while no client is attached. Both need an
-emulator inside the host, which it does not have yet.
+**The ring is cut only where the output can be.** Every byte passes through a
+small scanner on its way into the log. It follows the grammar all terminal
+emulators share - escape sequences, strings, UTF-8 - without being one, and
+knows two things at any point: whether the stream may be cut there, and which
+terminal modes are in effect. The head of the ring only moves to a point that
+is outside every escape sequence, every multi-byte character and every
+synchronized update, so a replay never starts with half of one. Output that
+offers no such point for longer than the ring - one enormous string, an update
+that is never closed - is let grow to twice the ring's size and then cut
+anyway; the client is told that its stream starts torn.
+
+**A late client gets the modes, and asks for the picture.** A program switches
+things on once and expects them to stay: the alternate screen, bracketed
+paste, mouse reporting, application cursor keys, the keyboard protocol, the
+cursor's shape, the title. A replay that starts in the middle of the ring has
+missed all of it. So whenever a stream starts later than its client asked, at
+attach or after the client fell behind, the host first sends a *preamble*:
+bytes that put any emulator into the modes in effect at that point, with an
+explicit set or reset for every one of them so that nothing depends on the
+state the emulator was in. The host does not try to reconstruct the screen.
+The client replays what the ring still holds and then asks the host to
+`redraw`, which resizes the terminal by one row and back; a full-screen
+program repaints on that as it would for any resize. Both steps are ordinary
+resizes, recorded in the log.
+
+**The host answers the program.** Programs ask their terminal questions and
+wait: where the cursor is, what the terminal supports, what its colours are.
+Some ask on every resize. With no window attached there would be nobody to
+answer, so the host always answers, from an emulator of its own that follows
+each session's output; a window's emulator only draws. The answers must not
+differ from what the window would have said - a program would otherwise be
+told one thing at start-up and find another once a window shows it - so the
+host uses, on each platform, the emulator the window uses there, built with
+the same settings. On macOS that is `alacritty_terminal`, and a test in the
+app asks a pane's terminal and the host's the same questions and compares.
+What only a window can know, its colours and the size of a cell in pixels, a
+client tells the host; until one has, those questions go unanswered, as in a
+terminal that does not support them. Answers go to the program without ever
+holding up the thread that reads its output: one the program is not reading
+its input for is dropped.
+
+Still open:
+
+- **Linux has no answering emulator yet.** The window there uses libghostty,
+  the host does not link it, and so on Linux the host answers no queries. The
+  emulator sits behind a small trait; adding one touches nothing else.
+- **The picture comes from the program.** After a trim, what is on screen is
+  whatever the program repaints. A program that does not repaint on a resize
+  shows only what it prints from then on, and scrollback older than the ring
+  is gone for good.
+- **Only the modes listed above are restored.** A scroll region, tab stops or
+  a character set that a program set once, before the trim, are not.
 
 **The wire contract has its own version.** Sessions are supposed to survive an
 update, so a host and the window attached to it are routinely different
