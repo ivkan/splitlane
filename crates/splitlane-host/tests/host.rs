@@ -25,6 +25,8 @@ use splitlane_host::{
     ensure_running, AttachFrom, Attachment, Client, ExitStatus, HostConfig, HostError, SessionId,
     SessionInfo, SpawnSpec, StreamEvent,
 };
+#[cfg(target_os = "macos")]
+use splitlane_host::{Facts, Rgb};
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
@@ -170,6 +172,10 @@ struct Trace {
     next: Option<u64>,
     positions: Vec<(u64, Pos)>,
     gaps: Vec<(u64, u64)>,
+    /// Each preamble with the position it was sent ahead of.
+    preambles: Vec<(u64, Vec<u8>)>,
+    /// A gap was reported and its preamble has not arrived yet.
+    preamble_due: bool,
     exit: Option<ExitStatus>,
 }
 
@@ -177,12 +183,21 @@ impl Trace {
     fn starting_at(attachment: &Attachment) -> Self {
         Trace {
             next: Some(attachment.start_seq),
+            // A stream that starts later than asked opens with one.
+            preamble_due: attachment.gap,
             ..Trace::default()
         }
     }
 
     fn record(&mut self, event: StreamEvent) {
         assert!(self.exit.is_none(), "an event after the exit: {event:?}");
+        // A preamble comes exactly where it is owed and nowhere else.
+        assert_eq!(
+            matches!(event, StreamEvent::Preamble(_)),
+            self.preamble_due,
+            "{event:?}"
+        );
+        self.preamble_due = false;
         match event {
             StreamEvent::Output { seq, bytes } => {
                 assert_eq!(Some(seq), self.next, "output out of sequence");
@@ -205,6 +220,11 @@ impl Trace {
                 assert!(resumes_at > lost_from);
                 self.gaps.push((lost_from, resumes_at));
                 self.next = Some(resumes_at);
+                self.preamble_due = true;
+            }
+            StreamEvent::Preamble(bytes) => {
+                assert_eq!(bytes.first(), Some(&0x18), "a preamble opens with a cancel");
+                self.preambles.push((self.next.unwrap(), bytes));
             }
             StreamEvent::Exited(status) => self.exit = Some(status),
         }
@@ -564,6 +584,314 @@ fn a_late_attach_to_a_trimmed_log_starts_at_its_head_and_says_so() {
     );
 }
 
+fn visible(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).replace('\x1b', "^")
+}
+
+#[test]
+fn a_late_attach_to_a_trimmed_log_is_given_the_modes_before_the_output() {
+    let host = TestHost::start(|config| config.log_capacity_bytes = 4096);
+    let client = host.client();
+    // Switched on once, at the start, and long gone from the log by the
+    // time anybody attaches.
+    let setup = "\x1b[?1049h\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?25l\x1b[5 q\x1b]2;a title\x07";
+    let script = format!(
+        "printf '\\033[?1049h\\033[?2004h\\033[?1000h\\033[?1006h\\033[?25l\\033[5 q\\033]2;a title\\007'; {}",
+        print_numbered_lines(2000)
+    );
+    let expected = format!("{setup}{}", numbered_lines(2000));
+    let (session, _) = client.spawn(sh(&script)).unwrap();
+    wait_for_tail(&client, session, expected.len() as u64);
+    let listed = info(&client, session);
+    assert!(listed.log_head_seq > setup.len() as u64);
+
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    assert!(attachment.gap && !attachment.torn);
+    assert_eq!(attachment.start_seq, listed.log_head_seq);
+    // `Trace` insists that the preamble is the first event and the only
+    // one of its kind.
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the tail of the log", |t| {
+        t.next == Some(expected.len() as u64)
+    });
+    assert_eq!(trace.text(), &expected[listed.log_head_seq as usize..]);
+    let [(at, preamble)] = trace.preambles.as_slice() else {
+        panic!("one preamble expected, got {:?}", trace.preambles);
+    };
+    assert_eq!(*at, listed.log_head_seq);
+    let preamble = visible(preamble);
+    for restored in [
+        "^[?1049h",
+        "^[?2004h",
+        "^[?1000h",
+        "^[?1006h",
+        "^[?25l",
+        "^[5 q",
+        "^]2;a title^\\",
+    ] {
+        assert!(
+            preamble.contains(restored),
+            "{restored} is not in {preamble}"
+        );
+    }
+
+    // A client that asks for a position the log still has was not cut off
+    // from anything and is sent no preamble: `Trace` would refuse one.
+    let resuming = host.client();
+    let exact = resuming
+        .attach(session, AttachFrom::Seq(listed.log_head_seq))
+        .unwrap();
+    assert!(!exact.gap && !exact.torn);
+    let mut resumed = Trace::starting_at(&exact);
+    resumed.follow(&exact, "the tail of the log", |t| {
+        t.next == Some(expected.len() as u64)
+    });
+    assert!(resumed.preambles.is_empty());
+}
+
+#[test]
+fn a_log_cut_through_a_sequence_says_so_and_still_gives_the_modes() {
+    let host = TestHost::start(|config| config.log_capacity_bytes = 1024);
+    let client = host.client();
+    // One title of 6000 bytes: nowhere in it may the log be cut, and it is
+    // several times the log.
+    let (session, _) = client
+        .spawn(sh(
+            "stty -opost; printf '\\033[?2004h\\033]2;'; i=0; while [ $i -lt 100 ]; do printf '%060d' 0; i=$((i+1)); done; read hold",
+        ))
+        .unwrap();
+    let total = "\x1b[?2004h\x1b]2;".len() as u64 + 6000;
+    wait_for_tail(&client, session, total);
+    let listed = info(&client, session);
+    assert!(listed.log_head_seq > 0);
+    assert!(listed.log_bytes <= 2 * 1024);
+
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    assert!(attachment.gap && attachment.torn);
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the tail of the log", |t| {
+        t.next == Some(total)
+    });
+    assert!(visible(&trace.preambles[0].1).contains("^[?2004h"));
+    assert!(trace.text().bytes().all(|byte| byte == b'0'));
+}
+
+#[test]
+fn a_redraw_resizes_the_terminal_by_a_row_and_back() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    // The shell reports each size change it is signalled about, with the
+    // size it finds then.
+    let (session, _) = client
+        .spawn(sh(
+            "trap 'echo \"winch $(stty size)\"' WINCH; sleep 1000 & echo ready; while :; do wait $!; done",
+        ))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the shell to be ready", |t| {
+        t.text().contains("ready")
+    });
+    let resizes = |trace: &Trace| -> Vec<(u16, u16)> {
+        trace
+            .positions
+            .iter()
+            .filter_map(|(_, pos)| match pos {
+                Pos::Resize(cols, rows) => Some((*cols, *rows)),
+                Pos::Byte(_) => None,
+            })
+            .collect()
+    };
+    let winches = |trace: &Trace| -> Vec<String> {
+        trace
+            .text()
+            .lines()
+            .filter(|line| line.starts_with("winch ") && line.ends_with('0'))
+            .map(str::to_owned)
+            .collect()
+    };
+
+    client.redraw(session).unwrap();
+    trace.follow(&attachment, "both resizes and both signals", |t| {
+        resizes(t).len() == 2 && winches(t).len() == 2
+    });
+    // Two records like any other resize, and the size that was there
+    // before is the size that is there after.
+    assert_eq!(resizes(&trace), [(80, 23), (80, 24)]);
+    assert_eq!(winches(&trace)[1], "winch 24 80");
+    let listed = info(&client, session);
+    assert_eq!((listed.cols, listed.rows), (80, 24));
+
+    // A real resize that lands between the two steps is what the redraw
+    // comes back to, not the size it started from.
+    client.redraw(session).unwrap();
+    client.resize(session, 100, 30).unwrap();
+    trace.follow(&attachment, "the redraw to finish", |t| {
+        resizes(t).len() == 5 && winches(t).last().is_some_and(|line| line == "winch 30 100")
+    });
+    assert_eq!(resizes(&trace)[2..], [(80, 23), (100, 30), (100, 30)]);
+    let listed = info(&client, session);
+    assert_eq!((listed.cols, listed.rows), (100, 30));
+
+    client.kill(session).unwrap();
+    trace.follow_to_exit(&attachment);
+    let error = client.redraw(session).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_SESSION_EXITED));
+    let error = client.redraw(SessionId::new_random()).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_NO_SESSION));
+}
+
+/// What `od` prints for `bytes` once the blanks are taken out.
+#[cfg(target_os = "macos")]
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// A shell command that reads `count` bytes of input and prints them as
+/// hexadecimal digits. The terminal must be in raw mode: each byte is then
+/// one read, so exactly `count` are consumed.
+#[cfg(target_os = "macos")]
+fn read_hex(count: usize) -> String {
+    format!("dd bs=1 count={count} 2>/dev/null | od -An -tx1 | tr -d ' \\n'")
+}
+
+// The three tests below need an engine, and the host has one on macOS only
+// so far.
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_program_gets_its_answers_with_nobody_attached() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    // Where is the cursor, is the keyboard protocol supported, what are
+    // you. The second goes unanswered, as it does in a pane, and the
+    // program reads exactly the two answers that are left: one more or one
+    // fewer and the digits printed would be different ones.
+    let answers = b"\x1b[1;3R\x1b[?6c";
+    let script = format!(
+        "stty raw -echo; printf 'ab\\033[6n\\033[?u\\033[c'; {}; printf ' end'",
+        read_hex(answers.len())
+    );
+    let (session, _) = client.spawn(sh(&script)).unwrap();
+    let exited = wait_for("the child to get its answers", || {
+        info(&client, session).exited
+    });
+    assert_eq!(exited.code, Some(0));
+    // Nobody followed the session while it ran.
+    let trace = whole_session(&client, session);
+    assert_eq!(
+        trace.text(),
+        format!("ab\x1b[6n\x1b[?u\x1b[c{} end", hex(answers))
+    );
+    assert_eq!(info(&client, session).dropped_replies, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn questions_about_the_window_are_answered_once_a_client_has_told_the_host() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let background = b"\x1b]11;rgb:1212/3434/5656\x07";
+    let pixels = b"\x1b[4;432;720t";
+    let resized = b"\x1b[4;600;1000t";
+    // Three rounds, each started by a byte of input: before any facts,
+    // after them, and after a resize that came with pixels. In the first
+    // the colour goes unanswered and only the question after it is.
+    let script = format!(
+        "stty raw -echo; printf '\\033]11;?\\007\\033[14t\\033[c'; {}; printf ' first '; \
+         dd bs=1 count=1 2>/dev/null >/dev/null; printf '\\033]11;?\\007\\033[14t'; {}; printf ' second '; \
+         dd bs=1 count=1 2>/dev/null >/dev/null; printf '\\033[14t'; {}; printf ' third'",
+        read_hex(5),
+        read_hex(background.len() + pixels.len()),
+        read_hex(resized.len()),
+    );
+    let (session, _) = client.spawn(sh(&script)).unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the first round", |t| {
+        t.text().contains(" first ")
+    });
+    assert!(trace
+        .text()
+        .contains(&format!("{} first ", hex(b"\x1b[?6c"))));
+
+    client
+        .set_facts(
+            session,
+            &Facts {
+                background: Some(Rgb(0x12, 0x34, 0x56)),
+                cell_width: Some(9),
+                cell_height: Some(18),
+                ..Facts::default()
+            },
+        )
+        .unwrap();
+    client.input(session, b"g").unwrap();
+    trace.follow(&attachment, "the second round", |t| {
+        t.text().contains(" second ")
+    });
+    let mut both = background.to_vec();
+    both.extend_from_slice(pixels);
+    assert!(trace.text().contains(&format!("{} second ", hex(&both))));
+
+    client
+        .resize_with_pixels(session, 100, 30, 1000, 600)
+        .unwrap();
+    client.input(session, b"g").unwrap();
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    assert!(trace.text().ends_with(&format!("{} third", hex(resized))));
+
+    // Facts given with the spawn are there for the program's first
+    // question.
+    let script = format!(
+        "stty raw -echo; printf '\\033]10;?\\033\\\\'; {}",
+        read_hex(25)
+    );
+    let (session, _) = client
+        .spawn(SpawnSpec {
+            facts: Some(Facts {
+                foreground: Some(Rgb(0xab, 0xcd, 0xef)),
+                ..Facts::default()
+            }),
+            ..sh(&script)
+        })
+        .unwrap();
+    let trace = whole_session(&client, session);
+    assert!(trace
+        .text()
+        .ends_with(&hex(b"\x1b]10;rgb:abab/cdcd/efef\x1b\\")));
+    // Facts for a session that is over, or was never there.
+    client.set_facts(session, &Facts::default()).unwrap();
+    let error = client
+        .set_facts(SessionId::new_random(), &Facts::default())
+        .unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_NO_SESSION));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn answers_a_program_does_not_read_are_dropped_and_hold_nothing_back() {
+    const QUESTIONS: u64 = 4 * 1024 * 1024;
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    // A million questions and not one read. The answers fill the PTY's
+    // input, then the queue to it, and from there on have nowhere to go.
+    let (session, _) = client
+        .spawn(sh(&format!(
+            "stty raw -echo; yes \"$(printf '\\033[c')\" | head -c {QUESTIONS}; printf DONE; sleep 300"
+        )))
+        .unwrap();
+    // Every byte the program printed is in the log: the thread reading its
+    // output never waited for room to answer.
+    wait_for_tail(&client, session, QUESTIONS + 4);
+    let listed = info(&client, session);
+    assert!(listed.dropped_replies > 0, "{listed:?}");
+    assert_eq!(listed.exited, None);
+    // And the session still does what it is told.
+    client.kill(session).unwrap();
+    wait_for("the session to end", || info(&client, session).exited);
+}
+
 /// A connection driven by hand, for what [`Client`] will not do: say the
 /// wrong thing, or say nothing.
 struct RawClient {
@@ -647,9 +975,19 @@ fn a_client_that_stops_reading_does_not_hold_the_session_back() {
 
     let mut next = 0u64;
     let mut lost = 0u64;
+    let mut preamble_due = false;
     let status = loop {
         let frame = protocol::read_frame(&mut stalled.stream).unwrap();
+        // Every gap is followed by the modes to resume in, before anything
+        // else.
+        assert_eq!(frame.kind == protocol::KIND_PREAMBLE, preamble_due);
+        preamble_due = false;
         match frame.kind {
+            protocol::KIND_PREAMBLE => {
+                let (id, bytes) = protocol::decode_preamble(&frame.body).unwrap();
+                assert_eq!(id, session);
+                assert!(bytes.starts_with(b"\x18\x1b[?2026l"));
+            }
             protocol::KIND_OUTPUT => {
                 let output = protocol::decode_output(&frame.body).unwrap();
                 assert_eq!(output.seq, next);
@@ -663,6 +1001,7 @@ fn a_client_that_stops_reading_does_not_hold_the_session_back() {
                         let resumes_at = event.resumes_at.unwrap();
                         lost += resumes_at - next;
                         next = resumes_at;
+                        preamble_due = true;
                     }
                     protocol::EVENT_EXITED => break event.code,
                     other => panic!("unexpected event {other}"),
@@ -962,12 +1301,13 @@ fn a_socket_file_left_by_a_dead_host_is_replaced() {
     // Bound and dropped: the file stays, and nothing listens on it.
     drop(UnixListener::bind(&socket).unwrap());
     assert!(socket.exists());
-    let nobody = Client::connect(&socket);
-    assert!(
-        matches!(nobody, Err(HostError::NotRunning)),
-        "{:?}",
-        nobody.err()
-    );
+    // Asked until the answer is the lasting one. Other tests of this binary
+    // start children all the time, and a child forked while the listener
+    // above was open keeps it open until it execs: a connect in that moment
+    // is accepted by nobody and times out instead of being refused.
+    wait_for("the dead socket to refuse connections", || {
+        matches!(Client::connect(&socket), Err(HostError::NotRunning)).then_some(())
+    });
 
     let config = HostConfig::new(&socket);
     let thread = std::thread::spawn(move || splitlane_host::run(config));
@@ -1082,6 +1422,25 @@ fn host_process_entry() {
 }
 
 /// Pids of the processes started with `socket` among their arguments.
+///
+/// Read from `/proc` where there is one, so the test asks for no program
+/// that a minimal Linux image lacks; macOS has no `/proc` and ships `pgrep`.
+#[cfg(target_os = "linux")]
+fn host_processes(socket: &Path) -> Vec<u32> {
+    let wanted = socket.to_str().unwrap().as_bytes();
+    let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline"))
+                .is_ok_and(|line| line.split(|byte| *byte == 0).any(|arg| arg == wanted))
+        })
+        .collect();
+    pids.sort_unstable();
+    pids
+}
+
+#[cfg(not(target_os = "linux"))]
 fn host_processes(socket: &Path) -> Vec<u32> {
     let output = std::process::Command::new("pgrep")
         .arg("-f")

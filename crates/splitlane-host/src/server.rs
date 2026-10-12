@@ -47,8 +47,8 @@ use crate::client::Client;
 use crate::log::Item;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, Frame, FrameError, Hello, Incompatible, ListResult,
-    ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId, ShutdownArgs, SpawnArgs,
-    SpawnResult, WireError,
+    ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId, SetFactsArgs, ShutdownArgs,
+    SpawnArgs, SpawnResult, WireError,
 };
 use crate::session::{LogBudget, Session, SessionSettings, KILL_GRACE};
 use crate::{lock, HostConfig, HostError, MAX_SOCKET_PATH_BYTES};
@@ -706,10 +706,24 @@ impl Connection {
                     session,
                     cols,
                     rows,
+                    pixel_width,
+                    pixel_height,
                 } = args(raw)?;
                 self.session(session)?
-                    .resize(cols, rows)
+                    .resize(cols, rows, pixel_width.zip(pixel_height))
                     .map_err(|message| WireError::new(protocol::ERR_SESSION_EXITED, message))?;
+                Ok(Value::Null)
+            }
+            protocol::OP_REDRAW => {
+                let SessionArgs { session } = args(raw)?;
+                self.session(session)?
+                    .redraw()
+                    .map_err(|message| WireError::new(protocol::ERR_SESSION_EXITED, message))?;
+                Ok(Value::Null)
+            }
+            protocol::OP_SET_FACTS => {
+                let SetFactsArgs { session, facts } = args(raw)?;
+                self.session(session)?.set_facts(&facts);
                 Ok(Value::Null)
             }
             protocol::OP_KILL => {
@@ -754,7 +768,8 @@ impl Connection {
     }
 
     fn attach(&mut self, id: u64, raw: Value) -> bool {
-        let prepared = (|| -> Result<(Arc<Session>, AttachResult), WireError> {
+        type Prepared = (Arc<Session>, AttachResult, Option<Vec<u8>>);
+        let prepared = (|| -> Result<Prepared, WireError> {
             let AttachArgs { session, from_seq } = args(raw)?;
             let found = self.session(session)?;
             if let Some(previous) = self.followers.get(&session) {
@@ -771,6 +786,10 @@ impl Connection {
             // back that far, the client is told its replay is incomplete.
             let (start_seq, gap) = shared.log.resolve(from_seq.unwrap_or(0));
             let (cols, rows) = shared.log.size_at(start_seq);
+            // A stream that starts later than was asked for starts at the
+            // head, in whatever modes the output before it left behind.
+            let preamble = gap.then(|| shared.log.head_preamble());
+            let torn = gap && shared.log.head_torn();
             shared.attached += 1;
             drop(shared);
             Ok((
@@ -781,10 +800,12 @@ impl Connection {
                     gap,
                     cols,
                     rows,
+                    torn,
                 },
+                preamble,
             ))
         })();
-        let (session, attached) = match prepared {
+        let (session, attached, preamble) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => return self.reply(id, Err(error)),
         };
@@ -799,7 +820,14 @@ impl Connection {
             }
         );
         let start_seq = attached.start_seq;
-        if !self.reply(id, result(&attached)) {
+        // Written here and not by the stream's thread, so that it is in
+        // place before anything of the stream can be.
+        let announced = self.reply(id, result(&attached))
+            && preamble.is_none_or(|bytes| {
+                self.wire
+                    .send(|half| protocol::write_preamble(half, session.id, &bytes))
+            });
+        if !announced {
             lock(&session.shared).attached -= 1;
             return false;
         }
@@ -844,7 +872,9 @@ impl Connection {
 }
 
 enum Step {
-    Batch(crate::log::Batch),
+    /// What to send next, with the preamble for it if the log moved past
+    /// the stream.
+    Batch(crate::log::Batch, Option<Vec<u8>>),
     Exited(protocol::ExitStatus),
     Stop,
 }
@@ -876,7 +906,10 @@ fn follow(session: &Arc<Session>, wire: &Wire, stop: &AtomicBool, mut cursor: u6
                 }
                 let batch = shared.log.read_from(cursor, protocol::MAX_DATA_CHUNK);
                 if batch.gap || !batch.items.is_empty() {
-                    break Step::Batch(batch);
+                    // Taken under the same lock as the batch: these are
+                    // the modes at exactly where it starts.
+                    let preamble = batch.gap.then(|| shared.log.head_preamble());
+                    break Step::Batch(batch, preamble);
                 }
                 if let Some(status) = shared.exit {
                     break Step::Exited(status);
@@ -890,13 +923,13 @@ fn follow(session: &Arc<Session>, wire: &Wire, stop: &AtomicBool, mut cursor: u6
                     .unwrap_or_else(|poisoned| poisoned.into_inner().0);
             }
         };
-        let batch = match step {
+        let (batch, preamble) = match step {
             Step::Stop => break,
             Step::Exited(status) => {
                 wire.json(protocol::KIND_EVENT, &EventBody::exited(id, status));
                 break;
             }
-            Step::Batch(batch) => batch,
+            Step::Batch(batch, preamble) => (batch, preamble),
         };
         if batch.gap {
             gaps += 1;
@@ -911,6 +944,12 @@ fn follow(session: &Arc<Session>, wire: &Wire, stop: &AtomicBool, mut cursor: u6
                 protocol::KIND_EVENT,
                 &EventBody::gap(id, cursor, batch.start_seq),
             ) {
+                break;
+            }
+        }
+        // After the gap it explains and before the output it prepares for.
+        if let Some(bytes) = preamble {
+            if !wire.send(|half| protocol::write_preamble(half, id, &bytes)) {
                 break;
             }
         }

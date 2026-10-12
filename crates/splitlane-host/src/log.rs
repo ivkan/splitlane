@@ -8,13 +8,37 @@
 //! makes "everything from N" a complete question, and it puts a resize
 //! exactly where it happened between two stretches of output, which is where
 //! a replaying emulator has to apply it.
+//!
+//! # Where the ring may be cut
+//!
+//! A replay that starts at the head of a ring that has wrapped must not
+//! start inside an escape sequence, a UTF-8 character or a synchronized
+//! update, and it needs to be told which terminal modes were in effect
+//! there. Every byte therefore passes through a [`Scanner`] on its way in.
+//! Where the scanner says the stream may be cut, a record is closed and the
+//! next one remembers the modes it starts in; the head only ever moves to
+//! the start of such a record. [`SessionLog::head_preamble`] is those modes
+//! as bytes for the emulator of whoever starts reading at the head.
+//!
+//! Output that offers no such place - megabytes of one device control
+//! string, a synchronized update that is never closed - cannot hold memory
+//! for ever. Once the log has grown to twice its capacity it is cut at a
+//! record boundary regardless, and says so through
+//! [`SessionLog::head_torn`] until the head reaches a clean place again.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+
+use crate::scan::{Modes, Scanner};
 
 /// Default capacity of one session's log.
 pub const DEFAULT_CAPACITY: usize = 8 * 1024 * 1024;
 /// Largest chunk consecutive writes are merged into.
 pub const MAX_CHUNK: usize = 64 * 1024;
+/// How much output a record holds before it is closed at the next place the
+/// stream may be cut. Smaller records let the head land closer to where a
+/// trim wants it, at the price of more of them.
+pub const SEAL_AT: usize = 4 * 1024;
 
 /// Most items one [`SessionLog::read_from`] returns. Resize records carry no
 /// bytes, so the byte limit alone would let a long run of them be copied in
@@ -54,6 +78,11 @@ struct Entry {
     /// Sequence number of the record's first position.
     seq: u64,
     record: Record,
+    /// The modes in effect where the record starts.
+    modes: Arc<Modes>,
+    /// Whether the stream may be cut where the record starts. The head
+    /// moves to this record by choice only when it may.
+    clean: bool,
 }
 
 /// A piece of the log as handed to a reader.
@@ -85,25 +114,41 @@ pub struct SessionLog {
     stored: usize,
     capacity: usize,
     chunk_cap: usize,
+    seal_at: usize,
     /// Terminal size in effect at `head_seq`. A trimmed resize record is
     /// folded in here, so a replay that starts at the head still knows the
     /// size to start from.
     head_size: (u16, u16),
+    /// Has read everything up to `tail_seq`.
+    scanner: Scanner,
+    /// The last output record ends where the stream may be cut and is not
+    /// added to: the next output starts a record of its own.
+    sealed: bool,
+    /// The modes in effect at `head_seq`. `None` while the head is the
+    /// session's start, where there is nothing to restore.
+    head_modes: Option<Arc<Modes>>,
+    head_torn: bool,
 }
 
 impl SessionLog {
     pub fn new(capacity: usize, cols: u16, rows: u16) -> Self {
+        // A chunk is dropped whole, so a chunk as large as the ring would
+        // make every trim empty it. An eighth keeps a full ring at least
+        // seven-eighths full after a trim.
+        let chunk_cap = (capacity / 8).clamp(1, MAX_CHUNK);
         Self {
             entries: VecDeque::new(),
             head_seq: 0,
             tail_seq: 0,
             stored: 0,
             capacity,
-            // A chunk is dropped whole, so a chunk as large as the ring
-            // would make every trim empty it. An eighth keeps a full ring at
-            // least seven-eighths full after a trim.
-            chunk_cap: (capacity / 8).clamp(1, MAX_CHUNK),
+            chunk_cap,
+            seal_at: SEAL_AT.min(chunk_cap / 2).max(1),
             head_size: (cols, rows),
+            scanner: Scanner::new(),
+            sealed: false,
+            head_modes: None,
+            head_torn: false,
         }
     }
 
@@ -120,6 +165,28 @@ impl SessionLog {
         self.stored
     }
 
+    /// The modes in effect after everything appended so far.
+    pub fn modes(&self) -> &Modes {
+        self.scanner.modes()
+    }
+
+    /// True when the head is not a place the stream may be cut: the log had
+    /// to drop output that offered none. A replay from the head then starts
+    /// with the rest of whatever was cut through.
+    pub fn head_torn(&self) -> bool {
+        self.head_torn
+    }
+
+    /// What an emulator has to be fed before a replay from the head:
+    /// see [`Modes::preamble`]. Empty while the head is the session's
+    /// start.
+    pub fn head_preamble(&self) -> Vec<u8> {
+        match &self.head_modes {
+            Some(modes) => modes.preamble(),
+            None => Vec::new(),
+        }
+    }
+
     /// Append output. Returns true when the head moved to make room.
     pub fn append_output(&mut self, mut bytes: &[u8]) -> bool {
         while !bytes.is_empty() {
@@ -127,27 +194,56 @@ impl SessionLog {
                 Some(Entry {
                     record: Record::Output(last),
                     ..
-                }) => self.chunk_cap.saturating_sub(last.len()),
+                }) if !self.sealed => self.chunk_cap.saturating_sub(last.len()),
                 _ => 0,
             };
             if room == 0 {
                 self.entries.push_back(Entry {
                     seq: self.tail_seq,
                     record: Record::Output(Vec::new()),
+                    modes: self.scanner.snapshot(),
+                    clean: self.scanner.is_safe(),
                 });
+                self.sealed = false;
                 continue;
             }
+            // The scanner sees exactly what goes into this record, so the
+            // place it reports can be compared with the record's length.
             let take = room.min(bytes.len());
-            if let Some(Entry {
+            let (piece, rest) = bytes.split_at(take);
+            bytes = rest;
+            let held = self.chunk_cap - room;
+            let cut = self
+                .scanner
+                .feed(piece)
+                .filter(|safe| held + safe.offset >= self.seal_at);
+            let Some(Entry {
                 record: Record::Output(last),
                 ..
             }) = self.entries.back_mut()
-            {
-                last.extend_from_slice(&bytes[..take]);
+            else {
+                continue;
+            };
+            match cut {
+                Some(safe) => {
+                    last.extend_from_slice(&piece[..safe.offset]);
+                    // Closed for good; give back what growing it reserved.
+                    last.shrink_to_fit();
+                    if safe.offset < take {
+                        self.entries.push_back(Entry {
+                            seq: self.tail_seq + safe.offset as u64,
+                            record: Record::Output(piece[safe.offset..].to_vec()),
+                            modes: safe.modes,
+                            clean: true,
+                        });
+                    } else {
+                        self.sealed = true;
+                    }
+                }
+                None => last.extend_from_slice(piece),
             }
             self.tail_seq += take as u64;
             self.stored += take;
-            bytes = &bytes[take..];
         }
         self.trim_to(self.capacity) > 0
     }
@@ -159,42 +255,90 @@ impl SessionLog {
         self.entries.push_back(Entry {
             seq: self.tail_seq,
             record,
+            modes: self.scanner.snapshot(),
+            // A resize is a place to cut whenever the output before it is.
+            clean: self.scanner.is_safe(),
         });
+        self.sealed = false;
         self.tail_seq += 1;
         self.trim_to(self.capacity) > 0
     }
 
-    /// Drop records from the head until at most `limit` bytes are held.
-    /// Returns how many sequence numbers were dropped.
+    /// Drop records from the head until at most `limit` bytes are held, or
+    /// until there is no place left to cut. Returns how many sequence
+    /// numbers were dropped.
+    ///
+    /// The head stops only where the stream may be cut, so the log can stay
+    /// above `limit`. It does not stay above twice its capacity: past that
+    /// it is cut at a record boundary and the head is marked torn.
     pub fn trim_to(&mut self, limit: usize) -> u64 {
         let before = self.head_seq;
         while self.stored > limit {
-            if self.droppable_head_records() == 0 {
-                break;
+            match self.droppable_head_records(limit == 0) {
+                0 if self.stored > self.capacity.saturating_mul(2) => {
+                    while self.stored > limit && self.drop_head_record() {}
+                    break;
+                }
+                0 => break,
+                count => {
+                    for _ in 0..count {
+                        self.drop_head_record();
+                    }
+                }
             }
-            let Some(entry) = self.entries.pop_front() else {
-                break;
-            };
-            self.stored -= entry.record.cost();
-            self.head_seq = entry.seq + entry.record.span();
-            if let Record::Resize { cols, rows } = entry.record {
-                self.head_size = (cols, rows);
-            }
+        }
+        if self.head_seq != before {
+            self.settle_head();
         }
         self.head_seq - before
     }
 
-    /// How many records may be dropped from the head right now.
-    ///
-    /// Every record boundary is allowed today, so a trim can leave the head
-    /// in the middle of an escape sequence or inside an alternate screen,
-    /// and a replay from there starts with a torn sequence and unknown
-    /// terminal modes. Once the host runs an emulator of its own, this is
-    /// the place that limits a trim to a point where the parser is in its
-    /// ground state, and [`SessionLog::read_from`] is where the modes in
-    /// effect at the new head get prepended as a preamble.
-    fn droppable_head_records(&self) -> usize {
-        self.entries.len()
+    /// Drop everything, clean place or not. For a log nobody will read
+    /// again.
+    pub fn clear(&mut self) {
+        while self.drop_head_record() {}
+        self.settle_head();
+    }
+
+    /// How many records to drop from the head to reach the nearest place
+    /// the stream may be cut. Zero when there is none.
+    fn droppable_head_records(&self, to_nothing: bool) -> usize {
+        let next_clean = self.entries.iter().skip(1).position(|entry| entry.clean);
+        match next_clean {
+            Some(skipped) => skipped + 1,
+            // The end of the log can be such a place too, but cutting there
+            // keeps nothing, and that includes output a client following
+            // the session has not read yet. It is used only when nothing is
+            // to be kept; otherwise the next record to arrive starts clean
+            // and the head moves then.
+            None if to_nothing && self.scanner.is_safe() => self.entries.len(),
+            None => 0,
+        }
+    }
+
+    fn drop_head_record(&mut self) -> bool {
+        let Some(entry) = self.entries.pop_front() else {
+            return false;
+        };
+        self.stored -= entry.record.cost();
+        self.head_seq = entry.seq + entry.record.span();
+        if let Record::Resize { cols, rows } = entry.record {
+            self.head_size = (cols, rows);
+        }
+        true
+    }
+
+    /// Record what the head is after records were dropped.
+    fn settle_head(&mut self) {
+        let (modes, clean) = match self.entries.front() {
+            Some(entry) => (entry.modes.clone(), entry.clean),
+            None => {
+                self.sealed = false;
+                (self.scanner.snapshot(), self.scanner.is_safe())
+            }
+        };
+        self.head_modes = Some(modes);
+        self.head_torn = !clean;
     }
 
     /// Terminal size in effect at `seq`.
@@ -357,11 +501,14 @@ mod tests {
         for _ in 0..1000 {
             log.append_output(b"0123456789");
         }
-        assert_eq!(log.entries.len(), 1);
+        // Not one record per write, and not one record for all of them
+        // either: a record is closed once it holds enough to be worth
+        // trimming on its own.
+        assert_eq!(log.entries.len(), 10_000 / SEAL_AT + 1);
 
         // One large write is cut at the chunk size.
         log.append_output(&vec![b'x'; MAX_CHUNK * 2]);
-        assert_eq!(log.entries.len(), 3);
+        assert_eq!(log.entries.len(), 10_000 / SEAL_AT + 3);
         assert!(log
             .entries
             .iter()
@@ -510,5 +657,178 @@ mod tests {
         assert!(log.stored_bytes() <= 256);
         assert_eq!(log.trim_to(0), 512 - dropped);
         assert_eq!(log.head_seq(), log.tail_seq());
+    }
+
+    use crate::scan::tests::{synthetic, Mix, Rng};
+
+    fn preamble_text(log: &SessionLog) -> String {
+        String::from_utf8_lossy(&log.head_preamble()).replace('\x1b', "^")
+    }
+
+    #[test]
+    fn the_head_only_moves_to_where_the_stream_may_be_cut() {
+        let (mut all_moves, mut torn) = (0, 0);
+        for seed in 1..=30u64 {
+            let stream = synthetic(seed, 2000, Mix::EVERYTHING);
+            let mut rng = Rng(seed | 1);
+            let capacity = [16, 64, 256, 1024][rng.below(4)];
+            let mut log = SessionLog::new(capacity, 80, 24);
+            // Sequence numbers of the resize records, to turn a position
+            // of the log back into an offset of the output.
+            let mut resizes: Vec<u64> = Vec::new();
+            let mut fed = 0;
+            let mut moves = 0;
+            while fed < stream.bytes.len() {
+                let before = log.head_seq();
+                if rng.below(20) == 0 {
+                    resizes.push(log.tail_seq());
+                    log.append_resize(80 + rng.below(40) as u16, 24);
+                } else {
+                    // Any size of write, across any boundary.
+                    let take = (1 + rng.below(capacity)).min(stream.bytes.len() - fed);
+                    log.append_output(&stream.bytes[fed..fed + take]);
+                    fed += take;
+                }
+                assert!(log.stored_bytes() <= capacity * 2 + RESIZE_COST);
+                if log.head_seq() == before {
+                    continue;
+                }
+                moves += 1;
+                torn += usize::from(log.head_torn());
+                let head = log.head_seq();
+                let offset =
+                    (head - resizes.iter().filter(|seq| **seq < head).count() as u64) as usize;
+                assert_eq!(
+                    stream.safe.binary_search(&offset).is_ok(),
+                    !log.head_torn(),
+                    "seed {seed}, capacity {capacity}: the head is at offset {offset}"
+                );
+                // The modes handed out with the head are the ones a
+                // scanner of its own finds there, torn or not.
+                {
+                    let mut scanner = Scanner::new();
+                    scanner.feed(&stream.bytes[..offset]);
+                    assert_eq!(
+                        log.head_preamble(),
+                        scanner.modes().preamble(),
+                        "seed {seed}, offset {offset}"
+                    );
+                }
+                // What is left reads back as the output from there on.
+                let (items, _) = drain(&log, head, 1 + rng.below(capacity));
+                assert_eq!(output_of(&items), &stream.bytes[offset..fed]);
+            }
+            assert!(moves > 0, "seed {seed}: the head never moved");
+            all_moves += moves;
+        }
+        assert!(all_moves > 1000, "the head moved only {all_moves} times");
+        // Both kinds of cut were seen: the smallest logs are smaller than
+        // a synchronized update.
+        assert!(
+            torn > 0 && torn < all_moves / 10,
+            "{torn} of {all_moves} torn"
+        );
+    }
+
+    #[test]
+    fn a_log_with_no_place_to_cut_waits_and_then_cuts_anyway() {
+        let mut log = SessionLog::new(1024, 80, 24);
+        log.append_output(b"\x1b[?1049h\x1b[?2004hbefore");
+        // One device control string, far larger than the log.
+        log.append_output(b"\x1bP");
+        let mut data = 0;
+        while log.head_seq() == 0 {
+            log.append_output(&[b'x'; 100]);
+            data += 100;
+            assert!(log.stored_bytes() <= 2 * 1024 + 100);
+        }
+        // It grew to twice its capacity first.
+        assert!(data > 1024, "cut after only {data} bytes");
+        assert!(log.head_torn());
+        assert!(log.stored_bytes() <= 1024);
+        // The modes at the cut are known all the same.
+        assert!(preamble_text(&log).contains("^[?1049h"));
+        assert!(preamble_text(&log).contains("^[?2004h"));
+
+        // It stays torn for as long as the string runs, and stays bounded.
+        for _ in 0..100 {
+            log.append_output(&[b'x'; 100]);
+            assert!(log.head_torn());
+            assert!(log.stored_bytes() <= 2 * 1024 + 100);
+        }
+        // A resize in the middle of the string is not a place to cut.
+        log.append_resize(100, 30);
+        log.append_output(&[b'x'; 2000]);
+        assert!(log.head_torn());
+
+        // Once the string ends, the next trim lands on a clean head again.
+        log.append_output(b"\x1b\\\x1b[?2004l");
+        log.append_output(&[b'y'; 2000]);
+        assert!(!log.head_torn());
+        assert!(log.stored_bytes() <= 1024);
+        assert!(preamble_text(&log).contains("^[?2004l"));
+        let (items, _) = drain(&log, log.head_seq(), 64);
+        assert!(output_of(&items).iter().all(|byte| *byte == b'y'));
+        assert_eq!(log.size_at(log.head_seq()), (100, 30));
+    }
+
+    #[test]
+    fn a_synchronized_update_is_kept_whole() {
+        let mut log = SessionLog::new(1024, 80, 24);
+        log.append_output(&[b'a'; 900]);
+        log.append_output(b"\x1b[?2026h");
+        log.append_output(&[b'b'; 1100]);
+        // Over capacity, and the only places to cut are before the update.
+        assert!(log.stored_bytes() > 1024);
+        let head = log.head_seq() as usize;
+        assert!(head <= 900, "the head is inside the update, at {head}");
+        assert!(!log.head_torn());
+        log.append_output(b"\x1b[?2026l");
+        log.append_output(&[b'c'; 600]);
+        assert!(log.stored_bytes() <= 1024);
+        assert!(!log.head_torn());
+    }
+
+    #[test]
+    fn a_cut_asked_for_from_outside_obeys_the_same_rule() {
+        // What the total budget does to the largest log.
+        let mut log = SessionLog::new(64 * 1024, 80, 24);
+        log.append_output(&[b'a'; 6000]);
+        log.append_output(b"\x1b]2;");
+        log.append_output(&[b't'; 20_000]);
+        let stored = log.stored_bytes();
+
+        // Asked to halve: everything before the open string can go and
+        // nothing of the string can.
+        let dropped = log.trim_to(stored / 2);
+        assert!(dropped > 0 && dropped <= 6000, "dropped {dropped}");
+        assert!(log.stored_bytes() > stored / 2);
+        assert!(!log.head_torn());
+        // Asked again, there is nothing more to give.
+        assert_eq!(log.trim_to(stored / 2), 0);
+
+        log.append_output(b"\x07after");
+        log.append_output(&[b'z'; 5000]);
+        assert!(log.trim_to(4096) > 0);
+        assert!(log.stored_bytes() <= 4096);
+        assert!(!log.head_torn());
+
+        // Forgetting a session takes everything, wherever that leaves it.
+        log.append_output(b"\x1b[");
+        log.clear();
+        assert_eq!((log.stored_bytes(), log.head_seq()), (0, log.tail_seq()));
+        assert!(log.head_torn());
+    }
+
+    #[test]
+    fn there_is_no_preamble_until_the_head_leaves_the_start() {
+        let mut log = SessionLog::new(64, 80, 24);
+        log.append_output(b"\x1b[?2004h");
+        assert_eq!(log.head_seq(), 0);
+        assert!(log.head_preamble().is_empty());
+        assert!(!log.head_torn());
+        log.append_output(&[b'x'; 200]);
+        assert!(log.head_seq() > 0);
+        assert!(preamble_text(&log).contains("^[?2004h"));
     }
 }

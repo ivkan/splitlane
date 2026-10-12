@@ -61,6 +61,11 @@ widestring = "1"
 # no HTML writer, no simd. The in-tree markdown viewer is what reads it.
 pulldown-cmark = { version = "0.10", default-features = false }
 
+# Terminal emulation. One version for the window and for the session host:
+# the host answers a program's queries in the window's place, so the two must
+# be the same emulator down to the release.
+alacritty_terminal = "0.26"
+
 # Internal crates
 splitlane-acp = { path = "crates/splitlane-acp" }
 splitlane-config = { path = "crates/splitlane-config" }
