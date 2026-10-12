@@ -27,6 +27,8 @@ use alacritty_terminal::vte::ansi::Rgb as AlacRgb;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use super::element::color::palette_color_at;
+#[cfg(target_os = "macos")]
+use super::host_session::{RemoteMsg, RemoteSender};
 use super::listener::{ClipboardGate, SpikeTermSize, ZedListener};
 use super::marks::{
     CommandMark, Osc133Scanner, RawMark, ScanEvent, SharedLastCommand, SharedMarkRing,
@@ -162,6 +164,10 @@ fn resolved_cursor_color_override() -> Option<gpui::Hsla> {
 pub enum TerminalType {
     /// A live PTY: writes go to the alacritty `EventLoop` channel.
     Pty(EventLoopSender),
+    /// A PTY the session host owns: writes are queued for the thread that
+    /// talks to the host.
+    #[cfg(target_os = "macos")]
+    Remote(RemoteSender),
     /// No PTY: input / resize / shutdown are dropped.
     DisplayOnly,
 }
@@ -188,13 +194,22 @@ impl PtySender {
         Self::new(TerminalType::DisplayOnly)
     }
 
-    /// Whether this is a live PTY (vs display-only / not-yet-promoted). A
-    /// display-only sender already drops every write, so this is an explicit
-    /// readiness query for callers/tests rather than a guard the write path
-    /// needs.
-    #[allow(dead_code)]
-    pub fn is_pty(&self) -> bool {
-        matches!(self.0, TerminalType::Pty(_))
+    /// Sender for a terminal whose PTY the session host owns.
+    #[cfg(target_os = "macos")]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "no pane is opened in the session host yet")
+    )]
+    pub(super) fn remote(sender: RemoteSender) -> Self {
+        Self::new(TerminalType::Remote(sender))
+    }
+
+    /// Whether a child is at the other end (vs display-only /
+    /// not-yet-promoted). A display-only sender already drops every write,
+    /// so this is what tells the input path to send instead of buffering
+    /// for a promotion still to come.
+    pub fn is_live(&self) -> bool {
+        !matches!(self.0, TerminalType::DisplayOnly)
     }
 
     /// Internal: drop the message for a display-only terminal, otherwise hand it
@@ -206,23 +221,48 @@ impl PtySender {
         }
     }
 
-    /// Forward input bytes to the child (the [`Notify`] path).
-    pub fn write(&self, bytes: Cow<'static, [u8]>) {
+    /// Forward input bytes to the child (the [`Notify`] path). False when
+    /// the bytes were refused because too much input is waiting already,
+    /// which only a terminal in the session host can say: the `EventLoop`
+    /// takes everything.
+    pub fn write(&self, bytes: Cow<'static, [u8]>) -> bool {
         // alacritty: the terminal hangs if 0 bytes are sent through.
         if bytes.is_empty() {
-            return;
+            return true;
+        }
+        #[cfg(target_os = "macos")]
+        if let TerminalType::Remote(sender) = &self.0 {
+            return sender.input(bytes);
         }
         self.send(Msg::Input(bytes));
+        true
     }
 
     /// Resize the PTY grid (drives SIGWINCH to the child).
     pub fn resize(&self, size: AlacWindowSize) {
+        #[cfg(target_os = "macos")]
+        if let TerminalType::Remote(sender) = &self.0 {
+            // The host is told the size of the whole text area, and works
+            // the size of a cell out of it.
+            sender.send(RemoteMsg::Resize {
+                cols: size.num_cols,
+                rows: size.num_lines,
+                pixel_width: size.cell_width.saturating_mul(size.num_cols),
+                pixel_height: size.cell_height.saturating_mul(size.num_lines),
+            });
+            return;
+        }
         self.send(Msg::Resize(size));
     }
 
     /// Ask the `EventLoop` to shut down (sent from `Drop` before the teardown
     /// ladder).
     pub fn shutdown(&self) {
+        #[cfg(target_os = "macos")]
+        if let TerminalType::Remote(sender) = &self.0 {
+            sender.send(RemoteMsg::Shutdown);
+            return;
+        }
         self.send(Msg::Shutdown);
     }
 }
@@ -235,7 +275,10 @@ pub struct PtyNotifier(pub PtySender);
 
 impl Notify for PtyNotifier {
     fn notify<B: Into<Cow<'static, [u8]>>>(&self, bytes: B) {
-        self.0.write(bytes.into());
+        // Nobody on this path is asked whether the write went through: it
+        // carries the terminal's own protocol writes, and input that was
+        // counted where it was accepted.
+        let _ = self.0.write(bytes.into());
     }
 }
 
@@ -3704,8 +3747,10 @@ impl TerminalState {
             }
             return;
         }
-        if self.notifier.0.is_pty() {
-            self.notifier.notify(input);
+        if self.notifier.0.is_live() {
+            if !self.notifier.0.write(input) {
+                self.note_refused_input();
+            }
             return;
         }
         if input.is_empty() {
@@ -5062,11 +5107,11 @@ mod tests {
     #[test]
     fn display_only_sender_is_inert() {
         // The DisplayOnly variant of TerminalType has no EventLoop, so
-        // write/resize/shutdown are dropped (no panic) and `is_pty` is false.
+        // write/resize/shutdown are dropped (no panic) and `is_live` is false.
         // This is the spawn-failure fallback's write side - input must never
         // reach a child that doesn't exist.
         let s = PtySender::display_only();
-        assert!(!s.is_pty());
+        assert!(!s.is_live());
         s.write(b"echo hi\n".as_slice().into());
         s.resize(AlacWindowSize {
             num_cols: 80,
@@ -5077,12 +5122,100 @@ mod tests {
         s.shutdown();
     }
 
+    /// The write side of a pane in the session host: nothing is sent from
+    /// the calling thread, everything is queued in the order it was said.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sender_to_the_session_host_queues_what_it_is_told() {
+        use crate::terminal::host_session::{RemoteMsg, remote_queue};
+
+        let (queue, receiver) = remote_queue(MAX_PENDING_INPUT_BYTES);
+        let s = PtySender::remote(queue);
+        assert!(s.is_live());
+        assert!(s.write(b"echo hi\n".as_slice().into()));
+        // An empty write is not a message; alacritty hangs on one and the
+        // host would be sent a frame that says nothing.
+        assert!(s.write(b"".as_slice().into()));
+        s.resize(AlacWindowSize {
+            num_cols: 100,
+            num_lines: 30,
+            cell_width: 9,
+            cell_height: 18,
+        });
+        // Before the first layout the size of a cell is not known.
+        s.resize(AlacWindowSize {
+            num_cols: 80,
+            num_lines: 24,
+            cell_width: 0,
+            cell_height: 0,
+        });
+        s.shutdown();
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Some(RemoteMsg::Input(bytes)) if bytes.as_ref() == b"echo hi\n"
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Some(RemoteMsg::Resize {
+                cols: 100,
+                rows: 30,
+                pixel_width: 900,
+                pixel_height: 540,
+            })
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Some(RemoteMsg::Resize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+        ));
+        assert!(matches!(receiver.try_recv(), Some(RemoteMsg::Shutdown)));
+        assert!(receiver.try_recv().is_none());
+    }
+
+    /// A program that stops reading holds up the connection to the host,
+    /// and what is typed after that waits here. It may not wait without
+    /// bound, and a write that was dropped has to be countable, as it is
+    /// before a pane has a shell at all.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn input_for_the_session_host_is_bounded_and_a_refusal_is_counted() {
+        use crate::terminal::host_session::remote_queue;
+
+        let (mut state, _pending) = TerminalState::new_pending(80, 24);
+        let (queue, receiver) = remote_queue(MAX_PENDING_INPUT_BYTES);
+        state.notifier = PtyNotifier(PtySender::remote(queue));
+
+        let chunk = vec![b'x'; 8 * 1024];
+        let fitting = MAX_PENDING_INPUT_BYTES / chunk.len();
+        for _ in 0..fitting + 2 {
+            state.write_to_pty(chunk.clone());
+        }
+        assert_eq!(state.refused_input_count(), 2);
+        // Sent on, not kept for a promotion that already happened.
+        assert!(state.pending_input.lock().expect("lock").is_empty());
+        let mut queued = 0;
+        while let Some(msg) = receiver.try_recv() {
+            assert!(matches!(msg, RemoteMsg::Input(_)));
+            queued += 1;
+        }
+        assert_eq!(queued, fitting);
+
+        // Room again once the queue was emptied.
+        state.write_to_pty(chunk);
+        assert_eq!(state.refused_input_count(), 2);
+    }
+
     #[test]
     fn new_display_only_terminal_has_no_pty() {
         // The spawn-failure fallback builds a DisplayOnly terminal; its
         // notifier must report no PTY so the input path drops bytes.
         let state = TerminalState::new_display_only(24, 80);
-        assert!(!state.notifier.0.is_pty());
+        assert!(!state.notifier.0.is_live());
     }
 
     #[test]
@@ -5092,7 +5225,7 @@ mod tests {
         // `eventloop_pty_echoes_input_into_grid` smoke via the synchronous
         // `new`, which composes new_pending + open_pty_and_eventloop + promote.)
         let (state, _events_tx) = TerminalState::new_pending(80, 24);
-        assert!(!state.notifier.0.is_pty());
+        assert!(!state.notifier.0.is_live());
         assert_eq!(state.child_pid, 0);
     }
 
@@ -5222,7 +5355,7 @@ mod tests {
         // without this queue the command (e.g. `claude`) is lost and the
         // terminal opens to a bare shell. `write_to_pty` must buffer instead.
         let (state, _events_tx) = TerminalState::new_pending(80, 24);
-        assert!(!state.notifier.0.is_pty());
+        assert!(!state.notifier.0.is_live());
         state.write_to_pty(b"claude\r".to_vec());
         let queued = state.pending_input.lock().expect("pending_input lock");
         assert_eq!(queued.len(), 1);
@@ -5419,12 +5552,12 @@ mod tests {
         let (mut state, pending) = TerminalState::new_pending(params.cols, params.rows);
         // Buffered while display-only - the live notifier does not exist yet.
         state.write_to_pty(b"echo SPLITLANE_FLUSH_OK\n".to_vec());
-        assert!(!state.notifier.0.is_pty());
+        assert!(!state.notifier.0.is_live());
 
         let spawned = TerminalState::open_pty_and_eventloop(params, pending, None)
             .expect("open a PTY-backed terminal via tty::new + EventLoop");
         state.promote(spawned);
-        assert!(state.notifier.0.is_pty());
+        assert!(state.notifier.0.is_live());
 
         let mut found = false;
         for _ in 0..60 {
