@@ -52,7 +52,8 @@ fn output(seq: u64, bytes: &[u8]) -> StreamEvent {
 }
 
 /// Do what the view's event pump does, and say which of the emulator's
-/// events came through.
+/// events came through. Every event is taken here and nowhere else, so
+/// none can be acted on without being named.
 fn pump(state: &mut TerminalState) -> Vec<&'static str> {
     let mut seen = Vec::new();
     let mut events = state.events_rx.take().expect("an event channel");
@@ -74,7 +75,15 @@ fn pump(state: &mut TerminalState) -> Vec<&'static str> {
         state.process_event(event);
     }
     state.events_rx = Some(events);
-    state.sync();
+    state.sync_channels();
+    let mut finished = state
+        .replay_finished_rx
+        .take()
+        .expect("a channel for the end of a replay");
+    while let Ok(()) = finished.try_recv() {
+        state.replay_finished();
+    }
+    state.replay_finished_rx = Some(finished);
     seen.retain(|name| *name != "other");
     seen
 }
