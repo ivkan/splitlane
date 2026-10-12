@@ -6,6 +6,7 @@ members = [
     "crates/splitlane-config",
     "crates/splitlane-ipc-client",
     "crates/splitlane-ghostty-smoke",
+    "crates/splitlane-host",
     "crates/splitlane-libghostty-sys",
     "crates/splitlane-mcp",
     "crates/splitlane-mcp-install",
@@ -63,6 +64,7 @@ pulldown-cmark = { version = "0.10", default-features = false }
 # Internal crates
 splitlane-acp = { path = "crates/splitlane-acp" }
 splitlane-config = { path = "crates/splitlane-config" }
+splitlane-host = { path = "crates/splitlane-host" }
 splitlane-ipc-client = { path = "crates/splitlane-ipc-client" }
 splitlane-process = { path = "crates/splitlane-process" }
 splitlane-telemetry = { path = "crates/splitlane-telemetry" }

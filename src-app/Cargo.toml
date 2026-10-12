@@ -89,6 +89,10 @@ splitlane-process = { workspace = true }
 # `splitlane <verb>` CLI subcommands use to drive a RUNNING instance over the
 # existing IPC socket and exit before any GPUI init.
 splitlane-ipc-client = { workspace = true }
+# The session host: the same binary runs as the host when started with
+# `__splitlane-host`, and `splitlane host ...` talks to it. GPU-free; the
+# window does not use it yet.
+splitlane-host = { workspace = true }
 # File system watcher (OS-native: inotify/FSEvents/ReadDirectoryChanges)
 notify = "7"
 

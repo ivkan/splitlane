@@ -109,7 +109,9 @@ pub fn run_pty_guard_from_args(args: &[String]) -> i32 {
     set_control_pipe_nonblocking();
     while parent_still_attached(parent_pid) && process_group_alive(child_pgid) {
         if control_pipe_closed() {
-            return 0;
+            // Closed on purpose while the parent lives, or closed because
+            // the parent died a moment ago; the check below tells which.
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }

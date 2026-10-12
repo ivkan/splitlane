@@ -406,3 +406,64 @@ fn mcp_bridge_tool_names_keep_reading_pane_as_surface() {
         );
     }
 }
+
+#[test]
+fn the_session_host_wire_keeps_its_numbers_and_names() {
+    // A session host outlives the release that started it, so the next
+    // release's window talks to this release's host. Everything below is
+    // read by a peer built from other source.
+    let protocol = read("crates/splitlane-host/src/protocol.rs");
+    for line in [
+        "pub const KIND_HELLO: u8 = 1;",
+        "pub const KIND_REQUEST: u8 = 2;",
+        "pub const KIND_REPLY: u8 = 3;",
+        "pub const KIND_EVENT: u8 = 4;",
+        "pub const KIND_ERROR: u8 = 5;",
+        "pub const KIND_OUTPUT: u8 = 16;",
+        "pub const KIND_INPUT: u8 = 17;",
+        "pub const OP_SPAWN: &str = \"spawn\";",
+        "pub const OP_LIST: &str = \"list\";",
+        "pub const OP_ATTACH: &str = \"attach\";",
+        "pub const OP_DETACH: &str = \"detach\";",
+        "pub const OP_RESIZE: &str = \"resize\";",
+        "pub const OP_KILL: &str = \"kill\";",
+        "pub const OP_FORGET: &str = \"forget\";",
+        "pub const OP_SHUTDOWN: &str = \"shutdown\";",
+        "pub const EVENT_RESIZED: &str = \"resized\";",
+        "pub const EVENT_EXITED: &str = \"exited\";",
+        "pub const EVENT_GAP: &str = \"gap\";",
+        "pub const ERR_INCOMPATIBLE: &str = \"incompatible\";",
+    ] {
+        assert!(
+            protocol.contains(line),
+            "the session host wire lost `{line}`; a host from an earlier release still speaks it"
+        );
+    }
+    // The length field is little-endian and counts the kind byte.
+    assert!(
+        protocol.contains("frame.extend_from_slice(&(len as u32).to_le_bytes());"),
+        "the frame header of the session host wire changed"
+    );
+
+    // Where a window of the next release looks for the host of this one, and
+    // how the binary is told to be one.
+    let paths = read("src-app/src/runtime_paths.rs");
+    assert!(
+        paths.contains("\"splitlane-host.sock\"") && paths.contains("\"splitlane-dev-host.sock\""),
+        "the session host socket keeps its file name"
+    );
+    assert!(
+        read("crates/splitlane-host/src/lib.rs")
+            .contains("pub const HOST_SUBCOMMAND: &str = \"__splitlane-host\";"),
+        "the argument that starts the binary as a session host is published"
+    );
+
+    // The host starts the app's watcher by name; the two crates share no
+    // code, so nothing but this keeps the two spellings the same.
+    let guard = "PTY_GUARD_SUBCOMMAND: &str = \"__splitlane-pty-guard\";";
+    assert!(
+        read("src-app/src/agents/parent_guard.rs").contains(guard)
+            && read("crates/splitlane-host/src/session.rs").contains(guard),
+        "the app and the session host must name the PTY watcher subcommand alike"
+    );
+}

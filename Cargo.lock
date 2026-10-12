@@ -5925,6 +5925,7 @@ dependencies = [
  "smol",
  "splitlane-acp",
  "splitlane-config",
+ "splitlane-host",
  "splitlane-ipc-client",
  "splitlane-mcp-install",
  "splitlane-process",
@@ -5991,6 +5992,21 @@ dependencies = [
  "libc",
  "portable-pty",
  "splitlane-terminal-ghostty",
+]
+
+[[package]]
+name = "splitlane-host"
+version = "0.2.6"
+dependencies = [
+ "interprocess",
+ "libc",
+ "log",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

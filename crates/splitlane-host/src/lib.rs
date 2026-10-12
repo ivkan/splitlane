@@ -1,0 +1,157 @@
+//! The session host: a long-lived process without a window that owns the
+//! PTYs of terminal sessions, so that closing, updating or crashing the
+//! window does not end what runs in them.
+//!
+//! A client connects over a local socket, asks for a session's output log
+//! from some position, replays it through its own terminal emulator and then
+//! follows the live bytes. The host keeps raw output, not a screen, so it
+//! needs no emulator to serve a late client and no agreement with the client
+//! about how a screen is represented.
+//!
+//! - [`protocol`]: the wire contract, versioned on its own because a host
+//!   and its clients are routinely different releases.
+//! - [`log`]: the bounded per-session output log.
+//! - [`client`]: a blocking client, and [`client::ensure_running`] to start a
+//!   host when none answers.
+//! - [`run`]: the host itself.
+//!
+//! The host runs on Unix. On other platforms the crate compiles and its
+//! entry points return [`HostError::Unsupported`].
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+pub mod client;
+pub mod log;
+pub mod protocol;
+
+#[cfg(unix)]
+mod descriptors;
+#[cfg(unix)]
+mod server;
+#[cfg(unix)]
+mod session;
+
+pub use client::{ensure_running, AttachFrom, Attachment, Client, StreamEvent};
+#[cfg(unix)]
+pub use descriptors::close_inherited_descriptors;
+pub use protocol::{ExitStatus, SessionId, SessionInfo, SpawnSpec};
+
+/// Lock a mutex, carrying on after a panic in another holder. Everything
+/// guarded in this crate stays consistent between statements, and a host
+/// that stops answering takes every session with it.
+pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Argv[1] that makes the app binary run as a host instead of opening a
+/// window.
+pub const HOST_SUBCOMMAND: &str = "__splitlane-host";
+
+/// Largest socket path the host accepts, in bytes. `sockaddr_un.sun_path`
+/// holds 104 bytes on macOS and 108 on Linux, including the terminating
+/// NUL; the smaller one is used everywhere so a path that works on one
+/// works on the other.
+pub const MAX_SOCKET_PATH_BYTES: usize = 103;
+
+#[derive(Debug, thiserror::Error)]
+pub enum HostError {
+    #[error("the session host is not supported on this platform yet")]
+    Unsupported,
+    /// Nothing is listening on the socket.
+    #[error("no session host is running")]
+    NotRunning,
+    #[error("a session host is already running on {0}")]
+    AlreadyRunning(PathBuf),
+    /// The two sides have no contract in common. The message says which
+    /// side is too old.
+    #[error("{0}")]
+    Incompatible(String),
+    /// The host answered a request with an error.
+    #[error("{message}")]
+    Remote { code: String, message: String },
+    #[error("{0}")]
+    Protocol(String),
+    #[error("timed out {0}")]
+    Timeout(String),
+    #[error("{0}")]
+    Config(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+impl HostError {
+    /// The error code of a refused request, if that is what this is.
+    pub fn remote_code(&self) -> Option<&str> {
+        match self {
+            HostError::Remote { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+}
+
+/// Nothing is inherited that a host could hold on to on this platform yet.
+#[cfg(not(unix))]
+pub fn close_inherited_descriptors() {}
+
+/// How a host is run. Built with [`HostConfig::new`] and adjusted field by
+/// field, so a field added later does not break a caller.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct HostConfig {
+    pub socket_path: PathBuf,
+    /// Whether the socket's directory is the host's to create and to
+    /// restrict to the user. False for a path the caller chose: then the
+    /// directory must already exist and must not be writable by others.
+    pub owns_socket_dir: bool,
+    /// Capacity of one session's output log.
+    pub log_capacity_bytes: usize,
+    /// Bound on all logs together. When their sum goes over it, the largest
+    /// log is cut first, by the excess but by no more than half of itself,
+    /// and then the next largest.
+    pub total_log_capacity_bytes: usize,
+    /// How long the host stays with no running session and no connected
+    /// client before it exits.
+    pub idle_grace: Duration,
+    /// The binary that implements the kill-on-host-death watcher. `None`
+    /// starts no watcher, which is what tests want.
+    pub guard_exe: Option<PathBuf>,
+    pub max_connections: usize,
+    /// Treat SIGTERM and SIGINT as a forced shutdown. Process-wide, so it
+    /// is off unless the host is the whole process.
+    pub handle_signals: bool,
+    /// Release version reported in the handshake. For display only.
+    pub version: String,
+}
+
+impl HostConfig {
+    pub fn new(socket_path: impl Into<PathBuf>) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+            owns_socket_dir: true,
+            log_capacity_bytes: log::DEFAULT_CAPACITY,
+            total_log_capacity_bytes: 128 * 1024 * 1024,
+            idle_grace: Duration::from_secs(10),
+            guard_exe: None,
+            max_connections: 64,
+            handle_signals: false,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+}
+
+/// Run a host on `config.socket_path` until it is told to stop or has been
+/// idle for the grace period. Returns after the socket is removed.
+pub fn run(config: HostConfig) -> Result<(), HostError> {
+    #[cfg(unix)]
+    {
+        server::run(config)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config;
+        Err(HostError::Unsupported)
+    }
+}

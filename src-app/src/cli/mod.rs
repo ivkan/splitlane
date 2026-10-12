@@ -17,6 +17,7 @@ mod answer_cmd;
 mod control_cmds;
 mod flow_cmd;
 mod flow_spec;
+mod host_cmd;
 mod read_cmds;
 mod selector;
 mod send_cmd;
@@ -93,6 +94,7 @@ const VERBS: &[&str] = &[
     "focus",
     "key",
     "flow",
+    "host",
     "list_panes",
     "read_pane",
     "search_pane",
@@ -503,6 +505,10 @@ enum Commands {
         #[arg(long, value_name = "SECS", requires = "until")]
         start_grace: Option<u64>,
     },
+    /// Inspect or stop the session host, the process that keeps terminal
+    /// sessions running without a window.
+    #[command(subcommand)]
+    Host(HostCommand),
     /// Stream lifecycle events from the running instance as JSONL.
     Watch {
         /// Only stream events for this pane (selector). Omit for all panes.
@@ -514,6 +520,22 @@ enum Commands {
         /// Hide subscription protocol frames and print user events only.
         #[arg(long)]
         events_only: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum HostCommand {
+    /// Say whether a session host is running, and list its sessions.
+    Status {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop the session host. Asks first if sessions are still running.
+    Stop {
+        /// Terminate running sessions without asking.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -611,6 +633,21 @@ pub fn run() -> i32 {
     if let Some(key) = cli.key {
         splitlane_ipc_client::present_session_key(key);
     }
+    // The host has a socket of its own and answers whether or not an
+    // instance is running, so these never open the instance's socket.
+    let command = match command {
+        Commands::Host(host) => {
+            let outcome = match host {
+                HostCommand::Status { json } => host_cmd::status(json),
+                HostCommand::Stop { force } => host_cmd::stop(force),
+            };
+            return outcome.unwrap_or_else(|e| {
+                eprintln!("splitlane: {}", e.message);
+                e.code
+            });
+        }
+        other => other,
+    };
 
     let client = match connect() {
         Ok(client) => client,
@@ -853,6 +890,8 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             types,
             events_only,
         } => watch_cmd::watch(client, surface.as_deref(), &types, events_only),
+        // Answered in `run`, before a client to the instance exists.
+        Commands::Host(_) => Ok(EXIT_OK),
     }
 }
 
