@@ -12,6 +12,8 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 use alacritty_terminal::Term;
+#[cfg(target_os = "macos")]
+use alacritty_terminal::event::EventListener;
 use alacritty_terminal::event::{Event as AlacEvent, Notify, WindowSize as AlacWindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll as AlacScroll};
@@ -29,6 +31,8 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use super::element::color::palette_color_at;
 #[cfg(target_os = "macos")]
 use super::host_session::{RemoteMsg, RemoteSender};
+#[cfg(target_os = "macos")]
+use super::listener::RemoteGate;
 use super::listener::{ClipboardGate, SpikeTermSize, ZedListener};
 use super::marks::{
     CommandMark, Osc133Scanner, RawMark, ScanEvent, SharedLastCommand, SharedMarkRing,
@@ -313,6 +317,8 @@ impl PtyNotifier {
 pub(crate) struct TerminalSessionBackend {
     term: SharedTerm,
     notifier: PtyNotifier,
+    #[cfg(target_os = "macos")]
+    remote_gate: Arc<RemoteGate>,
     #[cfg(any(
         all(target_os = "linux", feature = "libghostty-linux"),
         all(
@@ -329,6 +335,10 @@ pub(crate) struct TerminalSessionBackend {
 /// without importing or pattern-matching Alacritty's event enum.
 pub(crate) enum TerminalBackendEvent {
     Alacritty(AlacEvent),
+    /// A terminal in the session host has finished replaying what its
+    /// session printed before the window attached.
+    #[cfg(target_os = "macos")]
+    ReplayFinished,
     #[cfg(any(
         all(target_os = "linux", feature = "libghostty-linux"),
         all(
@@ -345,6 +355,8 @@ impl TerminalBackendEvent {
     pub(crate) fn is_wakeup(&self) -> bool {
         match self {
             Self::Alacritty(event) => matches!(event, AlacEvent::Wakeup),
+            #[cfg(target_os = "macos")]
+            Self::ReplayFinished => false,
             #[cfg(any(
                 all(target_os = "linux", feature = "libghostty-linux"),
                 all(
@@ -361,6 +373,8 @@ impl TerminalBackendEvent {
 
 pub(crate) struct TerminalBackendEvents {
     alacritty: Option<UnboundedReceiver<AlacEvent>>,
+    #[cfg(target_os = "macos")]
+    replay_finished: Option<UnboundedReceiver<()>>,
     #[cfg(any(
         all(target_os = "linux", feature = "libghostty-linux"),
         all(
@@ -404,6 +418,20 @@ impl futures::Stream for TerminalBackendEvents {
                     return std::task::Poll::Ready(Some(TerminalBackendEvent::Alacritty(event)));
                 }
                 std::task::Poll::Ready(None) => self.alacritty = None,
+                std::task::Poll::Pending => {}
+            }
+        }
+        // After the terminal's own events: the end of a replay is sent
+        // behind the title the replay left, and is acted on behind it. The
+        // sender is dropped as soon as the pane turns out to have a PTY of
+        // its own, so this is not what keeps the stream open.
+        #[cfg(target_os = "macos")]
+        if let Some(receiver) = self.replay_finished.as_mut() {
+            match futures::Stream::poll_next(std::pin::Pin::new(receiver), cx) {
+                std::task::Poll::Ready(Some(())) => {
+                    return std::task::Poll::Ready(Some(TerminalBackendEvent::ReplayFinished));
+                }
+                std::task::Poll::Ready(None) => self.replay_finished = None,
                 std::task::Poll::Pending => {}
             }
         }
@@ -452,6 +480,18 @@ pub(crate) struct PendingTerminalBackend {
     term: SharedTerm,
     events_tx: UnboundedSender<AlacEvent>,
     clipboard_gate: Arc<ClipboardGate>,
+    #[cfg(target_os = "macos")]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "no pane is opened in the session host yet")
+    )]
+    remote_gate: Arc<RemoteGate>,
+    #[cfg(target_os = "macos")]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "no pane is opened in the session host yet")
+    )]
+    replay_finished_tx: UnboundedSender<()>,
 }
 
 #[cfg(test)]
@@ -480,10 +520,16 @@ pub(crate) fn take_render_content_lock_durations() -> Vec<std::time::Duration> {
 }
 
 impl TerminalSessionBackend {
-    fn alacritty(term: SharedTerm, notifier: PtyNotifier) -> Self {
+    fn alacritty(
+        term: SharedTerm,
+        notifier: PtyNotifier,
+        #[cfg(target_os = "macos")] remote_gate: Arc<RemoteGate>,
+    ) -> Self {
         Self {
             term,
             notifier,
+            #[cfg(target_os = "macos")]
+            remote_gate,
             #[cfg(any(
                 all(target_os = "linux", feature = "libghostty-linux"),
                 all(
@@ -546,7 +592,16 @@ impl TerminalSessionBackend {
         let mut term = self.term.lock();
         #[cfg(test)]
         let lock_acquired_at = measure_lock_duration.then(std::time::Instant::now);
-        let resized = resize_if_needed(&mut term, window_size.cols, window_size.rows);
+        // While the log of a session in the host is being replayed the grid
+        // has the sizes the log recorded, one after the other: the output
+        // was laid out for them. The window's size is applied by the first
+        // frame after the replay.
+        #[cfg(target_os = "macos")]
+        let follows_window = !self.remote_gate.is_replaying();
+        #[cfg(not(target_os = "macos"))]
+        let follows_window = true;
+        let resized =
+            follows_window && resize_if_needed(&mut term, window_size.cols, window_size.rows);
         let initial_clear_consumed = clear_on_resize && resized;
         if initial_clear_consumed {
             term.grid_mut().reset();
@@ -1534,6 +1589,12 @@ pub struct TerminalState {
     term: Arc<FairMutex<Term<ZedListener>>>,
     notifier: PtyNotifier,
     events_rx: Option<UnboundedReceiver<AlacEvent>>,
+    /// What decides which of the emulator's events reach this state. Local
+    /// unless the terminal is given a PTY in the session host.
+    #[cfg(target_os = "macos")]
+    remote_gate: Arc<RemoteGate>,
+    #[cfg(target_os = "macos")]
+    replay_finished_rx: Option<UnboundedReceiver<()>>,
     #[cfg(any(
         all(target_os = "linux", feature = "libghostty-linux"),
         all(
@@ -2166,6 +2227,439 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+/// How a terminal comes to follow a session in the host.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AttachMode {
+    /// The window has just started the session itself. Everything in the
+    /// stream is happening now, the first prompt included, and the grid has
+    /// the size the window gives it.
+    Fresh,
+    /// The session was running before this terminal existed. Its log is
+    /// replayed first, quietly and at the sizes the log recorded; see
+    /// [`RemoteSink`]. A view that shows such a terminal must not clear the
+    /// grid on its first layout, as it does for a pane it started.
+    Reattach,
+}
+
+/// Where an attached stream begins, as the host said in its reply.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct StreamStart {
+    pub(super) start_seq: u64,
+    /// Where the log ended at the attach: the first position that is new.
+    pub(super) tail_seq: Option<u64>,
+    /// The stream begins later than was asked, and a preamble comes first.
+    pub(super) gap: bool,
+    pub(super) cols: u16,
+    pub(super) rows: u16,
+}
+
+/// What the thread feeding a [`RemoteSink`] has to do after an event.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SinkStep {
+    Continue,
+    /// Output was lost on the way and only the modes were restored: ask
+    /// the host to make the program repaint.
+    Redraw,
+    /// The session ended and the terminal was told. Nothing follows.
+    Ended,
+}
+
+/// The receiving ends of what a [`RemoteSink`] reports besides the grid,
+/// for the terminal state that owns the other half.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+pub(super) struct RemoteSinkChannels {
+    pub(super) cwd_rx: UnboundedReceiver<String>,
+    pub(super) marks_rx: std::sync::mpsc::Receiver<RawMark>,
+    pub(super) last_command: SharedLastCommand,
+}
+
+/// A replay in progress: where it ends and what it has held back so far.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+struct Replay {
+    /// The first position that is not old output.
+    until: u64,
+    cwd: Option<String>,
+    mark: Option<RawMark>,
+    /// A preamble was part of it, so the picture is incomplete.
+    redraw: bool,
+}
+
+/// Feeds the stream of a session in the host into a terminal.
+///
+/// For a PTY the window owns, alacritty's `EventLoop` reads the PTY, runs
+/// the bytes through [`Osc7Pty`] and the parser and wakes the window. This
+/// does the same for bytes that arrive as stream events, in the same order:
+/// the working-directory scanner, the command-mark scanner, the filter that
+/// bounds an OSC, the parser.
+///
+/// # Old output and new
+///
+/// A terminal that attaches to a running session first gets the session's
+/// log. Replaying it rebuilds the grid, and must do nothing else: the
+/// output is as old as the session and whoever was looking then has seen
+/// its effects. Until the stream reaches the position the log ended at when
+/// the attach was made, the window is therefore not woken, the terminal's
+/// gate drops what would act twice, and of the working directories and
+/// command marks the log reports only the last is kept - a mark is placed
+/// at the cursor when it is read, and the cursor is where the replay left
+/// it. At that position the kept ones are sent, the gate goes live, and the
+/// window is told once that there is something to draw.
+///
+/// Whose answers reach the program is not decided here: in either state
+/// the gate drops the emulator's replies, because the host has given them.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+pub(super) struct RemoteSink {
+    term: SharedTerm,
+    listener: ZedListener,
+    gate: Arc<RemoteGate>,
+    parser: alacritty_terminal::vte::ansi::Processor<alacritty_terminal::vte::ansi::StdSyncHandler>,
+    osc_filter: BoundedOscFilter,
+    cwd_scanner: Osc7Scanner,
+    marks_scanner: Osc133Scanner,
+    cwd_tx: UnboundedSender<String>,
+    marks_tx: std::sync::mpsc::SyncSender<RawMark>,
+    last_command: SharedLastCommand,
+    replay_finished_tx: UnboundedSender<()>,
+    replay: Option<Replay>,
+    /// The position the stream has reached, while that matters: until the
+    /// replay is over.
+    position: u64,
+    /// What the OSC filter let through of the chunk being fed.
+    filtered: Vec<u8>,
+}
+
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+impl RemoteSink {
+    /// A sink for the terminal `pending` belongs to. Moves that terminal's
+    /// gate off local: from here on the host answers its program.
+    pub(super) fn new(
+        pending: &PendingTerminalBackend,
+        mode: AttachMode,
+        start: StreamStart,
+    ) -> (Self, RemoteSinkChannels) {
+        let (cwd_tx, cwd_rx) = unbounded();
+        let (marks_tx, marks_rx) = std::sync::mpsc::sync_channel(256);
+        let last_command: SharedLastCommand = Arc::new(std::sync::Mutex::new(None));
+        let gate = pending.remote_gate.clone();
+        let replay = match mode {
+            AttachMode::Fresh => None,
+            AttachMode::Reattach => Some(Replay {
+                // A host that does not say where its log ended gives no
+                // way to tell old from new, and then nothing is old.
+                until: start.tail_seq.unwrap_or(start.start_seq),
+                cwd: None,
+                mark: None,
+                redraw: false,
+            }),
+        };
+        gate.set_mode(if replay.is_some() {
+            RemoteGate::REMOTE_REPLAY
+        } else {
+            RemoteGate::REMOTE_LIVE
+        });
+        if replay.is_some() {
+            // The log was laid out for the size the session had where the
+            // stream starts, not for the size this terminal was built at.
+            resize_if_needed(
+                &mut pending.term.lock(),
+                usize::from(start.cols),
+                usize::from(start.rows),
+            );
+        }
+        let mut sink = Self {
+            term: pending.term.clone(),
+            listener: ZedListener::with_gates(
+                pending.events_tx.clone(),
+                pending.clipboard_gate.clone(),
+                gate.clone(),
+            ),
+            gate,
+            parser: alacritty_terminal::vte::ansi::Processor::new(),
+            osc_filter: BoundedOscFilter::default(),
+            cwd_scanner: Osc7Scanner::default(),
+            marks_scanner: Osc133Scanner::default(),
+            cwd_tx,
+            marks_tx,
+            last_command: last_command.clone(),
+            replay_finished_tx: pending.replay_finished_tx.clone(),
+            replay,
+            position: start.start_seq,
+            filtered: Vec::new(),
+        };
+        // Nothing to replay, and no preamble on its way that would have to
+        // be read as part of one: live at once. Otherwise an idle session
+        // would leave the terminal replaying until its next byte.
+        if !start.gap {
+            let _ = sink.reached(start.start_seq);
+        }
+        (
+            sink,
+            RemoteSinkChannels {
+                cwd_rx,
+                marks_rx,
+                last_command,
+            },
+        )
+    }
+
+    /// Take one event of the stream, in the order the host sent it.
+    pub(super) fn handle(&mut self, event: splitlane_host::StreamEvent) -> SinkStep {
+        use splitlane_host::StreamEvent;
+        match event {
+            StreamEvent::Output { seq, bytes } => self.output(seq, &bytes),
+            StreamEvent::Resized { seq, cols, rows } => {
+                // Only while replaying. Live, the window decides the size
+                // of its grid and this is the echo of what it asked for,
+                // or one half of a redraw's nudge.
+                if self
+                    .replay
+                    .as_ref()
+                    .is_some_and(|replay| seq < replay.until)
+                {
+                    resize_if_needed(&mut self.term.lock(), usize::from(cols), usize::from(rows));
+                }
+                self.reached(seq.saturating_add(1))
+            }
+            // What was lost is lost; the preamble that follows says what
+            // to do about it.
+            StreamEvent::Gap { resumes_at, .. } => self.reached(resumes_at),
+            StreamEvent::Preamble(bytes) => {
+                self.feed(&bytes);
+                match self.replay.as_mut() {
+                    Some(replay) => {
+                        // Asked for when the replay is over: a repaint in
+                        // the middle of it would be painted over. And it
+                        // is over already if the log held nothing else.
+                        replay.redraw = true;
+                        self.reached(self.position)
+                    }
+                    None => SinkStep::Redraw,
+                }
+            }
+            StreamEvent::Exited(status) => {
+                if self.replay.is_some() {
+                    // The program that would repaint is gone.
+                    let _ = self.finish_replay();
+                }
+                self.exited(status);
+                SinkStep::Ended
+            }
+        }
+    }
+
+    fn output(&mut self, seq: u64, bytes: &[u8]) -> SinkStep {
+        let Some(until) = self.replay.as_ref().map(|replay| replay.until) else {
+            self.feed(bytes);
+            return SinkStep::Continue;
+        };
+        // One chunk can hold the last old bytes and the first new ones.
+        let old = usize::try_from(until.saturating_sub(seq))
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        self.feed(&bytes[..old]);
+        let step = self.reached(seq.saturating_add(old as u64));
+        if old < bytes.len() {
+            self.feed(&bytes[old..]);
+        }
+        step
+    }
+
+    /// The stream stands at `seq`. Ends the replay if that is where the
+    /// log ended.
+    fn reached(&mut self, seq: u64) -> SinkStep {
+        self.position = seq;
+        if self
+            .replay
+            .as_ref()
+            .is_some_and(|replay| seq >= replay.until)
+        {
+            return self.finish_replay();
+        }
+        SinkStep::Continue
+    }
+
+    fn finish_replay(&mut self) -> SinkStep {
+        let Some(replay) = self.replay.take() else {
+            return SinkStep::Continue;
+        };
+        if let Some(title) = self.gate.go_live() {
+            self.listener.send_event(title);
+        }
+        if let Some(cwd) = replay.cwd {
+            let _ = self.cwd_tx.unbounded_send(cwd);
+        }
+        if let Some(mark) = replay.mark {
+            let _ = self.marks_tx.try_send(mark);
+        }
+        let _ = self.replay_finished_tx.unbounded_send(());
+        if replay.redraw {
+            SinkStep::Redraw
+        } else {
+            SinkStep::Continue
+        }
+    }
+
+    /// Run a chunk of the session's output through the scanners and the
+    /// parser, and wake the window unless it is old output.
+    fn feed(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let Self {
+            cwd_scanner,
+            marks_scanner,
+            cwd_tx,
+            marks_tx,
+            last_command,
+            replay,
+            ..
+        } = self;
+        match replay.as_mut() {
+            Some(replay) => {
+                cwd_scanner.advance(bytes, |cwd| replay.cwd = Some(cwd));
+                marks_scanner.feed(bytes, &mut |event| match event {
+                    ScanEvent::Mark(mark) => replay.mark = Some(mark),
+                    // The newest command is the newest command, whenever
+                    // it ran.
+                    ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
+                });
+            }
+            None => {
+                cwd_scanner.advance(bytes, |cwd| {
+                    let _ = cwd_tx.unbounded_send(cwd);
+                });
+                marks_scanner.feed(bytes, &mut |event| match event {
+                    ScanEvent::Mark(mark) => {
+                        let _ = marks_tx.try_send(mark);
+                    }
+                    ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
+                });
+            }
+        }
+        self.osc_filter.advance(bytes);
+        self.filtered.clear();
+        self.filtered.extend(self.osc_filter.pending.drain(..));
+        if self.filtered.is_empty() {
+            return;
+        }
+        // One lock for the chunk: the renderer gets its turn between two
+        // of them, and a chunk is never more than the host's frame size.
+        self.parser.advance(&mut *self.term.lock(), &self.filtered);
+        // As the `EventLoop` does: no redraw while everything that was
+        // read is being held for a synchronized update.
+        if self.replay.is_none() && self.parser.sync_bytes_count() < self.filtered.len() {
+            self.listener.send_event(AlacEvent::Wakeup);
+        }
+    }
+
+    /// When a synchronized update the program began and did not end has to
+    /// be shown anyway. `None` while nothing is held.
+    pub(super) fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.parser.sync_timeout().sync_timeout()
+    }
+
+    /// The stream went quiet. Shows what a synchronized update is holding
+    /// back once its time is up, as the `EventLoop` does when its poll
+    /// times out.
+    pub(super) fn quiet(&mut self) {
+        if self
+            .sync_deadline()
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            self.parser.stop_sync(&mut *self.term.lock());
+            if self.replay.is_none() {
+                self.listener.send_event(AlacEvent::Wakeup);
+            }
+        }
+    }
+
+    fn exited(&mut self, status: splitlane_host::ExitStatus) {
+        // The same events, in the same order, as the `EventLoop` sends for
+        // a child of its own, so that one piece of code handles both.
+        if let Some(status) = exit_status_from_host(status) {
+            self.listener.send_event(AlacEvent::ChildExit(status));
+        }
+        self.term.lock().exit();
+        self.listener.send_event(AlacEvent::Wakeup);
+    }
+
+    /// The connection to the host is gone while the session was running.
+    /// The pane says so and ends, as for a shell that died: what became of
+    /// the session cannot be known from here.
+    pub(super) fn connection_lost(&mut self) {
+        let _ = self.finish_replay();
+        self.parser.advance(
+            &mut *self.term.lock(),
+            b"\r\n\x1b[0;2mThe connection to the session host was lost.\x1b[0m\r\n",
+        );
+        self.term.lock().exit();
+        self.listener.send_event(AlacEvent::Wakeup);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+fn note_command_line(last_command: &SharedLastCommand, payload: &[u8]) {
+    if let Some(command) = sanitize_command_line(payload) {
+        *last_command
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(command);
+    }
+}
+
+/// How the host says a child ended, as the status the rest of the terminal
+/// reads one from. `None` when the host could not say: the child was
+/// reaped by somebody else.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+fn exit_status_from_host(status: splitlane_host::ExitStatus) -> Option<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+    // The encoding `wait` uses: the signal in the low seven bits, or the
+    // exit code in the next eight.
+    match (status.signal, status.code) {
+        (Some(signal), _) => Some(std::process::ExitStatus::from_raw(signal & 0x7f)),
+        (None, Some(code)) => Some(std::process::ExitStatus::from_raw((code & 0xff) << 8)),
+        (None, None) => None,
+    }
+}
+
 /// Foreground (main-thread) signal mask, captured so an off-thread PTY spawn
 /// doesn't hand the child the background executor's mask (which blocks
 /// SIGINT/SIGTSTP and would break Ctrl-C / Ctrl-Z). Unix-only - a ZST on
@@ -2247,7 +2741,12 @@ impl TerminalState {
                 ghostty.clone(),
             );
         }
-        TerminalSessionBackend::alacritty(self.term.clone(), PtyNotifier(self.notifier.0.clone()))
+        TerminalSessionBackend::alacritty(
+            self.term.clone(),
+            PtyNotifier(self.notifier.0.clone()),
+            #[cfg(target_os = "macos")]
+            self.remote_gate.clone(),
+        )
     }
 
     pub(crate) fn take_backend_events(&mut self) -> TerminalBackendEvents {
@@ -2262,8 +2761,12 @@ impl TerminalState {
             )
         ))]
         let ghostty = self.ghostty_events_rx.take();
+        #[cfg(target_os = "macos")]
+        let replay_finished = self.replay_finished_rx.take();
         TerminalBackendEvents {
             alacritty,
+            #[cfg(target_os = "macos")]
+            replay_finished,
             #[cfg(any(
                 all(target_os = "linux", feature = "libghostty-linux"),
                 all(
@@ -2280,6 +2783,8 @@ impl TerminalState {
     pub(crate) fn process_backend_event(&mut self, event: TerminalBackendEvent) {
         match event {
             TerminalBackendEvent::Alacritty(event) => self.process_event(event),
+            #[cfg(target_os = "macos")]
+            TerminalBackendEvent::ReplayFinished => self.replay_finished(),
             #[cfg(any(
                 all(target_os = "linux", feature = "libghostty-linux"),
                 all(
@@ -2291,6 +2796,21 @@ impl TerminalState {
             ))]
             TerminalBackendEvent::Ghostty(event) => self.process_ghostty_event(event),
         }
+    }
+
+    /// The log of this terminal's session has been replayed and the grid
+    /// shows the session as it stands.
+    ///
+    /// It has to be drawn, but it is not activity: the output is as old as
+    /// the session. So no wakeup is counted, and the service lines the
+    /// replay left on the screen are taken note of here and not announced -
+    /// they were announced when they were printed, to whoever was looking
+    /// then. Without this the first live byte would report them as new.
+    #[cfg(target_os = "macos")]
+    fn replay_finished(&mut self) {
+        let _ = self.scan_output();
+        self.last_activity_burst = Some(std::time::Instant::now());
+        self.dirty = true;
     }
 
     pub(crate) fn process_backend_wakeup(&mut self) {
@@ -2733,6 +3253,10 @@ impl TerminalState {
             term,
             events_tx,
             clipboard_gate,
+            #[cfg(target_os = "macos")]
+                remote_gate: _,
+            #[cfg(target_os = "macos")]
+                replay_finished_tx: _,
         } = pending;
         let listener = ZedListener::with_clipboard_gate(events_tx, clipboard_gate);
         let (cwd_tx, cwd_rx) = unbounded();
@@ -2933,7 +3457,21 @@ impl TerminalState {
         let clipboard_gate = Arc::new(ClipboardGate::default());
         // The Term keeps one clone (emits Wakeup after VTE mutations); the
         // returned clone is for a later `EventLoop` on promotion.
+        #[cfg(not(target_os = "macos"))]
         let listener = ZedListener::with_clipboard_gate(events_tx.clone(), clipboard_gate.clone());
+        // Where the PTY will be is not known yet, and the `Term` keeps the
+        // listener it is built with. So it gets a gate now, in the position
+        // that changes nothing.
+        #[cfg(target_os = "macos")]
+        let remote_gate = Arc::new(RemoteGate::default());
+        #[cfg(target_os = "macos")]
+        let listener = ZedListener::with_gates(
+            events_tx.clone(),
+            clipboard_gate.clone(),
+            remote_gate.clone(),
+        );
+        #[cfg(target_os = "macos")]
+        let (replay_finished_tx, replay_finished_rx) = unbounded();
 
         let config = TermConfig {
             scrolling_history: resolved_scrollback_lines(profile),
@@ -2952,6 +3490,10 @@ impl TerminalState {
             term: term.clone(),
             events_tx,
             clipboard_gate: clipboard_gate.clone(),
+            #[cfg(target_os = "macos")]
+            remote_gate: remote_gate.clone(),
+            #[cfg(target_os = "macos")]
+            replay_finished_tx,
         };
         let state = Self {
             term,
@@ -2959,6 +3501,10 @@ impl TerminalState {
             // `promote()` installs a `Pty` sender.
             notifier: PtyNotifier(notifier_sender),
             events_rx: Some(events_rx),
+            #[cfg(target_os = "macos")]
+            remote_gate,
+            #[cfg(target_os = "macos")]
+            replay_finished_rx: Some(replay_finished_rx),
             #[cfg(any(
                 all(target_os = "linux", feature = "libghostty-linux"),
                 all(
@@ -3062,6 +3608,13 @@ impl TerminalState {
                 self.process_event(event);
             }
             self.events_rx = Some(rx);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(mut rx) = self.replay_finished_rx.take() {
+            while let Ok(()) = rx.try_recv() {
+                self.replay_finished();
+            }
+            self.replay_finished_rx = Some(rx);
         }
         #[cfg(any(
             all(target_os = "linux", feature = "libghostty-linux"),
@@ -5093,6 +5646,10 @@ pub(super) fn terminate_windows_process_tree(
     }
     result
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "pty_session_host_tests.rs"]
+mod host_tests;
 
 #[cfg(test)]
 mod tests {
