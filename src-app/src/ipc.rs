@@ -301,6 +301,19 @@ pub fn start_server() -> (
         && let Some(socket_spec) = socket_path_spec()
         && let Some(info) = detect_existing_instance(socket_spec.path())
     {
+        // The instance may be running with its window put away (`on_quit`:
+        // `keep`), and starting the app again is how a person comes back to
+        // it. An instance too old to know the method answers with an error
+        // and gets the refusal below, as before.
+        if ask_to_come_forward(socket_spec.path()) {
+            eprintln!(
+                "splitlane: already running on {} ({}); its window was brought forward.\n\
+                 Set SPLITLANE_ALLOW_MULTIPLE=1 to start a second instance.",
+                socket_spec.path().display(),
+                info
+            );
+            std::process::exit(0);
+        }
         eprintln!(
             "splitlane: another Splitlane instance is already running on {}.\n\
              Existing instance: {}\n\
@@ -682,6 +695,44 @@ fn remove_socket_file_if_socket(path: &std::path::Path, context: &str) -> bool {
 fn socket_inode(path: &std::path::Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(path).ok().map(|m| m.ino())
+}
+
+/// Ask the instance on `socket_path` to show its window. True when it said
+/// it did.
+fn ask_to_come_forward(socket_path: &std::path::Path) -> bool {
+    let Ok(name) = socket_path.to_fs_name::<GenericFilePath>() else {
+        return false;
+    };
+    let Ok(mut stream) = Stream::connect(name) else {
+        return false;
+    };
+    // Answered on the app's main thread, which drains requests every 50 ms;
+    // two seconds covers a frame that ran long.
+    if stream
+        .set_recv_timeout(Some(Duration::from_secs(2)))
+        .is_err()
+    {
+        return false;
+    }
+    if stream
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"app.activate\"}\n")
+        .is_err()
+    {
+        return false;
+    }
+    let _ = stream.flush();
+    let mut line = String::new();
+    if BufReader::new(stream)
+        .take(MAX_REQUEST_LEN)
+        .read_line(&mut line)
+        .is_err()
+    {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(&line)
+        .ok()
+        .and_then(|reply| reply.pointer("/result/activated").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
 }
 
 /// Probe `socket_path` to determine whether another live Splitlane instance
@@ -1183,6 +1234,7 @@ fn handle_connection(
                                         "surface.close", "surface.interrupt",
                                         "surface.focus", "surface.status",
                                         "surface.send_answer", "app.dispatch_action",
+                                        "app.activate",
                                         "fleet.list",
                                         "events.subscribe",
                                         "ai.session_start",

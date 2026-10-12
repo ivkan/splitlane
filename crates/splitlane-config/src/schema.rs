@@ -234,6 +234,13 @@ pub struct SplitlaneConfig {
     /// with a warn.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub script_sessions: Option<bool>,
+    /// What `Quit` and the window's close button do while agent sessions are
+    /// open: `"keep"` leaves them working and puts the window away, `"stop"`
+    /// ends the app and them with it, `"ask"` asks each time. `None` is the
+    /// platform's default ([`OnQuit::platform_default`]); an unknown word
+    /// resolves to it too.
+    #[serde(default)]
+    pub on_quit: Option<String>,
     /// The person asked for Codex sessions to reach this app. `Some(true)`:
     /// the app keeps a permissions profile in Codex's own config that allows
     /// its socket, which on Codex also opens the network to the commands of a
@@ -321,6 +328,49 @@ pub struct SplitlaneConfig {
     /// this tool" UI writes today.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tool_permissions: HashMap<String, ToolPermissionsEntry>,
+}
+
+/// What leaving the app does while agent sessions are open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnQuit {
+    /// The sessions keep working and the window is put away.
+    Keep,
+    /// The app ends, and every process it started ends with it.
+    Stop,
+    /// Ask which of the two, each time.
+    Ask,
+}
+
+impl OnQuit {
+    pub fn from_wire(word: &str) -> Option<Self> {
+        match word {
+            "keep" => Some(Self::Keep),
+            "stop" => Some(Self::Stop),
+            "ask" => Some(Self::Ask),
+            _ => None,
+        }
+    }
+
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Stop => "stop",
+            Self::Ask => "ask",
+        }
+    }
+
+    /// Keeping is the default wherever the window can leave the screen: on
+    /// macOS the app hides, and the menu bar still offers the quit that stops
+    /// everything. Elsewhere the window can only be minimised, and a close
+    /// button that silently minimises reads as a button that did not work -
+    /// so there the first answer is asked for.
+    pub fn platform_default() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Keep
+        } else {
+            Self::Ask
+        }
+    }
 }
 
 impl SplitlaneConfig {
@@ -504,6 +554,17 @@ impl SplitlaneConfig {
     /// an explicit `false` turns it off.
     pub fn script_sessions_enabled(&self) -> bool {
         self.script_sessions.unwrap_or(true)
+    }
+
+    /// What leaving the app does to the agent sessions that are open.
+    pub fn on_quit_mode(&self) -> OnQuit {
+        let Some(word) = self.on_quit.as_deref() else {
+            return OnQuit::platform_default();
+        };
+        OnQuit::from_wire(word).unwrap_or_else(|| {
+            tracing::warn!("on_quit: unknown value {word:?}; using the platform default");
+            OnQuit::platform_default()
+        })
     }
 
     /// Whether the person asked for Codex to reach this app. Default OFF:
@@ -2354,6 +2415,7 @@ mod tests {
             fleet_skill: Some(false),
             tell_opener: Some(false),
             script_sessions: Some(false),
+            on_quit: Some("stop".to_string()),
             codex_drive: Some(true),
             claude_code_button_visible: Some(true),
             codex_button_visible: Some(true),
@@ -2753,6 +2815,29 @@ mod tests {
         // Anything that is not `true` leaves the network closed.
         let cfg: SplitlaneConfig = serde_json::from_str(r#"{"codex_drive": "yes"}"#).unwrap();
         assert!(!cfg.codex_drive_enabled());
+    }
+
+    #[test]
+    fn leaving_keeps_sessions_where_the_window_can_go_and_asks_elsewhere() {
+        let default = SplitlaneConfig::default().on_quit_mode();
+        assert_eq!(default, OnQuit::platform_default());
+        if cfg!(target_os = "macos") {
+            assert_eq!(default, OnQuit::Keep);
+        } else {
+            assert_eq!(default, OnQuit::Ask);
+        }
+        for (word, mode) in [
+            ("keep", OnQuit::Keep),
+            ("stop", OnQuit::Stop),
+            ("ask", OnQuit::Ask),
+        ] {
+            let cfg: SplitlaneConfig =
+                serde_json::from_str(&format!(r#"{{"on_quit": "{word}"}}"#)).unwrap();
+            assert_eq!(cfg.on_quit_mode(), mode);
+            assert_eq!(mode.as_wire(), word);
+        }
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"on_quit": "later"}"#).unwrap();
+        assert_eq!(cfg.on_quit_mode(), OnQuit::platform_default());
     }
 
     #[test]

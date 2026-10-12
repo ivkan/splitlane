@@ -119,6 +119,7 @@ fn ipc_workspace_methods_survive_the_container_merge() {
         "surface.send_text",
         "surface.send_keystroke",
         "app.dispatch_action",
+        "app.activate",
         "surface.send_answer",
     ] {
         assert!(

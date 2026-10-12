@@ -1168,6 +1168,9 @@ impl SplitlaneApp {
             attention_queue_selected: 0,
             attention_queue_focus: cx.focus_handle(),
             pending_exit: None,
+            pending_exit_offers_keep: false,
+            kept_while_away: None,
+            kept_notice_shown: false,
             exit_confirm_focus: cx.focus_handle(),
             // Fleet grep closed.
             launch_pad: None,
@@ -1542,7 +1545,7 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
 
     use crate::{
         About, CheckForUpdatesNow, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp,
-        Paste, Quit,
+        Paste, Quit, QuitAndStop,
     };
 
     cx.set_menus(vec![
@@ -1551,6 +1554,7 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
             MenuItem::action("Check for Updates", CheckForUpdatesNow),
             MenuItem::separator(),
             MenuItem::action("Quit Splitlane", Quit),
+            MenuItem::action("Quit and Stop Sessions", QuitAndStop),
         ]),
         // No "Select All": the terminal has no select-all, so the entry was
         // an enabled menu item wired to a logging stub. It comes back with
@@ -1591,7 +1595,7 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
 pub(crate) fn install_macos_menu_action_fallbacks(cx: &mut gpui::App) {
     use crate::{
         About, CheckForUpdatesNow, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp,
-        Paste, Quit, SplitlaneApp,
+        Paste, Quit, QuitAndStop, SplitlaneApp,
     };
 
     fn with_active_splitlane_window(
@@ -1612,6 +1616,12 @@ pub(crate) fn install_macos_menu_action_fallbacks(cx: &mut gpui::App) {
     cx.on_action(|_: &Quit, cx| {
         with_active_splitlane_window(cx, |app, _window, cx| {
             app.request_exit(crate::app::exit_guard::ExitIntent::Quit, cx);
+        });
+    });
+
+    cx.on_action(|_: &QuitAndStop, cx| {
+        with_active_splitlane_window(cx, |app, _window, cx| {
+            app.request_exit(crate::app::exit_guard::ExitIntent::QuitAndStop, cx);
         });
     });
 

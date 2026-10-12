@@ -248,6 +248,12 @@
       "description": "Let a program that is not running in a pane open agent sessions. Null/true (default): a script, a scheduled job or another program of yours may run 'splitlane add' in a directory of a project open in Splitlane, and write to and close the sessions it opened with the key 'add' gave it. At most 8 such sessions run at a time. False: a caller outside a pane needs the app to be launched with SPLITLANE_IPC_ORCHESTRATION=1, as before.",
       "default": true
     },
+    "on_quit": {
+      "type": ["string", "null"],
+      "description": "What Quit and the window's close button do while agent sessions are open. 'keep': the sessions keep working and the window is put away (hidden on macOS, minimised on Linux and Windows); launching Splitlane again brings it back. 'stop': the app ends and every session's processes end with it. 'ask': ask each time. Null (default): 'keep' on macOS, 'ask' on Linux and Windows. Restarting into an update always ends the app.",
+      "enum": ["keep", "stop", "ask", null],
+      "default": null
+    },
     "codex_drive": {
       "type": ["boolean", "null"],
       "description": "Let Codex sessions reach Splitlane. True: Splitlane keeps a permissions profile named 'splitlane' in Codex's config.toml that allows its socket and makes it Codex's default; on Codex this also gives the commands of a turn network access. Null/false (default): nothing is written and Codex's sandbox refuses the socket. macOS only. Settings > Agents writes this key after showing what it costs.",

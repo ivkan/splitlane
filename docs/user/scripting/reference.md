@@ -589,6 +589,7 @@ Leave the key out to get the default.
 | `surface.show` | `surface_id` or `name`, `beside_surface_id`, `direction` | `{shown, surface_id, displaced_surface_id}` |
 | `surface.close` | `surface_id` or `name`, `stop_turn` | `{closed, surface_id, thread_id}` |
 | `surface.interrupt` | `surface_id` or `name` | `{sent, surface_id, rail_status_at_send, runs_ended, last_outcome}`. Answers as soon as the key is written; the stop is confirmed by `rail.runs_ended` passing the value given here with `rail.last_outcome` `interrupted` |
+| `app.activate` | | `{activated}`. Brings the window forward, unhiding or restoring it. Always allowed. A second launch of the app sends it and exits with 0 |
 | `app.dispatch_action` | `action`: an action name from [Keybindings](../keybindings.md) (for example `jump_next_waiting`, `toggle_files_sidebar`) | `{dispatched, action}`. The action runs on the next frame, where the same key press would land; the result does not say whether anything answered it |
 | `surface.send_answer` | `surface_id` (an agent session), `to_surface_id` (another agent pane on screen in the same project) | `{sent, surface_id, to_surface_id}`. The same as the pane menu's "Send last answer to": the answer lands on the other agent's input line and is not submitted |
 | `fleet.list` | | See above |

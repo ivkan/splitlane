@@ -739,8 +739,46 @@ agent is `running` and otherwise names the sessions and asks. `running` only:
 `waiting for you` is visible and a person's to answer, `starting` has sent
 nothing. A repeat of the same door does **not** confirm - a held `⌘Q`
 auto-repeats, and a repeat answering a question nobody has read yet is the
-failure the card exists to prevent. What reopens this: sessions that outlive the
-app (a PTY host process), which would make quitting lose nothing at all.
+failure the card exists to prevent.
+
+**Quit keeps the sessions, by putting the window away rather than ending the
+process.** The complaint that forced it: one stray `⌘Q` took down every agent
+at once, and the conversation coming back with `--resume` did not give back
+the turns in flight. The full answer is a process of its own that holds the
+terminals and outlives the app; this is the step before it, and it is the
+whole app staying up. `Quit`, `CloseWindow` and both close buttons ask the
+`on_quit` setting (`exit_guard::leave_plan`):
+
+- `keep` hides the app on macOS and minimises the window elsewhere, and asks
+  nothing, mid-turn or not, because nothing is lost. Starting the app again
+  brings the window back: the second process finds the first on the socket,
+  sends `app.activate` and exits with 0.
+- `ask` offers both answers on one card, and `enter` gives the one that stops
+  nothing.
+- `stop` is the behaviour described above, question and all.
+
+The default differs by platform, and that is a concession, not a preference.
+GPUI can hide an app only on macOS; on Linux and Windows the nearest thing is
+a minimised window, and a close button that minimises without a word reads as
+a button that did not work. So macOS keeps and the other two ask.
+
+With no agent session open the app quits whatever the setting says: a window
+put away with nothing behind it is an app that will not quit. "Open" is a
+session whose terminal the state pass saw in the last six seconds, so a
+restored row that was never shown does not hold the app up.
+
+There has to be a door that still ends everything, and it must not be the same
+key pressed twice (the auto-repeat rule above). It is its own action,
+`quit_and_stop`, on `⌥⌘Q` and in the application menu on macOS and on
+`Ctrl+Alt+Q` elsewhere - bound on all three, because where there is no
+application menu a setting of `keep` would otherwise leave no way out. The restart into an
+update is the other such door. Both keep the question about a turn in
+progress.
+
+What this does not do, and the process of its own will: survive an update, a
+crash, a logout, or the Dock's Quit, which ends the process without passing
+through `request_exit`. The session is saved before the window is put away for
+that reason.
 
 The chord's context is `Markdown && !MarkdownSearch`, because the find bar
 layers onto the same node and `enter` there belongs to `markdown_find_next`. It

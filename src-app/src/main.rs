@@ -230,6 +230,8 @@ pub(crate) enum TerminalDropdown {
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum GeneralDropdown {
     Editor,
+    /// Settings -> General: what quitting does to the open sessions.
+    OnQuit,
     /// Settings -> AI Agent: which agent the new-agent chord starts in a
     /// project that has never been asked. One dropdown state serves both
     /// pages; the row anatomy is the same and so is the open/close rule.
@@ -1359,6 +1361,13 @@ struct SplitlaneApp {
     /// Leaving the app while an agent is mid-turn asks first
     /// (`app::exit_guard`). `Some` while the card is up.
     pending_exit: Option<crate::app::exit_guard::ExitIntent>,
+    /// Whether the card on screen offers to keep the sessions.
+    pending_exit_offers_keep: bool,
+    /// How many sessions were left working when the window was last put away
+    /// without a question; taken when the window comes back.
+    kept_while_away: Option<usize>,
+    /// The notice about that is said once per run.
+    kept_notice_shown: bool,
     exit_confirm_focus: FocusHandle,
     // The fleet-grep OVERLAY used to be four fields here. The
     // design dissolves fleet search into the palette's "Output" tab, so the
@@ -2495,6 +2504,11 @@ impl Render for SplitlaneApp {
             .on_action(cx.listener(|this: &mut Self, _: &Quit, _window, cx| {
                 this.request_exit(crate::app::exit_guard::ExitIntent::Quit, cx);
             }))
+            .on_action(
+                cx.listener(|this: &mut Self, _: &QuitAndStop, _window, cx| {
+                    this.request_exit(crate::app::exit_guard::ExitIntent::QuitAndStop, cx);
+                }),
+            )
             .on_action(cx.listener(|this: &mut Self, _: &About, _window, cx| {
                 this.show_about_dialog = true;
                 cx.notify();
@@ -3263,6 +3277,7 @@ fn mount_splitlane_app(window: &mut Window, cx: &mut App) -> Entity<SplitlaneApp
                     // names in as many words - never make an absence cost
                     // somebody a noise they cannot act on faster for.
                     app.rebaseline_attention_edge();
+                    app.note_return_to_kept_sessions(cx);
                     // And if the Notifications page is open, coming back is
                     // very likely coming back *from* System Settings, which is
                     // the only place the answer it states can be changed. A

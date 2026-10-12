@@ -29,6 +29,10 @@ pub(crate) struct ConfirmDialog {
     pub title: String,
     pub body: String,
     pub confirm_label: String,
+    /// An answer that ends nothing, drawn between `Cancel` and the danger
+    /// button. When there is one, `enter` gives it: a key pressed without
+    /// reading must not be the answer that stops things.
+    pub safe: Option<(String, ConfirmHandler)>,
     /// When set, the card takes the keyboard: `escape` cancels and `enter`
     /// confirms, each on a fresh press only. The handle has to be one the render pass lists as a focus
     /// holder, or its keys are pulled back to the panes a frame later.
@@ -47,10 +51,14 @@ pub(crate) fn render_confirm_dialog(
         title,
         body,
         confirm_label,
+        safe,
         focus,
         on_cancel,
         on_confirm,
     } = dialog;
+    let on_enter = safe
+        .as_ref()
+        .map_or_else(|| on_confirm.clone(), |(_, handler)| handler.clone());
     let element_id = |part: &str| SharedString::from(format!("{id}-{part}"));
     let cancel_resting_background = ui.subtle;
     let cancel_hover_background = ui.surface;
@@ -70,7 +78,7 @@ pub(crate) fn render_confirm_dialog(
         .gap(tok::space::MD)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     if let Some(focus) = focus.as_ref() {
-        let (on_cancel, on_confirm) = (on_cancel.clone(), on_confirm.clone());
+        let on_cancel = on_cancel.clone();
         card = card.track_focus(focus).on_key_down(cx.listener(
             move |this, event: &KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
                 // A held key auto-repeats; an answer has to be a fresh press.
@@ -81,7 +89,7 @@ pub(crate) fn render_confirm_dialog(
                 }
                 "enter" => {
                     cx.stop_propagation();
-                    on_confirm(this, window, cx);
+                    on_enter(this, window, cx);
                 }
                 _ => {}
             },
@@ -148,6 +156,29 @@ pub(crate) fn render_confirm_dialog(
                             }))
                             .child("Cancel"),
                     )
+                    .children(safe.map(|(label, handler)| {
+                        div()
+                            .id(element_id("safe"))
+                            .px(tok::space::XL)
+                            .py(tok::space::MD)
+                            .rounded(tok::radius::SMALL)
+                            .bg(cancel_resting_background)
+                            .text_size(tok::text::ROW)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ui.text)
+                            .animated_hover(move |style, delta| {
+                                style.bg(lerp_color(
+                                    cancel_resting_background,
+                                    cancel_hover_background,
+                                    delta,
+                                ));
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                handler(this, window, cx);
+                            }))
+                            .child(label)
+                    }))
                     .child(
                         div()
                             .id(element_id("confirm"))

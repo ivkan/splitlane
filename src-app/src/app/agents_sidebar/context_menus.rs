@@ -391,6 +391,7 @@ impl SplitlaneApp {
                 title,
                 body,
                 confirm_label: danger_label,
+                safe: None,
                 focus: None,
                 on_cancel: std::rc::Rc::new(|this, _window, cx| {
                     this.cancel_agents_confirm_delete(cx);

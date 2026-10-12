@@ -160,6 +160,7 @@ impl SplitlaneApp {
                 title,
                 body,
                 confirm_label,
+                safe: None,
                 focus: None,
                 on_cancel: std::rc::Rc::new(|this, _window, cx| this.cancel_codex_drive(cx)),
                 on_confirm: std::rc::Rc::new(|this, _window, cx| this.confirm_codex_drive(cx)),

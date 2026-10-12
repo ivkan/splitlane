@@ -13,12 +13,12 @@ use crate::{
     MarkdownCopy, MarkdownFindDismiss, MarkdownFindNext, MarkdownFindOpen, MarkdownFindPrev,
     MarkdownScrollPageDown, MarkdownScrollPageUp, NewTab, NewWorkspace, NextWorkspace,
     OpenFileInEditor, OpenWorkspaceInCursor, OpenWorkspaceInVsCode, OpenWorkspaceInWindsurf,
-    OpenWorkspaceInZed, Quit, ResetTerminal, RevealWorkspaceInFileManager, ScrollPageDown,
-    ScrollPageUp, SearchNext, SearchPrev, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3,
-    SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8,
-    SelectWorkspace9, SplitEqualize, SplitHorizontally, SplitVertically, SwapPane, TerminalCopy,
-    TerminalPaste, ToggleCopyMode, ToggleSearch, ToggleSearchCase, ToggleSearchRegex, ToggleZoom,
-    UndoClosePane,
+    OpenWorkspaceInZed, Quit, QuitAndStop, ResetTerminal, RevealWorkspaceInFileManager,
+    ScrollPageDown, ScrollPageUp, SearchNext, SearchPrev, SelectWorkspace1, SelectWorkspace2,
+    SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7,
+    SelectWorkspace8, SelectWorkspace9, SplitEqualize, SplitHorizontally, SplitVertically,
+    SwapPane, TerminalCopy, TerminalPaste, ToggleCopyMode, ToggleSearch, ToggleSearchCase,
+    ToggleSearchRegex, ToggleZoom, UndoClosePane,
 };
 use crate::{FontSizeDecrease, FontSizeIncrease, FontSizeReset, ToggleFleetSearch};
 
@@ -404,6 +404,14 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         factory: || Box::new(Quit),
         context: "",
         description: "Quit",
+    },
+    // The quit that ends the process and every session with it, whatever
+    // `on_quit` says. `Quit` alone may only put the window away.
+    ActionMeta {
+        name: "quit_and_stop",
+        factory: || Box::new(QuitAndStop),
+        context: "",
+        description: "Quit and stop sessions",
     },
     // Markdown pane navigation. Scroll + copy bind on the root
     // `Markdown` context; find-overlay actions bind on `MarkdownSearch`

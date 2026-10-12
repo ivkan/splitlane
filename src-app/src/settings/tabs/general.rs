@@ -49,6 +49,7 @@ use crate::settings::components::{
     setting_choice_row, setting_note, setting_row, setting_toggle_row, value_chip,
 };
 use crate::ui_tokens as tok;
+use splitlane_config::schema::OnQuit;
 
 /// One select option: display label, optional leading logo, the JSON value
 /// written to config when picked, and whether it is the current selection.
@@ -90,6 +91,45 @@ impl SplitlaneApp {
             editor_label,
             editor_opts,
             "external_editor",
+            ui,
+            cx,
+        );
+
+        // ── When quitting (on_quit) ─────────────────────────────────────
+        // The row shows what an unset key resolves to on this platform, so
+        // the chip never says "default" where a behaviour is meant.
+        let on_quit = config.on_quit_mode();
+        let on_quit_opts: Vec<SelectOption> = [
+            (OnQuit::Keep, "Keep sessions running"),
+            (OnQuit::Ask, "Ask"),
+            (OnQuit::Stop, "Stop sessions"),
+        ]
+        .into_iter()
+        .map(|(mode, label)| {
+            (
+                label.to_string(),
+                None,
+                Value::String(mode.as_wire().to_string()),
+                mode == on_quit,
+            )
+        })
+        .collect();
+        let on_quit_label = on_quit_opts
+            .iter()
+            .find(|(_, _, _, selected)| *selected)
+            .map(|(label, _, _, _)| label.clone())
+            .unwrap_or_default();
+        let on_quit_row = self.general_choice_row(
+            GeneralDropdown::OnQuit,
+            "When quitting",
+            Some(SharedString::from(if cfg!(target_os = "macos") {
+                "kept sessions work on with the window hidden"
+            } else {
+                "kept sessions work on with the window minimised"
+            })),
+            on_quit_label,
+            on_quit_opts,
+            "on_quit",
             ui,
             cx,
         );
@@ -153,6 +193,7 @@ impl SplitlaneApp {
                 "always",
                 ChipTone::Plain,
             ))
+            .child(on_quit_row)
             .child(updates_row)
             .child(editor_row)
             .child(setting_row(

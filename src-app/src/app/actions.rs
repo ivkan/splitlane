@@ -95,6 +95,7 @@ actions!(
         // terminal implements select-all, so the action and its menu item
         // were removed together rather than advertised in the registry.
         Quit,
+        QuitAndStop,
         About,
         Copy,
         Paste,

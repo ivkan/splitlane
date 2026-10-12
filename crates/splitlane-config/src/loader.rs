@@ -281,6 +281,7 @@ pub fn try_parse_and_validate(json: &str) -> Result<SplitlaneConfig, serde_json:
     set_field!(fleet_skill);
     set_field!(tell_opener);
     set_field!(script_sessions);
+    set_field!(on_quit);
     set_field!(codex_drive);
     set_field!(claude_code_button_visible);
     set_field!(codex_button_visible);
@@ -1113,6 +1114,7 @@ mod tests {
             fleet_skill: None,
             tell_opener: None,
             script_sessions: None,
+            on_quit: None,
             codex_drive: None,
             claude_code_button_visible: None,
             codex_button_visible: None,

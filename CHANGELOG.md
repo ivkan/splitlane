@@ -8,6 +8,17 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Added
 
+- Quitting no longer has to stop your agents. With agent sessions open, Quit
+  and the window's close button put the window away and leave every session
+  working - hidden on macOS, minimised on Linux and Windows - and starting
+  Splitlane again brings it back. On macOS this is the default; on Linux and
+  Windows the app asks first. **Settings > General > When quitting**
+  (`on_quit`: `keep`, `stop` or `ask`) chooses. **Quit and Stop Sessions**
+  (`⌥⌘Q` on macOS, `Ctrl+Alt+Q` elsewhere, `quit_and_stop`) ends the app and everything it started.
+  The kept sessions live in the app's process: an update, a crash or a logout
+  still ends them.
+- Starting Splitlane while it is already running brings its window forward
+  instead of refusing with an error.
 - A session a script opened is reachable with its key after Splitlane
   restarts, while it is still a row with no terminal: the call that presents
   the key selects it. `send` to such a session starts its agent and writes

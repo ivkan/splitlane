@@ -85,6 +85,7 @@ while a particular kind of surface has keyboard focus.
 | `start_preset_2` | Start preset 2 | `⌘⇧2` | `Ctrl+Shift+2` | anywhere |
 | `start_preset_3` | Start preset 3 | `⌘⇧3` | `Ctrl+Shift+3` | anywhere |
 | `quit` | Quit | `⌘Q` | unassigned | anywhere |
+| `quit_and_stop` | Quit and stop sessions | `⌥⌘Q` | `Ctrl+Alt+Q` | anywhere |
 | `close_window` | Close window | unassigned | unassigned | anywhere |
 | `about` | About Splitlane | unassigned | unassigned | anywhere |
 | `open_help` | Open help | unassigned | unassigned | anywhere |

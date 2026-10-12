@@ -14,6 +14,19 @@
 //! hands over to the Windows installer. With no agent running it leaves at
 //! once, exactly as before. With one running it asks, naming the sessions.
 //!
+//! **Leaving need not end anything.** `Quit` and the close buttons first ask
+//! the `on_quit` setting what to do with the agent sessions that are open.
+//! `keep` puts the window away - hidden on macOS, minimised elsewhere, because
+//! that is all the toolkit can do there - and the process, with every agent
+//! under it, goes on; launching the app again brings the window back
+//! (`ipc::start_server`). Nothing is lost, so nothing is asked. `ask` offers
+//! the two answers on one card. `stop`, the separate `Quit and Stop Sessions`
+//! action, and the restart into an update end the process as before, and it
+//! is only on those that the question about a turn in progress remains.
+//!
+//! This is the whole app staying up, not a process of its own holding the
+//! terminals: it does not survive an update or a crash.
+//!
 //! **`running` only.** `waiting for you` is a person's to answer and they can
 //! see it; `idle` has nothing in flight; `starting` has sent nothing yet. Only a
 //! turn in progress is something the person would lose without knowing.
@@ -32,19 +45,107 @@
 
 use gpui::Context;
 
+use splitlane_config::schema::OnQuit;
+
 use crate::SplitlaneApp;
 use crate::project::{Thread, ThreadStatus};
 
-/// Why the process is about to end.
+/// Which door out was taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExitIntent {
-    /// `Quit`, `CloseWindow` and both close buttons.
+    /// `Quit`, `CloseWindow` and both close buttons. What it does to the open
+    /// sessions is the `on_quit` setting's to say.
     Quit,
+    /// `Quit and Stop Sessions`: ends the process whatever the setting says.
+    QuitAndStop,
     /// The update pill's click, on the paths that end this process: the
     /// relaunch into an already installed update, and the Windows installer
     /// hand-off. The background pre-install never comes here - it cannot
     /// restart anything by itself.
     Update,
+}
+
+/// What a door out does, once the setting and the sessions are known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Leave {
+    /// End the process at once: nothing would be lost.
+    Now,
+    /// Put the window away and leave everything working.
+    Keep,
+    /// Ask whether to keep the sessions or stop them.
+    AskKeepOrStop,
+    /// The process is ending and a turn is in progress: ask before losing it.
+    AskLoseTurn,
+}
+
+/// `open` counts the agent sessions with a terminal behind them, `running`
+/// the ones mid-turn.
+pub(crate) fn leave_plan(intent: ExitIntent, mode: OnQuit, open: usize, running: usize) -> Leave {
+    let ending = if running > 0 {
+        Leave::AskLoseTurn
+    } else {
+        Leave::Now
+    };
+    match (intent, mode) {
+        (ExitIntent::QuitAndStop | ExitIntent::Update, _) | (ExitIntent::Quit, OnQuit::Stop) => {
+            ending
+        }
+        // Nothing to keep: a window put away with no agent behind it is an
+        // app that will not quit.
+        (ExitIntent::Quit, _) if open == 0 => ending,
+        (ExitIntent::Quit, OnQuit::Keep) => Leave::Keep,
+        (ExitIntent::Quit, OnQuit::Ask) => Leave::AskKeepOrStop,
+    }
+}
+
+/// How long after the detector last saw a session's terminal the session
+/// still counts as open: three of its two-second passes.
+const OPEN_SESSION_WINDOW_SECS: i64 = 6;
+
+/// How many agent sessions have a terminal behind them now.
+pub(crate) fn open_agent_sessions<'a>(
+    threads: impl Iterator<Item = &'a Thread>,
+    now: i64,
+) -> usize {
+    threads
+        .filter(|thread| {
+            thread
+                .agent_seen_secs
+                .is_some_and(|seen| now - seen <= OPEN_SESSION_WINDOW_SECS)
+        })
+        .count()
+}
+
+/// The sentence on the card that offers to keep the sessions.
+pub(crate) fn keep_or_stop_body(open: usize, running: usize) -> String {
+    let sessions = match open {
+        1 => "1 agent session is open".to_string(),
+        n => format!("{n} agent sessions are open"),
+    };
+    let mid_turn = match running {
+        0 => String::new(),
+        1 => ", 1 of them mid-turn".to_string(),
+        n => format!(", {n} of them mid-turn"),
+    };
+    format!(
+        "{sessions}{mid_turn}. Keep running puts the window away and leaves them working; \
+         start Splitlane again to come back. Stop and quit ends them: each session comes \
+         back on the next launch, a turn in progress does not."
+    )
+}
+
+/// What the person is told, once, on coming back to a window that was put
+/// away without a question.
+pub(crate) fn kept_notice(kept: usize) -> String {
+    let sessions = if kept == 1 {
+        "1 agent session".to_string()
+    } else {
+        format!("{kept} agent sessions")
+    };
+    format!(
+        "Splitlane stayed open with {sessions} working. To stop them too, use \
+         Quit and Stop Sessions."
+    )
 }
 
 /// The titles of the agents in the middle of a turn, in the order given.
@@ -61,7 +162,7 @@ pub(crate) fn exit_confirm_copy(
     running: &[String],
 ) -> (String, String, String) {
     let (title, verb, confirm) = match intent {
-        ExitIntent::Quit => ("Quit Splitlane", "Quitting", "Quit anyway"),
+        ExitIntent::Quit | ExitIntent::QuitAndStop => ("Quit Splitlane", "Quitting", "Quit anyway"),
         ExitIntent::Update => ("Restart to update", "Restarting", "Restart anyway"),
     };
     // Name what goes, then what actually happens - the rule the delete copy
@@ -87,26 +188,87 @@ impl SplitlaneApp {
         running_agent_titles(self.workspaces.iter().flat_map(|ws| ws.threads.iter()))
     }
 
-    /// The one door out. Leaves at once when nothing would be lost; otherwise
-    /// asks. A repeat of the question already on screen changes nothing.
+    fn open_sessions(&self) -> usize {
+        open_agent_sessions(
+            self.workspaces.iter().flat_map(|ws| ws.threads.iter()),
+            crate::project::now_unix_secs(),
+        )
+    }
+
+    fn leave_plan_for(&self, intent: ExitIntent) -> Leave {
+        leave_plan(
+            intent,
+            splitlane_config::loader::load_config().on_quit_mode(),
+            self.open_sessions(),
+            self.running_agents().len(),
+        )
+    }
+
+    /// The one door out. Leaves at once when nothing would be lost, puts the
+    /// window away when the sessions are to be kept, and otherwise asks. A
+    /// repeat of the question already on screen changes nothing.
     ///
     /// Takes no `Window` because two of the doors have none (the client-side
     /// title bar's event and the update action's shared entry); the card takes
     /// the keyboard on the next frame through `pending_focus`.
     pub(crate) fn request_exit(&mut self, intent: ExitIntent, cx: &mut Context<Self>) {
-        if self.running_agents().is_empty() {
-            // Whatever was being asked is moot: a card left up for a different
-            // door would outlive the process it asked about, or answer for it.
-            self.dismiss_exit_card();
-            self.perform_exit(intent, cx);
-            return;
+        match self.leave_plan_for(intent) {
+            Leave::Now => {
+                // Whatever was being asked is moot: a card left up for a
+                // different door would outlive the process it asked about,
+                // or answer for it.
+                self.dismiss_exit_card();
+                self.perform_exit(intent, cx);
+            }
+            Leave::Keep => self.keep_sessions_and_put_window_away(cx),
+            plan @ (Leave::AskKeepOrStop | Leave::AskLoseTurn) => {
+                if self.pending_exit == Some(intent) {
+                    return;
+                }
+                self.pending_exit = Some(intent);
+                // Settled when the card opens: the setting is a file, and a
+                // card that re-read it on every frame could turn from an
+                // offer to keep into a plain "quit anyway" under the person.
+                self.pending_exit_offers_keep = plan == Leave::AskKeepOrStop;
+                self.pending_focus = Some(self.exit_confirm_focus.clone());
+                cx.notify();
+            }
         }
-        if self.pending_exit == Some(intent) {
-            return;
-        }
-        self.pending_exit = Some(intent);
-        self.pending_focus = Some(self.exit_confirm_focus.clone());
+    }
+
+    /// Leave every session working and take the window off the screen.
+    fn keep_sessions_and_put_window_away(&mut self, cx: &mut Context<Self>) {
+        self.dismiss_exit_card();
+        // The process may still be ended from outside while nobody is
+        // looking - the Dock's Quit, a logout - and that door asks nothing.
+        self.save_session(cx);
+        let kept = self.open_sessions();
+        self.kept_while_away = Some(kept);
+        log::info!("leaving: window put away, {kept} agent session(s) kept working");
+        #[cfg(target_os = "macos")]
+        cx.hide();
+        // The toolkit can hide an app only on macOS. A minimised window is
+        // the nearest thing elsewhere; deferred because the window this was
+        // called from is still being updated.
+        #[cfg(not(target_os = "macos"))]
+        cx.defer(|cx| {
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| window.minimize_window());
+            }
+        });
         cx.notify();
+    }
+
+    /// Say once per run what happened to a window that was put away without
+    /// a question. Called when the window becomes active again.
+    pub(crate) fn note_return_to_kept_sessions(&mut self, cx: &mut Context<Self>) {
+        let Some(kept) = self.kept_while_away.take() else {
+            return;
+        };
+        if std::mem::replace(&mut self.kept_notice_shown, true) {
+            return;
+        }
+        self.show_toast(kept_notice(kept), cx);
     }
 
     fn dismiss_exit_card(&mut self) {
@@ -132,13 +294,21 @@ impl SplitlaneApp {
 
     fn confirm_exit(&mut self, cx: &mut Context<Self>) {
         if let Some(intent) = self.pending_exit.take() {
+            self.dismiss_exit_card();
             self.perform_exit(intent, cx);
+        }
+    }
+
+    /// The card's "Keep running".
+    fn keep_from_card(&mut self, cx: &mut Context<Self>) {
+        if self.pending_exit.take().is_some() {
+            self.keep_sessions_and_put_window_away(cx);
         }
     }
 
     fn perform_exit(&mut self, intent: ExitIntent, cx: &mut Context<Self>) {
         match intent {
-            ExitIntent::Quit => {
+            ExitIntent::Quit | ExitIntent::QuitAndStop => {
                 self.save_session_blocking(cx);
                 // Bounded to 2 s by the client; if PostHog is unreachable the
                 // worker detaches and the quit still proceeds.
@@ -160,13 +330,36 @@ impl SplitlaneApp {
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let (title, body, confirm_label) = exit_confirm_copy(intent, &self.running_agents());
+        let running = self.running_agents();
+        // Counted again on every frame, so a card left up while the last
+        // session closes turns into the plain question, not a stale offer.
+        if self.pending_exit_offers_keep && self.open_sessions() > 0 {
+            return crate::app::confirm_dialog::render_confirm_dialog(
+                crate::app::confirm_dialog::ConfirmDialog {
+                    id: "exit-keep-or-stop",
+                    title: "Quit Splitlane".to_string(),
+                    body: keep_or_stop_body(self.open_sessions(), running.len()),
+                    confirm_label: "Stop and quit".to_string(),
+                    safe: Some((
+                        "Keep running".to_string(),
+                        std::rc::Rc::new(|this, _window, cx| this.keep_from_card(cx)),
+                    )),
+                    focus: Some(self.exit_confirm_focus.clone()),
+                    on_cancel: std::rc::Rc::new(|this, _window, cx| this.cancel_exit(cx)),
+                    on_confirm: std::rc::Rc::new(|this, _window, cx| this.confirm_exit(cx)),
+                },
+                ui,
+                cx,
+            );
+        }
+        let (title, body, confirm_label) = exit_confirm_copy(intent, &running);
         crate::app::confirm_dialog::render_confirm_dialog(
             crate::app::confirm_dialog::ConfirmDialog {
                 id: "exit-confirm",
                 title,
                 body,
                 confirm_label,
+                safe: None,
                 focus: Some(self.exit_confirm_focus.clone()),
                 on_cancel: std::rc::Rc::new(|this, _window, cx| this.cancel_exit(cx)),
                 on_confirm: std::rc::Rc::new(|this, _window, cx| this.confirm_exit(cx)),
@@ -222,6 +415,61 @@ mod tests {
         assert!(
             body.starts_with("3 agents are running. Restarting stops them"),
             "{body}"
+        );
+    }
+
+    #[test]
+    fn quit_keeps_open_sessions_unless_told_to_stop() {
+        use ExitIntent::*;
+        // Nothing open: every door simply leaves.
+        for mode in [OnQuit::Keep, OnQuit::Ask, OnQuit::Stop] {
+            assert_eq!(leave_plan(Quit, mode, 0, 0), Leave::Now);
+        }
+        // Sessions open: the setting decides, and keeping asks nothing even
+        // mid-turn, because nothing is lost.
+        assert_eq!(leave_plan(Quit, OnQuit::Keep, 2, 1), Leave::Keep);
+        assert_eq!(leave_plan(Quit, OnQuit::Ask, 2, 0), Leave::AskKeepOrStop);
+        assert_eq!(leave_plan(Quit, OnQuit::Stop, 2, 0), Leave::Now);
+        assert_eq!(leave_plan(Quit, OnQuit::Stop, 2, 1), Leave::AskLoseTurn);
+    }
+
+    #[test]
+    fn the_doors_that_end_the_process_ignore_the_setting() {
+        for intent in [ExitIntent::QuitAndStop, ExitIntent::Update] {
+            for mode in [OnQuit::Keep, OnQuit::Ask, OnQuit::Stop] {
+                assert_eq!(leave_plan(intent, mode, 3, 0), Leave::Now);
+                assert_eq!(leave_plan(intent, mode, 3, 2), Leave::AskLoseTurn);
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_counts_as_open_while_its_terminal_was_seen_lately() {
+        let mut seen = agent("seen", ThreadStatus::Idle);
+        seen.agent_seen_secs = Some(1_000);
+        let mut gone = agent("gone", ThreadStatus::Idle);
+        gone.agent_seen_secs = Some(900);
+        let never = agent("never shown", ThreadStatus::Idle);
+        let threads = [seen, gone, never];
+        assert_eq!(open_agent_sessions(threads.iter(), 1_004), 1);
+        assert_eq!(open_agent_sessions(threads.iter(), 1_100), 0);
+    }
+
+    #[test]
+    fn the_offer_to_keep_says_what_each_answer_does() {
+        let body = keep_or_stop_body(3, 1);
+        assert!(
+            body.starts_with("3 agent sessions are open, 1 of them mid-turn."),
+            "{body}"
+        );
+        assert!(
+            body.contains("start Splitlane again to come back"),
+            "{body}"
+        );
+        assert!(keep_or_stop_body(1, 0).starts_with("1 agent session is open."));
+        assert_eq!(
+            kept_notice(2),
+            "Splitlane stayed open with 2 agent sessions working. To stop them too, use Quit and Stop Sessions."
         );
     }
 

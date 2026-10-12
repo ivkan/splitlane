@@ -95,14 +95,27 @@ a pane of the active project. Settings -> Notifications has three levels:
 default) and **And when work has finished**. There is no "off" level, so a
 failure is always reported.
 
-### Leaving while an agent is working
+### Leaving while agents are open
 
-Closing Splitlane stops every process it started, so no agent keeps spending
-tokens unwatched. The conversation survives - the next launch reopens each
-session with `--resume` - but a turn that was executing does not. So quitting
-(`⌘Q`, the window's close button, or a restart into an update) asks first
-whenever an agent is mid-turn, and names the sessions. Nothing is asked when
-every session is idle, waiting for you, or still starting.
+Quitting need not stop anything. With agent sessions open, Quit (`⌘Q`) and the
+window's close button put the window away and leave every session working:
+the app hides on macOS and minimises on Linux and Windows. Start Splitlane
+again - or click it in the Dock or the taskbar - to come back. This is the
+default on macOS; on Linux and Windows the app asks first, because a window
+that can only be minimised would otherwise look like a close button that did
+nothing. **Settings > General > When quitting** chooses between keeping,
+stopping and asking (`on_quit`).
+
+**Quit and Stop Sessions** (`⌥⌘Q` on macOS, where it is also in the application menu; `Ctrl+Alt+Q` on
+Linux and Windows) ends the
+app and every process it started. So does a restart into an update, and so
+does Quit when the setting says stop. The conversation survives those - the
+next launch reopens each session with `--resume` - but a turn that was
+executing does not, so each of them asks first whenever an agent is mid-turn,
+and names the sessions.
+
+The sessions that are kept live in the app's own process. They do not survive
+an update, a crash, a logout or the Dock's own Quit.
 
 ## Diff and files
 

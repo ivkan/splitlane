@@ -538,6 +538,14 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "copy_last_answer",
         context: None,
     },
+    // The door that ends the app whatever `on_quit` says. On all three
+    // platforms: where the window can only be minimised there is no menu to
+    // offer it, and a setting of `keep` must still leave a way out.
+    DefaultBinding {
+        key: "secondary-alt-q",
+        action_name: "quit_and_stop",
+        context: None,
+    },
     // A project group's label, while it holds focus. Bare keys are safe here
     // because the context is the label itself, never a terminal or a field.
     DefaultBinding {

@@ -3383,6 +3383,23 @@ impl SplitlaneApp {
                     "scope": scope.as_wire(),
                 })
             }
+            "app.activate" => {
+                // Bring the window back. A second launch of the app sends
+                // this before it gives way, so starting Splitlane again is
+                // how a person returns to a window that was put away with
+                // its sessions left working. Ungated: it shows the person
+                // their own window and reaches no session.
+                // With no window there is nothing to bring forward, and the
+                // caller must not tell the person that something was.
+                let any_window = !cx.windows().is_empty();
+                cx.activate(true);
+                cx.defer(|cx| {
+                    for window in cx.windows() {
+                        let _ = window.update(cx, |_, window, _| window.activate_window());
+                    }
+                });
+                serde_json::json!({"activated": any_window})
+            }
             "app.dispatch_action" => {
                 // Anything a key can do, by the action's registry name - the
                 // name a `shortcuts` override uses. Scripted demos and
