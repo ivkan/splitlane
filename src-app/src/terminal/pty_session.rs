@@ -30,7 +30,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use super::element::color::palette_color_at;
 #[cfg(target_os = "macos")]
-use super::host_session::{RemoteMsg, RemoteSender};
+use super::host_session::{RemoteHandle, RemoteMsg, RemoteSender, SpawnedRemote};
 #[cfg(target_os = "macos")]
 use super::listener::RemoteGate;
 use super::listener::{ClipboardGate, SpikeTermSize, ZedListener};
@@ -1153,6 +1153,37 @@ pub(super) fn queried_color(
     }
 }
 
+/// What a window tells the session host about itself: the colors a pane
+/// answers color queries with, and the size of a cell once the window has
+/// laid one out. The host answers the program from these, so they are made
+/// by the same two functions a pane's own answer is.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+pub(crate) fn window_facts(
+    theme: &crate::theme::TerminalTheme,
+    cursor_color_override: Option<gpui::Hsla>,
+    cell: Option<(u16, u16)>,
+) -> splitlane_host::Facts {
+    use alacritty_terminal::vte::ansi::NamedColor;
+    let color = |index: usize| {
+        let rgb = hsla_to_alac_rgb(queried_color(index, theme, cursor_color_override)?);
+        Some(splitlane_host::Rgb(rgb.r, rgb.g, rgb.b))
+    };
+    splitlane_host::Facts {
+        foreground: color(NamedColor::Foreground as usize),
+        background: color(NamedColor::Background as usize),
+        cursor: color(NamedColor::Cursor as usize),
+        palette: (0..=255u8)
+            .filter_map(|index| Some((index, color(usize::from(index))?)))
+            .collect(),
+        cell_width: cell.map(|(width, _)| width),
+        cell_height: cell.map(|(_, height)| height),
+    }
+}
+
 /// Convert GPUI Hsla to alacritty Rgb for color query responses.
 pub(super) fn hsla_to_alac_rgb(hsla: gpui::Hsla) -> AlacRgb {
     let rgba = gpui::Rgba::from(hsla);
@@ -1774,13 +1805,17 @@ pub struct TerminalState {
     /// `Send` and matches the crate's interior-mutability idiom; the lock is
     /// uncontended (main thread only).
     pending_input: std::sync::Mutex<VecDeque<PendingTerminalInput>>,
+    /// The session in the host this terminal is a pane of, when its PTY is
+    /// there and not here.
+    #[cfg(target_os = "macos")]
+    remote: Option<RemoteHandle>,
 }
 
 /// Cap on input buffered during the pre-promotion window. Generous for a
 /// launch command plus a burst of typing, tight enough that a terminal that
 /// never promotes (spawn failure - `promote` is never called) cannot
 /// accumulate input without bound.
-const MAX_PENDING_INPUT_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_PENDING_INPUT_BYTES: usize = 1024 * 1024;
 #[cfg(any(
     all(target_os = "linux", feature = "libghostty-linux"),
     all(
@@ -3404,6 +3439,68 @@ impl TerminalState {
         }
     }
 
+    /// Promote a display-only / pending terminal to a pane of a session in
+    /// the host. The counterpart of [`promote`](Self::promote), with the
+    /// same bookkeeping: the output already flows into the shared `term`,
+    /// through the sink the pane's reader thread feeds, and this opens the
+    /// write side and lets `Drop` end the session.
+    #[cfg(target_os = "macos")]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "no pane is opened in the session host yet")
+    )]
+    pub(super) fn promote_remote(&mut self, spawned: SpawnedRemote) {
+        self.notifier = PtyNotifier(PtySender::remote(spawned.sender));
+        self.cwd_rx = Some(spawned.channels.cwd_rx);
+        self.marks_rx = Some(spawned.channels.marks_rx);
+        self.last_command = spawned.channels.last_command;
+        // The host's child, a process of this machine like any other: the
+        // port scan, the foreground-process scan and the working-directory
+        // poll all go by pid and need nothing else.
+        self.child_pid = spawned.child_pid;
+        #[cfg(not(test))]
+        {
+            self.pty_guard = spawned.pty_guard;
+        }
+        if self.current_cwd.is_none() {
+            self.current_cwd = Some(spawned.cwd.to_string_lossy().into_owned());
+        }
+        self.remote = Some(spawned.handle);
+        self.set_osc52_mode(Osc52Mode::CopyOnly);
+        self.cursor_blinking = true;
+        self.dirty = true;
+        for input in self.drain_pending_legacy_input() {
+            if !self.notifier.0.write(input) {
+                self.note_refused_input();
+            }
+        }
+    }
+
+    /// Whether this terminal's PTY is in the session host.
+    #[cfg(target_os = "macos")]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "no pane is opened in the session host yet")
+    )]
+    pub(crate) fn is_in_host(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// Tell the host what the window knows that a program may ask its
+    /// terminal for. The host answers the program; it can only answer with
+    /// what it was told. Nothing happens for a terminal that is not in the
+    /// host.
+    #[cfg(target_os = "macos")]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "no pane is opened in the session host yet")
+    )]
+    pub(crate) fn tell_host(&self, facts: splitlane_host::Facts) {
+        if let TerminalType::Remote(sender) = &self.notifier.0.0 {
+            sender.send(RemoteMsg::Facts(Box::new(facts)));
+        }
+    }
+
     fn drain_pending_legacy_input(&self) -> Vec<Cow<'static, [u8]>> {
         let Ok(mut pending) = self.pending_input.lock() else {
             return Vec::new();
@@ -3569,6 +3666,8 @@ impl TerminalState {
             last_keystroke_at: None,
             background_executor: None,
             pending_input: std::sync::Mutex::new(VecDeque::new()),
+            #[cfg(target_os = "macos")]
+            remote: None,
         };
         (state, pending)
     }
@@ -4469,6 +4568,11 @@ impl TerminalState {
     pub(crate) fn kernel_window_size(&self) -> Option<(usize, usize)> {
         #[cfg(target_os = "macos")]
         {
+            // A PTY in the session host cannot be asked from here. What
+            // the host last confirmed is what it gave the PTY.
+            if let Some(remote) = &self.remote {
+                return remote.acked_size();
+            }
             let fd = self.pty_master_fd?;
             // SAFETY: `winsize` is plain integers, so all-zero is a valid value.
             let mut size: libc::winsize = unsafe { std::mem::zeroed() };
@@ -5121,6 +5225,32 @@ fn terminate_process_group(pid: i32) -> bool {
     unsafe { libc::kill(-pid, libc::SIGTERM) == 0 }
 }
 
+/// End a process group the way `Drop` ends a pane's: ask, give it the same
+/// 100ms, then make it. Waits for that long, so it is for a thread that
+/// may. For a session of the host that the host can no longer be asked to
+/// end.
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "no pane is opened in the session host yet")
+)]
+pub(super) fn end_process_group(pid: u32) {
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    if !terminate_process_group(pid) {
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    if is_own_session_group(pid) {
+        // SAFETY: `pid` was just confirmed to lead its own group, so the
+        // negative pid addresses that group and nothing else.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
 /// Format a numeric signal (from alacritty's native
 /// `ExitStatus::signal()`) as "N (Name)" for the exit overlay, e.g.
 /// "11 (Segmentation fault)". The name comes from `strsignal`; the number is
@@ -5160,6 +5290,16 @@ impl Drop for TerminalState {
             self.child_pid = 0;
         }
         self.notifier.0.shutdown();
+
+        // A session in the host is ended by the host. The pane's reader
+        // thread asks for that when it sees the flag, waits for the child
+        // and has the host forget the session; nothing here may wait. The
+        // signals below are for a child of this process.
+        #[cfg(target_os = "macos")]
+        if let Some(remote) = self.remote.take() {
+            remote.close();
+            return;
+        }
 
         // Close the dup'd PTY master fd we own (macOS). Done exactly
         // once here - the fd was duplicated at spawn so `tcgetpgrp` stayed
@@ -7459,27 +7599,15 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_session_host_answers_queries_like_a_pane_does() {
-        use alacritty_terminal::vte::ansi::NamedColor;
-        use splitlane_host::{Facts, Rgb};
-
         let theme = crate::theme::active_theme();
         let cursor_override = None;
-        let facts_color = |index: usize| {
-            let rgb = hsla_to_alac_rgb(queried_color(index, &theme, cursor_override)?);
-            Some(Rgb(rgb.r, rgb.g, rgb.b))
-        };
         let size = TerminalWindowSize::new(80, 24, 9, 18);
-        // What a window would tell the host about itself.
-        let facts = Facts {
-            foreground: facts_color(NamedColor::Foreground as usize),
-            background: facts_color(NamedColor::Background as usize),
-            cursor: facts_color(NamedColor::Cursor as usize),
-            palette: (0..=255u8)
-                .filter_map(|index| Some((index, facts_color(index as usize)?)))
-                .collect(),
-            cell_width: Some(size.cell_width),
-            cell_height: Some(size.cell_height),
-        };
+        // What a window tells the host about itself.
+        let facts = window_facts(
+            &theme,
+            cursor_override,
+            Some((size.cell_width, size.cell_height)),
+        );
 
         let mut pane = TerminalState::new_display_only(24, 80);
         let mut host = splitlane_host::engine::for_this_platform(80, 24)

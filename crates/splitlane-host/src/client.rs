@@ -305,6 +305,13 @@ impl Client {
         self.contract
     }
 
+    /// True once the connection is gone: the host closed it, or it broke.
+    /// Every request from then on fails, and a caller that keeps one
+    /// connection for a long time asks this to know when to open another.
+    pub fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::SeqCst)
+    }
+
     fn request<A: Serialize, R: DeserializeOwned>(
         &self,
         op: &str,
