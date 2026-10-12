@@ -790,6 +790,7 @@ impl Connection {
             // head, in whatever modes the output before it left behind.
             let preamble = gap.then(|| shared.log.head_preamble());
             let torn = gap && shared.log.head_torn();
+            let tail_seq = shared.log.tail_seq();
             shared.attached += 1;
             drop(shared);
             Ok((
@@ -801,6 +802,7 @@ impl Connection {
                     cols,
                     rows,
                     torn,
+                    tail_seq: Some(tail_seq),
                 },
                 preamble,
             ))

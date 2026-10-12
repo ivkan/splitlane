@@ -625,6 +625,14 @@ pub struct AttachResult {
     /// as stray text until the program repaints.
     #[serde(default)]
     pub torn: bool,
+    /// Sequence number the next byte or record will get, read at the same
+    /// moment as `start_seq`. Everything before it had already happened
+    /// when the client attached: a client that must treat old output
+    /// differently from new - not ring the bell again, not copy to the
+    /// clipboard again - replays up to here and is live from here on.
+    /// Absent from a host that does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -995,6 +1003,7 @@ mod tests {
         let attached: AttachResult =
             decode_json(format!(r#"{{"session":"{id}","gap":true}}"#).as_bytes()).unwrap();
         assert!(!attached.torn);
+        assert_eq!(attached.tail_seq, None);
     }
 
     #[test]

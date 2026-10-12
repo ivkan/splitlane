@@ -94,6 +94,10 @@ pub struct Attachment {
     /// Terminal size in effect at `start_seq`.
     pub cols: u16,
     pub rows: u16,
+    /// Where the log ended when the stream was opened: events below this
+    /// sequence number replay what had already happened, events from it on
+    /// are new. `None` from a host that does not say.
+    pub tail_seq: Option<u64>,
     events: Receiver<StreamEvent>,
     /// Id of the request that opened the stream; tells this attachment's
     /// slot from a later one for the same session.
@@ -110,6 +114,7 @@ impl std::fmt::Debug for Attachment {
             .field("torn", &self.torn)
             .field("cols", &self.cols)
             .field("rows", &self.rows)
+            .field("tail_seq", &self.tail_seq)
             .finish_non_exhaustive()
     }
 }
@@ -398,6 +403,7 @@ impl Client {
                 torn: result.torn,
                 cols: result.cols,
                 rows: result.rows,
+                tail_seq: result.tail_seq,
                 events: events_rx,
                 opened_by: id,
                 client: Arc::downgrade(&self.inner),

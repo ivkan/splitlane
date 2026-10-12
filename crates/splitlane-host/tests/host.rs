@@ -465,6 +465,59 @@ fn a_late_attach_replays_the_log_and_then_follows_live() {
 }
 
 #[test]
+fn an_attach_says_where_the_log_ended_when_it_was_made() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client
+        .spawn(sh("printf before; read line; printf after"))
+        .unwrap();
+    wait_for_tail(&client, session, 6);
+    client.resize(session, 100, 30).unwrap();
+
+    // Six bytes and a resize record: seven positions had been used.
+    let late_client = host.client();
+    let late = late_client.attach(session, AttachFrom::Start).unwrap();
+    assert_eq!((late.start_seq, late.tail_seq), (0, Some(7)));
+    assert_eq!(info(&client, session).log_tail_seq, 7);
+
+    // It is the boundary between what is replayed and what is new: the
+    // position of the first thing that happens after the attach.
+    client.input(session, b"\n").unwrap();
+    let mut trace = Trace::starting_at(&late);
+    assert_eq!(trace.follow_to_exit(&late).code, Some(0));
+    let replayed: Vec<Pos> = trace
+        .positions
+        .iter()
+        .filter(|(seq, _)| *seq < 7)
+        .map(|(_, pos)| *pos)
+        .collect();
+    assert_eq!(replayed.len(), 7);
+    assert_eq!(replayed[6], Pos::Resize(100, 30));
+    assert_eq!(trace.positions[7].0, 7);
+
+    // An attach in the middle, and one at the very end of an ended session.
+    let resumed = host.client().attach(session, AttachFrom::Seq(3)).unwrap();
+    let ended = info(&client, session).log_tail_seq;
+    assert_eq!((resumed.start_seq, resumed.tail_seq), (3, Some(ended)));
+}
+
+/// A terminal that is not told its input is UTF-8 erases one byte for a
+/// backspace, and leaves the rest of a multi-byte character on the line.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_session_terminal_treats_its_input_as_utf8() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client.spawn(sh("stty -a")).unwrap();
+    let text = whole_session(&client, session).text();
+    let flags: Vec<&str> = text.split_whitespace().collect();
+    assert!(
+        flags.contains(&"iutf8") && !flags.contains(&"-iutf8"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_detached_stream_can_be_resumed_where_it_stopped() {
     let host = TestHost::start(|_| {});
     let client = host.client();
