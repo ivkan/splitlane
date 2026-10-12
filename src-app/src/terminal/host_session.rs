@@ -31,18 +31,13 @@
 //! dropping a connection, which can wait behind a stuck write, is left to
 //! the pane's reader.
 
-#![cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
-
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
@@ -182,6 +177,35 @@ impl RemoteReceiver {
     }
 }
 
+/// Whether new panes are opened in the session host.
+///
+/// Off unless the window was started with `SPLITLANE_SESSION_HOST=1`. An
+/// environment variable and not a setting, on purpose: the path is new,
+/// and a setting is a promise to keep. Read once, so a window is one or
+/// the other for as long as it runs.
+pub(super) fn enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SPLITLANE_SESSION_HOST").is_some_and(|value| value == "1")
+    })
+}
+
+/// The session host of this build: where it listens, and this binary to
+/// start it with. `None` when there is no place for its socket.
+pub(super) fn process_endpoint() -> Option<Arc<HostEndpoint>> {
+    static ENDPOINT: OnceLock<Option<Arc<HostEndpoint>>> = OnceLock::new();
+    ENDPOINT
+        .get_or_init(|| {
+            let socket = crate::runtime_paths::host_socket_path_spec()?;
+            let launcher = std::env::current_exe().ok()?;
+            Some(HostEndpoint::new(
+                socket.path().to_path_buf(),
+                Some(launcher),
+            ))
+        })
+        .clone()
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // Nothing guarded here is left half-changed by a panic.
     mutex
@@ -283,6 +307,7 @@ impl HostEndpoint {
     }
 
     /// Whether new panes are being kept away from the host for now.
+    #[cfg(test)]
     pub(super) fn is_avoided(&self) -> bool {
         lock(&self.state)
             .failed_at
@@ -772,7 +797,15 @@ pub(super) fn open(
 ) -> Opened {
     let refused = match endpoint {
         Some(endpoint) => match open_remote(&params, &pending, endpoint, facts) {
-            Ok(spawned) => return Opened::InHost(spawned),
+            Ok(spawned) => {
+                log::info!(
+                    target: "splitlane::terminal::host",
+                    "session {}: pane opened in the session host, pid {}",
+                    spawned.handle.session(),
+                    spawned.child_pid
+                );
+                return Opened::InHost(spawned);
+            }
             Err(OpenError::AfterSpawn(e)) => return Opened::Lost(e),
             Err(OpenError::BeforeSpawn(e)) => e,
         },

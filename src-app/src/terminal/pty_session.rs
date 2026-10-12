@@ -200,10 +200,6 @@ impl PtySender {
 
     /// Sender for a terminal whose PTY the session host owns.
     #[cfg(target_os = "macos")]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "no pane is opened in the session host yet")
-    )]
     pub(super) fn remote(sender: RemoteSender) -> Self {
         Self::new(TerminalType::Remote(sender))
     }
@@ -481,16 +477,8 @@ pub(crate) struct PendingTerminalBackend {
     events_tx: UnboundedSender<AlacEvent>,
     clipboard_gate: Arc<ClipboardGate>,
     #[cfg(target_os = "macos")]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "no pane is opened in the session host yet")
-    )]
     remote_gate: Arc<RemoteGate>,
     #[cfg(target_os = "macos")]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "no pane is opened in the session host yet")
-    )]
     replay_finished_tx: UnboundedSender<()>,
 }
 
@@ -1158,10 +1146,6 @@ pub(super) fn queried_color(
 /// laid one out. The host answers the program from these, so they are made
 /// by the same two functions a pane's own answer is.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 pub(crate) fn window_facts(
     theme: &crate::theme::TerminalTheme,
     cursor_color_override: Option<gpui::Hsla>,
@@ -2264,10 +2248,6 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 /// How a terminal comes to follow a session in the host.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AttachMode {
     /// The window has just started the session itself. Everything in the
@@ -2283,10 +2263,6 @@ pub(super) enum AttachMode {
 
 /// Where an attached stream begins, as the host said in its reply.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct StreamStart {
     pub(super) start_seq: u64,
@@ -2300,10 +2276,6 @@ pub(super) struct StreamStart {
 
 /// What the thread feeding a [`RemoteSink`] has to do after an event.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SinkStep {
     Continue,
@@ -2317,10 +2289,6 @@ pub(super) enum SinkStep {
 /// The receiving ends of what a [`RemoteSink`] reports besides the grid,
 /// for the terminal state that owns the other half.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 pub(super) struct RemoteSinkChannels {
     pub(super) cwd_rx: UnboundedReceiver<String>,
     pub(super) marks_rx: std::sync::mpsc::Receiver<RawMark>,
@@ -2329,10 +2297,6 @@ pub(super) struct RemoteSinkChannels {
 
 /// A replay in progress: where it ends and what it has held back so far.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 struct Replay {
     /// The first position that is not old output.
     until: u64,
@@ -2366,10 +2330,6 @@ struct Replay {
 /// Whose answers reach the program is not decided here: in either state
 /// the gate drops the emulator's replies, because the host has given them.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 pub(super) struct RemoteSink {
     term: SharedTerm,
     listener: ZedListener,
@@ -2391,10 +2351,6 @@ pub(super) struct RemoteSink {
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 impl RemoteSink {
     /// A sink for the terminal `pending` belongs to. Moves that terminal's
     /// gate off local: from here on the host answers its program.
@@ -2664,10 +2620,6 @@ impl RemoteSink {
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 fn note_command_line(last_command: &SharedLastCommand, payload: &[u8]) {
     if let Some(command) = sanitize_command_line(payload) {
         *last_command
@@ -2680,10 +2632,6 @@ fn note_command_line(last_command: &SharedLastCommand, payload: &[u8]) {
 /// reads one from. `None` when the host could not say: the child was
 /// reaped by somebody else.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 fn exit_status_from_host(status: splitlane_host::ExitStatus) -> Option<std::process::ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
     // The encoding `wait` uses: the signal in the low seven bits, or the
@@ -3445,10 +3393,6 @@ impl TerminalState {
     /// through the sink the pane's reader thread feeds, and this opens the
     /// write side and lets `Drop` end the session.
     #[cfg(target_os = "macos")]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "no pane is opened in the session host yet")
-    )]
     pub(super) fn promote_remote(&mut self, spawned: SpawnedRemote) {
         self.notifier = PtyNotifier(PtySender::remote(spawned.sender));
         self.cwd_rx = Some(spawned.channels.cwd_rx);
@@ -3478,10 +3422,6 @@ impl TerminalState {
 
     /// Whether this terminal's PTY is in the session host.
     #[cfg(target_os = "macos")]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "no pane is opened in the session host yet")
-    )]
     pub(crate) fn is_in_host(&self) -> bool {
         self.remote.is_some()
     }
@@ -3491,10 +3431,6 @@ impl TerminalState {
     /// what it was told. Nothing happens for a terminal that is not in the
     /// host.
     #[cfg(target_os = "macos")]
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "no pane is opened in the session host yet")
-    )]
     pub(crate) fn tell_host(&self, facts: splitlane_host::Facts) {
         if let TerminalType::Remote(sender) = &self.notifier.0.0 {
             sender.send(RemoteMsg::Facts(Box::new(facts)));
@@ -4566,13 +4502,14 @@ impl TerminalState {
     /// program in it is told. `None` where the master is not kept to ask:
     /// only macOS keeps it.
     pub(crate) fn kernel_window_size(&self) -> Option<(usize, usize)> {
+        // A PTY in the session host cannot be asked from here. What the
+        // host last confirmed is what it gave the PTY.
+        #[cfg(target_os = "macos")]
+        if let Some(remote) = &self.remote {
+            return remote.acked_size();
+        }
         #[cfg(target_os = "macos")]
         {
-            // A PTY in the session host cannot be asked from here. What
-            // the host last confirmed is what it gave the PTY.
-            if let Some(remote) = &self.remote {
-                return remote.acked_size();
-            }
             let fd = self.pty_master_fd?;
             // SAFETY: `winsize` is plain integers, so all-zero is a valid value.
             let mut size: libc::winsize = unsafe { std::mem::zeroed() };
@@ -5230,10 +5167,6 @@ fn terminate_process_group(pid: i32) -> bool {
 /// may. For a session of the host that the host can no longer be asked to
 /// end.
 #[cfg(target_os = "macos")]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no pane is opened in the session host yet")
-)]
 pub(super) fn end_process_group(pid: u32) {
     let Ok(pid) = i32::try_from(pid) else {
         return;
