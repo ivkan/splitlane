@@ -22,13 +22,14 @@ It targets Linux (Wayland and X11), macOS and Windows.
 | `crates/splitlane-terminal-ghostty/`, `crates/splitlane-libghostty-sys/` | The libghostty backend and its FFI |
 | `crates/splitlane-shim/`, `crates/splitlane-ai-hook/` | The `PATH` shim around agent CLIs and the hook payloads it reports |
 | `crates/splitlane-mcp/`, `crates/splitlane-mcp-install/` | The read-only MCP bridge and its installer |
+| `crates/splitlane-host/` | The session host: PTYs and their output logs in a process without a window. Not used by the window yet |
 | `crates/splitlane-ipc-client/`, `crates/splitlane-process/`, `crates/splitlane-telemetry/`, `crates/splitlane-acp/` | Small shared libraries |
 | `native/libghostty/` | Vendored libghostty sources and checksum-pinned prebuilts - do not edit by hand |
 | `docs/` | User documentation; `docs/internals/` holds the reasoning behind UI and agent-state behaviour |
 | `packaging/`, `assets/`, `debian/` | Installers, icons, desktop metadata |
 
-Only `splitlane-app` links GPUI. Keep it that way: the shim, hook, MCP bridge
-and installer run outside the GUI process and must stay GPU-free.
+Only `splitlane-app` links GPUI. Keep it that way: the shim, hook, MCP bridge,
+installer and session host run outside the GUI process and must stay GPU-free.
 
 ## Build and check
 

@@ -1,0 +1,812 @@
+//! One PTY, the child running in it, and the log of what it printed.
+//!
+//! Three threads serve a session. The reader moves bytes from the PTY into
+//! the log and never waits for anybody: whoever follows the session holds
+//! only a position in the log, so a client that stops reading costs the
+//! reader nothing and loses nothing until the ring wraps past it. The writer
+//! feeds input to the PTY, so a child that does not read its input blocks
+//! that one thread and not the connection that sent it. The waiter reaps
+//! the child.
+
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{self, Write};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use portable_pty::{native_pty_system, MasterPty, PtySize, SlavePty};
+
+use crate::descriptors;
+use crate::lock;
+use crate::log::SessionLog;
+use crate::protocol::{ExitStatus, SessionId, SessionInfo, SpawnSpec};
+
+/// Argv[1] of the watcher process that kills a child's process group when
+/// the process that started the watcher dies. The app binary implements it;
+/// the host only starts it.
+pub const PTY_GUARD_SUBCOMMAND: &str = "__splitlane-pty-guard";
+
+/// How long a process group gets between SIGTERM and SIGKILL.
+pub(crate) const KILL_GRACE: Duration = Duration::from_millis(100);
+
+/// How long output is still collected after the child was reaped. A child's
+/// last words are already in the PTY when it exits, so this is normally one
+/// short read; the bound is for a background process that inherited the PTY
+/// and never stops writing.
+const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(1);
+/// Silence that ends the drain early.
+const DRAIN_QUIET_MS: i32 = 20;
+
+const READ_BUF: usize = 64 * 1024;
+/// Input chunks that may wait for the PTY. Bounded, so a sender is slowed
+/// down instead of the host buffering what a stuck child will never read.
+const INPUT_QUEUE: usize = 64;
+
+/// The memory all logs together may use.
+///
+/// Each log has its own capacity; this is the bound on their sum, for a host
+/// that holds many sessions. When the sum goes over, the largest log is cut
+/// first, by the excess but by no more than half of itself, and the next
+/// largest after it until the sum fits. The session that printed the most
+/// pays, and a quiet session keeps its whole history.
+pub(crate) struct LogBudget {
+    cap: usize,
+    total: AtomicUsize,
+    members: Mutex<Vec<Weak<Session>>>,
+}
+
+impl LogBudget {
+    pub(crate) fn new(cap: usize) -> Arc<Self> {
+        Arc::new(Self {
+            cap,
+            total: AtomicUsize::new(0),
+            members: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn enroll(&self, session: &Arc<Session>) {
+        let mut members = lock(&self.members);
+        members.retain(|member| member.strong_count() > 0);
+        members.push(Arc::downgrade(session));
+    }
+
+    fn account(&self, before: usize, after: usize) {
+        if after >= before {
+            self.total.fetch_add(after - before, Ordering::Relaxed);
+        } else {
+            self.total.fetch_sub(before - after, Ordering::Relaxed);
+        }
+    }
+
+    fn enforce(&self) {
+        if self.total.load(Ordering::Relaxed) <= self.cap {
+            return;
+        }
+        // One enforcer at a time; whoever arrives second leaves it to the
+        // first and goes back to reading its PTY.
+        let Ok(members) = self.members.try_lock() else {
+            return;
+        };
+        let sessions: Vec<Arc<Session>> = members.iter().filter_map(Weak::upgrade).collect();
+        // Each pass at least halves the largest log, so this ends.
+        for _ in 0..64 {
+            let excess = self.total.load(Ordering::Relaxed).saturating_sub(self.cap);
+            if excess == 0 {
+                break;
+            }
+            let largest = sessions
+                .iter()
+                .map(|session| (lock(&session.shared).log.stored_bytes(), session))
+                .max_by_key(|(stored, _)| *stored);
+            let Some((stored, session)) = largest else {
+                break;
+            };
+            if stored == 0 {
+                break;
+            }
+            let target = stored.saturating_sub(excess).max(stored / 2);
+            let mut shared = lock(&session.shared);
+            let before = shared.log.stored_bytes();
+            let dropped = shared.log.trim_to(target);
+            self.account(before, shared.log.stored_bytes());
+            drop(shared);
+            if dropped > 0 {
+                // Debug, not info: a session printing at the limit gets
+                // here on every read.
+                log::debug!(
+                    "session {}: log cut by {dropped} positions to keep all logs within {} bytes",
+                    session.id,
+                    self.cap
+                );
+            }
+        }
+    }
+}
+
+/// What a session needs from the host that owns it.
+pub(crate) struct SessionSettings {
+    pub(crate) log_capacity: usize,
+    pub(crate) budget: Arc<LogBudget>,
+    pub(crate) guard_exe: Option<PathBuf>,
+}
+
+/// State guarded by one lock and announced through one condition variable:
+/// everything a follower of the session waits on.
+pub(crate) struct Shared {
+    pub(crate) log: SessionLog,
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+    /// Set once, after the last output is in the log.
+    pub(crate) exit: Option<ExitStatus>,
+    pub(crate) attached: u32,
+}
+
+pub(crate) struct Session {
+    pub(crate) id: SessionId,
+    pub(crate) pid: u32,
+    cwd: String,
+    program: String,
+    label: Option<String>,
+    exported: BTreeMap<String, String>,
+    created_at_ms: u64,
+    pub(crate) shared: Mutex<Shared>,
+    pub(crate) changed: Condvar,
+    budget: Arc<LogBudget>,
+    /// Held to resize. Dropped when the session ends.
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    /// Held so the PTY keeps unread output; see where it is stored. With a
+    /// slave open here the master never reports the end of output, which
+    /// is why a session ends when its child is reaped and not when the
+    /// PTY says so.
+    slave: Mutex<Option<Box<dyn SlavePty + Send>>>,
+    input: Mutex<Option<SyncSender<Vec<u8>>>>,
+    /// The watcher exits when this pipe closes, so it is held for exactly as
+    /// long as there is a child to watch.
+    guard: Mutex<Option<ChildStdin>>,
+    /// Set by the waiter the moment the child is reaped, before the rest of
+    /// its output is collected.
+    reaped: AtomicBool,
+}
+
+impl Session {
+    pub(crate) fn spawn(
+        spec: SpawnSpec,
+        settings: &SessionSettings,
+    ) -> Result<Arc<Session>, String> {
+        let Some(program) = spec.argv.first().cloned() else {
+            return Err("argv is empty".into());
+        };
+        if spec.cols == 0 || spec.rows == 0 {
+            return Err(format!(
+                "terminal size {}x{} is empty",
+                spec.cols, spec.rows
+            ));
+        }
+        // Checked here because the alternative is the child starting
+        // somewhere else without anybody being told.
+        if !Path::new(&spec.cwd).is_dir() {
+            return Err(format!(
+                "working directory {:?} is not a directory",
+                spec.cwd
+            ));
+        }
+
+        let opened = {
+            // One session is opened at a time. Opening PTYs from several
+            // threads at once is not safe on macOS, where `openpty` keeps
+            // process-wide state: concurrent calls were seen to fail
+            // outright, and to leave a session whose log never received
+            // what its child printed. The lock also covers the moments in
+            // which a descriptor exists but is not yet marked
+            // close-on-exec, during which a child forked for another
+            // session would inherit it and keep that PTY open.
+            let _opening = lock(&OPENING);
+            open_session(&spec, &program, settings.guard_exe.as_deref())?
+        };
+        let Opened {
+            master,
+            slave,
+            read_fd,
+            write_fd,
+            wake_rx,
+            wake_tx,
+            pid,
+            guard,
+        } = opened;
+        let (input_tx, input_rx) = sync_channel::<Vec<u8>>(INPUT_QUEUE);
+
+        let session = Arc::new(Session {
+            id: SessionId::new_random(),
+            pid,
+            cwd: spec.cwd,
+            program,
+            label: spec.label,
+            exported: spec.exported,
+            created_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|since| since.as_millis() as u64)
+                .unwrap_or(0),
+            shared: Mutex::new(Shared {
+                log: SessionLog::new(settings.log_capacity, spec.cols, spec.rows),
+                cols: spec.cols,
+                rows: spec.rows,
+                exit: None,
+                attached: 0,
+            }),
+            changed: Condvar::new(),
+            budget: settings.budget.clone(),
+            master: Mutex::new(Some(master)),
+            slave: Mutex::new(Some(slave)),
+            input: Mutex::new(Some(input_tx)),
+            guard: Mutex::new(guard),
+            reaped: AtomicBool::new(false),
+        });
+        settings.budget.enroll(&session);
+
+        let waiter = {
+            let session = session.clone();
+            thread("waiter", move || {
+                let status = wait_for(pid);
+                session.reaped.store(true, Ordering::SeqCst);
+                // Wakes the reader out of its wait for output.
+                let _ = (&File::from(wake_tx)).write_all(&[1]);
+                status
+            })
+        };
+        let waiter = match waiter {
+            Ok(waiter) => waiter,
+            Err(e) => {
+                session.abandon();
+                return Err(e);
+            }
+        };
+        let reader = {
+            let session = session.clone();
+            thread("reader", move || {
+                session.pump_output(read_fd, wake_rx);
+                let status = waiter.join().unwrap_or_default();
+                session.finish(status);
+            })
+        };
+        let writer = thread("writer", move || {
+            write_input(File::from(write_fd), input_rx)
+        });
+        if let Err(e) = reader.and(writer) {
+            session.abandon();
+            return Err(e);
+        }
+        log::info!(
+            "session {}: started {:?} as pid {pid}, {}x{}",
+            session.id,
+            session.program,
+            spec.cols,
+            spec.rows
+        );
+        Ok(session)
+    }
+
+    /// Undo a spawn that could not be completed.
+    fn abandon(&self) {
+        signal_group(self.pid, libc::SIGKILL);
+        lock(&self.guard).take();
+        lock(&self.slave).take();
+        lock(&self.master).take();
+        lock(&self.input).take();
+    }
+
+    /// Body of the reader thread: move output into the log until the child
+    /// is gone and the PTY went quiet. The PTY reporting its own end stops
+    /// it too, though while the host holds the slave that does not happen.
+    fn pump_output(&self, pty: OwnedFd, wake: OwnedFd) {
+        let mut buf = vec![0u8; READ_BUF];
+        let mut reaped_at: Option<Instant> = None;
+        loop {
+            if reaped_at.is_none() && self.reaped.load(Ordering::SeqCst) {
+                reaped_at = Some(Instant::now());
+            }
+            let timeout_ms = if reaped_at.is_some() {
+                DRAIN_QUIET_MS
+            } else {
+                -1
+            };
+            let mut fds = [
+                libc::pollfd {
+                    fd: pty.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    // Watched only until the waiter has spoken; after that
+                    // the pipe stays readable and would turn the wait into
+                    // a spin.
+                    fd: if reaped_at.is_some() {
+                        -1
+                    } else {
+                        wake.as_raw_fd()
+                    },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: `fds` is a valid array of two entries for the call.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
+            if ready < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            if ready == 0 {
+                // Only the drain has a timeout: the child is gone and the
+                // PTY has nothing more.
+                break;
+            }
+            if fds[0].revents & libc::POLLIN != 0 {
+                // SAFETY: `buf` is valid for `buf.len()` bytes.
+                let n = unsafe { libc::read(pty.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                if n > 0 {
+                    self.append_output(&buf[..n as usize]);
+                } else if n == 0 {
+                    break;
+                } else {
+                    let kind = io::Error::last_os_error().kind();
+                    if !matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) {
+                        // EIO is how Linux says every slave end is closed.
+                        break;
+                    }
+                }
+            } else if fds[0].revents != 0 {
+                // Hang-up or error with nothing left to read.
+                break;
+            }
+            if reaped_at.is_some_and(|at| at.elapsed() > DRAIN_AFTER_EXIT) {
+                break;
+            }
+        }
+    }
+
+    fn append_output(&self, bytes: &[u8]) {
+        let mut shared = lock(&self.shared);
+        let before = shared.log.stored_bytes();
+        shared.log.append_output(bytes);
+        self.budget.account(before, shared.log.stored_bytes());
+        drop(shared);
+        self.changed.notify_all();
+        self.budget.enforce();
+    }
+
+    /// Record the end of the session. Runs after the last output is in the
+    /// log, so a follower that sees the exit has seen everything before it.
+    fn finish(&self, status: ExitStatus) {
+        lock(&self.guard).take();
+        lock(&self.slave).take();
+        lock(&self.master).take();
+        lock(&self.input).take();
+        lock(&self.shared).exit = Some(status);
+        self.changed.notify_all();
+        match (status.code, status.signal) {
+            (_, Some(signal)) => log::info!("session {}: ended by signal {signal}", self.id),
+            (code, None) => log::info!(
+                "session {}: exited with code {}",
+                self.id,
+                code.unwrap_or(-1)
+            ),
+        }
+    }
+
+    pub(crate) fn exit_status(&self) -> Option<ExitStatus> {
+        lock(&self.shared).exit
+    }
+
+    /// Queue input for the PTY. Input for a session that ended is dropped:
+    /// there is nobody to read it and nobody to tell.
+    pub(crate) fn input(&self, bytes: &[u8]) {
+        let sender = lock(&self.input).clone();
+        if let Some(sender) = sender {
+            // Blocks when the queue is full. That holds up the connection
+            // that is sending and nothing else.
+            let _ = sender.send(bytes.to_vec());
+        }
+    }
+
+    pub(crate) fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        if cols == 0 || rows == 0 {
+            return Err(format!("terminal size {cols}x{rows} is empty"));
+        }
+        // Held across both steps, so two resizes reach the log in the order
+        // they reached the PTY.
+        let master = lock(&self.master);
+        let Some(pty) = master.as_ref() else {
+            return Err("the session has ended".into());
+        };
+        pty.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("cannot resize the PTY: {e:#}"))?;
+        let mut shared = lock(&self.shared);
+        let before = shared.log.stored_bytes();
+        shared.log.append_resize(cols, rows);
+        self.budget.account(before, shared.log.stored_bytes());
+        shared.cols = cols;
+        shared.rows = rows;
+        drop(shared);
+        drop(master);
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    /// Ask the session's process group to end, and make it after a grace.
+    ///
+    /// The child is the leader of its own session, so its pid names the
+    /// group. SIGTERM goes out only while that is still true of the pid,
+    /// which also covers a child that is already gone. The follow-up asks
+    /// whether the group still has members rather than whether its leader
+    /// lives: a process that ignores SIGTERM usually outlives the shell
+    /// that started it, and is exactly what the SIGKILL is for.
+    pub(crate) fn kill(&self) {
+        if self.exit_status().is_some() || !self.terminate() {
+            return;
+        }
+        let pid = self.pid;
+        let spawned = thread("killer", move || {
+            std::thread::sleep(KILL_GRACE);
+            signal_group(pid, libc::SIGKILL);
+        });
+        if spawned.is_err() {
+            signal_group(pid, libc::SIGKILL);
+        }
+    }
+
+    /// SIGTERM to the group. True when it was delivered.
+    ///
+    /// Not sent once the child was reaped: from then on its pid may belong
+    /// to somebody else, and what is left of the group is dealt with by the
+    /// SIGKILL of whoever called this.
+    pub(crate) fn terminate(&self) -> bool {
+        !self.reaped.load(Ordering::SeqCst)
+            && is_group_leader(self.pid)
+            && signal_group(self.pid, libc::SIGTERM)
+    }
+
+    /// SIGKILL to whatever is left of the group.
+    pub(crate) fn kill_now(&self) {
+        signal_group(self.pid, libc::SIGKILL);
+    }
+
+    pub(crate) fn group_alive(&self) -> bool {
+        signal_group(self.pid, 0)
+    }
+
+    pub(crate) fn info(&self) -> SessionInfo {
+        let shared = lock(&self.shared);
+        SessionInfo {
+            id: self.id,
+            pid: self.pid,
+            cols: shared.cols,
+            rows: shared.rows,
+            cwd: self.cwd.clone(),
+            program: self.program.clone(),
+            label: self.label.clone(),
+            created_at_ms: self.created_at_ms,
+            exited: shared.exit,
+            log_head_seq: shared.log.head_seq(),
+            log_tail_seq: shared.log.tail_seq(),
+            log_bytes: shared.log.stored_bytes() as u64,
+            attached: shared.attached,
+            exported: self.exported.clone(),
+        }
+    }
+
+    /// Give the log's memory back when the session is forgotten.
+    pub(crate) fn release_log(&self) {
+        let mut shared = lock(&self.shared);
+        let before = shared.log.stored_bytes();
+        shared.log.trim_to(0);
+        self.budget.account(before, shared.log.stored_bytes());
+    }
+}
+
+/// Serialises [`open_session`]; see where it is taken.
+static OPENING: Mutex<()> = Mutex::new(());
+
+/// Everything of a session that involves creating a descriptor or a
+/// process.
+struct Opened {
+    master: Box<dyn MasterPty + Send>,
+    slave: Box<dyn SlavePty + Send>,
+    read_fd: OwnedFd,
+    write_fd: OwnedFd,
+    wake_rx: OwnedFd,
+    wake_tx: OwnedFd,
+    pid: u32,
+    guard: Option<ChildStdin>,
+}
+
+fn open_session(
+    spec: &SpawnSpec,
+    program: &str,
+    guard_exe: Option<&Path>,
+) -> Result<Opened, String> {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: spec.rows,
+            cols: spec.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("cannot open a PTY: {e:#}"))?;
+    let master_fd = pair
+        .master
+        .as_raw_fd()
+        .ok_or("the PTY has no file descriptor")?;
+    // SAFETY: `master_fd` belongs to `pair.master`, which is alive for the
+    // whole borrow.
+    let master_ref = unsafe { BorrowedFd::borrow_raw(master_fd) };
+    let read_fd = clone_fd(master_ref, "reader")?;
+    let write_fd = clone_fd(master_ref, "writer")?;
+    let (wake_rx, wake_tx) = wake_pipe().map_err(|e| format!("cannot open a pipe: {e}"))?;
+
+    let child = spawn_child(spec, program, pair.master.as_ref())?;
+    let pid = child.id();
+    let guard = guard_exe.and_then(|exe| spawn_guard(exe, pid));
+    Ok(Opened {
+        // Kept, and not closed now that the child has its own copies. On
+        // macOS, output nobody has read yet is thrown away when the last
+        // slave descriptor closes, and a child that prints and exits at
+        // once closes it before the reader has been scheduled: under load
+        // about one such exit in four hundred lost everything it printed.
+        // While the host holds a copy there is no last close until the
+        // output has been collected.
+        slave: pair.slave,
+        master: pair.master,
+        read_fd,
+        write_fd,
+        wake_rx,
+        wake_tx,
+        pid,
+        guard,
+    })
+}
+
+fn thread<T: Send + 'static>(
+    role: &str,
+    body: impl FnOnce() -> T + Send + 'static,
+) -> Result<std::thread::JoinHandle<T>, String> {
+    std::thread::Builder::new()
+        .name(format!("host-{role}"))
+        .spawn(body)
+        .map_err(|e| format!("cannot start the {role} thread: {e}"))
+}
+
+fn clone_fd(fd: BorrowedFd<'_>, role: &str) -> Result<OwnedFd, String> {
+    fd.try_clone_to_owned()
+        .map_err(|e| format!("cannot duplicate the PTY for the {role}: {e}"))
+}
+
+/// A pipe whose both ends close on exec, so no session's child inherits the
+/// ends that belong to another session.
+fn wake_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0 as RawFd; 2];
+    // SAFETY: `fds` has room for the two descriptors `pipe` writes.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: both descriptors were just created and are owned by nobody
+    // else.
+    let ends = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    for end in [&ends.0, &ends.1] {
+        // SAFETY: plain fcntl on a descriptor we own.
+        if unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(ends)
+}
+
+/// Start the child on the slave side of the PTY.
+///
+/// The PTY comes from `portable-pty`, but the child is started here and not
+/// through its `spawn_command`: that call always adds a `SHELL` variable of
+/// its own and falls back to the home directory when the working directory
+/// is missing, and the contract promises the child exactly the environment
+/// and directory it was given.
+fn spawn_child(
+    spec: &SpawnSpec,
+    program: &str,
+    master: &(dyn MasterPty + Send),
+) -> Result<std::process::Child, String> {
+    let tty = master
+        .tty_name()
+        .ok_or("the PTY has no device name to open")?;
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(&tty)
+        .map_err(|e| format!("cannot open {}: {e}", tty.display()))?;
+    let stdio = || {
+        slave
+            .try_clone()
+            .map(Stdio::from)
+            .map_err(|e| format!("cannot duplicate {}: {e}", tty.display()))
+    };
+
+    let mut command = Command::new(program);
+    command
+        .args(&spec.argv[1..])
+        .env_clear()
+        .envs(spec.env.iter().map(|(key, value)| (key, value)))
+        .current_dir(&spec.cwd)
+        .stdin(stdio()?)
+        .stdout(stdio()?)
+        .stderr(stdio()?);
+    let descriptor_limit = descriptors::limit();
+    // SAFETY: the closure runs between fork and exec and calls only
+    // async-signal-safe functions.
+    unsafe {
+        command.pre_exec(move || {
+            // Nothing of the host's may reach the child: not a client's
+            // connection, not another session's terminal.
+            descriptors::seal_inherited(descriptor_limit);
+            // The host handles SIGTERM and SIGINT itself and a handler does
+            // not survive exec, but an ignored signal and a blocked one do.
+            for signal in [
+                libc::SIGCHLD,
+                libc::SIGHUP,
+                libc::SIGINT,
+                libc::SIGQUIT,
+                libc::SIGTERM,
+                libc::SIGALRM,
+                libc::SIGPIPE,
+            ] {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            let mut none: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut none);
+            libc::sigprocmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+            // A session of its own makes the child a process group leader,
+            // which is what lets the whole group be signalled by its pid,
+            // and lets the PTY become its controlling terminal.
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            // Without a controlling terminal a resize sends no SIGWINCH
+            // and ^C reaches nobody. The request constant's type differs
+            // between platforms, hence the inferred cast.
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+        .spawn()
+        .map_err(|e| format!("cannot start {program:?}: {e}"))
+}
+
+/// Start the watcher that kills the child's process group if this process
+/// dies without doing it. Same arguments and the same pipe convention as
+/// the app uses for the PTYs it owns itself: the watcher exits when its
+/// standard input closes.
+fn spawn_guard(exe: &Path, child_pgid: u32) -> Option<ChildStdin> {
+    let mut command = Command::new(exe);
+    command
+        .arg(PTY_GUARD_SUBCOMMAND)
+        .arg(std::process::id().to_string())
+        .arg(child_pgid.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // A group of its own, so a signal aimed at the host's group or the
+        // child's does not take the watcher with it.
+        .process_group(0);
+    let descriptor_limit = descriptors::limit();
+    // SAFETY: only `fcntl` is called between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            descriptors::seal_inherited(descriptor_limit);
+            Ok(())
+        });
+    }
+    match command.spawn() {
+        Ok(mut guard) => {
+            let Some(stdin) = guard.stdin.take() else {
+                log::warn!("watcher for process group {child_pgid} has no control pipe");
+                let _ = guard.kill();
+                let _ = guard.wait();
+                return None;
+            };
+            // Reaped on a thread of its own, or every ended session would
+            // leave a zombie behind.
+            if let Err(e) = thread("guard-reaper", move || {
+                let _ = guard.wait();
+            }) {
+                log::warn!("{e}");
+            }
+            Some(stdin)
+        }
+        Err(e) => {
+            // The session still works; it is only not cleaned up if the
+            // host is killed.
+            log::warn!(
+                "cannot start the watcher {} for process group {child_pgid}: {e}",
+                exe.display()
+            );
+            None
+        }
+    }
+}
+
+/// Body of the writer thread.
+fn write_input(mut pty: File, input: Receiver<Vec<u8>>) {
+    while let Ok(bytes) = input.recv() {
+        if pty.write_all(&bytes).is_err() {
+            // The slave side is closed. Keep emptying the queue so that a
+            // sender blocked on it is released.
+            while input.recv().is_ok() {}
+            return;
+        }
+    }
+}
+
+/// Reap `pid` and report how it ended.
+fn wait_for(pid: u32) -> ExitStatus {
+    let mut status: libc::c_int = 0;
+    loop {
+        // SAFETY: `status` is a valid out-pointer; `pid` is our own child.
+        let rc = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+        if rc == -1 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            // Somebody else reaped it. That it ended is all we know.
+            return ExitStatus::default();
+        }
+        break;
+    }
+    if libc::WIFSIGNALED(status) {
+        ExitStatus {
+            code: None,
+            signal: Some(libc::WTERMSIG(status)),
+        }
+    } else {
+        ExitStatus {
+            code: Some(libc::WEXITSTATUS(status)),
+            signal: None,
+        }
+    }
+}
+
+/// True while `pid` is a live process leading its own process group.
+fn is_group_leader(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: getpgid only queries; it returns -1 for a pid that is gone.
+    pid > 1 && unsafe { libc::getpgid(pid) } == pid
+}
+
+/// Send `signal` to the process group `pgid`; with signal 0, only ask
+/// whether the group has members. True when the group was there.
+fn signal_group(pgid: u32, signal: libc::c_int) -> bool {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return false;
+    };
+    // Group 0 is our own and group 1 is init's.
+    if pgid <= 1 {
+        return false;
+    }
+    // SAFETY: a negative pid addresses the process group; range checked
+    // above.
+    unsafe { libc::kill(-pgid, signal) == 0 }
+}

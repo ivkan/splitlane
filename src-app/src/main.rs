@@ -48,6 +48,7 @@ mod file_view;
 mod fleet_skill;
 mod fonts;
 mod git_command;
+mod host_process;
 mod ipc;
 mod ipc_events;
 mod keybindings;
@@ -3380,6 +3381,12 @@ fn main() {
     #[cfg(unix)]
     if args.get(1).map(String::as_str) == Some(agents::parent_guard::PTY_GUARD_SUBCOMMAND) {
         std::process::exit(agents::parent_guard::run_pty_guard_from_args(&args));
+    }
+    // The session host is this binary started with one argument. It owns
+    // PTYs and has no window, so it leaves before anything of the app is
+    // initialised - above all before GPUI, which a host must never load.
+    if args.get(1).map(String::as_str) == Some(splitlane_host::HOST_SUBCOMMAND) {
+        std::process::exit(host_process::run());
     }
     #[cfg(target_os = "windows")]
     if external_open::is_open_url_helper_invocation(&args) {

@@ -1,0 +1,1203 @@
+//! A real host on a temporary socket, real `/bin/sh` children, real clients.
+//!
+//! Nothing here asserts by sleeping: every wait is a poll with a deadline
+//! that fails with what was seen so far.
+
+#![cfg(unix)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::unwrap_in_result,
+    clippy::panic,
+    reason = "test helpers fail the test by panicking, like the tests that call them"
+)]
+
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use splitlane_host::protocol::{
+    self, AttachArgs, AttachResult, EventBody, Hello, ReplyEnvelope, RequestEnvelope, WireError,
+};
+use splitlane_host::{
+    ensure_running, AttachFrom, Attachment, Client, ExitStatus, HostConfig, HostError, SessionId,
+    SessionInfo, SpawnSpec, StreamEvent,
+};
+
+const DEADLINE: Duration = Duration::from_secs(20);
+
+/// Poll `probe` until it yields something, or fail naming `what`.
+fn wait_for<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        if let Some(found) = probe() {
+            return found;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn process_exists(pid: u32) -> bool {
+    // SAFETY: signal 0 only asks whether the process is there.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// A host running on a thread of the test, on a socket of its own.
+struct TestHost {
+    // Field order matters: the directory is removed last.
+    thread: Option<JoinHandle<Result<(), HostError>>>,
+    socket: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+/// A directory short enough for a socket path: macOS allows 104 bytes and
+/// its default temporary directory uses half of them.
+fn short_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("slh")
+        .tempdir_in("/tmp")
+        .unwrap()
+}
+
+impl TestHost {
+    fn start(configure: impl FnOnce(&mut HostConfig)) -> Self {
+        let dir = short_dir();
+        // One level down, so the host has a directory to create.
+        let socket = dir.path().join("h").join("host.sock");
+        let mut config = HostConfig::new(&socket);
+        configure(&mut config);
+        let thread = std::thread::spawn(move || splitlane_host::run(config));
+        let host = TestHost {
+            thread: Some(thread),
+            socket,
+            _dir: dir,
+        };
+        drop(host.client());
+        host
+    }
+
+    fn client(&self) -> Client {
+        wait_for("the host to answer", || {
+            if self.thread.as_ref().is_some_and(JoinHandle::is_finished) {
+                panic!("the host exited before answering");
+            }
+            Client::connect(&self.socket).ok()
+        })
+    }
+
+    /// Wait for the host to exit by itself and return how it ended.
+    fn join(&mut self) -> Result<(), HostError> {
+        let thread = self.thread.take().unwrap();
+        wait_for("the host to exit", || thread.is_finished().then_some(()));
+        thread.join().unwrap()
+    }
+}
+
+impl Drop for TestHost {
+    fn drop(&mut self) {
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        if !thread.is_finished() {
+            if let Ok(client) = Client::connect(&self.socket) {
+                let _ = client.shutdown(true);
+            }
+        }
+        let _ = thread.join();
+    }
+}
+
+fn sh(script: &str) -> SpawnSpec {
+    SpawnSpec {
+        argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+        env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+        cwd: "/".into(),
+        cols: 80,
+        rows: 24,
+        ..SpawnSpec::default()
+    }
+}
+
+fn info(client: &Client, session: SessionId) -> SessionInfo {
+    client
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|info| info.id == session)
+        .unwrap()
+}
+
+/// Wait until the session's log has grown to exactly `tail` positions.
+fn wait_for_tail(client: &Client, session: SessionId, tail: u64) {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let listed = info(client, session);
+        if listed.log_tail_seq == tail {
+            return;
+        }
+        if Instant::now() >= deadline || listed.log_tail_seq > tail {
+            let attachment = client.attach(session, AttachFrom::Start).unwrap();
+            let mut trace = Trace::starting_at(&attachment);
+            while let Ok(event) = attachment.recv_timeout(Duration::from_millis(300)) {
+                trace.record(event);
+            }
+            let text = trace.text();
+            panic!(
+                "the log stopped at {} of {tail} positions ({listed:?}); it ends with {:?}",
+                listed.log_tail_seq,
+                &text[text.len().saturating_sub(300)..]
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// One position of a session's log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pos {
+    Byte(u8),
+    Resize(u16, u16),
+}
+
+/// Everything one attachment delivered, position by position. Recording it
+/// checks the one thing every stream must hold: each event starts where the
+/// previous one ended, unless a gap said otherwise.
+#[derive(Debug, Default)]
+struct Trace {
+    next: Option<u64>,
+    positions: Vec<(u64, Pos)>,
+    gaps: Vec<(u64, u64)>,
+    exit: Option<ExitStatus>,
+}
+
+impl Trace {
+    fn starting_at(attachment: &Attachment) -> Self {
+        Trace {
+            next: Some(attachment.start_seq),
+            ..Trace::default()
+        }
+    }
+
+    fn record(&mut self, event: StreamEvent) {
+        assert!(self.exit.is_none(), "an event after the exit: {event:?}");
+        match event {
+            StreamEvent::Output { seq, bytes } => {
+                assert_eq!(Some(seq), self.next, "output out of sequence");
+                assert!(!bytes.is_empty());
+                for (offset, byte) in bytes.iter().enumerate() {
+                    self.positions.push((seq + offset as u64, Pos::Byte(*byte)));
+                }
+                self.next = Some(seq + bytes.len() as u64);
+            }
+            StreamEvent::Resized { seq, cols, rows } => {
+                assert_eq!(Some(seq), self.next, "resize out of sequence");
+                self.positions.push((seq, Pos::Resize(cols, rows)));
+                self.next = Some(seq + 1);
+            }
+            StreamEvent::Gap {
+                lost_from,
+                resumes_at,
+            } => {
+                assert_eq!(Some(lost_from), self.next, "gap out of sequence");
+                assert!(resumes_at > lost_from);
+                self.gaps.push((lost_from, resumes_at));
+                self.next = Some(resumes_at);
+            }
+            StreamEvent::Exited(status) => self.exit = Some(status),
+        }
+    }
+
+    fn text(&self) -> String {
+        let bytes: Vec<u8> = self
+            .positions
+            .iter()
+            .filter_map(|(_, pos)| match pos {
+                Pos::Byte(byte) => Some(*byte),
+                Pos::Resize(..) => None,
+            })
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// Take events from `attachment` until `done` holds.
+    fn follow(&mut self, attachment: &Attachment, what: &str, done: impl Fn(&Trace) -> bool) {
+        let deadline = Instant::now() + DEADLINE;
+        while !done(self) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; got {:?}, exit {:?}",
+                self.text(),
+                self.exit
+            );
+            if let Ok(event) = attachment.recv_timeout(Duration::from_millis(50)) {
+                self.record(event);
+            }
+        }
+    }
+
+    fn follow_to_exit(&mut self, attachment: &Attachment) -> ExitStatus {
+        self.follow(attachment, "the session to exit", |trace| {
+            trace.exit.is_some()
+        });
+        self.exit.unwrap()
+    }
+}
+
+/// Attach from the start and collect everything up to the exit.
+fn whole_session(client: &Client, session: SessionId) -> Trace {
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    assert_eq!((attachment.start_seq, attachment.gap), (0, false));
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow_to_exit(&attachment);
+    trace
+}
+
+#[test]
+fn a_child_sees_exactly_the_environment_it_was_given() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    // `env` itself, not a shell running it: a shell adds variables of its
+    // own before `env` gets to print them.
+    let (session, pid) = client
+        .spawn(SpawnSpec {
+            argv: vec!["/usr/bin/env".into()],
+            env: vec![
+                ("ZED".into(), "last".into()),
+                ("ALPHA".into(), "two words".into()),
+            ],
+            cwd: "/".into(),
+            cols: 80,
+            rows: 24,
+            ..SpawnSpec::default()
+        })
+        .unwrap();
+    assert!(pid > 1);
+    let trace = whole_session(&client, session);
+    assert_eq!(
+        trace.exit,
+        Some(ExitStatus {
+            code: Some(0),
+            signal: None
+        })
+    );
+    let text = trace.text();
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["ALPHA=two words", "ZED=last"]);
+}
+
+#[test]
+fn a_spawn_that_cannot_work_is_refused_with_the_reason() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let refused = |spec: SpawnSpec| {
+        let error = client.spawn(spec).unwrap_err();
+        assert_eq!(error.remote_code(), Some(protocol::ERR_SPAWN), "{error}");
+        error.to_string()
+    };
+    assert!(refused(SpawnSpec::default()).contains("argv is empty"));
+    assert!(refused(SpawnSpec {
+        cwd: "/no/such/directory".into(),
+        ..sh("true")
+    })
+    .contains("not a directory"));
+    assert!(refused(SpawnSpec {
+        argv: vec!["/no/such/program".into()],
+        ..sh("true")
+    })
+    .contains("/no/such/program"));
+    assert!(refused(SpawnSpec {
+        cols: 0,
+        ..sh("true")
+    })
+    .contains("empty"));
+    assert!(client.list().unwrap().is_empty());
+}
+
+#[test]
+fn input_reaches_the_child_and_its_answer_comes_back() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client
+        .spawn(sh(r#"printf 'ready\n'; read line; echo "got:$line""#))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the prompt", |t| t.text().contains("ready"));
+    client.input(session, b"hello\n").unwrap();
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    assert!(trace.text().contains("got:hello"), "{:?}", trace.text());
+}
+
+#[test]
+fn a_resize_reaches_the_child_and_is_recorded_where_it_happened() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client
+        .spawn(sh("stty size; read a; stty size; read b"))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    assert_eq!((attachment.cols, attachment.rows), (80, 24));
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the first size", |t| {
+        t.text().contains("24 80")
+    });
+
+    client.resize(session, 100, 30).unwrap();
+    let listed = info(&client, session);
+    assert_eq!((listed.cols, listed.rows), (100, 30));
+    client.input(session, b"\n").unwrap();
+    trace.follow(&attachment, "the second size", |t| {
+        t.text().contains("30 100")
+    });
+
+    // The record sits after the first answer and before the second, at its
+    // own position; `Trace::record` has already checked that position
+    // follows the output before it without a hole.
+    let resize_at = trace
+        .positions
+        .iter()
+        .position(|(_, pos)| *pos == Pos::Resize(100, 30))
+        .unwrap();
+    let before: Trace = Trace {
+        positions: trace.positions[..resize_at].to_vec(),
+        ..Trace::default()
+    };
+    assert!(before.text().contains("24 80"));
+    assert!(!before.text().contains("30 100"));
+
+    assert!(client.resize(session, 0, 10).is_err());
+    client.input(session, b"\n").unwrap();
+    trace.follow_to_exit(&attachment);
+    let error = client.resize(session, 90, 20).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_SESSION_EXITED));
+}
+
+#[test]
+fn a_late_attach_replays_the_log_and_then_follows_live() {
+    let host = TestHost::start(|_| {});
+    let first_client = host.client();
+    let (session, _) = first_client
+        .spawn(sh("echo one; read a; echo two; read b; echo three"))
+        .unwrap();
+    let first = first_client.attach(session, AttachFrom::Start).unwrap();
+    let mut first_trace = Trace::starting_at(&first);
+    first_trace.follow(&first, "one", |t| t.text().contains("one"));
+    first_client.resize(session, 120, 40).unwrap();
+    first_client.input(session, b"\n").unwrap();
+    first_trace.follow(&first, "two", |t| t.text().contains("two"));
+
+    // Two more clients arrive in the middle: one wants everything, one
+    // continues from a position inside what was already printed.
+    let late_client = host.client();
+    let late = late_client.attach(session, AttachFrom::Start).unwrap();
+    assert_eq!((late.start_seq, late.gap), (0, false));
+    assert_eq!((late.cols, late.rows), (80, 24));
+    let mut late_trace = Trace::starting_at(&late);
+
+    let resume_at = 3;
+    let resuming_client = host.client();
+    let resuming = resuming_client
+        .attach(session, AttachFrom::Seq(resume_at))
+        .unwrap();
+    assert_eq!((resuming.start_seq, resuming.gap), (resume_at, false));
+    let mut resuming_trace = Trace::starting_at(&resuming);
+
+    assert_eq!(info(&late_client, session).attached, 3);
+    late_client.resize(session, 60, 20).unwrap();
+    late_client.input(session, b"\n").unwrap();
+
+    for (trace, attachment) in [
+        (&mut first_trace, &first),
+        (&mut late_trace, &late),
+        (&mut resuming_trace, &resuming),
+    ] {
+        assert_eq!(trace.follow_to_exit(attachment).code, Some(0));
+        assert!(trace.gaps.is_empty());
+    }
+    assert!(first_trace.text().contains("three"));
+    assert!(first_trace
+        .positions
+        .iter()
+        .any(|(_, pos)| *pos == Pos::Resize(120, 40)));
+    assert!(first_trace
+        .positions
+        .iter()
+        .any(|(_, pos)| *pos == Pos::Resize(60, 20)));
+
+    // Same bytes, same resize records, same positions: nothing replayed
+    // twice and nothing lost between the replay and the live part.
+    assert_eq!(late_trace.positions, first_trace.positions);
+    let suffix: Vec<_> = first_trace
+        .positions
+        .iter()
+        .filter(|(seq, _)| *seq >= resume_at)
+        .copied()
+        .collect();
+    assert_eq!(resuming_trace.positions, suffix);
+
+    // The log is still there after the exit, for whoever comes next.
+    let after = whole_session(&host.client(), session);
+    assert_eq!(after.positions, first_trace.positions);
+}
+
+#[test]
+fn a_detached_stream_can_be_resumed_where_it_stopped() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client
+        .spawn(sh("echo one; read a; echo two; read b"))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "one", |t| t.text().contains("one"));
+    assert!(matches!(
+        client.attach(session, AttachFrom::Start),
+        Err(e) if e.remote_code() == Some(protocol::ERR_ALREADY_ATTACHED)
+    ));
+
+    client.detach(session).unwrap();
+    // Whatever was queued before the detach still belongs to the stream.
+    for event in attachment {
+        trace.record(event);
+    }
+    assert_eq!(info(&client, session).attached, 0);
+    client.input(session, b"\n").unwrap();
+
+    let resumed = client
+        .attach(session, AttachFrom::Seq(trace.next.unwrap()))
+        .unwrap();
+    assert_eq!(Some(resumed.start_seq), trace.next);
+    trace.follow(&resumed, "two", |t| t.text().contains("two"));
+    client.input(session, b"\n").unwrap();
+    trace.follow_to_exit(&resumed);
+    assert_eq!(trace.text().matches("two").count(), 1);
+}
+
+#[test]
+fn a_dropped_attachment_lets_the_session_be_attached_again() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+
+    // A quiet session: nothing arrives after the drop to make the client
+    // notice, so the drop itself has to release the stream.
+    let (quiet, _) = client.spawn(sh("echo ready; read a")).unwrap();
+    let attachment = client.attach(quiet, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "ready", |t| t.text().contains("ready"));
+    drop(attachment);
+    let again = client.attach(quiet, AttachFrom::Start).unwrap();
+    wait_for("the first stream to be gone", || {
+        (info(&client, quiet).attached == 1).then_some(())
+    });
+    client.input(quiet, b"\n").unwrap();
+    let mut replay = Trace::starting_at(&again);
+    replay.follow_to_exit(&again);
+    assert!(replay.text().contains("ready"));
+
+    // A session that prints without pause: frames of the dropped stream are
+    // still arriving when the next attach is registered, and none of them
+    // may be taken for part of the new stream. `Trace` fails on the first
+    // event that does not continue where the previous one ended.
+    let (busy, _) = client
+        .spawn(sh("while :; do echo a line of output; done"))
+        .unwrap();
+    for _ in 0..20 {
+        let attachment = client.attach(busy, AttachFrom::Start).unwrap();
+        let mut trace = Trace::starting_at(&attachment);
+        let seen = trace.positions.len();
+        trace.follow(&attachment, "output", |t| t.positions.len() > seen);
+    }
+    client.kill(busy).unwrap();
+}
+
+/// What `count` lines of the loop below look like in the log.
+fn numbered_lines(count: usize) -> String {
+    (0..count)
+        .map(|i| format!("line {i} of output\n"))
+        .collect()
+}
+
+/// Output processing is switched off first, so the bytes logged are the
+/// bytes written. With it on, the terminal turns each newline into a
+/// carriage return and a newline, and macOS now and then emits a second
+/// carriage return when its output queue fills in the middle of that pair:
+/// harmless on a screen, but one byte too many for a test that counts.
+fn print_numbered_lines(count: usize) -> String {
+    format!(
+        "stty -opost; i=0; while [ $i -lt {count} ]; do echo \"line $i of output\"; i=$((i+1)); done; read hold"
+    )
+}
+
+#[test]
+fn a_late_attach_to_a_trimmed_log_starts_at_its_head_and_says_so() {
+    let host = TestHost::start(|config| config.log_capacity_bytes = 4096);
+    let client = host.client();
+    let expected = numbered_lines(2000);
+    let (session, _) = client.spawn(sh(&print_numbered_lines(2000))).unwrap();
+    wait_for_tail(&client, session, expected.len() as u64);
+    let listed = info(&client, session);
+    assert!(listed.log_bytes <= 4096);
+    assert!(listed.log_head_seq > 0);
+    assert_eq!(listed.exited, None);
+
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    assert!(attachment.gap);
+    assert_eq!(attachment.start_seq, listed.log_head_seq);
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the tail of the log", |t| {
+        t.next == Some(expected.len() as u64)
+    });
+    assert_eq!(trace.text(), &expected[listed.log_head_seq as usize..]);
+
+    // A position that is still in the log is served without a gap.
+    let other = host.client();
+    let exact = other
+        .attach(session, AttachFrom::Seq(listed.log_head_seq + 10))
+        .unwrap();
+    assert_eq!(
+        (exact.start_seq, exact.gap),
+        (listed.log_head_seq + 10, false)
+    );
+}
+
+/// A connection driven by hand, for what [`Client`] will not do: say the
+/// wrong thing, or say nothing.
+struct RawClient {
+    stream: UnixStream,
+}
+
+impl RawClient {
+    fn open(socket: &Path) -> Self {
+        let stream = UnixStream::connect(socket).unwrap();
+        stream.set_read_timeout(Some(DEADLINE)).unwrap();
+        RawClient { stream }
+    }
+
+    fn connect(socket: &Path) -> Self {
+        let mut raw = Self::open(socket);
+        protocol::write_json(&mut raw.stream, protocol::KIND_HELLO, &Hello::local("raw")).unwrap();
+        let frame = protocol::read_frame(&mut raw.stream).unwrap();
+        assert_eq!(frame.kind, protocol::KIND_HELLO);
+        raw
+    }
+
+    /// The error frame the host sends before it closes the connection.
+    fn refusal(&mut self) -> WireError {
+        let frame = protocol::read_frame(&mut self.stream).unwrap();
+        assert_eq!(frame.kind, protocol::KIND_ERROR);
+        let error = protocol::decode_json(&frame.body).unwrap();
+        // Closed, or reset when the host hung up on bytes it never read.
+        assert!(protocol::read_frame(&mut self.stream).is_err());
+        error
+    }
+}
+
+#[test]
+fn a_client_that_stops_reading_does_not_hold_the_session_back() {
+    const TOTAL: u64 = 2 * 1024 * 1024;
+    let host = TestHost::start(|config| config.log_capacity_bytes = 128 * 1024);
+    let client = host.client();
+    let (session, _) = client
+        .spawn(sh(
+            "read go; dd if=/dev/zero bs=65536 count=32 2>/dev/null | tr '\\0' x",
+        ))
+        .unwrap();
+
+    // Attached, and then silent: nothing is read from this socket until the
+    // child has long finished.
+    let mut stalled = RawClient::connect(&host.socket);
+    protocol::write_json(
+        &mut stalled.stream,
+        protocol::KIND_REQUEST,
+        &RequestEnvelope {
+            id: 1,
+            op: protocol::OP_ATTACH.into(),
+            args: serde_json::to_value(AttachArgs {
+                session,
+                from_seq: None,
+            })
+            .unwrap(),
+        },
+    )
+    .unwrap();
+    wait_for("the silent client to be attached", || {
+        (info(&client, session).attached == 1).then_some(())
+    });
+
+    client.input(session, b"\n").unwrap();
+    // The echoed newline comes first, as two bytes.
+    let total = TOTAL + 2;
+    let exited = wait_for("the child to finish", || info(&client, session).exited);
+    assert_eq!(exited.code, Some(0));
+    let listed = info(&client, session);
+    assert_eq!(listed.log_tail_seq, total);
+    assert!(listed.log_head_seq > 0);
+
+    // Now it reads. It gets what was already in the socket, is told what
+    // it missed, and is brought to the end.
+    let reply = protocol::read_frame(&mut stalled.stream).unwrap();
+    assert_eq!(reply.kind, protocol::KIND_REPLY);
+    let reply: ReplyEnvelope = protocol::decode_json(&reply.body).unwrap();
+    let attached: AttachResult = serde_json::from_value(reply.result).unwrap();
+    assert_eq!((attached.start_seq, attached.gap), (0, false));
+
+    let mut next = 0u64;
+    let mut lost = 0u64;
+    let status = loop {
+        let frame = protocol::read_frame(&mut stalled.stream).unwrap();
+        match frame.kind {
+            protocol::KIND_OUTPUT => {
+                let output = protocol::decode_output(&frame.body).unwrap();
+                assert_eq!(output.seq, next);
+                next += output.bytes.len() as u64;
+            }
+            protocol::KIND_EVENT => {
+                let event: EventBody = protocol::decode_json(&frame.body).unwrap();
+                match event.event.as_str() {
+                    protocol::EVENT_GAP => {
+                        assert_eq!(event.lost_from, Some(next));
+                        let resumes_at = event.resumes_at.unwrap();
+                        lost += resumes_at - next;
+                        next = resumes_at;
+                    }
+                    protocol::EVENT_EXITED => break event.code,
+                    other => panic!("unexpected event {other}"),
+                }
+            }
+            other => panic!("unexpected frame kind {other}"),
+        }
+    };
+    assert_eq!(status, Some(0));
+    assert_eq!(next, total);
+    assert!(lost > 0, "a 128 KiB log cannot have kept 2 MiB");
+}
+
+#[test]
+fn all_logs_together_stay_within_the_total_and_the_largest_pays() {
+    let host = TestHost::start(|config| {
+        config.log_capacity_bytes = 1024 * 1024;
+        config.total_log_capacity_bytes = 64 * 1024;
+    });
+    let client = host.client();
+    let (quiet, _) = client.spawn(sh("echo quiet; read hold")).unwrap();
+    let (loud, _) = client.spawn(sh(&print_numbered_lines(10_000))).unwrap();
+    let loud_total = numbered_lines(10_000).len() as u64;
+    wait_for_tail(&client, loud, loud_total);
+    let (quiet, loud) = (info(&client, quiet), info(&client, loud));
+    assert!(quiet.log_bytes + loud.log_bytes <= 64 * 1024);
+    assert!(loud.log_head_seq > 0);
+    // Under its own capacity the whole time: only the total cut it.
+    assert!(loud_total < 1024 * 1024);
+    assert_eq!(quiet.log_head_seq, 0);
+}
+
+#[test]
+fn an_exit_is_reported_after_the_last_output_and_kept_until_forgotten() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    // Several times over: output written right before the exit is the part
+    // that a race would lose.
+    for round in 0..10 {
+        let (session, _) = client
+            .spawn(sh(&format!("printf 'last words {round}'; exit 7")))
+            .unwrap();
+        let trace = whole_session(&client, session);
+        assert_eq!(
+            trace.exit,
+            Some(ExitStatus {
+                code: Some(7),
+                signal: None
+            })
+        );
+        assert_eq!(trace.text(), format!("last words {round}"));
+        client.forget(session).unwrap();
+    }
+
+    let (session, _) = client.spawn(sh("printf dying; kill -9 $$")).unwrap();
+    let trace = whole_session(&client, session);
+    assert_eq!(
+        trace.exit,
+        Some(ExitStatus {
+            code: None,
+            signal: Some(libc::SIGKILL)
+        })
+    );
+    assert_eq!(trace.text(), "dying");
+
+    // Still listed, with its log, for a client that was not there.
+    let listed = info(&host.client(), session);
+    assert_eq!(listed.exited.unwrap().signal, Some(libc::SIGKILL));
+    assert_eq!(listed.log_tail_seq, 5);
+    assert_eq!(whole_session(&host.client(), session).text(), "dying");
+    // Input for it goes nowhere and breaks nothing.
+    client.input(session, b"anybody?\n").unwrap();
+
+    client.forget(session).unwrap();
+    assert!(client.list().unwrap().is_empty());
+    let error = client.forget(session).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_NO_SESSION));
+
+    let (running, _) = client.spawn(sh("read hold")).unwrap();
+    let error = client.forget(running).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_SESSION_LIVE));
+}
+
+#[test]
+fn kill_ends_the_whole_process_group() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, pid) = client
+        .spawn(sh("sleep 300 & echo \"child=$!\"; wait"))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the background pid", |t| {
+        t.text().contains("\r\n")
+    });
+    let grandchild: u32 = trace
+        .text()
+        .trim()
+        .strip_prefix("child=")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(process_exists(pid) && process_exists(grandchild));
+
+    client.kill(session).unwrap();
+    assert_eq!(
+        trace.follow_to_exit(&attachment).signal,
+        Some(libc::SIGTERM)
+    );
+    wait_for("both processes to be gone", || {
+        (!process_exists(pid) && !process_exists(grandchild)).then_some(())
+    });
+    // Killing what is already dead is not an error.
+    client.kill(session).unwrap();
+}
+
+#[test]
+fn kill_reaches_a_process_that_ignores_the_polite_request() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    // The shell dies of SIGTERM at once. The `sleep` inherits the ignored
+    // signal and is left for the SIGKILL that follows.
+    let (session, pid) = client
+        .spawn(sh(
+            "(trap '' TERM; sleep 300 & echo \"child=$!\"; wait) & wait",
+        ))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the background pid", |t| {
+        t.text().contains("\r\n")
+    });
+    let stubborn: u32 = trace
+        .text()
+        .trim()
+        .strip_prefix("child=")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_ne!(stubborn, pid);
+
+    client.kill(session).unwrap();
+    wait_for("both processes to be gone", || {
+        (!process_exists(pid) && !process_exists(stubborn)).then_some(())
+    });
+}
+
+#[test]
+fn an_incompatible_peer_is_told_which_side_is_too_old() {
+    let host = TestHost::start(|_| {});
+    let connect = |contract, min_contract| {
+        Client::connect_with(
+            &host.socket,
+            &Hello {
+                contract,
+                min_contract,
+                version: "test".into(),
+                pid: None,
+            },
+            DEADLINE,
+        )
+    };
+
+    let Err(HostError::Incompatible(message)) = connect(0, 0) else {
+        panic!("a client older than the host accepts must be refused");
+    };
+    assert!(message.contains("client is too old"), "{message}");
+
+    // The refusal is the host's own, not only the client's check: a raw
+    // connection gets it as an error frame.
+    let mut raw = RawClient::open(&host.socket);
+    protocol::write_json(
+        &mut raw.stream,
+        protocol::KIND_HELLO,
+        &Hello {
+            contract: protocol::CONTRACT + 5,
+            min_contract: protocol::CONTRACT + 1,
+            version: "from the future".into(),
+            pid: None,
+        },
+    )
+    .unwrap();
+    let refusal = raw.refusal();
+    assert_eq!(refusal.code, protocol::ERR_INCOMPATIBLE);
+    assert!(
+        refusal.message.contains("session host is too old"),
+        "{}",
+        refusal.message
+    );
+
+    // A newer client that still accepts this contract is welcome, and a
+    // different release version is no obstacle at all.
+    let newer = connect(protocol::CONTRACT + 5, protocol::MIN_CONTRACT).unwrap();
+    assert_eq!(newer.contract(), protocol::CONTRACT);
+    assert_eq!(newer.host().pid, Some(std::process::id()));
+}
+
+#[test]
+fn a_peer_that_breaks_the_framing_is_dropped_and_nobody_else_notices() {
+    let host = TestHost::start(|_| {});
+    let bystander = host.client();
+    let (session, _) = bystander.spawn(sh("echo one; read a; echo two")).unwrap();
+    let attachment = bystander.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "one", |t| t.text().contains("one"));
+
+    // Not a frame at all: the first four bytes read as a length of about
+    // half a gigabyte.
+    let mut garbage = RawClient::open(&host.socket);
+    garbage.stream.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+    assert_eq!(garbage.refusal().code, protocol::ERR_PROTOCOL);
+
+    // A proper hello, then a frame over the limit. Only its header is ever
+    // sent: the host must refuse it without waiting for the body.
+    let mut oversized = RawClient::connect(&host.socket);
+    let mut header = ((protocol::MAX_FRAME_LEN + 1) as u32)
+        .to_le_bytes()
+        .to_vec();
+    header.push(protocol::KIND_INPUT);
+    oversized.stream.write_all(&header).unwrap();
+    let refusal = oversized.refusal();
+    assert_eq!(refusal.code, protocol::ERR_PROTOCOL);
+    assert!(refusal.message.contains("exceeds"), "{}", refusal.message);
+
+    // Something other than a hello first.
+    let mut rude = RawClient::open(&host.socket);
+    protocol::write_input(&mut rude.stream, session, b"rm -rf /\n").unwrap();
+    assert_eq!(rude.refusal().code, protocol::ERR_PROTOCOL);
+
+    // A request that is not JSON.
+    let mut confused = RawClient::connect(&host.socket);
+    protocol::write_frame(&mut confused.stream, protocol::KIND_REQUEST, &[b"{nope"]).unwrap();
+    assert_eq!(confused.refusal().code, protocol::ERR_PROTOCOL);
+
+    // A request from a later contract and a frame kind from one: both are
+    // answered or skipped, and the connection lives on.
+    let mut curious = RawClient::connect(&host.socket);
+    protocol::write_frame(&mut curious.stream, 200, &[b"whatever"]).unwrap();
+    protocol::write_json(
+        &mut curious.stream,
+        protocol::KIND_REQUEST,
+        &RequestEnvelope {
+            id: 9,
+            op: "teleport".into(),
+            args: serde_json::Value::Null,
+        },
+    )
+    .unwrap();
+    let reply = protocol::read_frame(&mut curious.stream).unwrap();
+    let reply: ReplyEnvelope = protocol::decode_json(&reply.body).unwrap();
+    assert_eq!((reply.id, reply.ok), (9, false));
+    assert_eq!(reply.error.unwrap().code, protocol::ERR_UNKNOWN_OP);
+
+    // The bystander's session never saw any of it.
+    bystander.input(session, b"\n").unwrap();
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    assert_eq!(trace.text(), "one\r\n\r\ntwo\r\n");
+}
+
+fn mode_of(path: &Path) -> u32 {
+    std::fs::symlink_metadata(path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+#[test]
+fn the_socket_is_private_and_belongs_to_one_host() {
+    let mut host = TestHost::start(|_| {});
+    assert_eq!(mode_of(&host.socket), 0o600);
+    assert_eq!(mode_of(host.socket.parent().unwrap()), 0o700);
+
+    // A second host on the same socket refuses to start and leaves the
+    // first one's socket alone.
+    let second = splitlane_host::run(HostConfig::new(&host.socket));
+    assert!(
+        matches!(&second, Err(HostError::AlreadyRunning(path)) if path == &host.socket),
+        "{second:?}"
+    );
+    let client = host.client();
+    assert!(client.list().unwrap().is_empty());
+
+    client.shutdown(false).unwrap();
+    host.join().unwrap();
+    assert!(!host.socket.exists());
+    assert!(matches!(
+        Client::connect(&host.socket),
+        Err(HostError::NotRunning)
+    ));
+}
+
+#[test]
+fn a_socket_file_left_by_a_dead_host_is_replaced() {
+    let dir = short_dir();
+    let socket = dir.path().join("host.sock");
+    // Bound and dropped: the file stays, and nothing listens on it.
+    drop(UnixListener::bind(&socket).unwrap());
+    assert!(socket.exists());
+    let nobody = Client::connect(&socket);
+    assert!(
+        matches!(nobody, Err(HostError::NotRunning)),
+        "{:?}",
+        nobody.err()
+    );
+
+    let config = HostConfig::new(&socket);
+    let thread = std::thread::spawn(move || splitlane_host::run(config));
+    let client = wait_for("the host to answer", || Client::connect(&socket).ok());
+    client.shutdown(false).unwrap();
+    thread.join().unwrap().unwrap();
+}
+
+#[test]
+fn a_path_that_is_not_a_socket_is_left_alone() {
+    let dir = short_dir();
+    let socket = dir.path().join("host.sock");
+    std::fs::write(&socket, "somebody's file").unwrap();
+    let outcome = splitlane_host::run(HostConfig::new(&socket));
+    assert!(matches!(outcome, Err(HostError::Config(_))), "{outcome:?}");
+    assert_eq!(std::fs::read_to_string(&socket).unwrap(), "somebody's file");
+
+    let too_long = dir.path().join("x".repeat(120));
+    let outcome = splitlane_host::run(HostConfig::new(too_long));
+    assert!(matches!(outcome, Err(HostError::Config(_))), "{outcome:?}");
+}
+
+#[test]
+fn a_directory_the_caller_chose_is_used_as_it_is_or_not_at_all() {
+    let dir = short_dir();
+    let open_dir = dir.path().join("open");
+    std::fs::create_dir(&open_dir).unwrap();
+    std::fs::set_permissions(&open_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let mut config = HostConfig::new(open_dir.join("host.sock"));
+    config.owns_socket_dir = false;
+    let outcome = splitlane_host::run(config);
+    assert!(matches!(outcome, Err(HostError::Config(_))), "{outcome:?}");
+    assert_eq!(mode_of(&open_dir), 0o777);
+
+    let mut config = HostConfig::new(dir.path().join("missing").join("host.sock"));
+    config.owns_socket_dir = false;
+    assert!(matches!(
+        splitlane_host::run(config),
+        Err(HostError::Config(_))
+    ));
+}
+
+#[test]
+fn shutdown_is_refused_while_a_session_runs_unless_forced() {
+    let mut host = TestHost::start(|_| {});
+    let client = host.client();
+    let (_, pid) = client.spawn(sh("sleep 300")).unwrap();
+    let error = client.shutdown(false).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_LIVE_SESSIONS));
+    assert!(process_exists(pid));
+
+    client.shutdown(true).unwrap();
+    host.join().unwrap();
+    wait_for("the session's child to be gone", || {
+        (!process_exists(pid)).then_some(())
+    });
+}
+
+#[test]
+fn an_idle_host_exits_after_the_grace_period() {
+    let grace = Duration::from_millis(300);
+    let mut host = TestHost::start(|config| config.idle_grace = grace);
+    let started = Instant::now();
+    host.join().unwrap();
+    assert!(started.elapsed() >= grace);
+    assert!(!host.socket.exists());
+}
+
+#[test]
+fn a_host_with_a_running_session_or_a_client_does_not_exit() {
+    let grace = Duration::from_millis(200);
+    let mut host = TestHost::start(|config| config.idle_grace = grace);
+    let client = host.client();
+    let (session, _) = client.spawn(sh("read hold")).unwrap();
+    drop(client);
+
+    // No client for several grace periods; the session alone keeps the
+    // host. This is the one place where time passing is the thing tested.
+    std::thread::sleep(grace * 5);
+    assert!(!host.thread.as_ref().unwrap().is_finished());
+
+    // A connected client keeps it as well, with the session gone.
+    let client = host.client();
+    client.kill(session).unwrap();
+    wait_for("the session to end", || info(&client, session).exited);
+    std::thread::sleep(grace * 5);
+    assert!(!host.thread.as_ref().unwrap().is_finished());
+
+    // The exited session was never forgotten. With nobody connected it
+    // does not keep the host.
+    drop(client);
+    host.join().unwrap();
+}
+
+/// Not a test of its own: when the test binary is started with a socket
+/// path among its arguments, this is the host process that
+/// `ensure_running` launches below. In a normal run there is no such
+/// argument and it does nothing.
+#[test]
+fn host_process_entry() {
+    let Some(socket) = std::env::args().find(|arg| arg.ends_with("/race.sock")) else {
+        return;
+    };
+    // What the real host process does first. Here it also matters for the
+    // test itself: eight callers fork at once, and a host that kept another
+    // caller's descriptors would keep that caller waiting.
+    splitlane_host::close_inherited_descriptors();
+    let mut config = HostConfig::new(socket);
+    config.idle_grace = Duration::from_secs(2);
+    let outcome = splitlane_host::run(config);
+    std::process::exit(if outcome.is_ok() { 0 } else { 3 });
+}
+
+/// Pids of the processes started with `socket` among their arguments.
+fn host_processes(socket: &Path) -> Vec<u32> {
+    let output = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg(socket)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+#[test]
+fn callers_racing_to_start_a_host_end_up_with_one() {
+    let dir = short_dir();
+    let socket = dir.path().join("race.sock");
+    let exe = std::env::current_exe().unwrap();
+    let callers: Vec<_> = (0..8)
+        .map(|_| {
+            let (exe, socket) = (exe.clone(), socket.clone());
+            std::thread::spawn(move || {
+                let socket_arg = socket.to_str().unwrap();
+                ensure_running(
+                    &exe,
+                    &["--exact", "host_process_entry", socket_arg, "--nocapture"],
+                    &socket,
+                )
+            })
+        })
+        .collect();
+    let clients: Vec<Client> = callers
+        .into_iter()
+        .map(|caller| caller.join().unwrap().unwrap())
+        .collect();
+
+    let host_pid = clients[0].host().pid.unwrap();
+    assert_ne!(host_pid, std::process::id());
+    assert!(clients
+        .iter()
+        .all(|client| client.host().pid == Some(host_pid)));
+    // Every caller may have started a process; all but the one that took
+    // the socket must go away by themselves.
+    wait_for("the hosts that lost the race to exit", || {
+        (host_processes(&socket) == [host_pid]).then_some(())
+    });
+
+    // It is one host: a session started through one caller is there for
+    // another.
+    let (session, _) = clients[0].spawn(sh("read hold")).unwrap();
+    assert_eq!(clients[7].list().unwrap()[0].id, session);
+
+    // Asking again starts nothing.
+    let again = ensure_running(Path::new("/nonexistent/host"), &[], &socket).unwrap();
+    assert_eq!(again.host().pid, Some(host_pid));
+
+    again.shutdown(true).unwrap();
+    wait_for("the host to exit", || {
+        host_processes(&socket).is_empty().then_some(())
+    });
+    assert!(!socket.exists());
+}
+
+#[test]
+fn sessions_started_at_the_same_moment_each_get_their_own_terminal() {
+    let host = TestHost::start(|_| {});
+    let starters: Vec<_> = (0..12)
+        .map(|n| {
+            let client = host.client();
+            std::thread::spawn(move || {
+                let (session, _) = client.spawn(sh(&format!("echo session-{n}-end"))).unwrap();
+                (n, session)
+            })
+        })
+        .collect();
+    let client = host.client();
+    for starter in starters {
+        let (n, session) = starter.join().unwrap();
+        // Exactly its own line: nothing of another session, and nothing of
+        // its own gone to another.
+        assert_eq!(
+            whole_session(&client, session).text(),
+            format!("session-{n}-end\r\n")
+        );
+    }
+}
+
+#[test]
+fn a_child_that_prints_and_exits_at_once_keeps_its_output() {
+    // Many at a time on purpose. What is tested is a race between the
+    // child's exit and the host's reader, and it only shows under load.
+    let host = TestHost::start(|_| {});
+    let workers: Vec<_> = (0..16)
+        .map(|worker| {
+            let client = host.client();
+            std::thread::spawn(move || {
+                for round in 0..20 {
+                    let word = format!("worker-{worker}-round-{round}");
+                    let (session, _) = client
+                        .spawn(SpawnSpec {
+                            argv: vec!["/bin/echo".into(), word.clone()],
+                            cwd: "/".into(),
+                            cols: 80,
+                            rows: 24,
+                            ..SpawnSpec::default()
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        whole_session(&client, session).text(),
+                        format!("{word}\r\n")
+                    );
+                    client.forget(session).unwrap();
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}

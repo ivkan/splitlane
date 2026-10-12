@@ -83,7 +83,6 @@ impl IpcSocketPath {
         &self.path
     }
 
-    #[cfg(unix)]
     pub(crate) fn owned_parent(&self) -> bool {
         self.owned_parent
     }
@@ -160,6 +159,62 @@ pub(crate) fn socket_path_spec() -> Option<IpcSocketPath> {
 
 pub(crate) fn socket_path() -> Option<PathBuf> {
     socket_path_spec().map(|spec| spec.path)
+}
+
+/// Socket filename of the session host, namespaced per build profile for the
+/// same reason as [`SOCKET_FILE`].
+#[cfg(unix)]
+const HOST_SOCKET_FILE: &str = if cfg!(debug_assertions) {
+    "splitlane-dev-host.sock"
+} else {
+    "splitlane-host.sock"
+};
+
+/// Endpoint of the session host that belongs to this build.
+///
+/// It sits in the directory of the resolved IPC socket, so whatever decided
+/// where this instance's IPC socket is - the runtime-dir chain or
+/// `SPLITLANE_SOCKET_PATH` - decides it for the host too, and the directory
+/// keeps the ownership the IPC socket's has. The file name does not come
+/// from the IPC socket's name: it is fixed per build profile. Inside a pane
+/// `SPLITLANE_SOCKET_PATH` names the socket of the instance that owns the
+/// pane, which may be a release while the binary asking is a debug build;
+/// a name derived from that value would hand the debug build the release's
+/// host and every session in it.
+#[cfg(unix)]
+pub(crate) fn host_socket_path_spec() -> Option<IpcSocketPath> {
+    host_socket_beside(&socket_path_spec()?)
+}
+
+#[cfg(unix)]
+fn host_socket_beside(ipc: &IpcSocketPath) -> Option<IpcSocketPath> {
+    let path = ipc.path.parent()?.join(HOST_SOCKET_FILE);
+    check_sun_path_fits(&path).then_some(IpcSocketPath {
+        path,
+        owned_parent: ipc.owned_parent,
+    })
+}
+
+/// Windows has no session host yet; the name is reserved so the two
+/// platforms agree on it once it does. Pipe names share one flat namespace,
+/// so there is no directory to take from the IPC pipe.
+#[cfg(windows)]
+pub(crate) fn host_socket_path_spec() -> Option<IpcSocketPath> {
+    Some(IpcSocketPath {
+        path: PathBuf::from(if cfg!(debug_assertions) {
+            r"\\.\pipe\splitlane-dev-host"
+        } else {
+            r"\\.\pipe\splitlane-host"
+        }),
+        owned_parent: false,
+    })
+}
+
+/// Where the session host writes its log. The host runs detached with no
+/// standard streams, so a file is the only place its messages can go. The
+/// cache directory, because the log is safe to lose.
+pub(crate) fn host_log_path() -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join(APP_SUBDIR).join("host.log"))
 }
 
 pub(crate) fn shell_integration_dir() -> Option<PathBuf> {
@@ -581,6 +636,47 @@ mod tests {
             // well-formed.
             assert!(p.ends_with(format!("{APP_SUBDIR}/{SOCKET_FILE}")));
         }
+    }
+
+    #[test]
+    fn host_socket_sits_beside_the_ipc_socket_under_its_own_name() {
+        let g = EnvGuard::take();
+        g.clear();
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000") };
+        let spec = host_socket_path_spec().expect("host socket resolves");
+        assert_eq!(
+            spec.path(),
+            Path::new(&format!("/run/user/1000/{APP_SUBDIR}/{HOST_SOCKET_FILE}"))
+        );
+        assert!(spec.owned_parent());
+
+        // Inside a pane the IPC socket is whatever the owning instance
+        // exported. The host socket follows it into that directory, keeps
+        // this build's own name, and does not claim the directory.
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var("SPLITLANE_SOCKET_PATH", "/tmp/other/instance.sock") };
+        let spec = host_socket_path_spec().expect("host socket resolves");
+        assert_eq!(
+            spec.path(),
+            Path::new("/tmp/other").join(HOST_SOCKET_FILE).as_path()
+        );
+        assert!(!spec.owned_parent());
+        assert_ne!(Some(spec.path().to_path_buf()), socket_path());
+    }
+
+    #[test]
+    fn host_socket_honours_the_same_length_limit() {
+        let g = EnvGuard::take();
+        g.clear();
+        // Long enough that the IPC socket still fits and the longer host
+        // name does not.
+        let room = MAX_SOCKET_PATH_BYTES - 1 - SOCKET_FILE.len() - SPLITLANE_SUBDIR.len() - 2;
+        let dir = "/".to_string() + &"x".repeat(room - 1);
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &dir) };
+        assert!(socket_path().is_some());
+        assert!(host_socket_path_spec().is_none());
     }
 
     #[test]

@@ -31,6 +31,7 @@ focused library crates:
 | `splitlane-ai-hook` | `crates/splitlane-ai-hook/` | The hook binary agent CLIs invoke to report session events back over IPC |
 | `splitlane-ipc-client` | `crates/splitlane-ipc-client/` | Blocking JSON-RPC client for the local IPC socket (shared by the MCP bridge and the CLI) |
 | `splitlane-mcp` | `crates/splitlane-mcp/` | Stdio MCP server exposing read-only pane access (`list_panes`, `read_pane`, `search_pane`) |
+| `splitlane-host` | `crates/splitlane-host/` | The session host: owns PTYs and their output logs outside the window process, plus the client that talks to it |
 | `splitlane-mcp-install` | `crates/splitlane-mcp-install/` | GPU-free install engine for the MCP bridge: per-agent detection, idempotent config merge, backup + atomic write |
 | `splitlane-process` | `crates/splitlane-process/` | Bounded external-process execution (wall-clock deadline + stdout cap) shared across crates |
 | `splitlane-acp` | `crates/splitlane-acp/` | Legacy Claude/Codex identity enum plus the `CLAUDECODE` environment scrub |
@@ -189,6 +190,73 @@ launch, so there is nothing extra to install.
 Ingress is treated as untrusted: session and config files are validated
 structurally (layout budgets, ratio clamps, id alphabets) before they touch
 app state.
+
+## The session host
+
+A terminal session today lives in the window's process: quit the app, update
+it or crash it, and every agent running in a pane ends with it. The session
+host is the process meant to take that ownership over. **The window does not
+use it yet.** What exists is the host itself, a client library and two CLI
+verbs (`splitlane host status`, `splitlane host stop`); every pane still owns
+its PTY as described above.
+
+The host is the app binary started as `splitlane __splitlane-host`. It leaves
+`main` before anything of the app is initialised and never loads GPUI; the
+code is the `splitlane-host` crate, which depends on neither. It is Unix-only
+for now. On Windows the crate compiles and its entry points report that the
+host is not supported there yet.
+
+**Socket.** The host listens on `splitlane-host.sock` (`splitlane-dev-host.sock`
+for a debug build) in the directory of the instance's IPC socket. The
+directory is mode 0700, the socket 0600, and each connection's peer user id is
+checked on top. The file name is fixed per build profile and not derived from
+the IPC socket's name, so a debug build run inside a release's pane does not
+end up holding the release's sessions. A host keeps an exclusive lock on
+`<socket>.lock` while it runs: when several callers start a host at once, one
+takes the socket and the rest exit.
+
+**Sessions.** A session is one PTY and the child started in it, as a session
+leader in its own process group. The child gets exactly the environment the
+client sent and nothing from the host's own, because the host may have been
+started by another release or from another terminal. For each session the host
+starts the same watcher process the app starts for the PTYs it owns, keyed on
+the host's pid, so a host that is killed outright still takes its children
+with it.
+
+**Attaching is replaying a log.** The host does not hold a screen. It holds
+each session's raw output in a bounded ring (8 MiB by default), and a client
+that attaches asks for that log from a position, feeds it through its own
+terminal emulator, and then receives new bytes as they arrive. Output and
+resizes share one sequence: one number per byte, one per resize record, so a
+resize is replayed exactly between the bytes it fell between. A client that
+follows a session is nothing but a position in the log. The thread reading the
+PTY never waits for a client and queues nothing for one; a client that falls
+behind the ring is told which range it lost and continues from the oldest
+byte still held. When all logs together exceed their shared limit, the largest
+one is cut first.
+
+Two things are deliberately left open. A trim may land in the middle of an
+escape sequence, so a replay that starts at a trimmed head can begin with a
+torn sequence and unknown terminal modes. And nothing answers a terminal query
+(cursor position, device attributes) while no client is attached. Both need an
+emulator inside the host, which it does not have yet.
+
+**The wire contract has its own version.** Sessions are supposed to survive an
+update, so a host and the window attached to it are routinely different
+releases, and tying the protocol to the release version would refuse exactly
+that pairing. Each side instead states the contract number it speaks and the
+oldest it accepts, and they talk when each one's number is at least the
+other's minimum. Frames are length-prefixed; control frames are JSON whose
+readers ignore unknown fields and default missing ones, and output and input
+travel as binary frames. New fields, new requests and new skippable events are
+therefore added without cutting anybody off; the rules are in the module
+documentation of `crates/splitlane-host/src/protocol.rs`.
+
+**Lifetime.** The host exits when asked to, on SIGTERM or SIGINT, and by itself
+after ten seconds with no running session and no connected client. A session
+that has exited stays listed with its log until a client forgets it, but does
+not keep the host alive once nobody is connected. Its log goes to `host.log`
+in the app's cache directory.
 
 ## Self-update
 

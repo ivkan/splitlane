@@ -1,0 +1,30 @@
+[package]
+name = "splitlane-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "GPU-free session host for Splitlane: owns PTYs and their output logs so sessions outlive the window"
+
+[dependencies]
+interprocess.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+# The PTY side exists on Unix only in this stage. On Windows the crate still
+# compiles and its entry points answer "not supported", so the dependency is
+# kept off that target instead of being linked and left unused.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+portable-pty = "0.9.0"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
