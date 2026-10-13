@@ -2184,6 +2184,30 @@ impl SplitlaneApp {
         current
     }
 
+    /// The pane a caller outside the process means by the id `said`: the
+    /// pane's own id, or the one a shell in the session host was told
+    /// instead (`surface_alias`). The two cannot be taken for one another.
+    pub(crate) fn surface_id_meant(&self, said: u64) -> u64 {
+        crate::surface_alias::pane_meant(said)
+    }
+
+    /// [`optional_id_param`] for a parameter that names a pane.
+    pub(crate) fn surface_id_param(
+        &self,
+        params: &serde_json::Value,
+        key: &str,
+    ) -> Result<Option<u64>, JsonRpcError> {
+        Ok(optional_id_param(params, key)?.map(|said| self.surface_id_meant(said)))
+    }
+
+    fn required_surface_id_param(
+        &self,
+        params: &serde_json::Value,
+        key: &str,
+    ) -> Result<u64, JsonRpcError> {
+        Ok(self.surface_id_meant(required_id_param(params, key)?))
+    }
+
     fn find_surface_terminal_by_id(
         &self,
         surface_id: u64,
@@ -2281,7 +2305,7 @@ impl SplitlaneApp {
         params: &serde_json::Value,
         cx: &App,
     ) -> Result<gpui::Entity<TerminalView>, JsonRpcError> {
-        if let Some(sid) = optional_id_param(params, "surface_id")? {
+        if let Some(sid) = self.surface_id_param(params, "surface_id")? {
             return self.find_surface_terminal_by_id(sid, cx).ok_or_else(|| {
                 JsonRpcError::invalid_params(format!("surface_id {sid} not found"))
             });
@@ -3339,7 +3363,7 @@ impl SplitlaneApp {
                 // Navigation only (no PTY write), so - like `workspace.select`
                 // and unlike `surface.send_*` - it does NOT require the
                 // `SPLITLANE_IPC_SCRIPTING` gate.
-                let sid = match required_id_param(params, "surface_id") {
+                let sid = match self.required_surface_id_param(params, "surface_id") {
                     Ok(sid) => sid,
                     Err(e) => return e.into_value(),
                 };
@@ -3440,8 +3464,8 @@ impl SplitlaneApp {
                     .into_value();
                 }
                 let (from, to) = match (
-                    required_id_param(params, "surface_id"),
-                    required_id_param(params, "to_surface_id"),
+                    self.required_surface_id_param(params, "surface_id"),
+                    self.required_surface_id_param(params, "to_surface_id"),
                 ) {
                     (Ok(from), Ok(to)) => (from, to),
                     (Err(e), _) | (_, Err(e)) => return e.into_value(),
@@ -3532,7 +3556,7 @@ impl SplitlaneApp {
                 // surface_id the active workspace's first terminal is used - the
                 // same default routing as `surface.send_keystroke`
                 // (`find_first_terminal` skips markdown leaves).
-                let surface_id = match optional_id_param(params, "surface_id") {
+                let surface_id = match self.surface_id_param(params, "surface_id") {
                     Ok(surface_id) => surface_id,
                     Err(e) => return e.into_value(),
                 };
@@ -3824,7 +3848,7 @@ impl SplitlaneApp {
                     .into_value();
                 }
                 // Route by surface_id if provided, otherwise use active terminal
-                let surface_id = match optional_id_param(params, "surface_id") {
+                let surface_id = match self.surface_id_param(params, "surface_id") {
                     Ok(surface_id) => surface_id,
                     Err(e) => return e.into_value(),
                 };
@@ -3942,7 +3966,7 @@ impl SplitlaneApp {
                 // lives - instead of the active workspace's first leaf. Absent
                 // = the legacy first-leaf behavior, so existing clients are
                 // untouched.
-                let surface_id = match optional_id_param(params, "surface_id") {
+                let surface_id = match self.surface_id_param(params, "surface_id") {
                     Ok(surface_id) => surface_id,
                     Err(e) => return e.into_value(),
                 };
@@ -5102,6 +5126,8 @@ pub(crate) fn pane_takes_input(
 /// stamps the top-level params from `SPLITLANE_SURFACE_ID`; accepting the same
 /// key under `hook_payload` keeps the server tolerant of older/alternate shims.
 /// Zero is rejected because GPUI entity ids are never meaningful as 0.
+///
+/// The id returned is the pane's own, whatever the program called it.
 fn read_frame_surface_id(params: &serde_json::Value) -> Option<u64> {
     let hook = params.get("hook_payload");
     params
@@ -5109,6 +5135,9 @@ fn read_frame_surface_id(params: &serde_json::Value) -> Option<u64> {
         .or_else(|| hook.and_then(|h| h.get("surface_id")))
         .and_then(|v| v.as_u64())
         .filter(|sid| *sid > 0)
+        // What a shell in the session host was told is its pane's id is
+        // not the pane's own.
+        .map(crate::surface_alias::pane_meant)
 }
 
 /// Read the `tool` field from an `ai.*` IPC param object, falling back
@@ -5721,6 +5750,39 @@ mod tests {
                 .expect_err("a target of the wrong type is an error");
             assert_eq!(err.code, JsonRpcError::INVALID_PARAMS, "{wrong}");
         }
+    }
+
+    /// A hook of a session that outlived the window it was started under
+    /// says the id its shell was told then. The frame is read as naming the
+    /// pane that shows the session now, wherever the id is carried.
+    #[test]
+    fn a_hook_frame_names_the_pane_its_session_is_shown_in_now() {
+        use serde_json::json;
+        // Ids of this test's own: the record is the process's.
+        let pane = 770_001;
+        let told = crate::surface_alias::tell(pane);
+        assert_eq!(
+            read_frame_surface_id(&json!({ "surface_id": told })),
+            Some(pane)
+        );
+        assert_eq!(
+            read_frame_surface_id(&json!({ "hook_payload": { "surface_id": told } })),
+            Some(pane)
+        );
+        // The session is shown in another pane after a restart of the window.
+        crate::surface_alias::forget(pane);
+        crate::surface_alias::remember(told, 770_002);
+        assert_eq!(
+            read_frame_surface_id(&json!({ "surface_id": told })),
+            Some(770_002)
+        );
+        crate::surface_alias::forget(770_002);
+        // An id nothing is recorded for is a pane's own, as it always was.
+        assert_eq!(
+            read_frame_surface_id(&json!({ "surface_id": 770_003 })),
+            Some(770_003)
+        );
+        assert_eq!(read_frame_surface_id(&json!({ "surface_id": 0 })), None);
     }
 
     #[test]

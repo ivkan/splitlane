@@ -104,6 +104,40 @@ impl SplitlaneApp {
     /// container from leaving anything behind - it contributes no layout, no
     /// tab-bar buttons, no files-tree expansion and no managed worktrees, so
     /// none of them can outlive it on disk.
+    /// The session in the session host an agent surface's terminal runs in
+    /// now, for the session file.
+    ///
+    /// Asked of the surface's terminal when it has one, in a slot or held
+    /// warm off screen. A surface with no terminal yet keeps what the file
+    /// said, and so does every surface in a window that does not use the
+    /// host: such a window attaches to nothing and ends nothing, and must
+    /// not write the sessions out of the file either.
+    fn surface_host_session(
+        &self,
+        container: &Workspace,
+        thread: &crate::project::Thread,
+        cx: &App,
+    ) -> Option<String> {
+        if !crate::terminal::held_sessions::enabled() {
+            return thread.host_session.clone();
+        }
+        let view = container
+            .root
+            .as_ref()
+            .and_then(|root| crate::app::agent_slots::agent_pane(root, thread.id, cx))
+            .and_then(|pane| crate::app::agent_slots::agent_view_in_pane(&pane, thread.id, cx))
+            .or_else(|| {
+                self.agents_view
+                    .agents_terminal_view_cache
+                    .get(&thread.id)
+                    .cloned()
+            });
+        match view {
+            Some(view) => view.read(cx).host_session_id(),
+            None => thread.host_session.clone(),
+        }
+    }
+
     fn build_session_state(&self, cx: &App) -> splitlane_config::schema::SessionState {
         let saved_groups: Vec<splitlane_config::schema::ProjectGroupSession> = self
             .project_groups
@@ -131,10 +165,14 @@ impl SplitlaneApp {
                     .threads
                     .iter()
                     .map(|thread| {
-                        crate::project::thread_to_surface(
+                        let mut surface = crate::project::thread_to_surface(
                             thread,
                             crate::app::agent_slots::agent_leaf_index(ws, thread.id, cx),
-                        )
+                        );
+                        if let Some(agent) = surface.agent.as_mut() {
+                            agent.host_session = self.surface_host_session(ws, thread, cx);
+                        }
+                        surface
                     })
                     .chain(
                         ws.diff_surface
@@ -793,6 +831,12 @@ impl SplitlaneApp {
                         )
                     });
 
+                    // A shell that was running in the session host when
+                    // the layout was saved is shown again if it still is.
+                    if let Some(session) = surface.host_session.clone() {
+                        t.read(cx).attach_to_held_session(session, None);
+                    }
+
                     // Explicit layout definitions may still seed scrollback.
                     // Session restore clears the legacy field before this path.
                     if let Some(ref scrollback) = surface.scrollback {
@@ -1377,7 +1421,11 @@ fn park_evicted_surfaces(
         if threads.len() >= crate::project::MAX_RESTORED_THREADS_PER_PROJECT {
             break;
         }
-        threads.push(crate::project::Thread::new_terminal(title, cwd, None));
+        let mut thread = crate::project::Thread::new_terminal(title, cwd, None);
+        // Its shell may still be running in the session host, and is then
+        // shown again when the row is opened.
+        thread.host_session = surface.host_session.clone();
+        threads.push(thread);
         parked += 1;
     }
     parked

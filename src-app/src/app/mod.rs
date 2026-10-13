@@ -25,6 +25,7 @@ pub mod event_handlers;
 pub mod exit_guard;
 pub mod files_sidebar;
 pub mod files_tree;
+pub mod held_sessions;
 pub mod ipc_handler;
 pub mod launch_pad;
 pub mod launcher;

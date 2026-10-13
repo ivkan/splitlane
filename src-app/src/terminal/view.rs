@@ -165,6 +165,16 @@ struct StatedWindowFacts {
 /// state (including the cfg-gated ghostty handles) out of the view's type.
 type DeferredBackendStart = Box<dyn FnOnce(&mut Context<TerminalView>)>;
 
+/// A session in the session host that a surface is to be attached to when
+/// it is first shown, instead of being given a new shell.
+struct HeldAttach {
+    /// The session's id, as the saved layout had it.
+    session: String,
+    /// What to type into a new shell if the session turns out to be gone:
+    /// the command that brings an agent's conversation back.
+    otherwise: Option<String>,
+}
+
 #[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
 fn should_render_ghostty_wakeup_immediately(event: &TerminalBackendEvent) -> bool {
     matches!(event, TerminalBackendEvent::Ghostty(_))
@@ -442,6 +452,10 @@ pub struct TerminalView {
     /// started - and for a display-only test view, which never starts one -
     /// which is what makes [`Self::ensure_backend_started`] idempotent.
     deferred_backend_start: Option<DeferredBackendStart>,
+    /// The session in the session host this surface was saved with, until
+    /// the surface has either been attached to it or given a new shell.
+    /// Shared with the deferred start, which is where it is read.
+    held_attach: std::rc::Rc<std::cell::RefCell<Option<HeldAttach>>>,
     /// The agent surface this PTY belongs to, when it is one: the
     /// [`crate::project::Thread::id`] whose `SessionBinding` produced the
     /// process running here. `None` for a plain shell.
@@ -838,8 +852,28 @@ impl TerminalView {
         // pane it was made as.
         #[cfg(target_os = "macos")]
         let in_host = super::host_session::enabled();
+        #[cfg(target_os = "macos")]
+        let held_attach = view.held_attach.clone();
 
         view.deferred_backend_start = Some(Box::new(move |cx: &mut Context<Self>| {
+            // The id the shell is told is its pane's. In a window whose
+            // panes run in the session host that is not the pane's own;
+            // `surface_alias` says why.
+            #[cfg(target_os = "macos")]
+            let told_surface_id = if in_host {
+                crate::surface_alias::tell(surface_id)
+            } else {
+                surface_id
+            };
+            #[cfg(not(target_os = "macos"))]
+            let told_surface_id = surface_id;
+            // Read and not taken: until the outcome is known, this is
+            // still the session a save must record for the surface.
+            #[cfg(target_os = "macos")]
+            let held_session = held_attach
+                .borrow()
+                .as_ref()
+                .and_then(|held| held.session.parse::<splitlane_host::SessionId>().ok());
             // Capture the foreground signal mask on the MAIN thread so the
             // background-spawned child still gets correct Ctrl-C / Ctrl-Z
             // `ensure_backend_started` only ever runs on the main
@@ -866,12 +900,12 @@ impl TerminalView {
                     // Blocking PTY open (`tty::new` forks) runs off the render thread,
                     // and so does param resolution (shell lookup + shell-integration
                     // rc write).
-                    let (shell_quoting, outcome) = executor
+                    let (shell_quoting, outcome, attached_to_held) = executor
                         .spawn(async move {
                             let params = TerminalState::resolve_spawn_params_with_profile(
                                 cwd,
                                 workspace_id,
-                                surface_id,
+                                told_surface_id,
                                 initial_size,
                                 user_env,
                                 profile,
@@ -979,40 +1013,103 @@ impl TerminalView {
                             let outcome = BackgroundSpawnOutcome::Alacritty(
                                 TerminalState::open_pty_and_eventloop(params, pending, signal_mask),
                             );
+                            #[cfg(not(target_os = "macos"))]
+                            let attached_to_held = false;
                             #[cfg(target_os = "macos")]
-                            let outcome = match hosted {
+                            let (outcome, attached_to_held) = match hosted {
                                 Some((endpoint, facts)) => {
-                                    use super::host_session::Opened;
-                                    match super::host_session::open(
-                                        endpoint.as_ref(),
-                                        facts,
-                                        params,
-                                        pending,
-                                        signal_mask,
-                                    ) {
-                                        Opened::InHost(spawned) => {
-                                            BackgroundSpawnOutcome::Hosted(Ok(spawned))
+                                    use super::host_session::{Opened, ReattachError};
+                                    // A surface saved with a session that
+                                    // is still running is attached to it. A
+                                    // session that is gone leaves the
+                                    // surface to be opened as a new one.
+                                    let attached = held_session.zip(endpoint.as_ref()).and_then(
+                                        |(session, endpoint)| {
+                                            match super::host_session::reattach(
+                                                endpoint,
+                                                session,
+                                                &pending,
+                                                facts.clone(),
+                                                surface_id,
+                                            ) {
+                                                Ok(spawned) => {
+                                                    log::info!(
+                                                        target: "splitlane::terminal::host",
+                                                        "session {session}: pane attached to it again, pid {}",
+                                                        spawned.child_pid
+                                                    );
+                                                    Some(Ok(spawned))
+                                                }
+                                                Err(ReattachError::Gone(error)) => {
+                                                    log::info!(
+                                                        target: "splitlane::terminal::host",
+                                                        "session {session} is not there to attach to, opening a new shell: {error:#}"
+                                                    );
+                                                    None
+                                                }
+                                                Err(ReattachError::Failed(error)) => {
+                                                    Some(Err(error))
+                                                }
+                                            }
+                                        },
+                                    );
+                                    match attached {
+                                        Some(attached) => {
+                                            (BackgroundSpawnOutcome::Hosted(attached), true)
                                         }
-                                        Opened::InWindow(spawned) => {
-                                            BackgroundSpawnOutcome::Alacritty(spawned)
-                                        }
-                                        Opened::Lost(error) => {
-                                            BackgroundSpawnOutcome::Hosted(Err(error))
+                                        None => {
+                                            let outcome = match super::host_session::open(
+                                                endpoint.as_ref(),
+                                                facts,
+                                                params,
+                                                pending,
+                                                signal_mask,
+                                                surface_id,
+                                            ) {
+                                                Opened::InHost(spawned) => {
+                                                    BackgroundSpawnOutcome::Hosted(Ok(spawned))
+                                                }
+                                                Opened::InWindow(spawned) => {
+                                                    BackgroundSpawnOutcome::Alacritty(spawned)
+                                                }
+                                                Opened::Lost(error) => {
+                                                    BackgroundSpawnOutcome::Hosted(Err(error))
+                                                }
+                                            };
+                                            (outcome, false)
                                         }
                                     }
                                 }
-                                None => BackgroundSpawnOutcome::Alacritty(
-                                    TerminalState::open_pty_and_eventloop(
-                                        params,
-                                        pending,
-                                        signal_mask,
+                                None => (
+                                    BackgroundSpawnOutcome::Alacritty(
+                                        TerminalState::open_pty_and_eventloop(
+                                            params,
+                                            pending,
+                                            signal_mask,
+                                        ),
                                     ),
+                                    false,
                                 ),
                             };
-                            (shell_quoting, outcome)
+                            (shell_quoting, outcome, attached_to_held)
                         })
                         .await;
                     let _ = this.update(cx, |view, cx| {
+                        // A surface that was to be attached to a session
+                        // and got a new shell is a new surface after all:
+                        // it clears its first, mis-sized frame as one, and
+                        // is typed the command that was held back for it.
+                        // Typed before the shell is connected, so it waits
+                        // in the same queue as anything typed since.
+                        if let Some(held) = view.held_attach.borrow_mut().take()
+                            && !attached_to_held
+                        {
+                            view.needs_initial_clear
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            if let Some(command) = held.otherwise.as_deref() {
+                                view.send_command(command);
+                            }
+                        }
                         // The placeholder was built before the shell was known
                         // (the backend start is deferred): adopt the resolved shell's quoting now.
                         view.terminal.shell_quoting = shell_quoting;
@@ -1040,6 +1137,7 @@ impl TerminalView {
                             #[cfg(target_os = "macos")]
                             BackgroundSpawnOutcome::Hosted(Ok(spawned)) => {
                                 view.terminal.promote_remote(spawned);
+                                cx.emit(TerminalEvent::HostSessionChanged);
                                 if let Some(size) = view.recorded_window_size() {
                                     view.terminal.notify_window_size(size);
                                 }
@@ -1048,7 +1146,7 @@ impl TerminalView {
                             BackgroundSpawnOutcome::Hosted(Err(error)) => {
                                 log::error!(
                                     target: "splitlane::terminal::host",
-                                    "the session host started a shell and the pane lost it: {error:#}"
+                                    "a pane could not follow its session in the session host: {error:#}"
                                 );
                                 view.needs_initial_clear
                                     .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1162,6 +1260,41 @@ impl TerminalView {
     /// re-runs an agent's launch command.
     /// Whether this surface's process has not been started yet: it was
     /// restored as a description and nothing has shown it or written to it.
+    /// Attach this surface to a session the session host holds when it is
+    /// first shown, instead of starting a shell. `otherwise` is typed into
+    /// a new shell if the session is gone by then.
+    ///
+    /// Only before the surface was shown, and only in a window whose panes
+    /// run in the host; false when it was not taken. The caller types
+    /// `otherwise` itself then.
+    pub(crate) fn attach_to_held_session(
+        &self,
+        session: String,
+        otherwise: Option<String>,
+    ) -> bool {
+        if !self.backend_not_started() || !super::held_sessions::enabled() {
+            return false;
+        }
+        // What the session printed is replayed into the grid, and the
+        // clear a new surface makes on its first layout would wipe it.
+        self.needs_initial_clear
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        *self.held_attach.borrow_mut() = Some(HeldAttach { session, otherwise });
+        true
+    }
+
+    /// The id of the session in the session host this surface shows or is
+    /// about to be attached to, for the saved layout. `None` for a surface
+    /// that owns its PTY.
+    pub(crate) fn host_session_id(&self) -> Option<String> {
+        self.terminal.host_session_id().or_else(|| {
+            self.held_attach
+                .borrow()
+                .as_ref()
+                .map(|held| held.session.clone())
+        })
+    }
+
     pub(crate) fn backend_not_started(&self) -> bool {
         self.deferred_backend_start.is_some()
     }
@@ -1490,6 +1623,7 @@ impl TerminalView {
             #[cfg(target_os = "macos")]
             host_facts_stated: None,
             deferred_backend_start: None,
+            held_attach: Default::default(),
             // Set by the agent-surface mount, the only place that knows a
             // thread produced this PTY.
             agent_thread_id: None,
@@ -1902,6 +2036,18 @@ pub enum TerminalEvent {
     ServiceDetected(ServiceInfo),
     /// Escape pressed while swap mode is active - requests cancellation.
     CancelSwapMode,
+    /// The surface's terminal now runs in a session of the session host, or
+    /// in another one than before. The saved layout records which, and is
+    /// what the next window finds the session by, so it is written now and
+    /// not whenever something else next changes.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(
+            dead_code,
+            reason = "panes run in the session host on macOS only so far"
+        )
+    )]
+    HostSessionChanged,
     /// A mouse selection was auto-copied to the clipboard on mouse release.
     /// Consumed by `SplitlaneApp` to surface a "Copied" toast.
     SelectionCopied,

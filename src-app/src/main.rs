@@ -71,6 +71,7 @@ mod rail_state;
 mod runtime_paths;
 mod search;
 mod settings;
+mod surface_alias;
 mod telemetry;
 mod terminal;
 pub mod theme;
@@ -1369,6 +1370,12 @@ struct SplitlaneApp {
     kept_while_away: Option<usize>,
     /// The notice about that is said once per run.
     kept_notice_shown: bool,
+    /// Sessions the session host held when the window started that the
+    /// saved layout did not mention (`app::held_sessions`), less the ones
+    /// opened or ended since.
+    held_unshown: Vec<crate::terminal::held_sessions::HeldSession>,
+    /// The card listing them was put away.
+    held_card_dismissed: bool,
     exit_confirm_focus: FocusHandle,
     // The fleet-grep OVERLAY used to be four fields here. The
     // design dissolves fleet search into the palette's "Output" tab, so the
@@ -3024,6 +3031,10 @@ impl Render for SplitlaneApp {
             app_content =
                 app_content.child(self.render_agents_confirm_delete_dialog(target, ui, cx));
         }
+        if self.held_sessions_card_is_up() {
+            app_content = app_content.child(self.render_held_sessions_card(ui, cx));
+        }
+        // After it, so that the question about leaving is the one on top.
         if let Some(intent) = self.pending_exit {
             app_content = app_content.child(self.render_exit_confirm_dialog(intent, ui, cx));
         }

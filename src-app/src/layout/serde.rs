@@ -107,7 +107,7 @@ impl LayoutTree {
                                 agent: tv_ref.terminal.detected_agent.map(|a| a.tag().to_string()),
                                 font_size: tv_ref.terminal.font_size_override,
                                 surface_id: None,
-                                host_session: None,
+                                host_session: tv_ref.host_session_id(),
                             }
                         }
                         crate::pane::TabContent::Markdown(markdown) => {
