@@ -125,7 +125,8 @@ Scripting commands (each takes --help):
   select           Select a workspace by index
   split            Split the active pane
   up               Open panes from a TOML file
-  flow             Run a pipeline of agents from a flow.toml";
+  flow             Run a pipeline of agents from a flow.toml
+  host             Inspect or stop the session host";
 
 /// True when `argv[1]` names one of our subcommands (including the MCP-tool
 /// aliases above).
