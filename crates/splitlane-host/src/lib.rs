@@ -131,6 +131,9 @@ pub struct HostConfig {
     /// How long the host stays with no running session and no connected
     /// client before it exits.
     pub idle_grace: Duration,
+    /// How long a session's process group gets between being hung up on
+    /// and being killed.
+    pub kill_grace: Duration,
     /// The binary that implements the kill-on-host-death watcher. `None`
     /// starts no watcher, which is what tests want.
     pub guard_exe: Option<PathBuf>,
@@ -146,6 +149,11 @@ pub struct HostConfig {
     pub version: String,
 }
 
+/// How long a process group gets between the hangup and the kill unless a
+/// host is configured otherwise. The same as a pane that runs in the
+/// window's own process gives.
+const KILL_GRACE: Duration = Duration::from_millis(100);
+
 impl HostConfig {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -154,6 +162,7 @@ impl HostConfig {
             log_capacity_bytes: log::DEFAULT_CAPACITY,
             total_log_capacity_bytes: 128 * 1024 * 1024,
             idle_grace: Duration::from_secs(10),
+            kill_grace: KILL_GRACE,
             guard_exe: None,
             max_connections: 1024,
             handle_signals: false,
