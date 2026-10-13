@@ -46,7 +46,11 @@ mod pty_session;
 mod resize_journal;
 mod search;
 mod service_detector;
+// Plain bookkeeping, built and tested everywhere. Outside its tests it is
+// used only where a pane can run in the session host.
 pub mod shell;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod stream_replay;
 pub mod types;
 pub mod view;
 

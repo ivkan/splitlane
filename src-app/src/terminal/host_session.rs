@@ -60,10 +60,10 @@ use splitlane_host::{
 
 use super::held_sessions::HeldSession;
 use super::pty_session::{
-    AttachMode, ForegroundSignalMask, MAX_PENDING_INPUT_BYTES, PendingTerminalBackend, RemoteSink,
-    RemoteSinkChannels, SinkStep, SpawnParams, SpawnedPty, StreamStart, TerminalState,
-    end_process_group,
+    ForegroundSignalMask, MAX_PENDING_INPUT_BYTES, PendingTerminalBackend, RemoteSink,
+    RemoteSinkChannels, SpawnParams, SpawnedPty, TerminalState, end_process_group,
 };
+use super::stream_replay::{AttachMode, SinkStep, StreamStart};
 
 /// How long a host that could not be reached, or would not start a session,
 /// is left alone. Restoring a window opens its panes one after the other,
