@@ -113,6 +113,20 @@ interrupted: there is no answer to read, so say so and ask what the session
 should do next rather than sending the task again - and `4` on timeout: wait
 again, do not send the task again.
 
+It also prints where the session stands as it returns, so there is nothing
+to ask afterwards:
+
+```json
+{"outcome": "finished", "targets": [{"surface_id": 4294967336, "outcome": "finished",
+  "status": "idle", "runs_ended": 3, "background_shells": 0, "message": null}]}
+```
+
+Act on the exit code, and take `runs_ended` from here for the next
+`--after`. Do not follow the wait with `splitlane status` to check that the
+turn is really over, and do not put the wait in a loop that goes round until
+such a check passes: a check that is wrong never passes, the command never
+ends, and you are never called back.
+
 `add` with a prompt exits `5` too, when the agent stopped at a question of
 its own before it took the task - whether to trust the folder, how to sign
 in. The session is open and its state is `waiting`, but **the task was not
