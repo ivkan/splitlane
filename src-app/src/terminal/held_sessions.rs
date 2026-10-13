@@ -150,16 +150,19 @@ pub(crate) fn stop_all() {
 }
 
 /// End a held session that no pane shows. Returns at once.
-pub(crate) fn end(id: &str) {
+pub(crate) fn end(held: &HeldSession) {
     #[cfg(target_os = "macos")]
     if let (Ok(session), Some(endpoint)) = (
-        id.parse::<splitlane_host::SessionId>(),
+        held.id.parse::<splitlane_host::SessionId>(),
         super::host_session::process_endpoint(),
     ) {
         let _ = std::thread::Builder::new()
             .name("held-session-end".into())
-            .spawn(move || endpoint.end_held(session));
+            .spawn({
+                let pid = held.pid;
+                move || endpoint.end_held(session, pid)
+            });
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = id;
+    let _ = held;
 }

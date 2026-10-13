@@ -1631,7 +1631,7 @@ fn a_window_listing_what_the_host_holds_gets_the_running_sessions_only() {
     assert_eq!(host.sessions().len(), 1);
 
     // A session no pane shows can be ended from the list.
-    window.end_held(running);
+    window.end_held(running, pid);
     assert!(host.sessions().is_empty());
     assert!(window.held_sessions().is_empty());
 }
