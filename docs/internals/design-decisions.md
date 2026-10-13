@@ -1295,22 +1295,53 @@ arrives late is only late.
 under the pane is dropped from the book. A shell would run the line as a
 command.
 
-**Not when the opener is already waiting.** A `splitlane wait` on that
+**Held back when the opener is already waiting.** A `splitlane wait` on that
 session ends on the same event, and a harness that calls its agent back would
 then start two turns for one. The server cannot see who is waiting, only that
 some subscriber asked for this surface's rail events by id, and that is the
-test: a script of the person's own waiting on the session silences the line
-too. A subscriber that takes every surface's events is a dashboard and does
-not count. The wait's polling fallback, used where the stream cannot be
+test: a script of the person's own waiting on the session holds the line
+back too. A subscriber that takes every surface's events is a dashboard and
+does not count. The wait's polling fallback, used where the stream cannot be
 opened, is not seen at all, and there the opener is told twice.
 
-**Not when the opener has looked for itself.** A line can be held while the
-opener is still in its turn, and in that turn the opener may start its wait a
-moment late, or read the answer outright. Both begin by reading the session's
-status, so an opener that reads the status of a session it is owed a line
-about is owed it no longer. Found in review: a quick session ends before its
-opener's wait starts, the wait returns at once, and the line would arrive
-afterwards as a turn about something already read.
+**Held back when the opener has looked for itself.** A line can be held while
+the opener is still in its turn, and in that turn the opener may start its
+wait a moment late, or read the answer outright. Both begin by reading the
+session's status, so from the moment an opener reads the status of a session
+it is owed a line about, the line is held back. Found in review: a quick
+session ends before its opener's wait starts, the wait returns at once, and
+the line would arrive afterwards as a turn about something already read.
+
+**A line held back is dropped when the opener is seen at work, and written
+after a minute if it never is.** Both rules above used to strike the line
+out, on the reasoning that the opener had heard. The case that showed
+otherwise: a lead started its wait inside a shell loop of its own that
+checked the session's status after each wait and went round again unless the
+check passed. The wait returned on time. The check could never pass (the
+loop split a string into words in a shell that does not), so the background
+command went on for an hour, the harness had nothing to call the lead back
+with, and the lead sat idle beside a finished session. The wait had been
+watching when the turn ended and the loop read the status afterwards, so
+both rules said the lead knew. The skill forbids such loops in so many
+words; that did not stop one being written. What an opener has heard cannot
+be read from what its commands asked. What can be read is whether it then
+did anything: a harness calls its agent back within seconds, so an opener
+still idle a minute later was not woken. The clock starts at the first
+reason for holding and is not restarted by later questions, or a script
+asking every half minute would hold the line for ever. While something is
+still waiting on the session by id the line stays held however long: a wait
+that outlasts the turn, waiting out the session's background command, is
+still the opener's way to hear, and the minute is counted from the last
+moment such a wait was seen.
+
+"At work" is read two ways, because the rail is sampled: the opener is
+working now, or one more of its turns has ended than had when the line was
+held. Not covered, and left so on purpose: an opener that was busy with
+something else when its broken wait returned is taken to have heard, and is
+not told. Telling it would also tell every opener whose wait was sound and
+reported into a turn already running, which is the common case with several
+sessions open, and a second turn about one event there costs more than the
+rare silence here.
 
 **Lines to one opener are five seconds apart.** The rail is sampled, and for
 a moment after a line is submitted the opener still reads `idle`.

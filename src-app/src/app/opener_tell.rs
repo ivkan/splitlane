@@ -18,7 +18,32 @@ use crate::project::ThreadStatus;
 pub(crate) struct Tell {
     /// The session whose turn ended.
     pub thread_id: u64,
+    /// Set when the opener has had another way to hear of it: something
+    /// was waiting on the session when its turn ended, or the opener asked
+    /// about it afterwards. Such a line is not written while the opener may
+    /// still be acting on what it heard ([`held_step`]).
+    pub held: Option<Held>,
 }
+
+/// Where an opener stood when it last had another way to hear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Held {
+    /// When: the first question about the session, or the last moment
+    /// something was seen waiting on it.
+    pub since: std::time::Instant,
+    /// How many of the opener's own turns had ended by then. The rail is
+    /// sampled, and a turn shorter than the gap between two samples is seen
+    /// only in this count.
+    pub opener_runs: u64,
+}
+
+/// How long an opener that had another way to hear is given to act on it.
+///
+/// A harness that calls its agent back when a background `splitlane wait`
+/// ends does so within seconds, and the opener is then at work. An opener
+/// still idle after this long did not hear: the wait was wrapped in a script
+/// that went on running, or its result was read by nobody.
+const HELD_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How long after one line the next may be written into the same opener.
 ///
@@ -45,6 +70,40 @@ pub(crate) struct OpenerFacts {
     pub entry_open: bool,
     /// A line was written into this opener less than [`TELL_GAP`] ago.
     pub just_told: bool,
+}
+
+/// What becomes of a line whose opener had another way to hear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HeldStep {
+    /// Not yet: the opener may still be about to act, or something is still
+    /// waiting on the session.
+    Keep,
+    /// The opener is at work: it heard, or was given something else to do
+    /// by somebody who knows.
+    Drop,
+    /// The opener has sat idle since: it is owed the line after all.
+    Due,
+}
+
+/// Whether a held line is still held.
+///
+/// `watched` is asked now and not when the turn ended: a wait that outlasts
+/// the turn (one waiting out the session's background command) is still the
+/// opener's way to hear, and a line written under it would be the second
+/// message about one turn.
+pub(crate) fn held_step(
+    opener_status: ThreadStatus,
+    opener_ran_since: bool,
+    held_for: std::time::Duration,
+    watched: bool,
+) -> HeldStep {
+    if opener_status == ThreadStatus::Thinking || opener_ran_since {
+        HeldStep::Drop
+    } else if watched || held_for < HELD_FOR {
+        HeldStep::Keep
+    } else {
+        HeldStep::Due
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,9 +170,11 @@ impl SplitlaneApp {
     /// Note that the turn `thread_id` just ended was its opener's to read,
     /// for the opener to be told.
     ///
-    /// Not when something is already waiting on this session by name: that
-    /// is the opener's own `splitlane wait`, which ends on the same event,
-    /// and a second message about one turn would start a second turn.
+    /// When something is already waiting on this session by id the line is
+    /// held, not written: that is the opener's own `splitlane wait`, which
+    /// ends on the same event, and a second message about one turn would
+    /// start a second turn. It is written later only to an opener that the
+    /// wait did not wake ([`held_step`]).
     pub(crate) fn tell_opener_of(&mut self, thread_id: u64, cx: &mut Context<Self>) {
         if !self.cached_config.tell_opener_enabled() {
             return;
@@ -139,26 +200,38 @@ impl SplitlaneApp {
             target: crate::app::agent_state_pass::TRACE,
             "#{thread_id} turn ended for its opener #{opener}: watched={watched}",
         );
-        if watched {
-            return;
-        }
+        let held = watched.then(|| self.held_now(opener));
         let tells = self.opener_tells.entry(opener).or_default();
         tells.retain(|tell| tell.thread_id != thread_id);
-        tells.push(Tell { thread_id });
+        tells.push(Tell { thread_id, held });
     }
 
     /// Note that `opener` has asked the app about `thread_id` itself.
     ///
     /// `splitlane wait` and `splitlane answer` both begin by reading the
-    /// session's status. An opener that does either after the turn ended has
-    /// the news already: a wait started a moment late returns at once, and
-    /// the line would then arrive as a turn about something it has read.
+    /// session's status. An opener that does either in its own turn after
+    /// the session's turn ended has the news already: a wait started a moment
+    /// late returns at once, and the line would then arrive as a turn about
+    /// something it has read. So the line is held from here on. It is not
+    /// struck out, because the question may have come from a background
+    /// command whose answer the agent never saw. The first look starts the
+    /// clock; a script asking every minute must not keep the line held for
+    /// ever.
     pub(crate) fn opener_looked_at(&mut self, opener: u64, thread_id: u64) {
+        let now = self.held_now(opener);
         if let Some(tells) = self.opener_tells.get_mut(&opener) {
-            tells.retain(|tell| tell.thread_id != thread_id);
-            if tells.is_empty() {
-                self.opener_tells.remove(&opener);
+            for tell in tells.iter_mut().filter(|tell| tell.thread_id == thread_id) {
+                tell.held.get_or_insert(now);
             }
+        }
+    }
+
+    fn held_now(&self, opener: u64) -> Held {
+        Held {
+            since: std::time::Instant::now(),
+            opener_runs: self
+                .thread_by_id(opener)
+                .map_or(0, |thread| thread.rail.runs_ended),
         }
     }
 
@@ -176,6 +249,59 @@ impl SplitlaneApp {
         for opener in openers {
             let Some(tells) = self.opener_tells.remove(&opener) else {
                 continue;
+            };
+            // Lines the opener had another way to hear of: gone once it is
+            // at work, kept back while it may still act, due after that.
+            let opener_now = self
+                .thread_by_id(opener)
+                .map(|thread| (thread.status, thread.rail.runs_ended));
+            let mut waiting: Vec<Tell> = Vec::new();
+            let tells: Vec<Tell> = tells
+                .into_iter()
+                .filter_map(|mut tell| {
+                    let (Some(held), Some((status, runs))) = (tell.held, opener_now) else {
+                        return Some(tell);
+                    };
+                    let watched = self
+                        .terminal_of(tell.thread_id, cx)
+                        .is_some_and(|terminal| {
+                            self.event_bus.is_watched(
+                                crate::rail_state::RAIL_EVENT_TYPE,
+                                terminal.entity_id().as_u64(),
+                            )
+                        });
+                    let ran_since = runs > held.opener_runs;
+                    match held_step(status, ran_since, held.since.elapsed(), watched) {
+                        HeldStep::Due => Some(tell),
+                        HeldStep::Keep => {
+                            // The minute is counted from the end of the
+                            // wait, not of the turn: a wait that returns
+                            // long after the turn must still be given time
+                            // to wake its opener.
+                            if watched {
+                                tell.held = Some(Held {
+                                    since: std::time::Instant::now(),
+                                    opener_runs: runs,
+                                });
+                            }
+                            waiting.push(tell);
+                            None
+                        }
+                        HeldStep::Drop => {
+                            log::debug!(
+                                target: crate::app::agent_state_pass::TRACE,
+                                "#{opener} is at work: held line about #{} dropped",
+                                tell.thread_id,
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+            let keep_waiting = |app: &mut Self, waiting: Vec<Tell>| {
+                if !waiting.is_empty() {
+                    app.opener_tells.entry(opener).or_default().extend(waiting);
+                }
             };
             // A session that is gone has no answer to read, and one at work
             // again was given its next task by somebody who knows. The
@@ -195,12 +321,17 @@ impl SplitlaneApp {
                 })
                 .collect();
             if sessions.is_empty() {
+                keep_waiting(self, waiting);
                 continue;
             }
-            let hold = |app: &mut Self, sessions: Vec<(Tell, String, u64)>| {
+            let hold = |app: &mut Self, sessions: Vec<(Tell, String, u64)>, waiting: Vec<Tell>| {
                 app.opener_tells.insert(
                     opener,
-                    sessions.into_iter().map(|(tell, ..)| tell).collect(),
+                    sessions
+                        .into_iter()
+                        .map(|(tell, ..)| tell)
+                        .chain(waiting)
+                        .collect(),
                 );
             };
             let Some(thread) = self.thread_by_id(opener) else {
@@ -214,11 +345,11 @@ impl SplitlaneApp {
             let (status, agent_exited) = (thread.status, thread.rail.agent_exited);
             // No terminal this pass is not the opener being gone.
             let Some(terminal) = self.terminal_of(opener, cx) else {
-                hold(self, sessions);
+                hold(self, sessions, waiting);
                 continue;
             };
             let Some(look) = self.opening_look(opener, &terminal, cx) else {
-                hold(self, sessions);
+                hold(self, sessions, waiting);
                 continue;
             };
             let facts = OpenerFacts {
@@ -242,7 +373,7 @@ impl SplitlaneApp {
                     continue;
                 }
                 TellStep::Hold => {
-                    hold(self, sessions);
+                    hold(self, sessions, waiting);
                     continue;
                 }
                 TellStep::Write => {}
@@ -262,7 +393,7 @@ impl SplitlaneApp {
                 terminal.read(cx).inject_text(&text);
             }
             if terminal.read(cx).terminal.refused_input_count() != refused_before {
-                hold(self, sessions);
+                hold(self, sessions, waiting);
                 continue;
             }
             let floor = std::time::Duration::from_millis(
@@ -271,6 +402,7 @@ impl SplitlaneApp {
             Self::schedule_deferred_submit(&terminal, floor, cx);
             self.opener_told_at
                 .insert(opener, std::time::Instant::now());
+            keep_waiting(self, waiting);
             log::debug!(
                 target: crate::app::agent_state_pass::TRACE,
                 "#{opener} told of {} ended turn(s)",
@@ -339,6 +471,41 @@ mod tests {
                 ..READY
             }),
             TellStep::Hold
+        );
+    }
+
+    #[test]
+    fn an_opener_at_work_heard_and_is_not_told_again() {
+        for held_for in [std::time::Duration::ZERO, HELD_FOR * 10] {
+            assert_eq!(
+                held_step(ThreadStatus::Thinking, false, held_for, false),
+                HeldStep::Drop
+            );
+        }
+        // A turn too short to be seen at work is seen in the count of turns.
+        assert_eq!(
+            held_step(ThreadStatus::Idle, true, HELD_FOR * 10, false),
+            HeldStep::Drop
+        );
+    }
+
+    /// The case that forced it: a lead's wait returned on time inside a
+    /// script of the lead's own that never ended, and the lead sat idle for
+    /// an hour beside a session that had finished.
+    #[test]
+    fn an_opener_still_idle_after_its_wait_ended_is_told() {
+        let just_short = HELD_FOR - std::time::Duration::from_secs(1);
+        for status in [ThreadStatus::Idle, ThreadStatus::WaitingForInput] {
+            assert_eq!(held_step(status, false, just_short, false), HeldStep::Keep);
+            assert_eq!(held_step(status, false, HELD_FOR, false), HeldStep::Due);
+        }
+    }
+
+    #[test]
+    fn a_wait_still_running_keeps_the_line_back() {
+        assert_eq!(
+            held_step(ThreadStatus::Idle, false, HELD_FOR * 10, true),
+            HeldStep::Keep
         );
     }
 
