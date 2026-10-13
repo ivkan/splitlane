@@ -22,6 +22,8 @@ libghostty-linux = [
     "dep:splitlane-terminal-ghostty",
     "dep:portable-pty",
     "splitlane-terminal-ghostty/native",
+    # The session host answers a program with the emulator the panes use.
+    "splitlane-host/libghostty-linux",
 ]
 # Windows backend backed by the pinned static wrapper and the ConPTY host. It is
 # enabled in standard builds so `terminal.backend = "auto"` can select Ghostty

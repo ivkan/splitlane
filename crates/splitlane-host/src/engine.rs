@@ -12,10 +12,12 @@
 //! program would see one terminal while it starts and another once a window
 //! shows it: a keyboard protocol it was told is supported and then is not.
 //! So the engine is, on each platform, the emulator the window uses there,
-//! configured the same way. On macOS that is `alacritty_terminal`. Where
-//! the window uses another emulator the host has no engine yet and answers
-//! nothing; [`for_this_platform`] returns `None` there, and the rest of the
-//! host does not care which it got.
+//! configured the same way: `alacritty_terminal` on macOS, libghostty-vt on
+//! Linux. The two do not give the same answers, and are not meant to: a
+//! program is told what the terminal it will be shown in is. A Linux build
+//! made without libghostty has no engine and answers nothing;
+//! [`for_this_platform`] returns `None` there, and the rest of the host
+//! does not care which it got.
 
 use std::time::Instant;
 
@@ -50,7 +52,17 @@ pub fn for_this_platform(cols: u16, rows: u16) -> Option<Box<dyn Engine>> {
     {
         Some(Box::new(alacritty::AlacrittyEngine::new(cols, rows)))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+    {
+        ghostty::GhosttyEngine::start(cols, rows).map(|engine| Box::new(engine) as Box<dyn Engine>)
+    }
+    // A Linux build without libghostty is one whose panes run on the other
+    // emulator, which the host does not carry there: such a build answers
+    // nothing, as every Linux build did before the host had an engine.
+    #[cfg(not(any(
+        target_os = "macos",
+        all(target_os = "linux", feature = "libghostty-linux")
+    )))]
     {
         let _ = (cols, rows);
         None
@@ -249,6 +261,507 @@ pub(crate) mod alacritty {
             self.processor.stop_sync(&mut self.term);
             self.collect(replies);
         }
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+pub(crate) mod ghostty {
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::time::Instant;
+
+    use splitlane_terminal_ghostty::{BackendEvent, DisplayTerminal, Rgb, WindowSize};
+
+    use super::Engine;
+    use crate::protocol::Facts;
+
+    /// The smallest grid the emulator takes.
+    const MIN_COLS: u16 = 1;
+    const MIN_ROWS: u16 = 1;
+
+    /// How much the emulator keeps of what scrolled off the screen. Nobody
+    /// scrolls back in it, but it is not zero: when the terminal grows
+    /// taller the lines come back down and the cursor goes with them, and
+    /// with nothing kept the cursor would be reported rows away from where
+    /// a pane has it. Any amount a pane can be configured with puts it in
+    /// the same place, so this is the smallest of those.
+    const SCROLLBACK: usize = 100;
+
+    /// What the emulator says the text area and a cell measure in pixels
+    /// when it was never told the size of a cell.
+    const NO_PIXELS: [&[u8]; 2] = [b"\x1b[4;0;0t", b"\x1b[6;0;0t"];
+
+    enum Request {
+        Advance(Vec<u8>),
+        Resize {
+            cols: u16,
+            rows: u16,
+            cell: Option<(u16, u16)>,
+        },
+        Facts(Box<Facts>),
+        #[cfg(test)]
+        Fail,
+    }
+
+    /// The terminal and what the host has to remember next to it. Lives on
+    /// the engine's own thread from its first moment to its last.
+    struct Emulator {
+        terminal: DisplayTerminal,
+        cols: u16,
+        rows: u16,
+        cell: Option<(u16, u16)>,
+    }
+
+    impl Emulator {
+        fn new(cols: u16, rows: u16) -> Result<Self, String> {
+            let (cols, rows) = (cols.max(MIN_COLS), rows.max(MIN_ROWS));
+            let size = window_size(cols, rows, None)?;
+            // As a pane's terminal is built in the app, which sets nothing
+            // but the theme's colours; those arrive as facts.
+            let terminal = DisplayTerminal::new(size, SCROLLBACK).map_err(|e| e.to_string())?;
+            Ok(Self {
+                terminal,
+                cols,
+                rows,
+                cell: None,
+            })
+        }
+
+        /// Run one request. An error is the terminal failing in a way that
+        /// leaves its state unknown, and ends the engine.
+        fn handle(&mut self, request: Request) -> Result<Vec<u8>, String> {
+            match request {
+                Request::Advance(bytes) => self.advance(&bytes),
+                Request::Resize { cols, rows, cell } => {
+                    let (cols, rows) = (cols.max(MIN_COLS), rows.max(MIN_ROWS));
+                    let cell = known(cell).or(self.cell);
+                    self.resize(cols, rows, cell)?;
+                    Ok(Vec::new())
+                }
+                Request::Facts(facts) => {
+                    self.terminal
+                        .set_known_default_colors(
+                            facts.foreground.map(rgb),
+                            facts.background.map(rgb),
+                            facts.cursor.map(rgb),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    // The palette has no reader: the emulator leaves a
+                    // query for an indexed colour unanswered whatever it
+                    // was told, in a pane as much as here.
+                    let cell = known(facts.cell_width.zip(facts.cell_height));
+                    // Only a cell that changed. Telling the emulator its
+                    // size makes it report the size to a program that
+                    // asked to hear of every change, and facts that repeat
+                    // what is known are no change.
+                    if cell.is_some() && cell != self.cell {
+                        self.resize(self.cols, self.rows, cell)?;
+                    }
+                    Ok(Vec::new())
+                }
+                #[cfg(test)]
+                Request::Fail => std::panic::resume_unwind(Box::new("forced engine failure")),
+            }
+        }
+
+        fn advance(&mut self, bytes: &[u8]) -> Result<Vec<u8>, String> {
+            self.terminal.feed(bytes).map_err(|e| e.to_string())?;
+            let mut replies = Vec::new();
+            for event in self.terminal.drain_events() {
+                match event {
+                    // The emulator answers a question about pixels with
+                    // zeros until it is told the size of a cell. A program
+                    // divides by that answer; none at all is what it gets
+                    // from a terminal that cannot say, and what it already
+                    // copes with. Each answer is an event of its own, so
+                    // the comparison is with the whole of one.
+                    BackendEvent::WritePty(answer)
+                        if self.cell.is_none() && NO_PIXELS.contains(&answer.as_slice()) => {}
+                    BackendEvent::WritePty(answer) => replies.extend_from_slice(&answer),
+                    // A pane takes this for its terminal having failed.
+                    // Here the session goes on and only the engine ends.
+                    BackendEvent::CallbackPanicked => {
+                        return Err("a callback of the emulator panicked".into());
+                    }
+                    // The title, the working directory, the bell and a copy
+                    // to the clipboard are for a window.
+                    _ => {}
+                }
+            }
+            Ok(replies)
+        }
+
+        /// What the emulator writes because of a resize, to a program that
+        /// asked for size reports, stays queued until the next output is
+        /// read: that is when a pane writes it too.
+        fn resize(&mut self, cols: u16, rows: u16, cell: Option<(u16, u16)>) -> Result<(), String> {
+            let size = window_size(cols, rows, cell)?;
+            self.terminal.resize(size).map_err(|e| e.to_string())?;
+            self.cols = cols;
+            self.rows = rows;
+            self.cell = cell;
+            Ok(())
+        }
+    }
+
+    /// A cell of no width or no height is one nobody measured.
+    fn known(cell: Option<(u16, u16)>) -> Option<(u16, u16)> {
+        cell.filter(|(width, height)| *width > 0 && *height > 0)
+    }
+
+    fn window_size(cols: u16, rows: u16, cell: Option<(u16, u16)>) -> Result<WindowSize, String> {
+        let (cell_width, cell_height) = cell.unwrap_or((0, 0));
+        WindowSize::new(
+            usize::from(cols),
+            usize::from(rows),
+            u32::from(cell_width),
+            u32::from(cell_height),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn rgb(colour: crate::protocol::Rgb) -> Rgb {
+        Rgb {
+            r: colour.0,
+            g: colour.1,
+            b: colour.2,
+        }
+    }
+
+    /// The engine's side of a terminal that lives on a thread of its own.
+    ///
+    /// A session's engine is made on one thread and then used from others,
+    /// one at a time, and this terminal is not `Send`: nothing says that
+    /// libghostty's state may be handed from thread to thread, and its
+    /// archive carries thread-local storage. So the terminal is made, used
+    /// and dropped on a thread that does nothing else, the way a pane's is
+    /// in the app, and every call here is a request to that thread and a
+    /// wait for what it answered.
+    pub(crate) struct GhosttyEngine {
+        /// `None` once the thread is known to be gone.
+        requests: Option<Sender<Request>>,
+        answers: Receiver<Vec<u8>>,
+    }
+
+    impl GhosttyEngine {
+        /// `None` if the thread or the terminal could not be made; the
+        /// session then runs without an engine.
+        pub(crate) fn start(cols: u16, rows: u16) -> Option<Self> {
+            let (requests, inbox) = channel::<Request>();
+            let (outbox, answers) = channel::<Vec<u8>>();
+            let spawned = std::thread::Builder::new()
+                .name("host-engine".into())
+                .spawn(move || {
+                    let mut emulator = match Emulator::new(cols, rows) {
+                        Ok(emulator) => emulator,
+                        Err(error) => {
+                            log::error!("cannot make a terminal engine: {error}");
+                            return;
+                        }
+                    };
+                    // The first answer says the terminal is there.
+                    if outbox.send(Vec::new()).is_err() {
+                        return;
+                    }
+                    for request in inbox {
+                        match emulator.handle(request) {
+                            Ok(answer) => {
+                                if outbox.send(answer).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                log::error!("the terminal engine failed: {error}");
+                                return;
+                            }
+                        }
+                    }
+                });
+            if let Err(error) = spawned {
+                log::error!("cannot start the terminal engine's thread: {error}");
+                return None;
+            }
+            answers.recv().ok()?;
+            Some(Self {
+                requests: Some(requests),
+                answers,
+            })
+        }
+
+        /// Have the thread run `request` and return what the terminal
+        /// answered. A thread that is gone, because the terminal failed or
+        /// panicked, answers nothing from then on: the session goes on
+        /// without answers, as it does when an engine fails on any
+        /// platform.
+        fn call(&mut self, request: Request) -> Vec<u8> {
+            let Some(requests) = self.requests.as_ref() else {
+                return Vec::new();
+            };
+            if requests.send(request).is_ok() {
+                if let Ok(answer) = self.answers.recv() {
+                    return answer;
+                }
+            }
+            log::error!("the terminal engine is gone; its queries go unanswered from here");
+            self.requests = None;
+            Vec::new()
+        }
+
+        #[cfg(test)]
+        pub(crate) fn fail(&mut self) {
+            self.call(Request::Fail);
+        }
+    }
+
+    impl Engine for GhosttyEngine {
+        fn advance(&mut self, bytes: &[u8], replies: &mut Vec<u8>) {
+            let mut answer = self.call(Request::Advance(bytes.to_vec()));
+            replies.append(&mut answer);
+        }
+
+        fn resize(&mut self, cols: u16, rows: u16, cell: Option<(u16, u16)>) {
+            self.call(Request::Resize { cols, rows, cell });
+        }
+
+        fn set_facts(&mut self, facts: &Facts) {
+            self.call(Request::Facts(Box::new(facts.clone())));
+        }
+
+        // This emulator holds nothing back during a synchronized update: a
+        // question asked inside one is answered at once, as in a pane.
+        fn sync_deadline(&self) -> Option<Instant> {
+            None
+        }
+
+        fn end_sync(&mut self, _replies: &mut Vec<u8>) {}
+    }
+}
+
+#[cfg(test)]
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+mod ghostty_tests {
+    use std::collections::BTreeMap;
+
+    use super::ghostty::GhosttyEngine;
+    use super::*;
+    use crate::protocol::Rgb;
+
+    fn engine(cols: u16, rows: u16) -> GhosttyEngine {
+        GhosttyEngine::start(cols, rows).unwrap()
+    }
+
+    fn ask(engine: &mut dyn Engine, query: &[u8]) -> String {
+        let mut replies = Vec::new();
+        engine.advance(query, &mut replies);
+        String::from_utf8(replies).unwrap().replace('\x1b', "^")
+    }
+
+    /// The answers a pane of the app gives on this platform, written out:
+    /// its terminal is the same one, built with the same settings.
+    #[test]
+    fn queries_get_the_answers_the_window_gives() {
+        let mut engine = engine(80, 24);
+        assert_eq!(ask(&mut engine, b"\x1b[6n"), "^[1;1R");
+        assert_eq!(ask(&mut engine, b"abc\r\nde\x1b[6n"), "^[2;3R");
+        assert_eq!(ask(&mut engine, b"\x1b[5n"), "^[0n");
+        // A VT220 with colour and a clipboard that can be written to.
+        assert_eq!(ask(&mut engine, b"\x1b[c"), "^[?62;22;52c");
+        assert_eq!(ask(&mut engine, b"\x1b[>c"), "^[>1;10;0c");
+        assert_eq!(ask(&mut engine, b"\x1b[=c"), "^P!|00000000^\\");
+        assert_eq!(
+            ask(&mut engine, b"\x1b[>q"),
+            format!(
+                "^P>|ghostty {}^\\",
+                splitlane_terminal_ghostty::GHOSTTY_APP_VERSION
+            )
+        );
+        assert_eq!(ask(&mut engine, b"\x1b[18t"), "^[8;24;80t");
+        assert_eq!(ask(&mut engine, b"\x1b[?2004$p"), "^[?2004;2$y");
+        assert_eq!(ask(&mut engine, b"\x1b[?2004h\x1b[?2004$p"), "^[?2004;1$y");
+        assert_eq!(ask(&mut engine, b"\x1b[?2026$p"), "^[?2026;2$y");
+        assert_eq!(ask(&mut engine, b"\x1b[?9999$p"), "^[?9999;0$y");
+        // The keyboard protocol is there, and its flags are the program's.
+        assert_eq!(ask(&mut engine, b"\x1b[?u"), "^[?0u");
+        assert_eq!(ask(&mut engine, b"\x1b[>1u\x1b[?u"), "^[?1u");
+        assert_eq!(ask(&mut engine, b"\x1b[<u\x1b[?u"), "^[?0u");
+        // The window is taken for a dark one, whatever its theme.
+        assert_eq!(ask(&mut engine, b"\x1b[?996n"), "^[?997;1n");
+        // Several at once come back in the order they were asked.
+        assert_eq!(
+            ask(&mut engine, b"\x1b[5n\x1b[c\x1b[5n"),
+            "^[0n^[?62;22;52c^[0n"
+        );
+
+        // What a pane does not answer is not answered here: a mode that is
+        // not a private one, a paste from the clipboard, an enquiry, and
+        // the settings and capabilities asked for by name.
+        assert_eq!(ask(&mut engine, b"\x1b[4$p"), "");
+        assert_eq!(ask(&mut engine, b"\x1b]52;c;?\x07"), "");
+        assert_eq!(ask(&mut engine, b"\x05"), "");
+        assert_eq!(ask(&mut engine, b"\x1bP$qm\x1b\\"), "");
+        assert_eq!(ask(&mut engine, b"\x1bP+q544e\x1b\\"), "");
+        // And what is for a window is no answer to the program.
+        assert_eq!(
+            ask(
+                &mut engine,
+                b"\x1b]0;title\x07\x1b]7;file:///tmp\x07\x1b]52;c;aGk=\x07\x07"
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn the_cursor_is_where_the_output_and_the_resizes_left_it() {
+        let mut engine = engine(80, 24);
+        assert_eq!(ask(&mut engine, b"\x1b[20;70H\x1b[6n"), "^[20;70R");
+        engine.resize(40, 10, None);
+        // The line the cursor was on is wrapped at the new width, and the
+        // cursor goes with its place in the text.
+        assert_eq!(ask(&mut engine, b"\x1b[6n\x1b[18t"), "^[10;30R^[8;10;40t");
+        // The alternate screen has a cursor of its own.
+        assert_eq!(ask(&mut engine, b"\x1b[?1049h\x1b[H\x1b[6n"), "^[1;1R");
+        assert_eq!(ask(&mut engine, b"\x1b[?1049l\x1b[6n"), "^[10;30R");
+
+        // A terminal that grows taller gets back lines that had scrolled
+        // off its top, and the cursor moves down with them.
+        let mut engine = self::engine(80, 24);
+        let lines = "line\r\n".repeat(30);
+        assert_eq!(ask(&mut engine, lines.as_bytes()), "");
+        assert_eq!(ask(&mut engine, b"\x1b[6n"), "^[24;1R");
+        engine.resize(80, 30, None);
+        assert_eq!(ask(&mut engine, b"\x1b[6n"), "^[30;1R");
+        engine.resize(80, 40, None);
+        assert_eq!(ask(&mut engine, b"\x1b[6n"), "^[31;1R");
+    }
+
+    #[test]
+    fn what_only_a_window_knows_is_answered_once_it_was_told() {
+        let mut engine = engine(80, 24);
+        let questions = b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]12;?\x07\x1b[14t\x1b[16t";
+        // A terminal that cannot be asked, and a program that goes on to
+        // the question it uses to tell: only that one is answered. The
+        // size in cells is not a question about the window.
+        assert_eq!(ask(&mut engine, questions), "");
+        assert_eq!(
+            ask(&mut engine, b"\x1b]11;?\x07\x1b[14t\x1b[18t\x1b[c"),
+            "^[8;24;80t^[?62;22;52c"
+        );
+
+        engine.set_facts(&Facts {
+            foreground: Some(Rgb(0xd0, 0xd1, 0xd2)),
+            background: Some(Rgb(0x12, 0x34, 0x56)),
+            cursor: None,
+            palette: BTreeMap::from([(1, Rgb(0xff, 0x00, 0x7f))]),
+            cell_width: Some(9),
+            cell_height: Some(18),
+        });
+        // Each answer ends the way its question did.
+        assert_eq!(
+            ask(&mut engine, questions),
+            "^]10;rgb:d0d0/d1d1/d2d2\x07^]11;rgb:1212/3434/5656^\\^[4;432;720t^[6;18;9t"
+        );
+        // An indexed colour is not answered for even when it was given: a
+        // pane, which has the whole palette, does not answer either.
+        assert_eq!(ask(&mut engine, b"\x1b]4;1;?\x07\x1b]4;2;?\x07"), "");
+
+        // A resize that came with pixels changes the cell; one without
+        // keeps it.
+        engine.resize(100, 30, Some((10, 20)));
+        assert_eq!(ask(&mut engine, b"\x1b[14t"), "^[4;600;1000t");
+        engine.resize(50, 10, None);
+        assert_eq!(ask(&mut engine, b"\x1b[14t"), "^[4;200;500t");
+
+        // New facts replace the colours whole. The cell is not something a
+        // window stops having, and stays.
+        engine.set_facts(&Facts {
+            cursor: Some(Rgb(1, 2, 3)),
+            ..Facts::default()
+        });
+        assert_eq!(
+            ask(&mut engine, questions),
+            "^]12;rgb:0101/0202/0303\x07^[4;200;500t^[6;20;10t"
+        );
+        engine.set_facts(&Facts::default());
+        assert_eq!(ask(&mut engine, questions), "^[4;200;500t^[6;20;10t");
+    }
+
+    #[test]
+    fn a_program_that_asked_to_hear_of_resizes_hears_of_real_ones() {
+        let mut engine = engine(80, 24);
+        let cell = Facts {
+            cell_width: Some(9),
+            cell_height: Some(18),
+            ..Facts::default()
+        };
+        engine.set_facts(&cell);
+        assert_eq!(ask(&mut engine, b"\x1b[?2048h"), "");
+        // The report waits for the next output, as it does in a pane.
+        engine.resize(100, 30, None);
+        assert_eq!(ask(&mut engine, b""), "^[48;30;100;540;900t");
+        // The facts again, with nothing new in them, are not a resize.
+        engine.set_facts(&cell);
+        assert_eq!(ask(&mut engine, b""), "");
+        // A cell of another size is one, though the grid is the same.
+        engine.set_facts(&Facts {
+            cell_width: Some(10),
+            cell_height: Some(20),
+            ..Facts::default()
+        });
+        assert_eq!(ask(&mut engine, b""), "^[48;30;100;600;1000t");
+    }
+
+    #[test]
+    fn a_query_inside_a_synchronized_update_is_answered_at_once() {
+        let mut engine = engine(80, 24);
+        assert_eq!(engine.sync_deadline(), None);
+        assert_eq!(ask(&mut engine, b"\x1b[?2026h\x1b[6n"), "^[1;1R");
+        assert_eq!(ask(&mut engine, b"\x1b[?2026$p"), "^[?2026;1$y");
+        assert_eq!(engine.sync_deadline(), None);
+        let mut replies = Vec::new();
+        engine.end_sync(&mut replies);
+        assert_eq!(replies, b"");
+        // Ending the update is the program's to do.
+        assert_eq!(ask(&mut engine, b"\x1b[?2026$p"), "^[?2026;1$y");
+    }
+
+    #[test]
+    fn sizes_no_terminal_has_are_taken_for_the_smallest_one() {
+        let mut engine = engine(0, 0);
+        assert_eq!(ask(&mut engine, b"\x1b[18t"), "^[8;1;1t");
+        engine.resize(80, 24, Some((0, 0)));
+        assert_eq!(ask(&mut engine, b"\x1b[18t\x1b[14t"), "^[8;24;80t");
+        engine.resize(0, 0, None);
+        assert_eq!(ask(&mut engine, b"\x1b[18t"), "^[8;1;1t");
+        // Shrinking both ways at once with the cursor on the last row.
+        engine.resize(80, 24, None);
+        assert_eq!(ask(&mut engine, b"\x1b[24;80H\x1b[6n"), "^[24;80R");
+        engine.resize(20, 5, None);
+        assert_eq!(ask(&mut engine, b"\x1b[18t"), "^[8;5;20t");
+    }
+
+    #[test]
+    fn an_engine_that_failed_answers_nothing_and_holds_nothing_up() {
+        let mut engine = engine(80, 24);
+        assert_eq!(ask(&mut engine, b"\x1b[5n"), "^[0n");
+        engine.fail();
+        // The thread is gone, and every call comes back all the same.
+        assert_eq!(ask(&mut engine, b"\x1b[5n"), "");
+        engine.resize(100, 30, Some((10, 20)));
+        engine.set_facts(&Facts::default());
+        let mut replies = Vec::new();
+        engine.end_sync(&mut replies);
+        assert_eq!(ask(&mut engine, b"\x1b[c"), "");
+
+        // An engine is used from whichever thread has the session's
+        // output or a client's request, one at a time.
+        let mut moved = super::for_this_platform(80, 24).unwrap();
+        let answer = std::thread::spawn(move || {
+            let mut replies = Vec::new();
+            moved.advance(b"\x1b[5n", &mut replies);
+            replies
+        })
+        .join()
+        .unwrap();
+        assert_eq!(answer, b"\x1b[0n");
     }
 }
 
