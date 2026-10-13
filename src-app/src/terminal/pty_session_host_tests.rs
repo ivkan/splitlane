@@ -1592,6 +1592,67 @@ fn a_session_that_ended_while_no_window_was_there_is_not_attached_to() {
     assert!(nowhere.held_sessions().is_empty());
 }
 
+/// A host that is there and does not answer for a session has not said
+/// the session is gone. The pane must not take that for leave to start a
+/// new shell and resume the agent in it: the first agent may still be at
+/// work on the same conversation.
+#[test]
+fn a_host_that_does_not_answer_for_a_session_is_not_taken_to_have_lost_it() {
+    // Room for one connection: the window's own takes it, and the pane's
+    // is turned away.
+    let host = TestHost::start(|config| config.max_connections = 1);
+    let session = {
+        let control = host.client();
+        control
+            .spawn(SpawnSpec {
+                argv: vec!["/bin/sh".into(), "-c".into(), "sleep 300".into()],
+                env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+                cwd: "/".into(),
+                cols: 80,
+                rows: 24,
+                ..SpawnSpec::default()
+            })
+            .expect("a session")
+            .0
+    };
+    let attached = wait_for("the host to have room for the window", || {
+        let (window, attached) = pane_of_the_next_window(&host, session, 880_021);
+        drop(window);
+        // Turned away at the first connection too while the one that
+        // started the session is still being let go of.
+        (!matches!(attached, Err(ReattachError::Gone(_)))).then_some(attached)
+    });
+    assert!(matches!(attached, Err(ReattachError::Unanswered(_))));
+    // Nothing was ended on the way.
+    let still = wait_for("the session to be listed again", || {
+        HostEndpoint::new(host.socket.clone(), None)
+            .held_sessions()
+            .into_iter()
+            .find(|held| held.id == session.to_string())
+    });
+    assert_eq!(still.id, session.to_string());
+    wait_for("the test's own session to be ended", || {
+        host.client().kill(session).ok()
+    });
+
+    // Something that listens and is not a host says nothing about any
+    // session either.
+    let dir = short_dir();
+    let socket = dir.path().join("mute.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    let mute = std::thread::spawn(move || {
+        // Taken and closed without a word.
+        let _ = listener.accept();
+    });
+    let window = HostEndpoint::new(socket, None);
+    let (_state, pending) = TerminalState::new_pending(80, 24);
+    assert!(matches!(
+        reattach(&window, session, &pending, facts(), 880_022),
+        Err(ReattachError::Unanswered(_))
+    ));
+    mute.join().expect("the mute listener");
+}
+
 #[test]
 fn a_window_listing_what_the_host_holds_gets_the_running_sessions_only() {
     let host = TestHost::start(|_| {});
