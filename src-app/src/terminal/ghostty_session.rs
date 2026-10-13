@@ -68,7 +68,14 @@ pub(crate) enum GhosttyUiEvent {
     WorkingDirectory(Arc<UiEventState>),
     Clipboard(Arc<UiEventState>),
     ServiceOutputReady(Arc<UiEventState>),
-    ChildExited { code: i32, signal: Option<String> },
+    ChildExited {
+        code: i32,
+        signal: Option<String>,
+    },
+    /// The log of a session in the host has been replayed: the grid shows
+    /// the session as it stands, and nothing of that is news.
+    #[cfg(host_panes)]
+    ReplayFinished,
     InputRejected(String),
     RuntimeFailed(String),
 }
@@ -157,6 +164,12 @@ pub(super) struct GhosttyRuntimePending {
     mailbox: Arc<RuntimeMailbox>,
 }
 
+#[cfg(host_panes)]
+#[path = "ghostty_remote.rs"]
+mod remote;
+#[cfg(host_panes)]
+pub(super) use remote::{GhosttyAttach, window_facts};
+
 pub(super) struct SpawnedGhostty {
     pub(super) child_pid: u32,
     pub(super) cwd: std::path::PathBuf,
@@ -222,6 +235,10 @@ struct SessionInner {
     state: RwLock<SharedState>,
     recent_output_lines: RwLock<Arc<[String]>>,
     queued_input_bytes: AtomicUsize,
+    /// How many times input was dropped after it had been accepted here,
+    /// because the queue to the session host had no room for it.
+    #[cfg(host_panes)]
+    refused_input: std::sync::atomic::AtomicU64,
     command_backpressure: AtomicBool,
     promoted: AtomicBool,
     shutdown_sent: AtomicBool,
@@ -286,6 +303,16 @@ enum RuntimeMessage {
     ExtractScrollback(SyncSender<Result<Option<String>, String>>),
     ExtractText(SyncSender<Result<Option<String>, String>>),
     RestoreScrollback(String),
+    /// What the stream of a session in the host says besides output, at the
+    /// place in the queue where the stream said it.
+    #[cfg(host_panes)]
+    Host(remote::HostEvent),
+    /// The pane was given its queue to the host.
+    #[cfg(host_panes)]
+    HostAttached(super::host_session::RemoteSender),
+    /// Tell the host the window's size again, whatever it was told last.
+    #[cfg(host_panes)]
+    ResendHostSize,
     #[cfg(test)]
     SimulateWorkerCrash,
     Shutdown,
@@ -327,16 +354,31 @@ struct MailboxState {
     queue: VecDeque<RuntimeMessage>,
     control_count: usize,
     output_count: usize,
+    /// Events of a host stream that are queued, counted apart from the
+    /// window's own commands so that neither can crowd the other out.
+    #[cfg(host_panes)]
+    host_event_count: usize,
     available_output_buffers: Vec<Vec<u8>>,
     accepting_input: bool,
     accepting_output: bool,
     closed: bool,
 }
 
+/// The one queue a runtime reads, in the order things were put on it.
+///
+/// Output and everything else share a single FIFO: the runtime takes a run
+/// of output only up to the next message of another kind, so a command, or
+/// an event of a host stream, takes effect exactly between the bytes it was
+/// queued between. Only the admission differs by kind. Output is bounded by
+/// its fixed pool of buffers, the window's commands by a count beyond which
+/// they are refused, and the events of a host stream by a count their
+/// producer waits at.
 struct RuntimeMailbox {
     state: Mutex<MailboxState>,
     ready: Condvar,
     output_buffer_ready: Condvar,
+    #[cfg(host_panes)]
+    host_event_ready: Condvar,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -359,6 +401,8 @@ impl RuntimeMailbox {
             }),
             ready: Condvar::new(),
             output_buffer_ready: Condvar::new(),
+            #[cfg(host_panes)]
+            host_event_ready: Condvar::new(),
         }
     }
 
@@ -461,12 +505,31 @@ impl RuntimeMailbox {
 
     fn pop_front(state: &mut MailboxState) -> Option<RuntimeMessage> {
         let message = state.queue.pop_front()?;
-        if matches!(message, RuntimeMessage::Output(_)) {
-            state.output_count = state.output_count.saturating_sub(1);
-        } else {
-            state.control_count = state.control_count.saturating_sub(1);
+        match message {
+            RuntimeMessage::Output(_) => {
+                state.output_count = state.output_count.saturating_sub(1);
+            }
+            #[cfg(host_panes)]
+            RuntimeMessage::Host(_) => {
+                state.host_event_count = state.host_event_count.saturating_sub(1);
+            }
+            // Neither counted when queued: see `send_host_attached`.
+            #[cfg(host_panes)]
+            RuntimeMessage::HostAttached(_) => {}
+            _ => state.control_count = state.control_count.saturating_sub(1),
         }
         Some(message)
+    }
+
+    /// Wake whoever waits for room among the events of a host stream, after
+    /// one was taken.
+    fn note_taken(&self, message: &RuntimeMessage) {
+        #[cfg(host_panes)]
+        if matches!(message, RuntimeMessage::Host(_)) {
+            self.host_event_ready.notify_one();
+        }
+        #[cfg(not(host_panes))]
+        let _ = message;
     }
 
     fn recv_timeout(&self, timeout: Duration) -> Result<RuntimeMessage, MailboxRecvError> {
@@ -477,6 +540,8 @@ impl RuntimeMailbox {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(message) = Self::pop_front(&mut state) {
+                drop(state);
+                self.note_taken(&message);
                 return Ok(message);
             }
             if state.closed {
@@ -566,6 +631,8 @@ impl RuntimeMailbox {
         drop(state);
         self.ready.notify_all();
         self.output_buffer_ready.notify_all();
+        #[cfg(host_panes)]
+        self.host_event_ready.notify_all();
     }
 
     #[cfg(test)]
@@ -575,6 +642,8 @@ impl RuntimeMailbox {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(message) = Self::pop_front(&mut state) {
+            drop(state);
+            self.note_taken(&message);
             Ok(message)
         } else if state.closed {
             Err(std::sync::mpsc::TryRecvError::Disconnected)
@@ -993,6 +1062,8 @@ impl GhosttySession {
                 }),
                 recent_output_lines: RwLock::new(Arc::from(Vec::<String>::new())),
                 queued_input_bytes: AtomicUsize::new(0),
+                #[cfg(host_panes)]
+                refused_input: std::sync::atomic::AtomicU64::new(0),
                 command_backpressure: AtomicBool::new(false),
                 promoted: AtomicBool::new(false),
                 shutdown_sent: AtomicBool::new(false),
@@ -1714,6 +1785,9 @@ fn new_display_terminal(
 /// The command a pane's shell is started with: the program, where it
 /// starts, and its environment - this process's, with the pane's variables
 /// and the terminal's identity on top.
+///
+/// A shell the session host starts for a pane is given exactly what this
+/// builds, so it is built in one place.
 fn shell_command(params: &SpawnParams) -> CommandBuilder {
     let mut command = CommandBuilder::new(&params.shell);
     command.args(&params.extra_args);
@@ -1929,7 +2003,8 @@ fn run_runtime(
                     &inner,
                     &mailbox,
                     &mut terminal,
-                    &mut writer,
+                    &mut Replies::ToPty(&mut writer),
+                    None,
                     &mut marks_scanner,
                     &mut status,
                     &mut service_output_tail,
@@ -2019,8 +2094,8 @@ fn run_runtime(
                 let message = handle_input_message(&inner, &mut terminal, message, &mut |bytes| {
                     write_input_bytes(&inner, &mut writer, bytes, &mut runtime_failed);
                 });
-                // What is left after that is output and its end, which
-                // have arms of their own above.
+                // What is left after that is for a runtime of a session in
+                // the host, and nobody sends it to this one.
                 let _ =
                     message.and_then(|message| handle_view_message(&inner, &mut terminal, message));
             }
@@ -2247,6 +2322,39 @@ fn run_runtime(
             }
         }
     }
+}
+
+/// Where a runtime's terminal sends what it answers a program with.
+enum Replies<'a> {
+    /// To the PTY, which this runtime owns.
+    ToPty(&'a mut Option<Box<dyn Write + Send>>),
+    /// Nowhere. The PTY is the session host's, and the host has answered
+    /// from an emulator of its own that read the same bytes: a second answer
+    /// from here would reach the program as input it never asked for.
+    #[cfg_attr(not(host_panes), allow(dead_code))]
+    AnsweredByHost,
+}
+
+impl Replies<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::ToPty(Some(writer)) => writer.write_all(bytes).and_then(|()| writer.flush()),
+            Self::ToPty(None) | Self::AnsweredByHost => Ok(()),
+        }
+    }
+}
+
+/// What old output reported and nobody was told, while the log of a session
+/// in the host is replayed: the last of each kind, for the end of the
+/// replay. Everything in a log has happened already, so of the titles,
+/// working directories and command marks it holds only the newest still
+/// says anything, and a mark is placed where the cursor is when it is read.
+#[derive(Default)]
+#[cfg_attr(not(host_panes), allow(dead_code))]
+struct HeldBack {
+    title: Option<String>,
+    working_directory: Option<String>,
+    mark: Option<RawMark>,
 }
 
 /// Give the grid a size, and clear it if this is the first size a new pane
@@ -2547,12 +2655,18 @@ fn search_scrollback_lines(
 
 // These parameters are the mutable runtime-loop state. Grouping them would add
 // a second state container without improving ownership or call-site clarity.
+//
+// `held` is given while the output is old - the log of a session in the
+// host being replayed. The grid is then rebuilt and nothing else is done:
+// nothing is published, nobody is woken, and what the output reports is
+// kept in `held` for the end of the replay.
 #[allow(clippy::too_many_arguments)]
 fn process_output_batch(
     inner: &SessionInner,
     mailbox: &RuntimeMailbox,
     terminal: &mut ghostty::DisplayTerminal,
-    writer: &mut Option<Box<dyn Write + Send>>,
+    replies: &mut Replies<'_>,
+    mut held: Option<&mut HeldBack>,
     marks_scanner: &mut Osc133Scanner,
     status: &mut StatusTap,
     service_output_tail: &mut ServiceOutputTail,
@@ -2576,13 +2690,7 @@ fn process_output_batch(
             // Before the emulator reads the chunk, so that this answer is
             // written ahead of any of its own; see `StatusTap::advance`.
             let mut status_reply = Ok(());
-            status.advance(bytes, &mut |answer| {
-                if let Some(active_writer) = writer.as_mut() {
-                    status_reply = active_writer
-                        .write_all(answer)
-                        .and_then(|()| active_writer.flush());
-                }
-            });
+            status.advance(bytes, &mut |answer| status_reply = replies.write(answer));
             status_reply.map_err(|error| format!("Ghostty protocol reply failed: {error}"))?;
             terminal
                 .feed(bytes)
@@ -2597,7 +2705,7 @@ fn process_output_batch(
             {
                 status.prompt_started();
             }
-            handle_engine_events(inner, terminal, writer)?;
+            handle_engine_events(inner, terminal, replies, held.as_deref_mut())?;
             #[cfg(test)]
             inner
                 .processed_output_bytes
@@ -2617,6 +2725,12 @@ fn process_output_batch(
         }
 
         *recent_output_pending = true;
+        if let Some(held) = held {
+            if let Some(mark) = raw_marks.pop() {
+                held.mark = Some(mark);
+            }
+            return Ok(());
+        }
         let service_output_ready = refresh_recent_output_lines(
             inner,
             service_output_tail,
@@ -2843,26 +2957,35 @@ fn read_pty(mut reader: Box<dyn Read + Send>, mailbox: Arc<RuntimeMailbox>) {
     mailbox.send_eof();
 }
 
+/// Act on what the terminal reported while it read output. `held` is
+/// given while that output is old; see [`HeldBack`].
 fn handle_engine_events(
     inner: &SessionInner,
     terminal: &mut ghostty::DisplayTerminal,
-    writer: &mut Option<Box<dyn Write + Send>>,
+    replies: &mut Replies<'_>,
+    mut held: Option<&mut HeldBack>,
 ) -> Result<(), String> {
     for event in terminal.drain_events() {
         match event {
             ghostty::BackendEvent::WritePty(bytes) => {
-                if let Some(active_writer) = writer.as_mut() {
-                    active_writer
-                        .write_all(&bytes)
-                        .and_then(|()| active_writer.flush())
-                        .map_err(|error| format!("Ghostty protocol reply failed: {error}"))?;
+                replies
+                    .write(&bytes)
+                    .map_err(|error| format!("Ghostty protocol reply failed: {error}"))?;
+            }
+            ghostty::BackendEvent::ClipboardStore(text) => {
+                // A copy the log made was made when it was printed.
+                if held.is_none() {
+                    queue_clipboard(inner, text);
                 }
             }
-            ghostty::BackendEvent::ClipboardStore(text) => queue_clipboard(inner, text),
-            ghostty::BackendEvent::Title(title) => queue_title(inner, title),
-            ghostty::BackendEvent::WorkingDirectory(cwd) => {
-                queue_working_directory(inner, cwd);
-            }
+            ghostty::BackendEvent::Title(title) => match held.as_deref_mut() {
+                Some(held) => held.title = Some(title),
+                None => queue_title(inner, title),
+            },
+            ghostty::BackendEvent::WorkingDirectory(cwd) => match held.as_deref_mut() {
+                Some(held) => held.working_directory = Some(cwd),
+                None => queue_working_directory(inner, cwd),
+            },
             ghostty::BackendEvent::Bell => {}
             ghostty::BackendEvent::CallbackPanicked => {
                 return Err("Ghostty callback panicked at the FFI boundary".into());

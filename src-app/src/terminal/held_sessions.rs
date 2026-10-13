@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 /// A session the host holds, as a window that has just started sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    not(target_os = "macos"),
+    not(host_panes),
     allow(
         dead_code,
-        reason = "panes run in the session host on macOS only so far"
+        reason = "only a build whose panes can run in the session host lists its sessions"
     )
 )]
 pub(crate) struct HeldSession {
@@ -35,11 +35,11 @@ pub(crate) struct HeldSession {
 
 /// Whether this window opens its panes in the session host.
 pub(crate) fn enabled() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     {
         super::host_session::enabled()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(host_panes))]
     {
         false
     }
@@ -66,7 +66,7 @@ fn publish(held: Vec<HeldSession>) {
 /// needed: a pane whose session is still running is attached to it, and
 /// one whose session is gone gets a new shell.
 pub(crate) fn begin_listing() {
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     if enabled() {
         let asked = std::thread::Builder::new()
             .name("held-sessions".into())
@@ -113,7 +113,7 @@ pub(crate) fn listing(wait: Duration) -> Vec<HeldSession> {
 
 /// The window is going away and what runs in the host stays.
 pub(crate) fn leave_running() {
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     if enabled()
         && let Some(endpoint) = super::host_session::process_endpoint()
     {
@@ -125,7 +125,7 @@ pub(crate) fn leave_running() {
 /// now that the window is going: they were left running, or the host was
 /// asked to end them.
 pub(crate) fn settled() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     if enabled() {
         return super::host_session::process_endpoint().is_none_or(|endpoint| endpoint.leaving());
     }
@@ -134,14 +134,14 @@ pub(crate) fn settled() -> bool {
 
 /// How long leaving the app waits for the host to take the request to stop
 /// everything.
-#[cfg(target_os = "macos")]
+#[cfg(host_panes)]
 const STOP_WAIT: Duration = Duration::from_secs(2);
 
 /// The app is being left with its sessions to be stopped: have the host
 /// end everything it holds. Waits, briefly, so it is for the way out and
 /// nowhere else.
 pub(crate) fn stop_all() {
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     if enabled()
         && let Some(endpoint) = super::host_session::process_endpoint()
     {
@@ -151,7 +151,7 @@ pub(crate) fn stop_all() {
 
 /// End a held session that no pane shows. Returns at once.
 pub(crate) fn end(held: &HeldSession) {
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     if let (Ok(session), Some(endpoint)) = (
         held.id.parse::<splitlane_host::SessionId>(),
         super::host_session::process_endpoint(),
@@ -163,6 +163,6 @@ pub(crate) fn end(held: &HeldSession) {
                 move || endpoint.end_held(session, pid)
             });
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(host_panes))]
     let _ = held;
 }

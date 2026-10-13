@@ -43,8 +43,7 @@
 //! end everything it holds.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
-use std::ffi::OsString;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -60,11 +59,13 @@ use splitlane_host::{
 };
 
 use super::held_sessions::HeldSession;
-use super::pty_session::{
-    ForegroundSignalMask, MAX_PENDING_INPUT_BYTES, PendingTerminalBackend, RemoteSinkChannels,
-    SpawnParams, SpawnedPty, TerminalState, end_process_group,
-};
+use super::pty_session::{MAX_PENDING_INPUT_BYTES, SpawnParams, end_process_group};
 use super::stream_replay::{AttachMode, SinkStep, StreamStart};
+
+/// What a pane writes into its terminal when the connection to the host
+/// is lost, before it shows as ended.
+pub(super) const CONNECTION_LOST_NOTICE: &[u8] =
+    b"\r\n\x1b[0;2mThe connection to the session host was lost.\x1b[0m\r\n";
 
 /// How long a host that could not be reached, or would not start a session,
 /// is left alone. Restoring a window opens its panes one after the other,
@@ -169,6 +170,12 @@ impl RemoteSender {
     /// Queue anything that is not input. Never refused.
     pub(super) fn send(&self, msg: RemoteMsg) {
         let _ = self.queue.send(msg);
+    }
+
+    /// Bytes of input queued and not yet taken by the sending thread.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub(super) fn queued_input_bytes(&self) -> usize {
+        self.queued_input.load(Ordering::Acquire)
     }
 }
 
@@ -430,7 +437,7 @@ impl HostEndpoint {
     }
 
     /// Whether new panes are being kept away from the host for now.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(super) fn is_avoided(&self) -> bool {
         lock(&self.state)
             .failed_at
@@ -512,11 +519,32 @@ pub(super) trait AttachTarget {
 
     /// A sink that feeds this terminal a stream beginning at `start`.
     fn sink(&self, mode: AttachMode, start: StreamStart) -> (Self::Sink, Self::Channels);
+
+    /// What this kind of terminal starts a shell with when the window
+    /// starts it: the host is asked for exactly that.
+    fn shell_start(params: &SpawnParams) -> anyhow::Result<ShellStart>;
+}
+
+/// The environment of a pane's shell, complete, and the directory it
+/// starts in.
+///
+/// A shell the window starts inherits the window's environment, with what
+/// the terminal's own spawn adds to it and takes from it, and the pane's
+/// variables on top. A shell the host starts inherits nothing: the host
+/// may have been started by another release or from a terminal, and its
+/// environment says nothing about this pane. So the same environment is
+/// put together in the window and sent whole. The directory is settled
+/// here too, because each spawn has its own idea of where a shell starts
+/// when the pane's directory is not there, and the host refuses one that
+/// is not.
+pub(super) struct ShellStart {
+    pub(super) env: Vec<(String, String)>,
+    pub(super) cwd: PathBuf,
 }
 
 /// What a terminal state needs to become a pane of a session in the host.
 /// `C` is what its sink reports: [`AttachTarget::Channels`].
-pub(super) struct SpawnedRemote<C = RemoteSinkChannels> {
+pub(super) struct SpawnedRemote<C> {
     pub(super) sender: RemoteSender,
     pub(super) child_pid: u32,
     pub(super) cwd: PathBuf,
@@ -567,7 +595,7 @@ pub(super) fn start_and_follow<T: AttachTarget>(
     // The id the shell is told is its pane's, which the view made up and
     // recorded. Recorded again here for whoever opens a pane without one.
     crate::surface_alias::remember(params.surface_id, surface);
-    let started = spawn_spec(params, facts).and_then(|spec| {
+    let started = spawn_spec::<T>(params, facts).and_then(|spec| {
         let (cwd, size) = (PathBuf::from(&spec.cwd), (spec.cols, spec.rows));
         let (session, pid) = control
             .spawn(spec)
@@ -1133,7 +1161,7 @@ pub(super) fn stop_all(endpoint: &Arc<HostEndpoint>, wait: Duration) {
 
 /// How a pane ended up with a shell. `C` is what the pane's sink reports
 /// and `W` what opening the pane in the window gives.
-pub(super) enum Opened<C = RemoteSinkChannels, W = anyhow::Result<SpawnedPty>> {
+pub(super) enum Opened<C, W> {
     InHost(SpawnedRemote<C>),
     /// The host was not used, or could not be: the pane has a PTY the
     /// window owns, as every pane has without the host.
@@ -1145,27 +1173,7 @@ pub(super) enum Opened<C = RemoteSinkChannels, W = anyhow::Result<SpawnedPty>> {
 
 /// Open a pane's shell in the host, or in the window if the host cannot
 /// take it. `endpoint` is `None` when this build has nowhere to look for a
-/// host.
-pub(super) fn open(
-    endpoint: Option<&Arc<HostEndpoint>>,
-    facts: Facts,
-    params: SpawnParams,
-    pending: PendingTerminalBackend,
-    signal_mask: Option<ForegroundSignalMask>,
-    surface: u64,
-) -> Opened {
-    open_or(
-        endpoint,
-        facts,
-        params,
-        pending,
-        surface,
-        |params, pending| TerminalState::open_pty_and_eventloop(params, pending, signal_mask),
-    )
-}
-
-/// [`open`] for any terminal that can follow a session: `in_window` is how
-/// such a terminal is given a PTY the window owns.
+/// host. `in_window` is how the terminal is given a PTY the window owns.
 pub(super) fn open_or<T: AttachTarget, W>(
     endpoint: Option<&Arc<HostEndpoint>>,
     facts: Facts,
@@ -1197,20 +1205,105 @@ pub(super) fn open_or<T: AttachTarget, W>(
     Opened::InWindow(in_window(params, pending))
 }
 
+/// [`open_or`] for the terminal the window draws with on macOS, as the
+/// tests of that terminal open a pane.
+#[cfg(all(test, target_os = "macos"))]
+pub(super) fn open(
+    endpoint: Option<&Arc<HostEndpoint>>,
+    facts: Facts,
+    params: SpawnParams,
+    pending: super::pty_session::PendingTerminalBackend,
+    signal_mask: Option<super::pty_session::ForegroundSignalMask>,
+    surface: u64,
+) -> Opened<super::pty_session::RemoteSinkChannels, anyhow::Result<super::pty_session::SpawnedPty>>
+{
+    open_or(
+        endpoint,
+        facts,
+        params,
+        pending,
+        surface,
+        |params, pending| {
+            super::pty_session::TerminalState::open_pty_and_eventloop(params, pending, signal_mask)
+        },
+    )
+}
+
+/// How a pane that is shown for the first time came by its shell.
+pub(super) struct Settled<C, W> {
+    pub(super) opened: Opened<C, W>,
+    /// The pane was saved with a session and is attached to it, or would
+    /// have been: it is not a new pane, whatever else happened.
+    pub(super) attached_to_held: bool,
+    /// The host did not say whether the session the pane was saved with is
+    /// still there. The pane keeps being recorded with it.
+    pub(super) held_unanswered: bool,
+}
+
+/// Give a pane its shell when it is first shown, in a window whose panes
+/// run in the host: the session it was saved with if that is still
+/// running, and a new one otherwise - in the host, or in the window when
+/// the host cannot take it.
+///
+/// A session the host did not answer for is not known to be gone, so it
+/// is not replaced: the pane says so and starts nothing.
+pub(super) fn attach_or_open<T: AttachTarget, W>(
+    endpoint: Option<&Arc<HostEndpoint>>,
+    held: Option<SessionId>,
+    facts: Facts,
+    params: SpawnParams,
+    pending: T,
+    surface: u64,
+    in_window: impl FnOnce(SpawnParams, T) -> W,
+) -> Settled<T::Channels, W> {
+    let mut held_unanswered = false;
+    let attached = held.zip(endpoint).and_then(|(session, endpoint)| {
+        match reattach(endpoint, session, &pending, facts.clone(), surface) {
+            Ok(spawned) => {
+                log::info!(
+                    target: "splitlane::terminal::host",
+                    "session {session}: pane attached to it again, pid {}",
+                    spawned.child_pid
+                );
+                Some(Opened::InHost(spawned))
+            }
+            Err(ReattachError::Gone(error)) => {
+                log::info!(
+                    target: "splitlane::terminal::host",
+                    "session {session} is not there to attach to, opening a new shell: {error:#}"
+                );
+                None
+            }
+            Err(ReattachError::Failed(error)) => Some(Opened::Lost(error)),
+            Err(ReattachError::Unanswered(error)) => {
+                held_unanswered = true;
+                Some(Opened::Lost(error.context(
+                    "this pane's session may still be running in the session host, so it was not started again; restart Splitlane to attach to it",
+                )))
+            }
+        }
+    });
+    match attached {
+        Some(opened) => Settled {
+            opened,
+            attached_to_held: true,
+            held_unanswered,
+        },
+        None => Settled {
+            opened: open_or(endpoint, facts, params, pending, surface, in_window),
+            attached_to_held: false,
+            held_unanswered,
+        },
+    }
+}
+
 /// What the host is asked to start for a pane: the shell the window would
 /// have started, where it would have started it, with the environment it
 /// would have had.
-fn spawn_spec(params: &SpawnParams, facts: Facts) -> anyhow::Result<SpawnSpec> {
+fn spawn_spec<T: AttachTarget>(params: &SpawnParams, facts: Facts) -> anyhow::Result<SpawnSpec> {
     let mut argv = vec![params.shell.clone()];
     argv.extend(params.extra_args.iter().cloned());
-    // The window's own spawn ignores a directory that is not there and
-    // starts the shell where the window is. The host refuses one, so the
-    // same choice is made before asking.
-    let cwd = if params.cwd.is_dir() {
-        params.cwd.clone()
-    } else {
-        crate::launch_cwd::implicit_launch_cwd()
-    };
+    let ShellStart { env, cwd } = T::shell_start(params)?;
     let cwd = cwd
         .into_os_string()
         .into_string()
@@ -1223,7 +1316,7 @@ fn spawn_spec(params: &SpawnParams, facts: Facts) -> anyhow::Result<SpawnSpec> {
     exported.insert("window_pid".to_string(), std::process::id().to_string());
     Ok(SpawnSpec {
         argv,
-        env: child_environment(std::env::vars_os(), &params.env, params.surface_id)?,
+        env,
         cwd,
         cols: u16::try_from(params.cols).unwrap_or(u16::MAX),
         rows: u16::try_from(params.rows).unwrap_or(u16::MAX),
@@ -1233,17 +1326,29 @@ fn spawn_spec(params: &SpawnParams, facts: Facts) -> anyhow::Result<SpawnSpec> {
     })
 }
 
-/// The environment of a pane's shell, complete.
-///
-/// A shell the window starts inherits the window's environment, with what
-/// the terminal emulator's own spawn adds to it and takes from it, and the
-/// pane's variables on top. A shell the host starts inherits nothing: the
-/// host may have been started by another release or from a terminal, and
-/// its environment says nothing about this pane. So the same environment
-/// is put together here and sent whole. `inherited` is the window's.
+/// How the terminal the window draws with on macOS starts a shell.
+#[cfg(target_os = "macos")]
+pub(super) fn alacritty_shell_start(params: &SpawnParams) -> anyhow::Result<ShellStart> {
+    // The window's own spawn ignores a directory that is not there and
+    // starts the shell where the window is.
+    let cwd = if params.cwd.is_dir() {
+        params.cwd.clone()
+    } else {
+        crate::launch_cwd::implicit_launch_cwd()
+    };
+    Ok(ShellStart {
+        env: child_environment(std::env::vars_os(), &params.env, params.surface_id)?,
+        cwd,
+    })
+}
+
+/// The environment of a shell alacritty's spawn starts: `inherited`, the
+/// window's own, with what that spawn adds to it and takes from it, and
+/// the pane's variables.
+#[cfg(target_os = "macos")]
 pub(super) fn child_environment(
-    inherited: impl Iterator<Item = (OsString, OsString)>,
-    pane: &HashMap<String, String>,
+    inherited: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    pane: &std::collections::HashMap<String, String>,
     surface_id: u64,
 ) -> anyhow::Result<Vec<(String, String)>> {
     // A variable that is not UTF-8 cannot travel as text. It is left out.
@@ -1269,6 +1374,7 @@ pub(super) fn child_environment(
 
 /// `USER` and `HOME` as alacritty's spawn sets them: from the environment,
 /// and for a variable that is not there, from the password database.
+#[cfg(target_os = "macos")]
 fn user_and_home(env: &BTreeMap<String, String>) -> anyhow::Result<(String, String)> {
     if let (Some(user), Some(home)) = (env.get("USER"), env.get("HOME")) {
         return Ok((user.clone(), home.clone()));
@@ -1282,7 +1388,7 @@ fn user_and_home(env: &BTreeMap<String, String>) -> anyhow::Result<(String, Stri
 }
 
 /// Name and home directory of the user this process runs as.
-fn password_entry() -> Option<(String, String)> {
+pub(super) fn password_entry() -> Option<(String, String)> {
     let mut buffer = vec![0 as libc::c_char; 4096];
     // SAFETY: `passwd` is plain integers and pointers, so all-zero is a
     // valid value to be overwritten.
