@@ -22,6 +22,15 @@ impl DisplayTerminal {
         Err(GhosttyError::UnsupportedPlatform)
     }
 
+    pub fn set_known_default_colors(
+        &mut self,
+        _: Option<Rgb>,
+        _: Option<Rgb>,
+        _: Option<Rgb>,
+    ) -> Result<()> {
+        Err(GhosttyError::UnsupportedPlatform)
+    }
+
     pub fn reset(&mut self) {}
 
     pub fn clear_screen_and_scrollback(&mut self) -> Result<()> {
