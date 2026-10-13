@@ -15,8 +15,8 @@ use super::host_test_support::*;
 use super::*;
 use crate::terminal::ghostty_session::{GhosttyAttach, GhosttySession, SpawnedGhostty};
 use crate::terminal::host_session::{
-    HostEndpoint, OpenError, Opened, ReattachError, attach_or_open, open_or, open_remote, reattach,
-    stop_all,
+    HostEndpoint, OpenError, Opened, ReattachError, attach_or_open, may_still_run, open_or,
+    open_remote, reattach, stop_all,
 };
 
 fn facts() -> Facts {
@@ -621,6 +621,32 @@ fn a_window_that_goes_away_leaves_its_sessions_running_and_the_next_one_finds_th
     wait_for("the new pane's id to be free", || {
         (crate::surface_alias::pane_meant(told) == told).then_some(())
     });
+}
+
+/// A pane saved with a session and now on the other terminal cannot follow
+/// it. Started anew it would be typed the command that resumes the same
+/// conversation, beside the agent still working in the host.
+#[test]
+fn a_pane_that_cannot_attach_is_told_when_its_session_still_runs() {
+    let host = TestHost::start(|_| {});
+    let (running, _) = a_session_running(&host, "echo up; sleep 300");
+    assert!(may_still_run(&host.endpoint, running).is_some());
+
+    // Gone, each in its own way: a session that ended, one the host never
+    // had, and a host that is not there.
+    let (ended, _) = a_session_running(&host, "echo done");
+    wait_for("the session to end", || {
+        host.sessions()
+            .into_iter()
+            .any(|info| info.id == ended && info.exited.is_some())
+            .then_some(())
+    });
+    assert!(may_still_run(&host.endpoint, ended).is_none());
+    assert!(may_still_run(&host.endpoint, SessionId::new_random()).is_none());
+    let nowhere = HostEndpoint::new(short_dir().path().join("no.sock"), None);
+    assert!(may_still_run(&nowhere, running).is_none());
+
+    host.client().kill(running).unwrap();
 }
 
 #[test]

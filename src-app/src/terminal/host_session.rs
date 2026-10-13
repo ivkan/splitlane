@@ -660,6 +660,39 @@ pub(super) enum ReattachError {
     Unanswered(anyhow::Error),
 }
 
+/// Why a session a pane was recorded with may still be running, for a pane
+/// that cannot be attached to it; `None` when it is gone.
+///
+/// A pane that runs on another terminal than the one the host answers with
+/// stays in the window. If it was saved with a session, that session is
+/// not its to follow any more, and a new shell typed the command that
+/// resumes the same conversation would put a second agent beside the one
+/// still working in the host. So such a pane asks first, by the rule
+/// [`reattach`] goes by: nothing listening is an answer, and so is a host
+/// that says the session is not there or has ended; anything else is not.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn may_still_run(
+    endpoint: &Arc<HostEndpoint>,
+    session: SessionId,
+) -> Option<anyhow::Error> {
+    let control = match endpoint.existing_session() {
+        Ok(control) => control,
+        Err(HostError::NotRunning) => return None,
+        Err(other) => {
+            return Some(
+                anyhow!(other).context("the session host could not be asked about the session"),
+            );
+        }
+    };
+    match control.list() {
+        Ok(held) => held
+            .into_iter()
+            .find(|info| info.id == session && info.exited.is_none())
+            .map(|_| anyhow!("session {session} is running in the session host")),
+        Err(error) => Some(anyhow!(error).context("the session host did not say what it holds")),
+    }
+}
+
 /// Attach a terminal to a session that is already running in the host.
 /// The terminal first replays what the session has printed. `surface` is
 /// the pane the terminal is shown in.

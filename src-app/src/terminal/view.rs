@@ -1087,17 +1087,41 @@ impl TerminalView {
                                     );
                                     settled
                                 } else {
-                                    (
-                                        BackgroundSpawnOutcome::Alacritty(
-                                            TerminalState::open_pty_and_eventloop(
-                                                params,
-                                                pending,
-                                                signal_mask,
-                                            ),
+                                    // A pane on the other terminal stays in
+                                    // the window, but not beside a session it
+                                    // was saved with that is still running.
+                                    #[cfg(host_panes)]
+                                    let elsewhere = held_session
+                                        .filter(|_| super::host_session::enabled())
+                                        .zip(super::host_session::process_endpoint())
+                                        .and_then(|(session, endpoint)| {
+                                            super::host_session::may_still_run(&endpoint, session)
+                                        });
+                                    #[cfg(not(host_panes))]
+                                    let elsewhere: Option<anyhow::Error> = None;
+                                    match elsewhere {
+                                        Some(error) => (
+                                            BackgroundSpawnOutcome::Alacritty(Err(error.context(
+                                                "this pane's session may still be running in the \
+                                                 session host, which this pane's terminal cannot \
+                                                 attach to, so nothing was started; end it with \
+                                                 `splitlane host stop` or switch the terminal back",
+                                            ))),
+                                            false,
+                                            true,
                                         ),
-                                        false,
-                                        false,
-                                    )
+                                        None => (
+                                            BackgroundSpawnOutcome::Alacritty(
+                                                TerminalState::open_pty_and_eventloop(
+                                                    params,
+                                                    pending,
+                                                    signal_mask,
+                                                ),
+                                            ),
+                                            false,
+                                            false,
+                                        ),
+                                    }
                                 };
                             #[cfg(not(any(
                                 target_os = "macos",
