@@ -552,6 +552,7 @@ impl Default for crate::schema::SurfaceDefinition {
             agent: None,
             font_size: None,
             surface_id: None,
+            host_session: None,
         }
     }
 }
@@ -1451,6 +1452,7 @@ mod tests {
                 title_user_set: false,
                 opened_by: None,
                 opened_by_script: None,
+                host_session: None,
             }),
         }
     }

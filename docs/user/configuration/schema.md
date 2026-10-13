@@ -231,8 +231,8 @@ For reference, the shape the migration reads:
   `layout_preset`.
 - Each surface becomes one pane of the preset. It carries over `name` (or
   `custom_name`, which wins), `cwd`, `agent`, `command`, `prompt`, `env` and
-  `focus`. The keys `surface_type`, `path`, `scrollback`, `font_size` and
-  `surface_id` are accepted and not carried over.
+  `focus`. The keys `surface_type`, `path`, `scrollback`, `font_size`,
+  `surface_id` and `host_session` are accepted and not carried over.
 
 ## Example
 

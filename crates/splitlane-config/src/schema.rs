@@ -1947,6 +1947,13 @@ pub struct AgentSurface {
     /// The program outside a pane that opened this session, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_by_script: Option<OpenedByScript>,
+    /// The session in the session host this surface's terminal ran in when
+    /// the session file was written. A window that starts while it is
+    /// still running attaches the surface to it, turn in progress and all;
+    /// otherwise the surface is started again from `session_id` as before.
+    /// Absent for a surface whose terminal the window owned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_session: Option<String>,
 }
 
 /// Which session opened another.
@@ -2074,6 +2081,14 @@ pub struct SurfaceDefinition {
     /// not a copy. A tab whose id matches no surface is dropped at restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_id: Option<u64>,
+    /// The session in the session host that a shell tab's terminal ran in
+    /// when the layout was saved. A window that starts while that session
+    /// is still running shows it in the tab again; otherwise the tab gets
+    /// a new shell and the id means nothing. Written by the app into its
+    /// saved session only, for a plain shell tab - an agent surface's is on
+    /// its own record ([`AgentSurface::host_session`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_session: Option<String>,
 }
 
 /// Schema v1: two containers, `workspaces` and `projects`, and the one-way
@@ -2190,6 +2205,7 @@ pub mod legacy_v1 {
                 title_user_set: t.title_user_set,
                 opened_by: None,
                 opened_by_script: None,
+                host_session: None,
             }),
         }
     }
@@ -2519,6 +2535,7 @@ mod tests {
                         agent: Some("claude_code".to_string()),
                         font_size: Some(13.0),
                         surface_id: Some(7),
+                        host_session: Some("0b0e3c5e-7f0a-4c58-9d0b-2f1f6f1c9a11".to_string()),
                     }],
                 }),
             }),

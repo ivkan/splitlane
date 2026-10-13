@@ -2055,6 +2055,7 @@ mod tests {
                 surface_type: Some("agent".to_string()),
                 name: Some("claude".to_string()),
                 surface_id: Some(7),
+                host_session: None,
                 ..Default::default()
             },
         ];

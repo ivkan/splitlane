@@ -604,6 +604,10 @@
           "type": ["integer", "null"],
           "minimum": 0,
           "description": "Id of the container surface this tab shows, for surface_type 'agent'. The surface's own record carries its payload; the tab only references it."
+        },
+        "host_session": {
+          "type": ["string", "null"],
+          "description": "Id of the session host session a shell tab's terminal ran in. Written by the app into its saved session; it has no meaning in a configuration file."
         }
       }
     }
