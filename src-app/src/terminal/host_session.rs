@@ -1020,9 +1020,10 @@ impl HostEndpoint {
         held
     }
 
-    /// End a session nobody shows, and have the host forget it.
-    pub(super) fn end_held(&self, session: SessionId) {
-        end_session(self, session, 0, false);
+    /// End a session nobody shows, and have the host forget it. `pid` is
+    /// its shell's, for a host that can no longer be asked.
+    pub(super) fn end_held(&self, session: SessionId, pid: u32) {
+        end_session(self, session, pid, false);
     }
 
     /// Ask the host to end every session and exit. True when it said it

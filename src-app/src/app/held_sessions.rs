@@ -124,7 +124,7 @@ impl SplitlaneApp {
             return;
         };
         let held = self.held_unshown.remove(at);
-        crate::terminal::held_sessions::end(&held.id);
+        crate::terminal::held_sessions::end(&held);
         cx.notify();
     }
 
