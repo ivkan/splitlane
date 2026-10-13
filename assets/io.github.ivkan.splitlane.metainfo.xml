@@ -63,6 +63,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.7" date="2026-10-13">
+      <description>
+        <p>Quitting no longer has to stop your agents: with agent sessions
+        open the window is put away and they keep working. Starting Splitlane
+        while it is running brings its window forward. On macOS, commands
+        whose answer is longer than 8 KiB no longer fail. A lead agent whose
+        own waiting went wrong is still told that a session it opened has
+        finished.</p>
+      </description>
+    </release>
     <release version="0.2.6" date="2026-10-11">
       <description>
         <p>Codex sessions report their state again, and a Codex session can
