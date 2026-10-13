@@ -28,7 +28,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, Weak};
@@ -251,7 +251,9 @@ pub(crate) struct Session {
     input: Mutex<Option<SyncSender<Vec<u8>>>>,
     /// The watcher exits when this pipe closes, so it is held for exactly as
     /// long as there is a child to watch.
-    guard: Mutex<Option<ChildStdin>>,
+    /// The pipe the session's watcher reads. Closing it tells the watcher
+    /// that the session is over.
+    guard: Mutex<Option<OwnedFd>>,
     /// Set by the waiter the moment the child is reaped, before the rest of
     /// its output is collected.
     reaped: AtomicBool,
@@ -814,7 +816,7 @@ struct Opened {
     wake_rx: OwnedFd,
     wake_tx: OwnedFd,
     pid: u32,
-    guard: Option<ChildStdin>,
+    guard: Option<OwnedFd>,
 }
 
 fn open_session(
@@ -840,7 +842,7 @@ fn open_session(
 
     let child = spawn_child(spec, program, pair.master.as_ref())?;
     let pid = child.id();
-    let guard = guard_exe.and_then(|exe| spawn_guard(exe, pid));
+    let guard = guard_exe.and_then(|exe| spawn_guard(exe, pid).or_else(|| fork_watcher(pid)));
     Ok(Opened {
         // Kept, and not closed now that the child has its own copies. On
         // macOS, output nobody has read yet is thrown away when the last
@@ -1006,7 +1008,7 @@ fn spawn_child(
 /// dies without doing it. Same arguments and the same pipe convention as
 /// the app uses for the PTYs it owns itself: the watcher exits when its
 /// standard input closes.
-fn spawn_guard(exe: &Path, child_pgid: u32) -> Option<ChildStdin> {
+fn spawn_guard(exe: &Path, child_pgid: u32) -> Option<OwnedFd> {
     let mut command = Command::new(exe);
     command
         .arg(PTY_GUARD_SUBCOMMAND)
@@ -1041,17 +1043,134 @@ fn spawn_guard(exe: &Path, child_pgid: u32) -> Option<ChildStdin> {
             }) {
                 log::warn!("{e}");
             }
-            Some(stdin)
+            Some(OwnedFd::from(stdin))
         }
         Err(e) => {
-            // The session still works; it is only not cleaned up if the
-            // host is killed.
             log::warn!(
-                "cannot start the watcher {} for process group {child_pgid}: {e}",
+                "cannot start the watcher {} for process group {child_pgid}: {e}; \
+                 watching from a copy of this process instead",
                 exe.display()
             );
             None
         }
+    }
+}
+
+/// How long a forked watcher whose pipe closed goes on asking whether the
+/// host is gone, and how often.
+const WATCHER_RECHECKS: u32 = 40;
+const WATCHER_RECHECK_NANOS: libc::c_long = 50_000_000;
+
+/// Watch over the child's process group from a forked copy of this process,
+/// for when the watcher binary cannot be started.
+///
+/// A host outlives the release that started it. An update replaces the app
+/// on disk, and from then on the binary this host was started from may be
+/// somewhere else or gone, while the host goes on starting sessions. A
+/// copy of the host needs no file: it is forked, keeps nothing but one end
+/// of a pipe, and does what the watcher binary does.
+fn fork_watcher(child_pgid: u32) -> Option<OwnedFd> {
+    let pgid = libc::pid_t::try_from(child_pgid)
+        .ok()
+        .filter(|id| *id > 1)?;
+    let (pipe_rx, pipe_tx) = match wake_pipe() {
+        Ok(ends) => ends,
+        Err(e) => {
+            log::warn!("no watcher for process group {child_pgid}: cannot open a pipe: {e}");
+            return None;
+        }
+    };
+    // SAFETY: getpid has no preconditions.
+    let host = unsafe { libc::getpid() };
+    let descriptor_limit = descriptors::limit();
+    // SAFETY: the child calls only async-signal-safe functions and never
+    // returns; see `watch_from_fork`.
+    match unsafe { libc::fork() } {
+        -1 => {
+            log::warn!(
+                "no watcher for process group {child_pgid}: {}",
+                io::Error::last_os_error()
+            );
+            None
+        }
+        0 => watch_from_fork(pipe_rx.as_raw_fd(), descriptor_limit, host, pgid),
+        watcher => {
+            if let Err(e) = thread("guard-reaper", move || {
+                let mut status: libc::c_int = 0;
+                // SAFETY: `status` is a valid out-pointer and `watcher` is
+                // this process's own child.
+                while unsafe { libc::waitpid(watcher, &mut status, 0) } == -1
+                    && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                {
+                }
+            }) {
+                log::warn!("{e}");
+            }
+            Some(pipe_tx)
+        }
+    }
+}
+
+/// Body of a forked watcher. It runs in a copy of a process that had other
+/// threads, any of which may have held a lock at the fork, so it may call
+/// nothing that takes one: no allocation, no logging, only system calls.
+fn watch_from_fork(
+    pipe: RawFd,
+    descriptor_limit: RawFd,
+    host: libc::pid_t,
+    pgid: libc::pid_t,
+) -> ! {
+    // SAFETY: every call below is async-signal-safe, and the pointers
+    // passed are to locals that live for the call.
+    unsafe {
+        // A group of its own, so a signal aimed at the host's group does
+        // not take the watcher with it.
+        libc::setpgid(0, 0);
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+        // Everything the host had open, closed: its listener, its clients,
+        // every session's terminal, and the lock file - a copy of that one
+        // left open would keep the next host from starting.
+        for fd in 0..descriptor_limit {
+            if fd != pipe {
+                libc::close(fd);
+            }
+        }
+        // The host never writes; the read returns when the pipe closes,
+        // because the session ended or because the host did.
+        let mut byte = 0u8;
+        loop {
+            let read = libc::read(pipe, (&raw mut byte).cast(), 1);
+            let interrupted =
+                read < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted;
+            if read <= 0 && !interrupted {
+                break;
+            }
+        }
+        // A dying process closes its files before its children are handed
+        // to another parent, so "the pipe closed and the host is still my
+        // parent" is asked more than once before it is believed.
+        let pause = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: WATCHER_RECHECK_NANOS,
+        };
+        for _ in 0..WATCHER_RECHECKS {
+            let gone = libc::kill(-pgid, 0) != 0
+                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if gone {
+                break;
+            }
+            if libc::getppid() != host {
+                libc::kill(-pgid, libc::SIGHUP);
+                libc::kill(-pgid, libc::SIGTERM);
+                libc::nanosleep(&pause, std::ptr::null_mut());
+                libc::nanosleep(&pause, std::ptr::null_mut());
+                libc::kill(-pgid, libc::SIGKILL);
+                break;
+            }
+            libc::nanosleep(&pause, std::ptr::null_mut());
+        }
+        libc::_exit(0)
     }
 }
 
