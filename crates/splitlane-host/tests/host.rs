@@ -1504,21 +1504,31 @@ fn a_host_with_a_running_session_or_a_client_does_not_exit() {
     host.join().unwrap();
 }
 
+/// Socket name that makes [`host_process_entry`] a host which cannot start
+/// its watcher binary.
+const MOVED_BINARY_SOCKET: &str = "/moved.sock";
+
 /// Not a test of its own: when the test binary is started with a socket
 /// path among its arguments, this is the host process that
 /// `ensure_running` launches below. In a normal run there is no such
 /// argument and it does nothing.
 #[test]
 fn host_process_entry() {
-    let Some(socket) = std::env::args().find(|arg| arg.ends_with("/race.sock")) else {
+    let Some(socket) = std::env::args()
+        .find(|arg| arg.ends_with("/race.sock") || arg.ends_with(MOVED_BINARY_SOCKET))
+    else {
         return;
     };
     // What the real host process does first. Here it also matters for the
     // test itself: eight callers fork at once, and a host that kept another
     // caller's descriptors would keep that caller waiting.
     splitlane_host::close_inherited_descriptors();
-    let mut config = HostConfig::new(socket);
+    let mut config = HostConfig::new(&socket);
     config.idle_grace = Duration::from_secs(2);
+    if socket.ends_with(MOVED_BINARY_SOCKET) {
+        // A host whose own binary was moved away by an update.
+        config.guard_exe = Some(PathBuf::from("/nonexistent/splitlane"));
+    }
     let outcome = splitlane_host::run(config);
     std::process::exit(if outcome.is_ok() { 0 } else { 3 });
 }
@@ -1603,6 +1613,58 @@ fn callers_racing_to_start_a_host_end_up_with_one() {
         host_processes(&socket).is_empty().then_some(())
     });
     assert!(!socket.exists());
+}
+
+/// A host is killed outright and its binary is no longer where it was: the
+/// sessions it started after that must still not be left running.
+#[test]
+fn a_host_that_cannot_start_its_watcher_still_takes_its_children_with_it() {
+    let dir = short_dir();
+    let socket = dir.path().join("moved.sock");
+    let exe = std::env::current_exe().unwrap();
+    let socket_arg = socket.to_str().unwrap();
+    let client = ensure_running(
+        &exe,
+        &["--exact", "host_process_entry", socket_arg, "--nocapture"],
+        &socket,
+    )
+    .unwrap();
+    let host_pid = client.host().pid.unwrap();
+    let (first, first_pid) = client.spawn(sh("sleep 600")).unwrap();
+    // Deaf to the hangup its terminal sends when the host dies, and to the
+    // polite request: only a watcher ends this one.
+    let (_, second_pid) = client.spawn(sh("trap '' HUP TERM; sleep 600")).unwrap();
+
+    // A session that ends in the ordinary way lets its watcher go without
+    // the watcher touching anything: the other session is still there.
+    client.kill(first).unwrap();
+    wait_for("the first session to end", || {
+        info(&client, first).exited.map(|_| ())
+    });
+    assert!(process_exists(second_pid));
+    assert!(!process_exists(first_pid));
+
+    // SAFETY: the pid is the host this test started.
+    unsafe { libc::kill(host_pid as libc::pid_t, libc::SIGKILL) };
+    wait_for("the killed host's session to be ended", || {
+        (!process_exists(second_pid)).then_some(())
+    });
+    // The watchers are copies of the host and carry its arguments. None
+    // may stay, and none may have kept the host's lock: a new host starts.
+    wait_for("the watchers to exit", || {
+        host_processes(&socket).is_empty().then_some(())
+    });
+    let again = ensure_running(
+        &exe,
+        &["--exact", "host_process_entry", socket_arg, "--nocapture"],
+        &socket,
+    )
+    .unwrap();
+    assert_ne!(again.host().pid, Some(host_pid));
+    again.shutdown(true).unwrap();
+    wait_for("the second host to exit", || {
+        host_processes(&socket).is_empty().then_some(())
+    });
 }
 
 #[test]
