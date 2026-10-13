@@ -436,6 +436,10 @@ pub(crate) mod ghostty {
     /// and dropped on a thread that does nothing else, the way a pane's is
     /// in the app, and every call here is a request to that thread and a
     /// wait for what it answered.
+    /// How long one request to the terminal may take. It is work of
+    /// microseconds; this is the bound on a terminal that hangs.
+    const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
     pub(crate) struct GhosttyEngine {
         /// `None` once the thread is known to be gone.
         requests: Option<Sender<Request>>,
@@ -480,7 +484,7 @@ pub(crate) mod ghostty {
                 log::error!("cannot start the terminal engine's thread: {error}");
                 return None;
             }
-            answers.recv().ok()?;
+            answers.recv_timeout(ANSWER_WAIT).ok()?;
             Some(Self {
                 requests: Some(requests),
                 answers,
@@ -496,8 +500,12 @@ pub(crate) mod ghostty {
             let Some(requests) = self.requests.as_ref() else {
                 return Vec::new();
             };
+            // Waited for with a limit: the terminal is foreign code fed
+            // whatever a program prints, and the caller is the thread that
+            // reads the program's output. A terminal that never comes back
+            // must cost the session its answers and not its output.
             if requests.send(request).is_ok() {
-                if let Ok(answer) = self.answers.recv() {
+                if let Ok(answer) = self.answers.recv_timeout(ANSWER_WAIT) {
                     return answer;
                 }
             }
