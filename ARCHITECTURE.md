@@ -65,7 +65,9 @@ own crate and never links GPUI.
 - **Terminal workers**: the backend is selected before the shell child is
   created. Each Ghostty session owns a `splitlane-ghostty-runtime` worker and a
   PTY reader; Windows also uses a dedicated ConPTY closer so pipe drainage
-  cannot block teardown. Alacritty sessions retain their `EventLoop` I/O
+  cannot block teardown. A Ghostty pane whose PTY is in the session host has
+  a `splitlane-ghostty-remote` worker instead, which owns no PTY and no
+  child. Alacritty sessions retain their `EventLoop` I/O
   thread and shared terminal grid. Both implementations publish
   backend-neutral events to the view and owned render snapshots through
   `TerminalSessionBackend`.
@@ -196,9 +198,10 @@ app state.
 A terminal session today lives in the window's process: quit the app, update
 it or crash it, and every agent running in a pane ends with it. The session
 host is the process meant to take that ownership over. **By default the window
-does not use it:** every pane owns its PTY as described above. On macOS a
-window started with `SPLITLANE_SESSION_HOST=1` opens its panes in the host
-instead, which is described under [A pane in the host](#a-pane-in-the-host).
+does not use it:** every pane owns its PTY as described above. On macOS, and
+on Linux in a build with libghostty, a window started with
+`SPLITLANE_SESSION_HOST=1` opens its panes in the host instead, which is
+described under [A pane in the host](#a-pane-in-the-host).
 With the switch on, a pane's session belongs to the host and outlives the
 window: see [Sessions that outlive the window](#sessions-that-outlive-the-window).
 
@@ -273,12 +276,13 @@ each session's output; a window's emulator only draws. The answers must not
 differ from what the window would have said - a program would otherwise be
 told one thing at start-up and find another once a window shows it - so the
 host uses, on each platform, the emulator the window uses there, built with
-the same settings. On macOS that is `alacritty_terminal`, and a test in the
-app asks a pane's terminal and the host's the same questions and compares. On
-Linux it is libghostty-vt, which lives on a thread of its own in each session
-because its terminal cannot be handed between threads; it keeps a little
-scrollback, since without any the cursor is reported elsewhere once the
-terminal has grown taller. The two emulators answer differently - one says it
+the same settings. On macOS that is `alacritty_terminal`. On Linux it is
+libghostty-vt, which lives on a thread of its own in each session because its
+terminal cannot be handed between threads; it keeps a little scrollback,
+since without any the cursor is reported elsewhere once the terminal has
+grown taller. For each of the two, a test in the app asks the host's engine
+and a terminal built by the pane's own code the same questions and
+compares. The two emulators answer differently - one says it
 has the keyboard protocol and names itself, the other does neither - and each
 session gets the answers of the platform it runs on.
 What only a window can know, its colours and the size of a cell in pixels, a
@@ -334,11 +338,16 @@ child the limit it was itself started with.
 
 ### A pane in the host
 
-On macOS, a window started with `SPLITLANE_SESSION_HOST=1` opens every new
-pane in the host. The variable is read once, at start; it is an environment
-variable and not a setting because the path is new and a setting is a promise
-to keep. Linux and Windows ignore it: the window does not open panes in the
-host there yet.
+On macOS, and on Linux in a build with libghostty, a window started with
+`SPLITLANE_SESSION_HOST=1` opens every new pane in the host. The variable is
+read once, at start; it is an environment variable and not a setting because
+the path is new and a setting is a promise to keep. Windows ignores it, and
+so does a Linux build without libghostty: the host has no emulator to answer
+with there. So does a single pane set to the other emulator than the one the
+host carries on its platform, which stays in the window - the host would tell
+its program one thing and the pane would show another. In the code, what
+exists only where a pane can run in the host is under `cfg(host_panes)`,
+which the app's build script sets for exactly those builds.
 
 The emulator, the view and the renderer of such a pane are the ones every
 pane uses. What differs is the two ends of the byte stream:
@@ -346,8 +355,12 @@ pane uses. What differs is the two ends of the byte stream:
 - **The shell is the host's child.** The window asks the host to start the
   shell it would have started itself: the same argv, the same directory, and
   the same environment sent whole - a snapshot of the window's own, with what
-  the emulator's spawn adds and removes, and the pane's variables on top. A
-  test runs `env` in both kinds of pane and compares.
+  the emulator's spawn adds and removes, and the pane's variables on top.
+  The two emulators start a shell differently - one names itself in
+  `TERM_PROGRAM` and falls back to the home directory, the other sets a
+  window id and falls back to where the window is - so each kind of pane
+  says what its own spawn would have done. A test runs `env` in both kinds
+  of pane and compares.
 - **Output arrives as stream events** and is fed through the same scanners and
   the same parser, in the same order, as output read from a PTY. The child's
   end arrives as the events a local child's end produces.
@@ -359,6 +372,22 @@ pane uses. What differs is the two ends of the byte stream:
 - **Input and resizes are queued** for a thread of the pane's own, because a
   request to the host waits for its reply and the thread that draws the window
   must not. Input waits there up to a limit and is refused beyond it.
+
+**A Ghostty pane keeps its one thread.** libghostty's terminal cannot be
+used on two threads, and a pane that owns its PTY already runs it on one, the
+runtime, which reads a single queue. A pane in the host is given another
+runtime, with the same terminal, encoders and queue and without a PTY: it
+cannot open one, start a process, wait for one or signal one. The pane's
+reader puts what the stream says on that queue - output in the queue's own
+fixed pool of buffers, a size the log recorded, the end of the replay, the
+child's end - and the runtime does it in that order, which is the only thing
+that places a recorded resize between the right bytes. The reader waits for a
+free buffer before it takes the next event, so a terminal that falls behind
+leaves the rest on the host's socket. What the pane's terminal answers the
+program is dropped as it is emitted; keys, pastes and mouse reports are
+encoded by the terminal for the modes in effect and then queued for the host.
+The grid is resized by the runtime and the PTY by the host, told once per
+size.
 
 Each pane has a connection of its own for its stream, its input and its
 resizes. Starting, ending and forgetting sessions goes over one connection the
@@ -475,6 +504,15 @@ Not there yet:
 - **A pane is told the window's colors when it is drawn.** After a theme
   change, a pane that is not on screen answers color queries with the old
   theme until it is shown again.
+- **On Linux the host follows a theme change and a pane of the window does
+  not.** A Ghostty pane that owns its PTY is given the theme's colors when it
+  starts and answers with those from then on; the host is told again when
+  the theme changes.
+- **On Linux input can be dropped after it was accepted.** Encoding needs
+  the terminal, so input passes through the pane's runtime before it is
+  queued for the host. What is waiting for the host is counted where input
+  is accepted, and refused there; the runtime only drops, and counts, what
+  slips between the two.
 - **Clearing the scrollback clears the window's copy.** The host's log still
   holds it.
 

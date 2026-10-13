@@ -782,8 +782,8 @@ that reason.
 
 **When the panes run in the session host, keeping the sessions ends the
 window.** That process of its own exists behind a switch
-(`SPLITLANE_SESSION_HOST=1`, macOS; see `ARCHITECTURE.md`), and with it the
-same three answers mean what they say:
+(`SPLITLANE_SESSION_HOST=1`, macOS and Linux; see `ARCHITECTURE.md`), and
+with it the same three answers mean what they say:
 
 - `keep` saves the layout, ends the window's process and leaves every session
   in the host. Nothing is put away, because nothing has to stay up. The next
