@@ -254,6 +254,36 @@ mod tests {
         assert!(terminal.modes().expect("modes after show").cursor_visible);
     }
 
+    /// The replies a terminal wrote after being fed `stream`.
+    fn replies_to(stream: &[u8]) -> Vec<u8> {
+        let size = WindowSize::new(80, 24, 8, 16).expect("valid terminal size");
+        let mut terminal = DisplayTerminal::new(size, 100).expect("terminal must initialize");
+        terminal.feed(stream).expect("stream must parse");
+        terminal
+            .drain_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                BackendEvent::WritePty(bytes) => Some(bytes),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn a_query_after_a_cancelled_string_is_answered_at_once() {
+        // A stream that starts in the middle of a title, as a replay can,
+        // is put right by a cancel. The status query behind it must not
+        // wait for the terminator the title never got.
+        assert_eq!(replies_to(b"\x1b]0;abc\x18\x1b[5n"), b"\x1b[0n");
+        assert_eq!(replies_to(b"\x1b]0;abc\x1a\x1b[5n"), b"\x1b[0n");
+        // An ESC ends the string too, and what it begins is read.
+        assert_eq!(replies_to(b"\x1b]0;abc\x1b[5n"), b"\x1b[0n");
+        // Nothing changes for a string that was ended properly.
+        assert_eq!(replies_to(b"\x1b]0;abc\x07\x1b[5n"), b"\x1b[0n");
+        assert_eq!(replies_to(b"\x1b]0;abc\x1b\\\x1b[5n"), b"\x1b[0n");
+    }
+
     #[test]
     fn oversized_c1_osc_tail_is_dropped_and_native_parser_recovers() {
         let size = WindowSize::new(80, 24, 8, 16).expect("valid terminal size");

@@ -76,6 +76,14 @@ impl ColorQueryResponder {
                     match byte {
                         b'\x07' => self.finish(emit_input, emit_reply),
                         b'\x1b' => self.state = State::OscEscape,
+                        // CAN and SUB abandon a control string. The parser
+                        // is given the cancel too, so that it leaves the
+                        // string it was given the start of.
+                        b'\x18' | b'\x1a' => {
+                            emit_input(&self.pending);
+                            self.pending.clear();
+                            self.state = State::Ground;
+                        }
                         _ if self.pending.len() > MAX_OSC_BYTES => {
                             emit_input(&self.pending);
                             self.pending.clear();
@@ -84,13 +92,37 @@ impl ColorQueryResponder {
                         _ => {}
                     }
                 }
-                State::OscEscape => {
+                State::OscEscape if byte == b'\\' => {
                     self.pending.push(byte);
                     plain_start = index + 1;
-                    if byte == b'\\' {
-                        self.finish(emit_input, emit_reply);
-                    } else if byte != b'\x1b' {
-                        self.state = State::Osc;
+                    self.finish(emit_input, emit_reply);
+                }
+                State::OscEscape => {
+                    // An ESC that is not the start of ST ended the string
+                    // and began a sequence of its own. What was held is the
+                    // parser's to make of; the ESC is read again as the
+                    // start of whatever this byte continues.
+                    plain_start = index + 1;
+                    let escape = self.pending.pop();
+                    debug_assert_eq!(escape, Some(b'\x1b'));
+                    emit_input(&self.pending);
+                    self.pending.clear();
+                    self.pending.push(b'\x1b');
+                    match byte {
+                        b']' => {
+                            self.pending.push(byte);
+                            self.state = State::Osc;
+                        }
+                        b'\x1b' => {
+                            emit_input(&self.pending);
+                            self.state = State::Escape;
+                        }
+                        _ => {
+                            self.pending.push(byte);
+                            emit_input(&self.pending);
+                            self.pending.clear();
+                            self.state = State::Ground;
+                        }
                     }
                 }
             }
@@ -212,5 +244,80 @@ mod tests {
         );
         assert_eq!(input, b"\x1b]0;title\x1b\\");
         assert!(replies.is_empty());
+    }
+
+    /// What reaches the parser and what is answered, for a stream fed in
+    /// the given pieces.
+    fn fed(chunks: &[&[u8]]) -> (Vec<u8>, Vec<u8>) {
+        let mut responder = responder();
+        let mut input = Vec::new();
+        let mut replies = Vec::new();
+        for chunk in chunks {
+            responder.feed(
+                chunk,
+                &mut |bytes| input.extend_from_slice(bytes),
+                &mut |bytes| replies.extend_from_slice(bytes),
+            );
+        }
+        (input, replies)
+    }
+
+    #[test]
+    fn can_and_sub_end_a_string_nothing_terminated() {
+        for cancel in [b'\x18', b'\x1a'] {
+            // A title that never ended, cancelled, then a status query: the
+            // query must reach the parser at once and not wait for a
+            // terminator that the cancel made unnecessary.
+            let mut stream = b"\x1b]0;abc".to_vec();
+            stream.push(cancel);
+            stream.extend_from_slice(b"\x1b[5n");
+            let (input, replies) = fed(&[&stream]);
+            assert_eq!(input, stream);
+            assert!(replies.is_empty());
+
+            // And a colour query after it is a query again.
+            let mut stream = b"\x1b]0;abc".to_vec();
+            stream.push(cancel);
+            stream.extend_from_slice(b"\x1b]11;?\x07");
+            let (input, replies) = fed(&[&stream[..5], &stream[5..]]);
+            let mut cancelled = b"\x1b]0;abc".to_vec();
+            cancelled.push(cancel);
+            assert_eq!(input, cancelled);
+            assert_eq!(replies, b"\x1b]11;rgb:4444/5555/6666\x07");
+        }
+    }
+
+    #[test]
+    fn an_escape_inside_a_string_starts_a_new_sequence() {
+        // The string ends at the ESC; what follows is a sequence of its own
+        // and is passed on as soon as it is complete.
+        let (input, replies) = fed(&[b"\x1b]0;abc\x1b[5n"]);
+        assert_eq!(input, b"\x1b]0;abc\x1b[5n");
+        assert!(replies.is_empty());
+
+        // Split at every position, the same bytes in the same order.
+        let stream = b"\x1b]0;abc\x1b[5nrest";
+        for cut in 1..stream.len() {
+            let (input, _) = fed(&[&stream[..cut], &stream[cut..]]);
+            assert_eq!(input, stream, "cut at {cut}");
+        }
+
+        // The new sequence may itself be a query, or another ESC.
+        let (input, replies) = fed(&[b"\x1b]0;abc\x1b]10;?\x1b\\"]);
+        assert_eq!(input, b"\x1b]0;abc");
+        assert_eq!(replies, b"\x1b]10;rgb:1111/2222/3333\x1b\\");
+        let (input, _) = fed(&[b"\x1b]0;abc\x1b\x1b[5n"]);
+        assert_eq!(input, b"\x1b]0;abc\x1b\x1b[5n");
+    }
+
+    #[test]
+    fn well_formed_strings_reach_the_parser_as_they_were_sent() {
+        let stream: &[u8] =
+            b"a\x1b]0;title\x07b\x1b]2;other\x1b\\c\x1b[31mred\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\";
+        for cut in 1..stream.len() {
+            let (input, replies) = fed(&[&stream[..cut], &stream[cut..]]);
+            assert_eq!(input, stream, "cut at {cut}");
+            assert!(replies.is_empty());
+        }
     }
 }

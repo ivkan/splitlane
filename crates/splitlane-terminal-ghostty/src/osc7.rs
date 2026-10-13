@@ -46,15 +46,17 @@ impl Osc7Scanner {
                 State::OscEscape => match byte {
                     b'\\' => self.finish(emit),
                     b'\x18' | b'\x1a' => self.reset(),
-                    _ => {
-                        if self.push_payload_byte(b'\x1b') {
-                            if byte == b'\x1b' {
-                                self.state = State::OscEscape;
-                            } else if self.push_payload_byte(byte) {
-                                self.state = State::Osc;
-                            }
-                        }
+                    // An ESC that does not begin ST ended the string
+                    // unfinished, and begins a sequence of its own.
+                    b']' => {
+                        self.payload.clear();
+                        self.state = State::Osc;
                     }
+                    b'\x1b' => {
+                        self.payload.clear();
+                        self.state = State::Escape;
+                    }
+                    _ => self.reset(),
                 },
                 State::Discard => match byte {
                     b'\x07' | b'\x18' | b'\x1a' => self.reset(),
@@ -202,6 +204,20 @@ mod tests {
             ]),
             ["/tmp/path one", "/tmp/path two"]
         );
+    }
+
+    #[test]
+    fn a_string_cut_short_does_not_swallow_the_report_after_it() {
+        // CAN and SUB abandon a string; an ESC that is not ST's ends it.
+        assert_eq!(scan(&[b"\x1b]0;abc\x18\x1b]7;file:///one\x07"]), ["/one"]);
+        assert_eq!(scan(&[b"\x1b]0;abc\x1a\x1b]7;file:///two\x07"]), ["/two"]);
+        assert_eq!(
+            scan(&[b"\x1b]0;abc\x1b[5n\x1b]7;file:///three\x07"]),
+            ["/three"]
+        );
+        assert_eq!(scan(&[b"\x1b]0;abc\x1b]7;file:///four\x1b\\"]), ["/four"]);
+        // A report that was itself cut short reports nothing.
+        assert!(scan(&[b"\x1b]7;file:///half\x1b[5n\x07"]).is_empty());
     }
 
     #[test]
