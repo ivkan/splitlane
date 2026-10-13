@@ -25,9 +25,9 @@
 //! from a range no window hands out. The two kinds of id can then never be
 //! taken for one another, in this window or any later one.
 
-// Only a window whose panes run in the session host writes the table, and
-// so far that is a window on macOS. Everybody reads it.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// Only a window whose panes can run in the session host writes the table.
+// Everybody reads it.
+#![cfg_attr(not(host_panes), allow(dead_code))]
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};

@@ -103,13 +103,81 @@ fn should_start_ghostty(requested: TerminalBackendConfig) -> bool {
     )
 }
 
+#[cfg(any(
+    all(target_os = "linux", feature = "libghostty-linux"),
+    all(
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc",
+        feature = "libghostty-windows"
+    )
+))]
+/// Give a Ghostty pane a PTY the window owns, on the calling thread. A
+/// start that fails before a shell exists falls back to Alacritty with
+/// `pending`; one that fails after it does not, because that would be a
+/// second shell.
+fn start_ghostty_in_window(
+    ghostty: &GhosttySession,
+    runtime_pending: super::ghostty_session::GhosttyRuntimePending,
+    params: super::pty_session::SpawnParams,
+    pending: super::pty_session::PendingTerminalBackend,
+    signal_mask: Option<crate::terminal::pty_session::ForegroundSignalMask>,
+    max_scrollback: usize,
+) -> BackgroundSpawnOutcome {
+    match ghostty.start(runtime_pending, params.clone(), signal_mask, max_scrollback) {
+        Ok(spawned) => BackgroundSpawnOutcome::Ghostty(spawned),
+        Err(GhosttyStartError::Initialization(error)) => {
+            let failure = TerminalBackendFailureDiagnostics::new(
+                TerminalBackendFailurePhase::Initialization,
+                TerminalBackendFailureDiagnostics::GHOSTTY_INITIALIZATION_FAILED,
+                raw_os_error_from_anyhow(&error),
+            );
+            let spawned = TerminalState::open_pty_and_eventloop(params, pending, signal_mask);
+            BackgroundSpawnOutcome::GhosttyFallback { spawned, failure }
+        }
+        Err(GhosttyStartError::OpenPty(error)) => {
+            let failure = TerminalBackendFailureDiagnostics::new(
+                TerminalBackendFailurePhase::OpenPty,
+                TerminalBackendFailureDiagnostics::GHOSTTY_OPEN_PTY_FAILED,
+                raw_os_error_from_anyhow(&error),
+            );
+            let spawned = TerminalState::open_pty_and_eventloop(params, pending, signal_mask);
+            BackgroundSpawnOutcome::GhosttyFallback { spawned, failure }
+        }
+        Err(GhosttyStartError::Spawn(error)) => {
+            let failure = TerminalBackendFailureDiagnostics::new(
+                TerminalBackendFailurePhase::Spawn,
+                TerminalBackendFailureDiagnostics::GHOSTTY_SPAWN_FAILED,
+                raw_os_error_from_anyhow(&error),
+            );
+            let spawned = TerminalState::open_pty_and_eventloop(params, pending, signal_mask);
+            BackgroundSpawnOutcome::GhosttyFallback { spawned, failure }
+        }
+        Err(GhosttyStartError::PostSpawn { child_pid, error }) => {
+            BackgroundSpawnOutcome::GhosttyPostSpawnFailed {
+                child_pid,
+                failure: TerminalBackendFailureDiagnostics::new(
+                    TerminalBackendFailurePhase::PostSpawn,
+                    TerminalBackendFailureDiagnostics::GHOSTTY_POST_SPAWN_FAILED,
+                    raw_os_error_from_anyhow(&error),
+                ),
+            }
+        }
+    }
+}
+
 enum BackgroundSpawnOutcome {
     Alacritty(anyhow::Result<super::pty_session::SpawnedPty>),
     /// The shell was started by the session host. An error here is a shell
     /// the host started and the pane could not be attached to: there is
     /// no falling back from that, only saying so.
     #[cfg(target_os = "macos")]
-    Hosted(anyhow::Result<super::host_session::SpawnedRemote>),
+    Hosted(
+        anyhow::Result<super::host_session::SpawnedRemote<super::pty_session::RemoteSinkChannels>>,
+    ),
+    /// The same for a Ghostty pane.
+    #[cfg(all(host_panes, not(target_os = "macos")))]
+    GhosttyHosted(anyhow::Result<super::host_session::SpawnedRemote<()>>),
     #[cfg(any(
         all(target_os = "linux", feature = "libghostty-linux"),
         all(
@@ -150,7 +218,7 @@ enum BackgroundSpawnOutcome {
 
 /// What the facts a window states to the session host depend on: when one
 /// of these changes, the host is told again.
-#[cfg(target_os = "macos")]
+#[cfg(host_panes)]
 #[derive(Clone, Copy, PartialEq)]
 struct StatedWindowFacts {
     theme_generation: u64,
@@ -446,7 +514,7 @@ pub struct TerminalView {
     pty_size_apart_recorded: bool,
     /// What the session host was last told about this window. `None`
     /// until it was told anything.
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     host_facts_stated: Option<StatedWindowFacts>,
     /// Backend start held until this surface is first shown. `None` once
     /// started - and for a display-only test view, which never starts one -
@@ -586,7 +654,7 @@ impl TerminalView {
                 self.terminal.child_pid, held.0, held.1, sent.cols, sent.rows,
             ));
         }
-        self.terminal.notify_window_size(sent);
+        self.terminal.resend_window_size(sent);
     }
 
     /// Tell the session host what this window would answer a program with,
@@ -596,7 +664,7 @@ impl TerminalView {
     /// A pane whose PTY the window owns looks these up at the moment a
     /// program asks. For a pane in the host the host answers, at once and
     /// without the window, so it has to have been told beforehand.
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     fn state_window_facts(&mut self) {
         if !self.terminal.is_in_host() {
             return;
@@ -615,7 +683,7 @@ impl TerminalView {
         }
         self.host_facts_stated = Some(stated);
         self.terminal
-            .tell_host(crate::terminal::pty_session::window_facts(
+            .tell_host(crate::terminal::pty_session::host_window_facts(
                 &crate::theme::active_theme(),
                 self.cursor_color_override,
                 cell,
@@ -850,26 +918,34 @@ impl TerminalView {
         // Decided here, when the pane is made, and not when its shell is
         // started: a pane restored now and shown an hour later is still the
         // pane it was made as.
+        //
+        // A pane on another terminal than the one the host answers with
+        // stays in the window: the host would tell its program one thing
+        // and the pane would show another.
         #[cfg(target_os = "macos")]
         let in_host = super::host_session::enabled();
-        #[cfg(target_os = "macos")]
+        #[cfg(all(host_panes, not(target_os = "macos")))]
+        let in_host = super::host_session::enabled() && ghostty_spawn.is_some();
+        #[cfg(host_panes)]
         let held_attach = view.held_attach.clone();
+        #[cfg(host_panes)]
+        let laid_out = view.terminal_window_size.clone();
 
         view.deferred_backend_start = Some(Box::new(move |cx: &mut Context<Self>| {
             // The id the shell is told is its pane's. In a window whose
             // panes run in the session host that is not the pane's own;
             // `surface_alias` says why.
-            #[cfg(target_os = "macos")]
+            #[cfg(host_panes)]
             let told_surface_id = if in_host {
                 crate::surface_alias::tell(surface_id)
             } else {
                 surface_id
             };
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(host_panes))]
             let told_surface_id = surface_id;
             // Read and not taken: until the outcome is known, this is
             // still the session a save must record for the surface.
-            #[cfg(target_os = "macos")]
+            #[cfg(host_panes)]
             let held_session = held_attach
                 .borrow()
                 .as_ref()
@@ -881,18 +957,29 @@ impl TerminalView {
             let signal_mask = crate::terminal::pty_session::capture_foreground_signal_mask();
             let executor = cx.background_executor().clone();
             // What the host has to know to answer the shell's first
-            // questions, which come before the first frame can say it. The
-            // size of a cell is not known before that frame either.
-            #[cfg(target_os = "macos")]
+            // questions, which come before the first frame can say it:
+            // the colours, and the size of a cell if a frame has laid one
+            // out already, which for a pane started by being shown it has
+            // not.
+            #[cfg(host_panes)]
             let hosted = in_host.then(|| {
                 let cursor = cursor_color_override_from_config(
                     &splitlane_config::loader::load_config()
                         .terminal
                         .unwrap_or_default(),
                 );
+                let cell = laid_out
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .map(|size| (size.cell_width, size.cell_height))
+                    .filter(|(width, height)| *width > 0 && *height > 0);
                 (
                     super::host_session::process_endpoint(),
-                    super::pty_session::window_facts(&crate::theme::active_theme(), cursor, None),
+                    super::pty_session::host_window_facts(
+                        &crate::theme::active_theme(),
+                        cursor,
+                        cell,
+                    ),
                 )
             });
             cx.spawn(
@@ -920,86 +1007,98 @@ impl TerminalView {
                                     feature = "libghostty-windows"
                                 )
                             ))]
-                            let outcome = if let Some((ghostty, runtime_pending)) = ghostty_spawn {
-                                let max_scrollback = splitlane_config::loader::load_config()
-                                    .terminal
-                                    .unwrap_or_default()
-                                    .resolved_scrollback_lines_for_profile(params.profile);
-                                match ghostty.start(
-                                    runtime_pending,
-                                    params.clone(),
-                                    signal_mask,
-                                    max_scrollback,
-                                ) {
-                                    Ok(spawned) => BackgroundSpawnOutcome::Ghostty(spawned),
-                                    Err(GhosttyStartError::Initialization(error)) => {
-                                        let failure = TerminalBackendFailureDiagnostics::new(
-                                            TerminalBackendFailurePhase::Initialization,
-                                            TerminalBackendFailureDiagnostics::GHOSTTY_INITIALIZATION_FAILED,
-                                            raw_os_error_from_anyhow(&error),
-                                        );
-                                        let spawned = TerminalState::open_pty_and_eventloop(
-                                            params,
-                                            pending,
-                                            signal_mask,
-                                        );
-                                        BackgroundSpawnOutcome::GhosttyFallback {
-                                            spawned,
-                                            failure,
+                            let (outcome, attached_to_held, held_unanswered) =
+                                if let Some((ghostty, runtime_pending)) = ghostty_spawn {
+                                    let max_scrollback = splitlane_config::loader::load_config()
+                                        .terminal
+                                        .unwrap_or_default()
+                                        .resolved_scrollback_lines_for_profile(params.profile);
+                                    #[cfg(host_panes)]
+                                    let settled = match hosted {
+                                        Some((endpoint, facts)) => {
+                                            use super::host_session::Opened;
+                                            let target = super::ghostty_session::GhosttyAttach {
+                                                session: ghostty,
+                                                pending: runtime_pending,
+                                                max_scrollback,
+                                            };
+                                            let settled = super::host_session::attach_or_open(
+                                                endpoint.as_ref(),
+                                                held_session,
+                                                facts,
+                                                params,
+                                                target,
+                                                surface_id,
+                                                |params, target| {
+                                                    start_ghostty_in_window(
+                                                        &target.session,
+                                                        target.pending,
+                                                        params,
+                                                        pending,
+                                                        signal_mask,
+                                                        target.max_scrollback,
+                                                    )
+                                                },
+                                            );
+                                            let outcome = match settled.opened {
+                                                Opened::InHost(spawned) => {
+                                                    BackgroundSpawnOutcome::GhosttyHosted(Ok(
+                                                        spawned,
+                                                    ))
+                                                }
+                                                Opened::InWindow(outcome) => outcome,
+                                                Opened::Lost(error) => {
+                                                    BackgroundSpawnOutcome::GhosttyHosted(Err(
+                                                        error,
+                                                    ))
+                                                }
+                                            };
+                                            (
+                                                outcome,
+                                                settled.attached_to_held,
+                                                settled.held_unanswered,
+                                            )
                                         }
-                                    }
-                                    Err(GhosttyStartError::OpenPty(error)) => {
-                                        let failure = TerminalBackendFailureDiagnostics::new(
-                                            TerminalBackendFailurePhase::OpenPty,
-                                            TerminalBackendFailureDiagnostics::GHOSTTY_OPEN_PTY_FAILED,
-                                            raw_os_error_from_anyhow(&error),
-                                        );
-                                        let spawned = TerminalState::open_pty_and_eventloop(
-                                            params,
-                                            pending,
-                                            signal_mask,
-                                        );
-                                        BackgroundSpawnOutcome::GhosttyFallback {
-                                            spawned,
-                                            failure,
-                                        }
-                                    }
-                                    Err(GhosttyStartError::Spawn(error)) => {
-                                        let failure = TerminalBackendFailureDiagnostics::new(
-                                            TerminalBackendFailurePhase::Spawn,
-                                            TerminalBackendFailureDiagnostics::GHOSTTY_SPAWN_FAILED,
-                                            raw_os_error_from_anyhow(&error),
-                                        );
-                                        let spawned = TerminalState::open_pty_and_eventloop(
-                                            params,
-                                            pending,
-                                            signal_mask,
-                                        );
-                                        BackgroundSpawnOutcome::GhosttyFallback {
-                                            spawned,
-                                            failure,
-                                        }
-                                    }
-                                    Err(GhosttyStartError::PostSpawn { child_pid, error }) => {
-                                        BackgroundSpawnOutcome::GhosttyPostSpawnFailed {
-                                            child_pid,
-                                            failure: TerminalBackendFailureDiagnostics::new(
-                                                TerminalBackendFailurePhase::PostSpawn,
-                                                TerminalBackendFailureDiagnostics::GHOSTTY_POST_SPAWN_FAILED,
-                                                raw_os_error_from_anyhow(&error),
+                                        None => (
+                                            start_ghostty_in_window(
+                                                &ghostty,
+                                                runtime_pending,
+                                                params,
+                                                pending,
+                                                signal_mask,
+                                                max_scrollback,
                                             ),
-                                        }
-                                    }
-                                }
-                            } else {
-                                BackgroundSpawnOutcome::Alacritty(
-                                    TerminalState::open_pty_and_eventloop(
-                                        params,
-                                        pending,
-                                        signal_mask,
-                                    ),
-                                )
-                            };
+                                            false,
+                                            false,
+                                        ),
+                                    };
+                                    #[cfg(not(host_panes))]
+                                    let settled = (
+                                        start_ghostty_in_window(
+                                            &ghostty,
+                                            runtime_pending,
+                                            params,
+                                            pending,
+                                            signal_mask,
+                                            max_scrollback,
+                                        ),
+                                        false,
+                                        false,
+                                    );
+                                    settled
+                                } else {
+                                    (
+                                        BackgroundSpawnOutcome::Alacritty(
+                                            TerminalState::open_pty_and_eventloop(
+                                                params,
+                                                pending,
+                                                signal_mask,
+                                            ),
+                                        ),
+                                        false,
+                                        false,
+                                    )
+                                };
                             #[cfg(not(any(
                                 target_os = "macos",
                                 all(target_os = "linux", feature = "libghostty-linux"),
@@ -1010,87 +1109,52 @@ impl TerminalView {
                                     feature = "libghostty-windows"
                                 )
                             )))]
-                            let outcome = BackgroundSpawnOutcome::Alacritty(
-                                TerminalState::open_pty_and_eventloop(params, pending, signal_mask),
+                            let (outcome, attached_to_held, held_unanswered) = (
+                                BackgroundSpawnOutcome::Alacritty(
+                                    TerminalState::open_pty_and_eventloop(
+                                        params,
+                                        pending,
+                                        signal_mask,
+                                    ),
+                                ),
+                                false,
+                                false,
                             );
-                            #[cfg(not(target_os = "macos"))]
-                            let (attached_to_held, held_unanswered) = (false, false);
                             #[cfg(target_os = "macos")]
-                            let mut held_unanswered = false;
-                            #[cfg(target_os = "macos")]
-                            let (outcome, attached_to_held) = match hosted {
+                            let (outcome, attached_to_held, held_unanswered) = match hosted {
                                 Some((endpoint, facts)) => {
-                                    use super::host_session::{Opened, ReattachError};
-                                    // A surface saved with a session that
-                                    // is still running is attached to it. A
-                                    // session that is gone leaves the
-                                    // surface to be opened as a new one.
-                                    let attached = held_session.zip(endpoint.as_ref()).and_then(
-                                        |(session, endpoint)| {
-                                            match super::host_session::reattach(
-                                                endpoint,
-                                                session,
-                                                &pending,
-                                                facts.clone(),
-                                                surface_id,
-                                            ) {
-                                                Ok(spawned) => {
-                                                    log::info!(
-                                                        target: "splitlane::terminal::host",
-                                                        "session {session}: pane attached to it again, pid {}",
-                                                        spawned.child_pid
-                                                    );
-                                                    Some(Ok(spawned))
-                                                }
-                                                Err(ReattachError::Gone(error)) => {
-                                                    log::info!(
-                                                        target: "splitlane::terminal::host",
-                                                        "session {session} is not there to attach to, opening a new shell: {error:#}"
-                                                    );
-                                                    None
-                                                }
-                                                Err(ReattachError::Failed(error)) => {
-                                                    Some(Err(error))
-                                                }
-                                                // Not known to be gone, so
-                                                // not replaced: the pane
-                                                // says so and starts
-                                                // nothing.
-                                                Err(ReattachError::Unanswered(error)) => {
-                                                    held_unanswered = true;
-                                                    Some(Err(error.context(
-                                                        "this pane's session may still be running in the session host, so it was not started again; restart Splitlane to attach to it",
-                                                    )))
-                                                }
-                                            }
-                                        },
-                                    );
-                                    match attached {
-                                        Some(attached) => {
-                                            (BackgroundSpawnOutcome::Hosted(attached), true)
-                                        }
-                                        None => {
-                                            let outcome = match super::host_session::open(
-                                                endpoint.as_ref(),
-                                                facts,
+                                    use super::host_session::Opened;
+                                    let settled = super::host_session::attach_or_open(
+                                        endpoint.as_ref(),
+                                        held_session,
+                                        facts,
+                                        params,
+                                        pending,
+                                        surface_id,
+                                        |params, pending| {
+                                            TerminalState::open_pty_and_eventloop(
                                                 params,
                                                 pending,
                                                 signal_mask,
-                                                surface_id,
-                                            ) {
-                                                Opened::InHost(spawned) => {
-                                                    BackgroundSpawnOutcome::Hosted(Ok(spawned))
-                                                }
-                                                Opened::InWindow(spawned) => {
-                                                    BackgroundSpawnOutcome::Alacritty(spawned)
-                                                }
-                                                Opened::Lost(error) => {
-                                                    BackgroundSpawnOutcome::Hosted(Err(error))
-                                                }
-                                            };
-                                            (outcome, false)
+                                            )
+                                        },
+                                    );
+                                    let outcome = match settled.opened {
+                                        Opened::InHost(spawned) => {
+                                            BackgroundSpawnOutcome::Hosted(Ok(spawned))
                                         }
-                                    }
+                                        Opened::InWindow(spawned) => {
+                                            BackgroundSpawnOutcome::Alacritty(spawned)
+                                        }
+                                        Opened::Lost(error) => {
+                                            BackgroundSpawnOutcome::Hosted(Err(error))
+                                        }
+                                    };
+                                    (
+                                        outcome,
+                                        settled.attached_to_held,
+                                        settled.held_unanswered,
+                                    )
                                 }
                                 None => (
                                     BackgroundSpawnOutcome::Alacritty(
@@ -1100,6 +1164,7 @@ impl TerminalView {
                                             signal_mask,
                                         ),
                                     ),
+                                    false,
                                     false,
                                 ),
                             };
@@ -1167,6 +1232,29 @@ impl TerminalView {
                                 );
                                 view.needs_initial_clear
                                     .store(false, std::sync::atomic::Ordering::Relaxed);
+                                view.terminal
+                                    .write_output(spawn_error_message(&error).as_bytes());
+                            }
+                            #[cfg(all(host_panes, not(target_os = "macos")))]
+                            BackgroundSpawnOutcome::GhosttyHosted(Ok(spawned)) => {
+                                view.terminal.promote_remote_ghostty(spawned);
+                                cx.emit(TerminalEvent::HostSessionChanged);
+                                if let Some(size) = view.recorded_window_size() {
+                                    view.terminal.notify_window_size(size);
+                                }
+                            }
+                            #[cfg(all(host_panes, not(target_os = "macos")))]
+                            BackgroundSpawnOutcome::GhosttyHosted(Err(error)) => {
+                                log::error!(
+                                    target: "splitlane::terminal::host",
+                                    "a pane could not follow its session in the session host: {error:#}"
+                                );
+                                view.needs_initial_clear
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                // The message is written into the terminal
+                                // every pane has; the Ghostty one, which
+                                // has nothing to show, makes way for it.
+                                view.terminal.give_up_ghostty();
                                 view.terminal
                                     .write_output(spawn_error_message(&error).as_bytes());
                             }
@@ -1637,7 +1725,7 @@ impl TerminalView {
             pty_size_checked_at: None,
             pty_size_apart_from: None,
             pty_size_apart_recorded: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(host_panes)]
             host_facts_stated: None,
             deferred_backend_start: None,
             held_attach: Default::default(),
@@ -2058,10 +2146,10 @@ pub enum TerminalEvent {
     /// what the next window finds the session by, so it is written now and
     /// not whenever something else next changes.
     #[cfg_attr(
-        not(target_os = "macos"),
+        not(host_panes),
         allow(
             dead_code,
-            reason = "panes run in the session host on macOS only so far"
+            reason = "only a build whose panes can run in the session host emits it"
         )
     )]
     HostSessionChanged,
@@ -2503,7 +2591,7 @@ impl Render for TerminalView {
         self.cell_width = frame_metrics.dimensions.cell_width;
         self.line_height = frame_metrics.dimensions.line_height;
         self.reconcile_pty_size();
-        #[cfg(target_os = "macos")]
+        #[cfg(host_panes)]
         self.state_window_facts();
 
         #[cfg(debug_assertions)]

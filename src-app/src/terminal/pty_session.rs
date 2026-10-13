@@ -29,7 +29,7 @@ use alacritty_terminal::vte::ansi::Rgb as AlacRgb;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use super::element::color::palette_color_at;
-#[cfg(target_os = "macos")]
+#[cfg(host_panes)]
 use super::host_session::{RemoteHandle, RemoteMsg, RemoteSender, SpawnedRemote};
 #[cfg(target_os = "macos")]
 use super::listener::RemoteGate;
@@ -1171,6 +1171,26 @@ pub(crate) fn window_facts(
     }
 }
 
+/// [`window_facts`] for the terminal this build's panes in the host use.
+/// A Ghostty pane answers with the theme's cursor colour whatever the
+/// user's own is, and so the host is told that one.
+#[cfg(host_panes)]
+pub(crate) fn host_window_facts(
+    theme: &crate::theme::TerminalTheme,
+    cursor_color_override: Option<gpui::Hsla>,
+    cell: Option<(u16, u16)>,
+) -> splitlane_host::Facts {
+    #[cfg(target_os = "macos")]
+    {
+        window_facts(theme, cursor_color_override, cell)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cursor_color_override;
+        super::ghostty_session::window_facts(theme, cell)
+    }
+}
+
 /// Convert GPUI Hsla to alacritty Rgb for color query responses.
 pub(super) fn hsla_to_alac_rgb(hsla: gpui::Hsla) -> AlacRgb {
     let rgba = gpui::Rgba::from(hsla);
@@ -1797,8 +1817,13 @@ pub struct TerminalState {
     pending_input: std::sync::Mutex<VecDeque<PendingTerminalInput>>,
     /// The session in the host this terminal is a pane of, when its PTY is
     /// there and not here.
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     remote: Option<RemoteHandle>,
+    /// This terminal's queue to its session in the host, where the
+    /// terminal is a Ghostty one: its runtime sends input and sizes over
+    /// it, and what the window states about itself is sent from here.
+    #[cfg(all(host_panes, not(target_os = "macos")))]
+    ghostty_host: Option<RemoteSender>,
 }
 
 /// Cap on input buffered during the pre-promotion window. Generous for a
@@ -2426,7 +2451,7 @@ impl RemoteSink {
         replay.abandon(&mut |action| terminal.apply(action));
         terminal.parser.advance(
             &mut *terminal.term.lock(),
-            b"\r\n\x1b[0;2mThe connection to the session host was lost.\x1b[0m\r\n",
+            super::host_session::CONNECTION_LOST_NOTICE,
         );
         terminal.term.lock().exit();
         terminal.listener.send_event(AlacEvent::Wakeup);
@@ -2459,6 +2484,10 @@ impl super::host_session::AttachTarget for PendingTerminalBackend {
 
     fn sink(&self, mode: AttachMode, start: StreamStart) -> (RemoteSink, RemoteSinkChannels) {
         RemoteSink::new(self, mode, start)
+    }
+
+    fn shell_start(params: &SpawnParams) -> anyhow::Result<super::host_session::ShellStart> {
+        super::host_session::alacritty_shell_start(params)
     }
 }
 
@@ -2733,7 +2762,7 @@ impl TerminalState {
     /// replay left on the screen are taken note of here and not announced -
     /// they were announced when they were printed, to whoever was looking
     /// then. Without this the first live byte would report them as new.
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     fn replay_finished(&mut self) {
         let _ = self.scan_output();
         self.last_activity_burst = Some(std::time::Instant::now());
@@ -2895,6 +2924,17 @@ impl TerminalState {
             ghostty.shutdown();
         }
         self.backend_failure = Some(failure);
+    }
+
+    /// Stop showing this terminal through Ghostty, with no failure of the
+    /// backend to record: a pane that could not follow its session in the
+    /// host has an error to show, and shows it in the terminal every pane
+    /// has.
+    #[cfg(all(host_panes, not(target_os = "macos")))]
+    pub(super) fn give_up_ghostty(&mut self) {
+        if let Some(ghostty) = self.ghostty.take() {
+            ghostty.shutdown();
+        }
     }
 
     pub(super) fn set_backend_request(&mut self, requested: TerminalBackendConfig) {
@@ -3347,7 +3387,7 @@ impl TerminalState {
     /// through the sink the pane's reader thread feeds, and this opens the
     /// write side and lets `Drop` end the session.
     #[cfg(target_os = "macos")]
-    pub(super) fn promote_remote(&mut self, spawned: SpawnedRemote) {
+    pub(super) fn promote_remote(&mut self, spawned: SpawnedRemote<RemoteSinkChannels>) {
         self.notifier = PtyNotifier(PtySender::remote(spawned.sender));
         self.cwd_rx = Some(spawned.channels.cwd_rx);
         self.marks_rx = Some(spawned.channels.marks_rx);
@@ -3371,8 +3411,48 @@ impl TerminalState {
         }
     }
 
+    /// Promote a pending Ghostty terminal to a pane of a session in the
+    /// host. The counterpart of [`promote_ghostty`](Self::promote_ghostty):
+    /// the runtime is running already and reads the session's stream, and
+    /// this gives it the queue to the host and lets `Drop` end the session.
+    ///
+    /// No watcher is started for the child. It is the host's, the host has
+    /// one, and the session is meant to outlive this window.
+    #[cfg(all(host_panes, not(target_os = "macos")))]
+    pub(super) fn promote_remote_ghostty(&mut self, spawned: SpawnedRemote<()>) {
+        let Some(ghostty) = self.ghostty.as_ref() else {
+            // Nothing to show the session in. Letting go of the handle
+            // ends what was started.
+            return;
+        };
+        // Before the terminal counts as promoted: the input waiting for
+        // that is queued behind the sender it is to be sent with.
+        let SpawnedRemote {
+            sender,
+            child_pid,
+            cwd,
+            channels: (),
+            handle,
+        } = spawned;
+        ghostty.attach_host(sender.clone());
+        ghostty.promote();
+        // The host's child, a process of this machine like any other: the
+        // port scan, the foreground-process scan and the working-directory
+        // poll all go by pid and need nothing else.
+        self.child_pid = child_pid;
+        if self.current_cwd.is_none() {
+            self.current_cwd = Some(cwd.to_string_lossy().into_owned());
+        }
+        self.ghostty_host = Some(sender);
+        self.remote = Some(handle);
+        self.set_osc52_mode(Osc52Mode::CopyOnly);
+        self.cursor_blinking = true;
+        self.dirty = true;
+        self.flush_ghostty_pending_input();
+    }
+
     /// Whether this terminal's PTY is in the session host.
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     pub(crate) fn is_in_host(&self) -> bool {
         self.remote.is_some()
     }
@@ -3381,13 +3461,13 @@ impl TerminalState {
     /// written into a saved layout. `None` for a terminal that owns its
     /// PTY, on every platform.
     pub(crate) fn host_session_id(&self) -> Option<String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(host_panes)]
         {
             self.remote
                 .as_ref()
                 .map(|remote| remote.session().to_string())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(host_panes))]
         {
             None
         }
@@ -3397,11 +3477,33 @@ impl TerminalState {
     /// terminal for. The host answers the program; it can only answer with
     /// what it was told. Nothing happens for a terminal that is not in the
     /// host.
-    #[cfg(target_os = "macos")]
+    #[cfg(host_panes)]
     pub(crate) fn tell_host(&self, facts: splitlane_host::Facts) {
-        if let TerminalType::Remote(sender) = &self.notifier.0.0 {
+        #[cfg(target_os = "macos")]
+        let sender = match &self.notifier.0.0 {
+            TerminalType::Remote(sender) => Some(sender),
+            _ => None,
+        };
+        #[cfg(not(target_os = "macos"))]
+        let sender = self.ghostty_host.as_ref();
+        if let Some(sender) = sender {
             sender.send(RemoteMsg::Facts(Box::new(facts)));
         }
+    }
+
+    /// Send the window's size again because the PTY does not hold it. For
+    /// a PTY the window owns that is sending it; a Ghostty pane in the
+    /// host has sent it and would not send the same size twice, so its
+    /// runtime is told to.
+    pub(crate) fn resend_window_size(&self, size: TerminalWindowSize) {
+        #[cfg(all(host_panes, not(target_os = "macos")))]
+        if self.remote.is_some()
+            && let Some(ghostty) = &self.ghostty
+        {
+            ghostty.resend_host_size();
+            return;
+        }
+        self.notify_window_size(size);
     }
 
     fn drain_pending_legacy_input(&self) -> Vec<Cow<'static, [u8]>> {
@@ -3570,8 +3672,10 @@ impl TerminalState {
             last_keystroke_at: None,
             background_executor: None,
             pending_input: std::sync::Mutex::new(VecDeque::new()),
-            #[cfg(target_os = "macos")]
+            #[cfg(host_panes)]
             remote: None,
+            #[cfg(all(host_panes, not(target_os = "macos")))]
+            ghostty_host: None,
         };
         (state, pending)
     }
@@ -3903,6 +4007,8 @@ impl TerminalState {
                     self.pty_guard = None;
                 }
             }
+            #[cfg(host_panes)]
+            GhosttyUiEvent::ReplayFinished => self.replay_finished(),
             GhosttyUiEvent::InputRejected(error) => {
                 log::warn!(target: "splitlane::terminal::ghostty", "{error}");
             }
@@ -4163,6 +4269,15 @@ impl TerminalState {
             total.saturating_add(item.queued_bytes())
         });
         let total = pending_bytes.saturating_add(ghostty.queued_input_bytes());
+        // For a pane in the host, what waits for the host to take it
+        // counts too. Input is refused here, where the caller is told,
+        // before the runtime would have to drop it unseen.
+        #[cfg(all(host_panes, not(target_os = "macos")))]
+        let total = total.saturating_add(
+            self.ghostty_host
+                .as_ref()
+                .map_or(0, RemoteSender::queued_input_bytes),
+        );
         let queue_limit = input.queue_limit();
         if !input.fits_after(total) {
             log::warn!(
@@ -4328,8 +4443,18 @@ impl TerminalState {
     }
 
     pub fn refused_input_count(&self) -> u64 {
-        self.refused_input
-            .load(std::sync::atomic::Ordering::Relaxed)
+        let refused = self
+            .refused_input
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // What a Ghostty pane's runtime dropped after this state had
+        // handed it over, because the queue to the host was full.
+        #[cfg(all(host_panes, not(target_os = "macos")))]
+        let refused = refused.saturating_add(
+            self.ghostty
+                .as_ref()
+                .map_or(0, GhosttySession::refused_input),
+        );
+        refused
     }
 
     /// Write to the PTY WITHOUT marking the session user-initiated.
@@ -4467,12 +4592,12 @@ impl TerminalState {
     }
 
     /// The columns and rows the kernel holds for this PTY, which is what the
-    /// program in it is told. `None` where the master is not kept to ask:
-    /// only macOS keeps it.
+    /// program in it is told. `None` where there is nobody to ask: for a
+    /// PTY the window owns only macOS keeps the master.
     pub(crate) fn kernel_window_size(&self) -> Option<(usize, usize)> {
         // A PTY in the session host cannot be asked from here. What the
         // host last confirmed is what it gave the PTY.
-        #[cfg(target_os = "macos")]
+        #[cfg(host_panes)]
         if let Some(remote) = &self.remote {
             return remote.acked_size();
         }
@@ -5134,7 +5259,7 @@ fn terminate_process_group(pid: i32) -> bool {
 /// 100ms, then make it. Waits for that long, so it is for a thread that
 /// may. For a session of the host that the host can no longer be asked to
 /// end.
-#[cfg(target_os = "macos")]
+#[cfg(host_panes)]
 pub(super) fn end_process_group(pid: u32) {
     let Ok(pid) = i32::try_from(pid) else {
         return;
@@ -5191,12 +5316,17 @@ impl Drop for TerminalState {
             self.child_pid = 0;
         }
         self.notifier.0.shutdown();
+        // Nothing queued for the host behind this is sent.
+        #[cfg(all(host_panes, not(target_os = "macos")))]
+        if let Some(sender) = self.ghostty_host.take() {
+            sender.send(RemoteMsg::Shutdown);
+        }
 
         // A session in the host is ended by the host. The pane's reader
         // thread asks for that when it sees the flag, waits for the child
         // and has the host forget the session; nothing here may wait. The
         // signals below are for a child of this process.
-        #[cfg(target_os = "macos")]
+        #[cfg(host_panes)]
         if let Some(remote) = self.remote.take() {
             remote.close();
             return;

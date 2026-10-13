@@ -31,10 +31,10 @@ mod ghostty_session;
     )
 ))]
 mod ghostty_stress;
-// A pane can run in the session host on macOS only so far: it is the one
-// platform where the host has the emulator the window uses.
 pub(crate) mod held_sessions;
-#[cfg(target_os = "macos")]
+// A pane can run in the session host where the host has the emulator the
+// window draws with: `host_panes`, which the build script sets.
+#[cfg(host_panes)]
 mod host_session;
 mod input;
 mod listener;
@@ -46,10 +46,10 @@ mod pty_session;
 mod resize_journal;
 mod search;
 mod service_detector;
+pub mod shell;
 // Plain bookkeeping, built and tested everywhere. Outside its tests it is
 // used only where a pane can run in the session host.
-pub mod shell;
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(host_panes), allow(dead_code))]
 mod stream_replay;
 pub mod types;
 pub mod view;

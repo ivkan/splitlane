@@ -87,6 +87,18 @@ fn main() {
     // silently keep the old value.
     println!("cargo:rerun-if-env-changed=SPLITLANE_EXPECTED_SIGNER_ORG");
 
+    // Where a window can open its panes in the session host: wherever the
+    // host answers a program with the emulator the window draws with. That
+    // is macOS, and Linux built with libghostty. One name for the pair, so
+    // that the code says what it depends on and not which platforms those
+    // happen to be.
+    println!("cargo:rustc-check-cfg=cfg(host_panes)");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let ghostty_on_linux = std::env::var_os("CARGO_FEATURE_LIBGHOSTTY_LINUX").is_some();
+    if target_os == "macos" || (target_os == "linux" && ghostty_on_linux) {
+        println!("cargo:rustc-cfg=host_panes");
+    }
+
     // 2. Stage the AI-hook binaries into a dir that
     //    `assets::Bins` (rust-embed) will ingest.
     let target = std::env::var("TARGET").expect("cargo always sets TARGET for build scripts");
