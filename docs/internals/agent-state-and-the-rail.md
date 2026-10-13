@@ -401,6 +401,77 @@ Three things are easy to get backwards:
   agent's own binary name, so there is no `splitlane-shim` process and the name
   separates nothing.
 
+**A program's own status report is read and written into the trace, and
+decides nothing.** The program status protocol, OSC 7501, lets a program print
+what it is doing as an escape sequence: `idle`, `working`, `done`, `blocked`
+with a reason, `error`. Claude Code speaks it from 2.1.295. It looks like the
+source that makes the other two unnecessary, and it is not one yet, for four
+reasons, each measured on Claude Code 2.1.296 on 12 October by recording the
+bytes of live sessions:
+
+- **It says nothing to a terminal that does not answer.** The program first
+  asks whether anybody reads its reports (`OSC 7501 ; ?`). Left unanswered it
+  asked once more and then reported nothing for a whole turn. So the pane has
+  to answer before there is anything to read, and it does: the session host for
+  a PTY it holds, the window for one it holds itself.
+- **The answer has to be the first thing the program reads.** Right after its
+  question the program asks what the terminal is, which every terminal answers,
+  and takes whichever reply arrives first. An answer sent round through the
+  emulator's event queue would come second. It is written on the thread that
+  reads the PTY, before the emulator is shown the chunk; in the host it goes
+  into the reply buffer ahead of the emulator's own.
+- **The short answer is the question.** The protocol allows a bare `?` as the
+  reply, which is byte for byte what the program sent. A program that asks and
+  exits leaves the reply to whatever reads the terminal next, and a line
+  discipline that echoes it raw would hand the pane its own answer as a new
+  question, without end. The pane answers with the long form, which lists the
+  states and kinds; an echo of that is not a question. Claude Code accepts it.
+- **It does not see the question the rail most needs.** A `Bash` permission
+  prompt arrives as `blocked` with `kind=permission`, 0.01 s after the
+  `PreToolUse` hook and before the status file is read as `waiting`. A question
+  the agent asks in plain text at the end of its turn arrives as `done`. Over
+  five recorded sessions the report and the status file never disagreed about
+  what the session was doing, which also means the report added no wait the
+  file had missed.
+
+What it does add is a turn that was cancelled: Esc during an answer, a refused
+permission prompt and a rejected plan all report `idle` with no `done` before
+it, and neither other source tells a cancelled turn from a finished one.
+
+So the report is kept beside the pane (`terminal/program_status.rs`) and the
+pass writes it into the trace next to its own conclusion: one line for every
+change since the last pass, then one that says `same` or `differs` and how long
+the report has stood. A report younger than a pass that differs is two sources
+read at different moments. One that has stood longer is the finding. Nothing
+that decides a state is given the report, and the pass takes it out of its
+targets before the sources are asked, so that stays true by construction and
+not by care.
+
+**Before a report moves the rail it has to pass the guard the other sources
+pass.** Anything that can print to the pane can print a report: a script, a
+file shown with `cat`, the far side of an ssh session. The status file is
+believed because it names the session of the process found under the pane, and
+a report names nothing but an `app` it chose itself. A `blocked` taken at its
+word would let any output claim a person is being kept waiting.
+
+Three things about the record are the protocol's and are kept:
+
+- **A report replaces its record whole.** A key missing from the newest report
+  is missing from the record, so `kind` and `msg` never outlive the state they
+  came with.
+- **A new shell prompt ends `working` and `blocked`, and leaves `done`, `error`
+  and `idle`.** A program killed mid-turn says nothing on its way out; the
+  prompt that follows is what says it is gone.
+- **Only the root record is kept.** A report addressed to a child record is
+  written into the trace and dropped, and a child's `clear` clears nothing.
+  What an agent reports for its subagents has not been recorded yet, and a
+  child that is blocked while its parent works is exactly the case that needs
+  a decision before it needs code.
+
+Codex has the protocol in its source and in no release as of 0.162.1, which
+printed no report over three turns. Its change reports `idle`, `working` and
+`blocked` without a reason and never `done`, and does not ask first.
+
 **Who owns `Thread::status`: the detector, with the hook as an accelerator.** A
 hook frame for a surface the detector reads does not write the status. It asks
 for an immediate re-read instead (`accelerate_agent_state`, one in flight per

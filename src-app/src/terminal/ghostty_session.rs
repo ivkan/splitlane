@@ -27,9 +27,10 @@ use splitlane_terminal_ghostty as ghostty;
 
 use super::listener::ClipboardGate;
 use super::marks::{
-    CommandMark, Osc133Scanner, RawMark, ScanEvent, SharedLastCommand, SharedMarkRing,
+    CommandMark, MarkKind, Osc133Scanner, RawMark, ScanEvent, SharedLastCommand, SharedMarkRing,
     sanitize_command_line,
 };
+use super::program_status::{SharedProgramStatus, StatusTap};
 use super::pty_session::{ForegroundSignalMask, SpawnParams};
 use super::service_detector::ServiceOutputTail;
 use super::types::{
@@ -236,6 +237,8 @@ struct SessionInner {
     /// The newest command line the shell reported through `133;E`, for the
     /// slot header's "↻ rerun".
     last_command: SharedLastCommand,
+    /// What the pane's program reports about itself through OSC 7501.
+    program_status: SharedProgramStatus,
 }
 
 #[derive(Clone)]
@@ -1008,6 +1011,7 @@ impl GhosttySession {
                 selection_update: Mutex::new(SelectionUpdateState::default()),
                 marks: Arc::new(Mutex::new(Default::default())),
                 last_command: Arc::new(Mutex::new(None)),
+                program_status: super::program_status::shared(),
             }),
         };
         (session, GhosttyRuntimePending { mailbox }, events_rx)
@@ -1095,6 +1099,10 @@ impl GhosttySession {
 
     pub(super) fn last_command(&self) -> SharedLastCommand {
         self.inner.last_command.clone()
+    }
+
+    pub(super) fn program_status(&self) -> SharedProgramStatus {
+        self.inner.program_status.clone()
     }
 
     pub(super) fn write(&self, bytes: Vec<u8>) -> GhosttyInputSendResult {
@@ -1861,6 +1869,7 @@ fn run_runtime(
     let mut writer = Some(writer);
 
     let mut marks_scanner = Osc133Scanner::default();
+    let mut status = StatusTap::new(inner.program_status.clone());
     let mut service_output_tail = ServiceOutputTail::default();
     let mut last_recent_output_refresh = None;
     let mut recent_output_pending = false;
@@ -1917,6 +1926,7 @@ fn run_runtime(
                     &mut terminal,
                     &mut writer,
                     &mut marks_scanner,
+                    &mut status,
                     &mut service_output_tail,
                     &mut last_recent_output_refresh,
                     &mut recent_output_pending,
@@ -2505,6 +2515,7 @@ fn process_output_batch(
     terminal: &mut ghostty::DisplayTerminal,
     writer: &mut Option<Box<dyn Write + Send>>,
     marks_scanner: &mut Osc133Scanner,
+    status: &mut StatusTap,
     service_output_tail: &mut ServiceOutputTail,
     last_recent_output_refresh: &mut Option<Instant>,
     recent_output_pending: &mut bool,
@@ -2523,12 +2534,30 @@ fn process_output_batch(
             let Some(bytes) = chunks.last() else {
                 return Err("Ghostty output batch lost its current chunk".into());
             };
+            // Before the emulator reads the chunk, so that this answer is
+            // written ahead of any of its own; see `StatusTap::advance`.
+            let mut status_reply = Ok(());
+            status.advance(bytes, &mut |answer| {
+                if let Some(active_writer) = writer.as_mut() {
+                    status_reply = active_writer
+                        .write_all(answer)
+                        .and_then(|()| active_writer.flush());
+                }
+            });
+            status_reply.map_err(|error| format!("Ghostty protocol reply failed: {error}"))?;
             terminal
                 .feed(bytes)
                 .map_err(|error| format!("Ghostty VT feed failed: {error}"))?;
             service_output_tail.advance(bytes);
+            let marks_before = raw_marks.len();
             let emitted_mark =
                 scan_chunk_for_marks(marks_scanner, bytes, &mut raw_marks, &inner.last_command);
+            if raw_marks[marks_before..]
+                .iter()
+                .any(|mark| mark.kind == MarkKind::PromptStart)
+            {
+                status.prompt_started();
+            }
             handle_engine_events(inner, terminal, writer)?;
             #[cfg(test)]
             inner

@@ -35,9 +35,10 @@ use super::host_session::{RemoteHandle, RemoteMsg, RemoteSender, SpawnedRemote};
 use super::listener::RemoteGate;
 use super::listener::{ClipboardGate, SpikeTermSize, ZedListener};
 use super::marks::{
-    CommandMark, Osc133Scanner, RawMark, ScanEvent, SharedLastCommand, SharedMarkRing,
+    CommandMark, MarkKind, Osc133Scanner, RawMark, ScanEvent, SharedLastCommand, SharedMarkRing,
     sanitize_command_line,
 };
+use super::program_status::{SharedProgramStatus, StatusTap};
 use super::service_detector::{ServiceInfo, detect_framework, parse_service_line};
 use super::shell::{resolve_default_shell, setup_shell_integration};
 use super::types::{
@@ -1638,6 +1639,9 @@ pub struct TerminalState {
     /// The newest command line the shell reported through `133;E`, for the
     /// slot header's "↻ rerun". Empty until the shell integration reports one.
     pub(crate) last_command: SharedLastCommand,
+    /// What the pane's program reports about itself through OSC 7501. Read
+    /// by the agent-state trace and by nothing that draws.
+    pub(crate) program_status: SharedProgramStatus,
     pub(crate) marks: SharedMarkRing,
     pub exited: Option<i32>,
     /// Set true once any user input (keystroke, paste, mouse report,
@@ -1844,6 +1848,7 @@ pub(super) struct SpawnedPty {
     cwd_rx: UnboundedReceiver<String>,
     marks_rx: std::sync::mpsc::Receiver<RawMark>,
     last_command: SharedLastCommand,
+    program_status: SharedProgramStatus,
     #[cfg(all(unix, not(test)))]
     pty_guard: Option<crate::agents::parent_guard::PtyGuardHandle>,
     #[cfg(target_os = "macos")]
@@ -2046,6 +2051,7 @@ struct Osc7Pty<T: tty::EventedPty> {
     /// than a channel: only the newest value matters and a queue of them would
     /// just be discarded.
     last_command: SharedLastCommand,
+    status: StatusTap,
 }
 
 impl<T: tty::EventedPty> Osc7Pty<T> {
@@ -2054,6 +2060,7 @@ impl<T: tty::EventedPty> Osc7Pty<T> {
         cwd_tx: UnboundedSender<String>,
         marks_tx: std::sync::mpsc::SyncSender<RawMark>,
         last_command: SharedLastCommand,
+        program_status: SharedProgramStatus,
     ) -> Self {
         Self {
             inner,
@@ -2063,6 +2070,7 @@ impl<T: tty::EventedPty> Osc7Pty<T> {
             cwd_tx,
             marks_tx,
             last_command,
+            status: StatusTap::new(program_status),
         }
     }
 }
@@ -2083,11 +2091,25 @@ impl<T: tty::EventedPty> Read for Osc7Pty<T> {
             self.scanner.advance(&buf[..read], |cwd| {
                 let _ = cwd_tx.unbounded_send(cwd);
             });
+            // Written from here, on the thread that also writes the pane's
+            // input, and not sent round through the emulator's events: the
+            // emulator has not seen this chunk yet, so whatever it answers
+            // to it comes after. See `StatusTap::advance`. A write the PTY
+            // cannot take is given up, as the program then gets no answer
+            // and goes on without reporting.
+            let inner = &mut self.inner;
+            self.status.advance(&buf[..read], &mut |answer| {
+                let _ = inner.writer().write_all(answer);
+            });
             let marks_tx = &self.marks_tx;
             let last_command = &self.last_command;
+            let status = &self.status;
             self.marks_scanner
                 .feed(&buf[..read], &mut |event| match event {
                     ScanEvent::Mark(mark) => {
+                        if mark.kind == MarkKind::PromptStart {
+                            status.prompt_started();
+                        }
                         let _ = marks_tx.try_send(mark);
                     }
                     ScanEvent::CommandLine(payload) => {
@@ -2293,6 +2315,7 @@ pub(super) struct RemoteSinkChannels {
     pub(super) cwd_rx: UnboundedReceiver<String>,
     pub(super) marks_rx: std::sync::mpsc::Receiver<RawMark>,
     pub(super) last_command: SharedLastCommand,
+    pub(super) program_status: SharedProgramStatus,
 }
 
 /// A replay in progress: where it ends and what it has held back so far.
@@ -2341,6 +2364,7 @@ pub(super) struct RemoteSink {
     cwd_tx: UnboundedSender<String>,
     marks_tx: std::sync::mpsc::SyncSender<RawMark>,
     last_command: SharedLastCommand,
+    status: StatusTap,
     replay_finished_tx: UnboundedSender<()>,
     replay: Option<Replay>,
     /// The position the stream has reached, while that matters: until the
@@ -2362,6 +2386,7 @@ impl RemoteSink {
         let (cwd_tx, cwd_rx) = unbounded();
         let (marks_tx, marks_rx) = std::sync::mpsc::sync_channel(256);
         let last_command: SharedLastCommand = Arc::new(std::sync::Mutex::new(None));
+        let program_status = super::program_status::shared();
         let gate = pending.remote_gate.clone();
         let replay = match mode {
             AttachMode::Fresh => None,
@@ -2403,6 +2428,7 @@ impl RemoteSink {
             cwd_tx,
             marks_tx,
             last_command: last_command.clone(),
+            status: StatusTap::new(program_status.clone()),
             replay_finished_tx: pending.replay_finished_tx.clone(),
             replay,
             position: start.start_seq,
@@ -2420,6 +2446,7 @@ impl RemoteSink {
                 cwd_rx,
                 marks_rx,
                 last_command,
+                program_status,
             },
         )
     }
@@ -2533,14 +2560,24 @@ impl RemoteSink {
             cwd_tx,
             marks_tx,
             last_command,
+            status,
             replay,
             ..
         } = self;
+        // Old output and new alike: what the program last said of itself is
+        // what it last said, whenever that was. The question is not answered
+        // from here, because the host that holds the PTY has answered it.
+        status.advance(bytes, &mut |_| {});
         match replay.as_mut() {
             Some(replay) => {
                 cwd_scanner.advance(bytes, |cwd| replay.cwd = Some(cwd));
                 marks_scanner.feed(bytes, &mut |event| match event {
-                    ScanEvent::Mark(mark) => replay.mark = Some(mark),
+                    ScanEvent::Mark(mark) => {
+                        if mark.kind == MarkKind::PromptStart {
+                            status.prompt_started();
+                        }
+                        replay.mark = Some(mark);
+                    }
                     // The newest command is the newest command, whenever
                     // it ran.
                     ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
@@ -2552,6 +2589,9 @@ impl RemoteSink {
                 });
                 marks_scanner.feed(bytes, &mut |event| match event {
                     ScanEvent::Mark(mark) => {
+                        if mark.kind == MarkKind::PromptStart {
+                            status.prompt_started();
+                        }
                         let _ = marks_tx.try_send(mark);
                     }
                     ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
@@ -2850,6 +2890,7 @@ impl TerminalState {
         self.effective_backend = "ghostty";
         self.marks = ghostty.marks();
         self.last_command = ghostty.last_command();
+        self.program_status = ghostty.program_status();
         self.ghostty = Some(ghostty);
         self.ghostty_events_rx = Some(events_rx);
     }
@@ -3316,7 +3357,14 @@ impl TerminalState {
             (dup >= 0).then_some(dup)
         };
 
-        let pty = Osc7Pty::new(pty, cwd_tx, marks_tx, Arc::clone(&last_command));
+        let program_status = super::program_status::shared();
+        let pty = Osc7Pty::new(
+            pty,
+            cwd_tx,
+            marks_tx,
+            Arc::clone(&last_command),
+            program_status.clone(),
+        );
         let event_loop = EventLoop::new(
             term,
             listener,
@@ -3337,6 +3385,7 @@ impl TerminalState {
             cwd_rx,
             marks_rx,
             last_command,
+            program_status,
             #[cfg(all(unix, not(test)))]
             pty_guard,
             #[cfg(target_os = "macos")]
@@ -3356,6 +3405,7 @@ impl TerminalState {
         self.cwd_rx = Some(spawned.cwd_rx);
         self.marks_rx = Some(spawned.marks_rx);
         self.last_command = spawned.last_command;
+        self.program_status = spawned.program_status;
         self.child_pid = spawned.child_pid;
         #[cfg(all(unix, not(test)))]
         {
@@ -3398,6 +3448,7 @@ impl TerminalState {
         self.cwd_rx = Some(spawned.channels.cwd_rx);
         self.marks_rx = Some(spawned.channels.marks_rx);
         self.last_command = spawned.channels.last_command;
+        self.program_status = spawned.channels.program_status;
         // The host's child, a process of this machine like any other: the
         // port scan, the foreground-process scan and the working-directory
         // poll all go by pid and need nothing else.
@@ -3564,6 +3615,7 @@ impl TerminalState {
             cwd_rx: None,
             marks_rx: None,
             last_command: Arc::new(std::sync::Mutex::new(None)),
+            program_status: super::program_status::shared(),
             marks: Arc::new(std::sync::Mutex::new(Default::default())),
             exited: None,
             keyboard_input_sent: std::sync::atomic::AtomicBool::new(false),
@@ -7036,6 +7088,7 @@ mod tests {
             cwd_tx,
             marks_tx,
             Arc::new(std::sync::Mutex::new(None)),
+            crate::terminal::program_status::shared(),
         );
         let mut output = [0; 64];
 
@@ -7043,6 +7096,67 @@ mod tests {
 
         assert_eq!(&output[..read], b"\x1b]52;c;SGVsbG8=\x07after");
         assert_eq!(pty.inner.read_calls, 2);
+    }
+
+    /// The program asks whether its status reports are read and, in the same
+    /// breath, what the terminal is. The pane's answer to the first is on the
+    /// PTY by the time the read returns, which is before the emulator has
+    /// been shown the second.
+    #[test]
+    fn a_status_question_is_answered_before_the_read_returns() {
+        let inner = ChunkedTestPty {
+            chunks: VecDeque::from([
+                b"\x1b]7501;?\x1b\\\x1b[c".to_vec(),
+                b"\x1b]7501;state=working:app=x\x07".to_vec(),
+                b"\x1b]133;A\x07".to_vec(),
+            ]),
+            writes: Vec::new(),
+            read_calls: 0,
+        };
+        let (cwd_tx, _cwd_rx) = unbounded();
+        let (marks_tx, _marks_rx) = std::sync::mpsc::sync_channel(4);
+        let status = crate::terminal::program_status::shared();
+        let mut pty = Osc7Pty::new(
+            inner,
+            cwd_tx,
+            marks_tx,
+            Arc::new(std::sync::Mutex::new(None)),
+            status.clone(),
+        );
+        let mut output = [0; 64];
+        let working = |status: &SharedProgramStatus| {
+            status
+                .lock()
+                .expect("status")
+                .take_for_trace()
+                .and_then(|reported| reported.root)
+                .map(|(record, _)| record.state)
+        };
+
+        let read = pty.read(&mut output).expect("the question");
+        // The emulator is still shown everything the program printed.
+        assert_eq!(&output[..read], b"\x1b]7501;?\x1b\\\x1b[c");
+        assert_eq!(
+            pty.inner.writes,
+            splitlane_host::program_status::reply(false)
+        );
+        assert_eq!(working(&status), None);
+
+        let read = pty.read(&mut output).expect("the report");
+        assert_eq!(&output[..read], b"\x1b]7501;state=working:app=x\x07");
+        assert_eq!(
+            working(&status),
+            Some(crate::terminal::program_status::State::Working)
+        );
+
+        // A new shell prompt: the program that was working is gone.
+        let read = pty.read(&mut output).expect("the prompt");
+        assert_eq!(&output[..read], b"\x1b]133;A\x07");
+        assert_eq!(working(&status), None);
+        assert_eq!(
+            pty.inner.writes,
+            splitlane_host::program_status::reply(false)
+        );
     }
 
     #[test]
