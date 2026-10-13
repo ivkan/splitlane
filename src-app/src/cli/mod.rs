@@ -98,6 +98,33 @@ const VERBS: &[&str] = &[
     "search_pane",
 ];
 
+/// The verbs as `splitlane --help` lists them. The error for an unknown verb
+/// sends the reader there, so every verb has to be on it; a test holds the
+/// two lists together.
+pub const COMMANDS_HELP: &str = "\
+Scripting commands (each takes --help):
+  ls               List panes and sessions
+  ps               List running agents: pid, tool, state, pane
+  status           Read one session's agent state
+  read             Print a pane's text
+  search           Search a pane's scrollback
+  answer           Print the last answer an agent gave
+  wait             Block until a turn ends or a pattern appears
+  watch            Stream events as JSON lines
+  add              Open an agent session
+  send             Write text into a session
+  key              Send a named keystroke
+  interrupt        Stop a session's turn
+  park             Take a session you opened out of its pane
+  show             Give a session you opened a pane
+  close            Close a session you opened
+  focus            Give a pane the keyboard focus
+  new              Create a workspace
+  select           Select a workspace by index
+  split            Split the active pane
+  up               Open panes from a TOML file
+  flow             Run a pipeline of agents from a flow.toml";
+
 /// True when `argv[1]` names one of our subcommands (including the MCP-tool
 /// aliases above).
 ///
@@ -890,6 +917,30 @@ pub(super) fn reject_legacy_error(result: Value) -> Result<Value, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `splitlane blah` answers "see `splitlane --help` for the verb
+    /// list", and for a long time the help named five verbs of twenty-one.
+    #[test]
+    fn the_help_lists_every_verb() {
+        let listed: Vec<&str> = super::COMMANDS_HELP
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_whitespace().next())
+            .collect();
+        for verb in super::VERBS {
+            // The MCP tool names are aliases, kept out of the help on purpose.
+            if verb.contains('_') {
+                continue;
+            }
+            assert!(listed.contains(verb), "`{verb}` is missing from --help");
+        }
+        for verb in &listed {
+            assert!(
+                super::VERBS.contains(verb),
+                "--help lists `{verb}`, which is no verb"
+            );
+        }
+    }
 
     /// The skill shipped with the app teaches an agent this CLI, and an
     /// agent does what it is taught: a verb or a flag that is not there is

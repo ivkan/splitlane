@@ -3454,13 +3454,15 @@ fn main() {
             "Splitlane {version} - native terminal workspace for coding agents\n\
              \n\
              Usage: splitlane [OPTIONS]\n\
-             \x20      splitlane <ls|read|send|up|wait|...>  Script the running app\n\
+             \x20      splitlane <COMMAND> [ARGS]            Script the running app\n\
              \x20      splitlane mcp <install|status|uninstall>\n\
              \x20      splitlane skill <install|status|uninstall>\n\
              \n\
              Options:\n\
              \x20 -h, --help       Print this help message\n\
              \x20 -v, --version    Print version\n\
+             \n\
+             {commands}\n\
              \n\
              Agent workflow:\n\
              \x20 Launch Claude Code, Codex, opencode, Pi, or any CLI agent in panes\n\
@@ -3477,7 +3479,8 @@ fn main() {
              Settings > Shortcuts lists every action. Config paths, scripting\n\
              commands and the IPC socket are documented in docs/user/.\n\
              https://github.com/ivkan/splitlane",
-            version = env!("CARGO_PKG_VERSION")
+            version = env!("CARGO_PKG_VERSION"),
+            commands = cli::COMMANDS_HELP
         );
         return;
     }
