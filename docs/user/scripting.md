@@ -395,8 +395,9 @@ The line goes in only when the lead is idle and shows an empty input line.
 While the lead is working, is asking you something, or has text you typed and
 have not sent, the line waits. When something was already waiting on that
 session by id, or the lead asked about it afterwards, the line is held back:
-it is dropped as soon as the lead starts working, and written if the lead is
-still idle a minute later with nothing waiting any more. It is never written
+it is dropped as soon as the lead starts a turn, and written if the lead is
+still idle a minute later with nothing waiting any more. A turn the lead was
+already in does not count as starting one. It is never written
 into a pane whose agent has exited. Turn it off with `"tell_opener": false` in `splitlane.json`, or under
 Settings > Agents.
 

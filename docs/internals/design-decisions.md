@@ -1378,12 +1378,27 @@ moment such a wait was seen.
 
 "At work" is read two ways, because the rail is sampled: the opener is
 working now, or one more of its turns has ended than had when the line was
-held. Not covered, and left so on purpose: an opener that was busy with
-something else when its broken wait returned is taken to have heard, and is
-not told. Telling it would also tell every opener whose wait was sound and
-reported into a turn already running, which is the common case with several
-sessions open, and a second turn about one event there costs more than the
-rare silence here.
+held.
+
+An opener that was already in a turn when the line was held is read
+differently, because that turn proves nothing: it was under way before there
+was anything to hear. This used to count as having heard, and a session that
+answers in a few seconds showed it does not. It ends its turn while the lead
+is still in the turn that opened it, so a lead whose wait sat inside a script
+was never told, on the first try. Such a line is kept until that turn ends,
+and then one of three things is true. The lead begins another turn: it was
+called back, the line is dropped. The lead has no background command left,
+or read the session's answer after the line was held: its wait ended inside
+the turn, where the agent reads it, and the line is dropped. The lead sits
+idle with a background command of its own still running: that is the script
+around the wait, and after a minute the line is written. Still not covered:
+a lead whose script also reads the answer, and an agent whose background
+commands the app cannot count; both are left untold as before. Asking for
+the session's status is not taken as reading its answer, because a wait
+asks it again and again, from inside a script as much as from a turn. The
+cost on the other side is a lead that heard inside its turn, did not read
+the answer, and has some other background command running: it gets one line
+about a turn it knows of.
 
 **Lines to one opener are five seconds apart.** The rail is sampled, and for
 a moment after a line is submitted the opener still reads `idle`.

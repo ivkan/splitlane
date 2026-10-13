@@ -318,7 +318,12 @@ pub fn answer(
     let surface_id = resolve_target(client, target)?;
     let status = super::reject_legacy_error(
         client
-            .call("surface.status", json!({ "surface_id": surface_id }))
+            // `for` tells the app this read is the caller taking the answer,
+            // which a wait polling the same method is not.
+            .call(
+                "surface.status",
+                json!({ "surface_id": surface_id, "for": "answer" }),
+            )
             .map_err(CliError::runtime)?,
     )?;
     let outcome = match locate(&status, options.after) {
