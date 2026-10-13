@@ -539,6 +539,12 @@ pub struct Thread {
     /// was given. `None` for every other session. Persisted for the reason
     /// [`Self::opened_by`] is.
     pub opened_by_script: Option<splitlane_config::schema::OpenedByScript>,
+    /// The session in the session host this surface's terminal was last
+    /// known to run in: read from the session file, and brought up to date
+    /// whenever the file is written. What a surface that has no terminal
+    /// yet is attached to when it gets one. `None` for a surface whose
+    /// terminal the window owns.
+    pub host_session: Option<String>,
     /// The terminal's count of keyboard submits when this session's opener
     /// last wrote text into it, or `None` if it never has.
     ///
@@ -589,6 +595,7 @@ impl Thread {
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
             opened_by_script: None,
+            host_session: None,
             opener_wrote_at: None,
         }
     }
@@ -674,6 +681,7 @@ impl Thread {
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
             opened_by_script: None,
+            host_session: None,
             opener_wrote_at: None,
         }
     }
@@ -728,6 +736,7 @@ pub fn thread_to_surface(t: &Thread, slot: Option<usize>) -> ProjectSurface {
             title_user_set: t.title_user_set,
             opened_by: t.opened_by.clone(),
             opened_by_script: t.opened_by_script.clone(),
+            host_session: t.host_session.clone(),
         }),
     }
 }
@@ -872,6 +881,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         // asked of the live records when it matters.
         opened_by: payload.opened_by.clone(),
         opened_by_script: payload.opened_by_script.clone(),
+        host_session: payload.host_session.clone(),
         opener_wrote_at: None,
     })
 }
@@ -1252,6 +1262,7 @@ mod tests {
                 title_user_set: false,
                 opened_by: None,
                 opened_by_script: None,
+                host_session: None,
             }),
         }
     }

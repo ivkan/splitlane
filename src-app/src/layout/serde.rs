@@ -83,6 +83,7 @@ impl LayoutTree {
                                     agent: None,
                                     font_size: tv_ref.terminal.font_size_override,
                                     surface_id: Some(surface_id),
+                                    host_session: None,
                                 };
                             }
                             let cwd = tv_ref.terminal.current_cwd.clone().or_else(|| {
@@ -106,6 +107,7 @@ impl LayoutTree {
                                 agent: tv_ref.terminal.detected_agent.map(|a| a.tag().to_string()),
                                 font_size: tv_ref.terminal.font_size_override,
                                 surface_id: None,
+                                host_session: None,
                             }
                         }
                         crate::pane::TabContent::Markdown(markdown) => {
@@ -124,6 +126,7 @@ impl LayoutTree {
                                 agent: None,
                                 font_size: None,
                                 surface_id: None,
+                                host_session: None,
                             }
                         }
                         // The container's `Changes`: a surface with a rail
@@ -145,6 +148,7 @@ impl LayoutTree {
                             agent: None,
                             font_size: None,
                             surface_id: None,
+                            host_session: None,
                         },
                     })
                     .collect();

@@ -119,6 +119,7 @@ mod tests {
             scrollback: Some("x".repeat(4096)),
             font_size: Some(13.0),
             surface_id: Some(7),
+            host_session: None,
             ..Default::default()
         }
     }
