@@ -6,6 +6,12 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `splitlane --help` lists every scripting command with a line on what it
+  does. It named five of twenty-one, and the error for a mistyped command
+  sent the reader there for the list.
+
 ## [0.2.7] - 2026-10-13
 
 ### Added
