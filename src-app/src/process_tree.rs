@@ -1796,65 +1796,65 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_baseline_tells_a_worker_from_the_furniture() {
+        use std::io::Write as _;
+
         let _guard = SPAWNING.lock().unwrap_or_else(|e| e.into_inner());
-        // Stands in for the shim/agent/MCP-server furniture: present before the
-        // baseline is taken, and still present after.
-        let furniture = Spawned(
+        // The pane is a process of its own, not this test process. Under
+        // this one every other test's children would count too, and a test
+        // elsewhere in the binary that started a process between the two
+        // snapshots made the furniture look like it had gained a worker.
+        //
+        // It starts its furniture at once - what stands in for the shim, the
+        // agent and its MCP servers - and its worker only when told to.
+        let mut pane = Spawned(
             std::process::Command::new("/bin/sh")
                 .arg("-c")
-                .arg("sleep 30; true")
+                .arg("sleep 30 & read go; sleep 30 & wait")
+                .stdin(std::process::Stdio::piped())
                 .spawn()
-                .expect("spawn the furniture"),
+                .expect("spawn the pane"),
         );
-        let me = std::process::id();
-
-        // Wait for the furniture to be WHOLE, not merely started. `sh -c "sleep
-        // 30; true"` is two forks and not one: the shell appears at once, and
-        // forks `sleep` a moment later. A baseline taken in between records the
-        // shell without the grandchild, so the grandchild then looks like a
-        // process that appeared after the turn ended - the exact thing this
-        // test asserts does not happen. A fast machine loses that race rarely
-        // and an emulated aarch64 runner loses it often, which is how it
-        // reached CI as a flake rather than as a failure.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let snap = loop {
-            let snap = ProcessSnapshot::capture().expect("snapshot");
-            if !snap.children_of(furniture.0.id()).is_empty() {
-                break snap;
+        let root = pane.0.id();
+        let under = |wanted: usize| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let snap = ProcessSnapshot::capture().expect("snapshot");
+                if snap.children_of(root).len() >= wanted {
+                    break snap;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the pane never had {wanted} processes under it"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the furniture never forked its `sleep` child"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
         };
-        assert!(
-            !snap.children_of(me).is_empty(),
-            "the furniture must be up before the baseline is taken"
-        );
-        let baseline = WorkerBaseline::take(&snap, me).expect("baseline");
+
+        // The furniture has to be up before the baseline is taken, or it
+        // would look like a process that appeared after the turn ended.
+        let snap = under(1);
+        let baseline = WorkerBaseline::take(&snap, root).expect("baseline");
 
         // Furniture alone: the old question would say `Present` here for ever,
         // which is exactly the failure this replaces.
-        assert_eq!(snap.worker_under(me), Worker::Present);
+        assert_eq!(snap.worker_under(root), Worker::Present);
         let snap = ProcessSnapshot::capture().expect("snapshot");
         assert_eq!(
-            worker_against(&snap, Some(&baseline), me),
+            worker_against(&snap, Some(&baseline), root),
             Worker::Absent,
             "everything under this pane was here when the turn ended"
         );
 
-        // A command starts.
-        let _worker = Spawned(
-            std::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg("sleep 30; true")
-                .spawn()
-                .expect("spawn the worker"),
-        );
-        let snap = ProcessSnapshot::capture().expect("snapshot");
+        // Now something that was not there: the worker.
+        pane.0
+            .stdin
+            .take()
+            .expect("the pane's stdin")
+            .write_all(b"go\n")
+            .expect("tell the pane to start its worker");
+        let snap = under(2);
         assert_eq!(
-            worker_against(&snap, Some(&baseline), me),
+            worker_against(&snap, Some(&baseline), root),
             Worker::Present,
             "a process that was not in the baseline is a worker"
         );
