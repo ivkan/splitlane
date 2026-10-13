@@ -2434,6 +2434,35 @@ impl RemoteSink {
 }
 
 #[cfg(target_os = "macos")]
+impl super::host_session::StreamSink for RemoteSink {
+    fn handle(&mut self, event: splitlane_host::StreamEvent) -> SinkStep {
+        RemoteSink::handle(self, event)
+    }
+
+    fn sync_deadline(&self) -> Option<std::time::Instant> {
+        RemoteSink::sync_deadline(self)
+    }
+
+    fn quiet(&mut self) {
+        RemoteSink::quiet(self);
+    }
+
+    fn connection_lost(&mut self) {
+        RemoteSink::connection_lost(self);
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl super::host_session::AttachTarget for PendingTerminalBackend {
+    type Sink = RemoteSink;
+    type Channels = RemoteSinkChannels;
+
+    fn sink(&self, mode: AttachMode, start: StreamStart) -> (RemoteSink, RemoteSinkChannels) {
+        RemoteSink::new(self, mode, start)
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl SinkTerminal {
     fn apply(&mut self, action: ReplayAction<'_>) {
         match action {

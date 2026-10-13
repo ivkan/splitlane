@@ -7,7 +7,8 @@
 //! other pane uses; only the two ends of the byte stream differ.
 //!
 //! This file is the window's side of that connection. It imports nothing of
-//! the terminal emulator: what touches the emulator is in `pty_session`.
+//! the terminal emulator: what touches an emulator is behind [`StreamSink`],
+//! and a terminal that can be given one is an [`AttachTarget`].
 //!
 //! # Connections and threads
 //!
@@ -60,8 +61,8 @@ use splitlane_host::{
 
 use super::held_sessions::HeldSession;
 use super::pty_session::{
-    ForegroundSignalMask, MAX_PENDING_INPUT_BYTES, PendingTerminalBackend, RemoteSink,
-    RemoteSinkChannels, SpawnParams, SpawnedPty, TerminalState, end_process_group,
+    ForegroundSignalMask, MAX_PENDING_INPUT_BYTES, PendingTerminalBackend, RemoteSinkChannels,
+    SpawnParams, SpawnedPty, TerminalState, end_process_group,
 };
 use super::stream_replay::{AttachMode, SinkStep, StreamStart};
 
@@ -482,12 +483,44 @@ fn unpack_size(packed: u32) -> Option<(usize, usize)> {
     (packed != 0).then_some(((packed >> 16) as usize, (packed & 0xffff) as usize))
 }
 
+/// Where a pane's reader puts the stream of its session: an emulator, and
+/// whatever else reads the output on its way into one.
+///
+/// Everything here is called on the reader's thread and nowhere else.
+pub(super) trait StreamSink: Send + 'static {
+    /// Take one event of the stream, in the order the host sent it.
+    fn handle(&mut self, event: StreamEvent) -> SinkStep;
+
+    /// When the sink has to be told the stream is quiet although the
+    /// reader would wait longer. `None` while it holds nothing back.
+    fn sync_deadline(&self) -> Option<Instant>;
+
+    /// No event came for as long as the reader waited.
+    fn quiet(&mut self);
+
+    /// The connection to the host is gone while the session was running.
+    /// Nothing follows.
+    fn connection_lost(&mut self);
+}
+
+/// A terminal that can follow a session in the host.
+pub(super) trait AttachTarget {
+    type Sink: StreamSink;
+    /// What the sink reports besides the grid, for the terminal state that
+    /// owns the other half.
+    type Channels;
+
+    /// A sink that feeds this terminal a stream beginning at `start`.
+    fn sink(&self, mode: AttachMode, start: StreamStart) -> (Self::Sink, Self::Channels);
+}
+
 /// What a terminal state needs to become a pane of a session in the host.
-pub(super) struct SpawnedRemote {
+/// `C` is what its sink reports: [`AttachTarget::Channels`].
+pub(super) struct SpawnedRemote<C = RemoteSinkChannels> {
     pub(super) sender: RemoteSender,
     pub(super) child_pid: u32,
     pub(super) cwd: PathBuf,
-    pub(super) channels: RemoteSinkChannels,
+    pub(super) channels: C,
     pub(super) handle: RemoteHandle,
 }
 
@@ -502,13 +535,13 @@ pub(super) enum OpenError {
 }
 
 /// Start a pane's shell in the host and attach the pane's terminal to it.
-pub(super) fn open_remote(
+pub(super) fn open_remote<T: AttachTarget>(
     params: &SpawnParams,
-    pending: &PendingTerminalBackend,
+    pending: &T,
     endpoint: &Arc<HostEndpoint>,
     facts: Facts,
     surface: u64,
-) -> Result<SpawnedRemote, OpenError> {
+) -> Result<SpawnedRemote<T::Channels>, OpenError> {
     let control = endpoint.for_new_session().map_err(OpenError::BeforeSpawn)?;
     // The pane's own connection before the shell, not after: a host that
     // has no room for one more connection then refuses while there is
@@ -522,15 +555,15 @@ pub(super) fn open_remote(
 
 /// The rest of [`open_remote`], with both connections in hand: start the
 /// shell over `control` and follow it over `pane`.
-pub(super) fn start_and_follow(
+pub(super) fn start_and_follow<T: AttachTarget>(
     params: &SpawnParams,
-    pending: &PendingTerminalBackend,
+    pending: &T,
     endpoint: &Arc<HostEndpoint>,
     control: &Client,
     pane: Client,
     facts: Facts,
     surface: u64,
-) -> Result<SpawnedRemote, OpenError> {
+) -> Result<SpawnedRemote<T::Channels>, OpenError> {
     // The id the shell is told is its pane's, which the view made up and
     // recorded. Recorded again here for whoever opens a pane without one.
     crate::surface_alias::remember(params.surface_id, surface);
@@ -606,13 +639,13 @@ pub(super) enum ReattachError {
 /// The session's program was told its pane's id when it started, under a
 /// window that may be gone; what it and its hooks say from now on carries
 /// that id, and it is recorded here as meaning `surface`.
-pub(super) fn reattach(
+pub(super) fn reattach<T: AttachTarget>(
     endpoint: &Arc<HostEndpoint>,
     session: SessionId,
-    pending: &PendingTerminalBackend,
+    pending: &T,
     facts: Facts,
     surface: u64,
-) -> Result<SpawnedRemote, ReattachError> {
+) -> Result<SpawnedRemote<T::Channels>, ReattachError> {
     let gone = ReattachError::Gone;
     // Nothing listening is an answer: a host takes its sessions with it.
     // Anything else a host says or fails to say is not.
@@ -699,21 +732,20 @@ struct Followed {
 /// Attach to `session` over `pane`, a connection for this pane alone, and
 /// start the pane's two threads on it. `size` is the size the session's
 /// PTY is known to have, if it is.
-fn follow(
+fn follow<T: AttachTarget>(
     endpoint: &Arc<HostEndpoint>,
     pane: Client,
     followed: Followed,
-    pending: &PendingTerminalBackend,
+    pending: &T,
     mode: AttachMode,
     size: Option<(u16, u16)>,
-) -> anyhow::Result<(RemoteSender, RemoteSinkChannels, RemoteHandle)> {
+) -> anyhow::Result<(RemoteSender, T::Channels, RemoteHandle)> {
     let Followed { session, pid, .. } = followed;
     let pane = Arc::new(pane);
     let attachment = pane
         .attach(session, AttachFrom::Start)
         .context("cannot attach to the session")?;
-    let (sink, channels) = RemoteSink::new(
-        pending,
+    let (sink, channels) = pending.sink(
         mode,
         StreamStart {
             start_seq: attachment.start_seq,
@@ -768,17 +800,17 @@ fn follow(
 
 /// The thread that takes a pane's stream. Owns the attachment and the
 /// sink, and is where both are dropped.
-struct PaneReader {
+struct PaneReader<S> {
     endpoint: Arc<HostEndpoint>,
     followed: Followed,
     attachment: Attachment,
-    sink: RemoteSink,
+    sink: S,
     to_writer: RemoteSender,
     closing: Arc<AtomicBool>,
     _pane: Arc<Client>,
 }
 
-impl PaneReader {
+impl<S: StreamSink> PaneReader<S> {
     fn run(mut self) {
         // Set once the pane was closed: from then on the stream is only
         // emptied, until the session's end comes through it or the wait
@@ -1099,12 +1131,13 @@ pub(super) fn stop_all(endpoint: &Arc<HostEndpoint>, wait: Duration) {
     }
 }
 
-/// How a pane ended up with a shell.
-pub(super) enum Opened {
-    InHost(SpawnedRemote),
+/// How a pane ended up with a shell. `C` is what the pane's sink reports
+/// and `W` what opening the pane in the window gives.
+pub(super) enum Opened<C = RemoteSinkChannels, W = anyhow::Result<SpawnedPty>> {
+    InHost(SpawnedRemote<C>),
     /// The host was not used, or could not be: the pane has a PTY the
     /// window owns, as every pane has without the host.
-    InWindow(anyhow::Result<SpawnedPty>),
+    InWindow(W),
     /// The host started the shell and the pane lost it. An error for the
     /// pane to show.
     Lost(anyhow::Error),
@@ -1121,6 +1154,26 @@ pub(super) fn open(
     signal_mask: Option<ForegroundSignalMask>,
     surface: u64,
 ) -> Opened {
+    open_or(
+        endpoint,
+        facts,
+        params,
+        pending,
+        surface,
+        |params, pending| TerminalState::open_pty_and_eventloop(params, pending, signal_mask),
+    )
+}
+
+/// [`open`] for any terminal that can follow a session: `in_window` is how
+/// such a terminal is given a PTY the window owns.
+pub(super) fn open_or<T: AttachTarget, W>(
+    endpoint: Option<&Arc<HostEndpoint>>,
+    facts: Facts,
+    params: SpawnParams,
+    pending: T,
+    surface: u64,
+    in_window: impl FnOnce(SpawnParams, T) -> W,
+) -> Opened<T::Channels, W> {
     let refused = match endpoint {
         Some(endpoint) => match open_remote(&params, &pending, endpoint, facts, surface) {
             Ok(spawned) => {
@@ -1141,11 +1194,7 @@ pub(super) fn open(
         target: "splitlane::terminal::host",
         "pane not opened in the session host, opening it in the window: {refused:#}"
     );
-    Opened::InWindow(TerminalState::open_pty_and_eventloop(
-        params,
-        pending,
-        signal_mask,
-    ))
+    Opened::InWindow(in_window(params, pending))
 }
 
 /// What the host is asked to start for a pane: the shell the window would
