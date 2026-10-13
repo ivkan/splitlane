@@ -21,10 +21,17 @@ pub(crate) struct ColorQueryResponder {
 }
 
 impl ColorQueryResponder {
-    pub(crate) fn set_colors(&mut self, foreground: Rgb, background: Rgb, cursor: Rgb) {
-        self.foreground = Some(foreground);
-        self.background = Some(background);
-        self.cursor = Some(cursor);
+    /// A colour that is `None` is one nobody told this terminal, and a query
+    /// for it goes unanswered.
+    pub(crate) fn set_colors(
+        &mut self,
+        foreground: Option<Rgb>,
+        background: Option<Rgb>,
+        cursor: Option<Rgb>,
+    ) {
+        self.foreground = foreground;
+        self.background = background;
+        self.cursor = cursor;
     }
 
     /// Intercept dynamic-color queries unsupported by the pinned libghostty.
@@ -143,21 +150,21 @@ mod tests {
     fn responder() -> ColorQueryResponder {
         let mut responder = ColorQueryResponder::default();
         responder.set_colors(
-            Rgb {
+            Some(Rgb {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
-            },
-            Rgb {
+            }),
+            Some(Rgb {
                 r: 0x44,
                 g: 0x55,
                 b: 0x66,
-            },
-            Rgb {
+            }),
+            Some(Rgb {
                 r: 0x77,
                 g: 0x88,
                 b: 0x99,
-            },
+            }),
         );
         responder
     }

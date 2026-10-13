@@ -159,6 +159,20 @@ impl DisplayTerminal {
         background: Rgb,
         cursor: Rgb,
     ) -> Result<()> {
+        self.set_known_default_colors(Some(foreground), Some(background), Some(cursor))
+    }
+
+    /// [`Self::set_default_colors`] for a terminal that is not drawn by the
+    /// process that owns it and so may have been told only some of the
+    /// colors, or none yet. A color given as `None` is forgotten, and a
+    /// query for it is left unanswered rather than answered with a default
+    /// the application would take for the real theme.
+    pub fn set_known_default_colors(
+        &mut self,
+        foreground: Option<Rgb>,
+        background: Option<Rgb>,
+        cursor: Option<Rgb>,
+    ) -> Result<()> {
         for (option, color) in [
             (
                 sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
@@ -173,18 +187,20 @@ impl DisplayTerminal {
                 cursor,
             ),
         ] {
-            let color = sys::GhosttyColorRgb {
+            let color = color.map(|color| sys::GhosttyColorRgb {
                 r: color.r,
                 g: color.g,
                 b: color.b,
-            };
-            let result = unsafe {
-                sys::ghostty_terminal_set(
-                    self.terminal.raw(),
-                    option,
-                    (&color as *const sys::GhosttyColorRgb).cast(),
-                )
-            };
+            });
+            // A null value clears the option, which is how libghostty is
+            // told that the color is unset again.
+            let value = color.as_ref().map_or(std::ptr::null(), |color| {
+                (color as *const sys::GhosttyColorRgb).cast::<c_void>()
+            });
+            // SAFETY: `self.terminal` owns a live terminal handle, and
+            // `value` is null or points at `color`, which outlives the call
+            // and has the type these three options read.
+            let result = unsafe { sys::ghostty_terminal_set(self.terminal.raw(), option, value) };
             check("terminal_set_default_color", result)?;
         }
         self.color_queries
@@ -401,6 +417,49 @@ mod tests {
                 .windows(b"]12;rgb:7777/8888/9999".len())
                 .any(|window| window == b"]12;rgb:7777/8888/9999")
         );
+    }
+
+    #[test]
+    fn a_color_nobody_gave_is_not_answered_for() {
+        fn replies(terminal: &mut DisplayTerminal) -> String {
+            terminal
+                .feed(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07")
+                .expect("color queries must parse");
+            let bytes = terminal
+                .drain_events()
+                .into_iter()
+                .filter_map(|event| match event {
+                    BackendEvent::WritePty(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            String::from_utf8(bytes).expect("replies are ASCII")
+        }
+
+        let mut terminal = DisplayTerminal::new(WindowSize::new(80, 24, 8, 16).unwrap(), 1_000)
+            .expect("terminal must initialize");
+        assert_eq!(replies(&mut terminal), "");
+
+        let background = Rgb {
+            r: 0x44,
+            g: 0x55,
+            b: 0x66,
+        };
+        terminal
+            .set_known_default_colors(None, Some(background), None)
+            .expect("a single color must be accepted");
+        assert_eq!(replies(&mut terminal), "\x1b]11;rgb:4444/5555/6666\x07");
+
+        // What was known before does not outlive being told otherwise.
+        terminal
+            .set_known_default_colors(None, None, Some(background))
+            .expect("colors must be replaceable");
+        assert_eq!(replies(&mut terminal), "\x1b]12;rgb:4444/5555/6666\x07");
+        terminal
+            .set_known_default_colors(None, None, None)
+            .expect("colors must be clearable");
+        assert_eq!(replies(&mut terminal), "");
     }
 
     #[test]
