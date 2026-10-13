@@ -278,6 +278,13 @@ terminal that does not support them. Answers go to the program without ever
 holding up the thread that reads its output: one the program is not reading
 its input for is dropped.
 
+One question is answered without the emulator, on every platform: whether the
+terminal reads the program's status reports (OSC 7501). Agents that report
+their own state ask it at start-up and stay silent when nobody answers. The
+host finds the question in the output itself and puts its answer ahead of
+anything the emulator says to the same bytes, because the program reads the
+first reply it gets as the verdict.
+
 Still open:
 
 - **Linux has no answering emulator yet.** The window there uses libghostty,

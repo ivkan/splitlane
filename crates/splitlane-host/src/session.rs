@@ -40,6 +40,7 @@ use crate::descriptors;
 use crate::engine::{self, Engine};
 use crate::lock;
 use crate::log::SessionLog;
+use crate::program_status;
 use crate::protocol::{ExitStatus, Facts, SessionId, SessionInfo, SpawnSpec};
 
 /// Argv[1] of the watcher process that kills a child's process group when
@@ -237,6 +238,10 @@ pub(crate) struct Session {
     /// Answers the program's terminal queries. `None` on a platform that
     /// has no engine, after the session ended, and after an engine failed.
     engine: Mutex<Option<Box<dyn Engine>>>,
+    /// Finds the program's question whether its status reports are read.
+    /// The answer does not depend on the emulator, so it is given on every
+    /// platform, engine or none.
+    status: Mutex<program_status::Scanner>,
     dropped_replies: AtomicU64,
     /// Held so the PTY keeps unread output; see where it is stored. With a
     /// slave open here the master never reports the end of output, which
@@ -341,6 +346,7 @@ impl Session {
                 redrawing: false,
             }),
             engine: Mutex::new(engine),
+            status: Mutex::new(program_status::Scanner::new()),
             dropped_replies: AtomicU64::new(0),
             slave: Mutex::new(Some(slave)),
             input: Mutex::new(Some(input_tx)),
@@ -482,6 +488,15 @@ impl Session {
         // The engine first and under the same locks as the log: a resize
         // then falls between the same two bytes for both.
         let mut engine = lock(&self.engine);
+        // Ahead of anything the engine answers. A program that asks whether
+        // its status is read asks what the terminal is right after, because
+        // every terminal answers that: whichever answer it reads first
+        // settles it.
+        lock(&self.status).feed(bytes, &mut |event| {
+            if let program_status::Event::Query { bel } = event {
+                replies.extend_from_slice(program_status::reply(bel));
+            }
+        });
         self.run_engine(&mut engine, |engine| engine.advance(bytes, replies));
         let mut shared = lock(&self.shared);
         let before = shared.log.stored_bytes();

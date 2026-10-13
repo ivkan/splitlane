@@ -795,7 +795,6 @@ fn a_redraw_resizes_the_terminal_by_a_row_and_back() {
 }
 
 /// What `od` prints for `bytes` once the blanks are taken out.
-#[cfg(target_os = "macos")]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -803,13 +802,38 @@ fn hex(bytes: &[u8]) -> String {
 /// A shell command that reads `count` bytes of input and prints them as
 /// hexadecimal digits. The terminal must be in raw mode: each byte is then
 /// one read, so exactly `count` are consumed.
-#[cfg(target_os = "macos")]
 fn read_hex(count: usize) -> String {
     format!("dd bs=1 count={count} 2>/dev/null | od -An -tx1 | tr -d ' \\n'")
 }
 
 // The three tests below need an engine, and the host has one on macOS only
 // so far.
+
+/// A program asks whether its status reports are read and, so as not to
+/// wait, what the terminal is; the first answer to arrive decides. The host
+/// has to say yes before its emulator says anything.
+#[test]
+fn a_program_asking_whether_its_status_is_read_is_told_so_first() {
+    use splitlane_host::program_status;
+
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let answer = program_status::reply(false);
+    let script = format!(
+        "stty raw -echo; printf '\\033]7501;?\\033\\\\\\033[c'; {}; printf ' end'",
+        read_hex(answer.len())
+    );
+    let (session, _) = client.spawn(sh(&script)).unwrap();
+    let exited = wait_for("the child to get its answer", || {
+        info(&client, session).exited
+    });
+    assert_eq!(exited.code, Some(0));
+    let trace = whole_session(&client, session);
+    assert_eq!(
+        trace.text(),
+        format!("\x1b]7501;?\x1b\\\x1b[c{} end", hex(answer))
+    );
+}
 
 #[cfg(target_os = "macos")]
 #[test]
