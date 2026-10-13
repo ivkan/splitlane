@@ -26,6 +26,13 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- A lead agent whose own waiting went wrong is still told that a session it
+  opened has finished. The line Splitlane writes into the lead was cancelled
+  whenever something had been waiting on that session or the lead had asked
+  for its status, even when the lead never saw the result - a wait wrapped in
+  a script that kept running left the lead idle beside a finished session.
+  The line is now only held back: dropped once the lead is at work, written
+  if it is still idle a minute later.
 - On macOS, `splitlane ps` and every other command whose answer is longer
   than 8 KiB failed with `invalid JSON-RPC response ... EOF while parsing`:
   the app sent the first 8192 bytes and closed the connection. It showed up
