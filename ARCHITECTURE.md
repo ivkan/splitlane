@@ -372,9 +372,6 @@ Not there yet:
 - **A pane is told the window's colors when it is drawn.** After a theme
   change, a pane that is not on screen answers color queries with the old
   theme until it is shown again.
-- **A closed pane's shell is not hung up on.** A PTY the window owns is closed
-  under its shell, which gets SIGHUP and a chance to save its history before
-  it is terminated. A session in the host is only terminated.
 - **Clearing the scrollback clears the window's copy.** The host's log still
   holds it.
 

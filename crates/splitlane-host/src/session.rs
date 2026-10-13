@@ -709,11 +709,11 @@ impl Session {
     /// Ask the session's process group to end, and make it after a grace.
     ///
     /// The child is the leader of its own session, so its pid names the
-    /// group. SIGTERM goes out only while that is still true of the pid,
-    /// which also covers a child that is already gone. The follow-up asks
-    /// whether the group still has members rather than whether its leader
-    /// lives: a process that ignores SIGTERM usually outlives the shell
-    /// that started it, and is exactly what the SIGKILL is for.
+    /// group. The request goes out only while that is still true of the
+    /// pid, which also covers a child that is already gone. The follow-up
+    /// asks whether the group still has members rather than whether its
+    /// leader lives: a process that ignores the request usually outlives the
+    /// shell that started it, and is exactly what the SIGKILL is for.
     pub(crate) fn kill(&self) {
         if self.exit_status().is_some() || !self.terminate() {
             return;
@@ -728,7 +728,14 @@ impl Session {
         }
     }
 
-    /// SIGTERM to the group. True when it was delivered.
+    /// SIGHUP and then SIGTERM to the group. True when they were
+    /// delivered.
+    ///
+    /// The hangup is what a shell gets when its terminal is closed under
+    /// it, and what makes an interactive one save its history on the way
+    /// out; several ignore SIGTERM altogether and would otherwise be left
+    /// for the SIGKILL. SIGTERM follows for the programs that only handle
+    /// that one.
     ///
     /// Not sent once the child was reaped: from then on its pid may belong
     /// to somebody else, and what is left of the group is dealt with by the
@@ -736,6 +743,7 @@ impl Session {
     pub(crate) fn terminate(&self) -> bool {
         !self.reaped.load(Ordering::SeqCst)
             && is_group_leader(self.pid)
+            && signal_group(self.pid, libc::SIGHUP)
             && signal_group(self.pid, libc::SIGTERM)
     }
 
