@@ -26,6 +26,10 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- On macOS, `splitlane ps` and every other command whose answer is longer
+  than 8 KiB failed with `invalid JSON-RPC response ... EOF while parsing`:
+  the app sent the first 8192 bytes and closed the connection. It showed up
+  once enough agent sessions were open for the list to grow past that size.
 - `send` to an agent session that has not been started since Splitlane was
   no longer writes at once, into the shell the agent is being launched from,
   where the text was lost or ran as a command. It is kept until the agent is

@@ -417,6 +417,11 @@ pub fn start_server() -> (
             loop {
                 match listener.accept() {
                     Ok(stream) => {
+                        #[cfg(unix)]
+                        if let Err(e) = serve_blocking(&stream) {
+                            log::warn!("IPC: dropping a connection that stays non-blocking ({e})");
+                            continue;
+                        }
                         if active_connections.load(Ordering::Acquire) >= MAX_CONCURRENT_CONNECTIONS
                         {
                             reject_overloaded(stream);
@@ -943,6 +948,18 @@ fn write_overloaded_error(writer: &mut Stream, message: &str) {
         "id": Value::Null,
     });
     let _ = write_envelope(writer, &envelope);
+}
+
+/// Put an accepted connection into blocking mode.
+///
+/// macOS hands an accepted socket its listener's non-blocking flag; Linux does
+/// not. Left that way, a reply larger than the socket's send buffer (8 KiB
+/// there) stops at the buffer with `WouldBlock` and the peer is given half a
+/// document, and a request read before its bytes arrive ends the connection
+/// unanswered.
+#[cfg(unix)]
+fn serve_blocking(stream: &Stream) -> std::io::Result<()> {
+    stream.set_nonblocking(false)
 }
 
 /// Backpressure: refuse a connection once the concurrency cap is hit.
@@ -2395,5 +2412,56 @@ mod windows_pipe_tests {
             started.elapsed() < Duration::from_secs(2),
             "timeout path must release promptly instead of pinning the handler slot"
         );
+    }
+}
+
+/// A reply has to arrive whole however large it is. The listener is built
+/// the way the server builds it, because that is where the fault was: the
+/// accepted socket took the listener's non-blocking flag.
+#[cfg(all(test, unix))]
+mod reply_size_tests {
+    use super::{bind_socket, write_envelope};
+    use interprocess::local_socket::{
+        GenericFilePath, ListenerNonblockingMode, Stream, prelude::*,
+    };
+    use serde_json::json;
+    use std::io::{BufRead, BufReader};
+    use std::time::Duration;
+
+    #[test]
+    fn a_reply_larger_than_the_socket_buffer_arrives_whole() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("s.sock");
+        let listener = bind_socket(&path).expect("bind");
+        listener
+            .set_nonblocking(ListenerNonblockingMode::Accept)
+            .expect("nonblocking accept");
+        let client = std::thread::spawn(move || {
+            let name = path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .expect("name");
+            let stream = Stream::connect(name).expect("connect");
+            // Slow to start reading, so the server meets a full buffer.
+            std::thread::sleep(Duration::from_millis(200));
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).expect("read");
+            line
+        });
+        let mut server = loop {
+            match listener.accept() {
+                Ok(stream) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => unreachable!("accept: {e}"),
+            }
+        };
+        super::serve_blocking(&server).expect("blocking");
+        let sent = write_envelope(&mut server, &json!({ "result": "x".repeat(100 * 1024) }));
+        drop(server);
+        let line = client.join().expect("client");
+        assert!(sent, "the write is reported as done");
+        assert!(line.ends_with('\n'), "{} bytes arrived", line.len());
     }
 }
