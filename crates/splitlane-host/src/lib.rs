@@ -18,6 +18,8 @@
 //! - [`scan`]: where that log may be cut, and which terminal modes a client
 //!   that starts reading there has to be put into.
 //! - [`engine`]: the emulator that answers the program.
+//! - [`program_status`]: what a program reports about itself, and the answer
+//!   to its question whether anybody reads that.
 //! - [`client`]: a blocking client, and [`client::ensure_running`] to start a
 //!   host when none answers.
 //! - [`run`]: the host itself.
@@ -31,6 +33,7 @@ use std::time::Duration;
 pub mod client;
 pub mod engine;
 pub mod log;
+pub mod program_status;
 pub mod protocol;
 pub mod scan;
 
