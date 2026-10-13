@@ -6,6 +6,12 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The fleet skill tells a lead agent that `splitlane wait` prints the
+  session's state as it returns, and not to check it again with `status` or
+  loop until such a check passes.
+
 ### Fixed
 
 - `splitlane --help` lists every scripting command with a line on what it
