@@ -780,6 +780,48 @@ crash, a logout, or the Dock's Quit, which ends the process without passing
 through `request_exit`. The session is saved before the window is put away for
 that reason.
 
+**When the panes run in the session host, keeping the sessions ends the
+window.** That process of its own exists behind a switch
+(`SPLITLANE_SESSION_HOST=1`, macOS; see `ARCHITECTURE.md`), and with it the
+same three answers mean what they say:
+
+- `keep` saves the layout, ends the window's process and leaves every session
+  in the host. Nothing is put away, because nothing has to stay up. The next
+  window attaches each pane to its session again.
+- `stop`, and `quit_and_stop` under any setting, ask the host to end
+  everything it holds - the sessions no pane shows included - and then quit.
+  If the host does not take the request in two seconds the window ends the
+  sessions its own panes show, the way it ends a PTY of its own, and leaves.
+- The restart into an update asks nothing and ends no session, whatever the
+  setting: it replaces the window, and the sessions were never the window's.
+- A door that asks nobody - the Dock's Quit, a logout - is answered by the
+  setting: `stop` stops, anything else leaves the sessions running. A window
+  that is killed outright ends nothing, so its sessions run on and the next
+  window finds them.
+
+With no agent session open, Quit still ends everything, shells included. The
+case that forced keeping was an agent's turn; a host left holding three idle
+shells after the person quit is a process they did not ask for and cannot see.
+If an agent session is open, everything is kept, shells too, so the layout
+comes back whole.
+
+The one thing keeping costs in that mode is being told: reading an agent's
+state is the window's job, so with no window an agent that needs an answer
+waits in silence. The card that offers to keep the sessions says so in that
+mode, in the sentence about keeping, because it is the only place the person
+is choosing with that in front of them. With `keep` there is no card, and so
+nothing says it.
+
+**A session nobody shows is put in front of the person, once.** A session in
+the host that the saved layout does not mention - its window was killed
+before the layout was written - would otherwise run on unseen, and for an
+agent that is spending unseen. A window that finds any when it starts lists
+them on a card, each with `Open` (a new tab in the pane the person is in) and
+`End`. `Not now` ends nothing and the next window lists them again. There is
+deliberately no timeout that ends such a session: it may be the one turn that
+mattered. The card does not take the keyboard, so it is not a focus holder
+and the panes keep their keys while it is up.
+
 The chord's context is `Markdown && !MarkdownSearch`, because the find bar
 layers onto the same node and `enter` there belongs to `markdown_find_next`. It
 is a *predicate* context rather than a bare word, which is why
