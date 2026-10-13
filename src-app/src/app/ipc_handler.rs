@@ -3292,7 +3292,8 @@ impl SplitlaneApp {
                 if let crate::app::orchestration::Caller::Pane(pane) = &who
                     && let Some(looked_at) = terminal.read(cx).agent_thread_id
                 {
-                    self.opener_looked_at(pane.thread_id, looked_at);
+                    let for_answer = params.get("for").and_then(|v| v.as_str()) == Some("answer");
+                    self.opener_looked_at(pane.thread_id, looked_at, for_answer);
                 }
                 let target = self.write_target_for(&who, &terminal, cx);
                 value["drive"] = serde_json::json!(target.drive.word());

@@ -17,6 +17,10 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- A lead agent is told that a session it opened has finished when that
+  session answered within seconds, while the lead was still in the turn that
+  opened it. A lead whose wait sat inside a script that kept running was
+  never told in that case.
 - `splitlane --help` lists every scripting command with a line on what it
   does. It named five of twenty-one, and the error for a mistyped command
   sent the reader there for the list.
