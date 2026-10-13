@@ -384,6 +384,10 @@ woken, nothing is copied to the clipboard, no bell rings, and of the titles,
 working directories and command marks the log holds only the last is kept.
 The host says where its log ended when the attach was made, and that position
 is where old output ends and new begins.
+Keeping that position - which bytes are old, which resize belongs to the log,
+when the replay is over and whether a repaint must then be asked for - is one
+piece of code that knows no emulator (`terminal/stream_replay.rs`); what
+feeds an emulator only does what it is told, in the order it is told.
 
 ### Sessions that outlive the window
 

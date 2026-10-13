@@ -41,6 +41,8 @@ use super::marks::{
 use super::program_status::{SharedProgramStatus, StatusTap};
 use super::service_detector::{ServiceInfo, detect_framework, parse_service_line};
 use super::shell::{resolve_default_shell, setup_shell_integration};
+#[cfg(target_os = "macos")]
+use super::stream_replay::{AttachMode, ReplayAction, SinkStep, StreamReplay, StreamStart};
 use super::types::{
     Content, GridLineText, GridMetrics, HyperlinkSource, HyperlinkZone, Line, Modes, Point,
     SelectionKind, SelectionRange, SelectionSide, SharedTerm, ShellQuoting, TerminalWindowSize,
@@ -2268,46 +2270,6 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-/// How a terminal comes to follow a session in the host.
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AttachMode {
-    /// The window has just started the session itself. Everything in the
-    /// stream is happening now, the first prompt included, and the grid has
-    /// the size the window gives it.
-    Fresh,
-    /// The session was running before this terminal existed. Its log is
-    /// replayed first, quietly and at the sizes the log recorded; see
-    /// [`RemoteSink`]. A view that shows such a terminal must not clear the
-    /// grid on its first layout, as it does for a pane it started.
-    Reattach,
-}
-
-/// Where an attached stream begins, as the host said in its reply.
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug)]
-pub(super) struct StreamStart {
-    pub(super) start_seq: u64,
-    /// Where the log ended at the attach: the first position that is new.
-    pub(super) tail_seq: Option<u64>,
-    /// The stream begins later than was asked, and a preamble comes first.
-    pub(super) gap: bool,
-    pub(super) cols: u16,
-    pub(super) rows: u16,
-}
-
-/// What the thread feeding a [`RemoteSink`] has to do after an event.
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SinkStep {
-    Continue,
-    /// Output was lost on the way and only the modes were restored: ask
-    /// the host to make the program repaint.
-    Redraw,
-    /// The session ended and the terminal was told. Nothing follows.
-    Ended,
-}
-
 /// The receiving ends of what a [`RemoteSink`] reports besides the grid,
 /// for the terminal state that owns the other half.
 #[cfg(target_os = "macos")]
@@ -2316,17 +2278,6 @@ pub(super) struct RemoteSinkChannels {
     pub(super) marks_rx: std::sync::mpsc::Receiver<RawMark>,
     pub(super) last_command: SharedLastCommand,
     pub(super) program_status: SharedProgramStatus,
-}
-
-/// A replay in progress: where it ends and what it has held back so far.
-#[cfg(target_os = "macos")]
-struct Replay {
-    /// The first position that is not old output.
-    until: u64,
-    cwd: Option<String>,
-    mark: Option<RawMark>,
-    /// A preamble was part of it, so the picture is incomplete.
-    redraw: bool,
 }
 
 /// Feeds the stream of a session in the host into a terminal.
@@ -2350,10 +2301,22 @@ struct Replay {
 /// it. At that position the kept ones are sent, the gate goes live, and the
 /// window is told once that there is something to draw.
 ///
+/// Where that position is, and what of the stream falls on which side of
+/// it, is [`StreamReplay`]'s to say. This is the half that does what it
+/// says to an alacritty terminal.
+///
 /// Whose answers reach the program is not decided here: in either state
 /// the gate drops the emulator's replies, because the host has given them.
 #[cfg(target_os = "macos")]
 pub(super) struct RemoteSink {
+    replay: StreamReplay,
+    terminal: SinkTerminal,
+}
+
+/// The terminal a [`RemoteSink`] feeds, with what scans the output on its
+/// way in and what a replay has held back so far.
+#[cfg(target_os = "macos")]
+struct SinkTerminal {
     term: SharedTerm,
     listener: ZedListener,
     gate: Arc<RemoteGate>,
@@ -2366,10 +2329,10 @@ pub(super) struct RemoteSink {
     last_command: SharedLastCommand,
     status: StatusTap,
     replay_finished_tx: UnboundedSender<()>,
-    replay: Option<Replay>,
-    /// The position the stream has reached, while that matters: until the
-    /// replay is over.
-    position: u64,
+    /// The last working directory and the last command mark old output
+    /// reported, until the replay is over.
+    held_cwd: Option<String>,
+    held_mark: Option<RawMark>,
     /// What the OSC filter let through of the chunk being fed.
     filtered: Vec<u8>,
 }
@@ -2388,32 +2351,13 @@ impl RemoteSink {
         let last_command: SharedLastCommand = Arc::new(std::sync::Mutex::new(None));
         let program_status = super::program_status::shared();
         let gate = pending.remote_gate.clone();
-        let replay = match mode {
-            AttachMode::Fresh => None,
-            AttachMode::Reattach => Some(Replay {
-                // A host that does not say where its log ended gives no
-                // way to tell old from new, and then nothing is old.
-                until: start.tail_seq.unwrap_or(start.start_seq),
-                cwd: None,
-                mark: None,
-                redraw: false,
-            }),
-        };
-        gate.set_mode(if replay.is_some() {
-            RemoteGate::REMOTE_REPLAY
-        } else {
-            RemoteGate::REMOTE_LIVE
+        // A reattach is a replay until it is told otherwise, which may be
+        // before the sink exists.
+        gate.set_mode(match mode {
+            AttachMode::Fresh => RemoteGate::REMOTE_LIVE,
+            AttachMode::Reattach => RemoteGate::REMOTE_REPLAY,
         });
-        if replay.is_some() {
-            // The log was laid out for the size the session had where the
-            // stream starts, not for the size this terminal was built at.
-            resize_if_needed(
-                &mut pending.term.lock(),
-                usize::from(start.cols),
-                usize::from(start.rows),
-            );
-        }
-        let mut sink = Self {
+        let mut terminal = SinkTerminal {
             term: pending.term.clone(),
             listener: ZedListener::with_gates(
                 pending.events_tx.clone(),
@@ -2430,18 +2374,13 @@ impl RemoteSink {
             last_command: last_command.clone(),
             status: StatusTap::new(program_status.clone()),
             replay_finished_tx: pending.replay_finished_tx.clone(),
-            replay,
-            position: start.start_seq,
+            held_cwd: None,
+            held_mark: None,
             filtered: Vec::new(),
         };
-        // Nothing to replay, and no preamble on its way that would have to
-        // be read as part of one: live at once. Otherwise an idle session
-        // would leave the terminal replaying until its next byte.
-        if !start.gap {
-            let _ = sink.reached(start.start_seq);
-        }
+        let replay = StreamReplay::new(mode, start, &mut |action| terminal.apply(action));
         (
-            sink,
+            Self { replay, terminal },
             RemoteSinkChannels {
                 cwd_rx,
                 marks_rx,
@@ -2453,104 +2392,76 @@ impl RemoteSink {
 
     /// Take one event of the stream, in the order the host sent it.
     pub(super) fn handle(&mut self, event: splitlane_host::StreamEvent) -> SinkStep {
-        use splitlane_host::StreamEvent;
-        match event {
-            StreamEvent::Output { seq, bytes } => self.output(seq, &bytes),
-            StreamEvent::Resized { seq, cols, rows } => {
-                // Only while replaying. Live, the window decides the size
-                // of its grid and this is the echo of what it asked for,
-                // or one half of a redraw's nudge.
-                if self
-                    .replay
-                    .as_ref()
-                    .is_some_and(|replay| seq < replay.until)
-                {
-                    resize_if_needed(&mut self.term.lock(), usize::from(cols), usize::from(rows));
-                }
-                self.reached(seq.saturating_add(1))
-            }
-            // What was lost is lost; the preamble that follows says what
-            // to do about it.
-            StreamEvent::Gap { resumes_at, .. } => self.reached(resumes_at),
-            StreamEvent::Preamble(bytes) => {
-                self.feed(&bytes);
-                match self.replay.as_mut() {
-                    Some(replay) => {
-                        // Asked for when the replay is over: a repaint in
-                        // the middle of it would be painted over. And it
-                        // is over already if the log held nothing else.
-                        replay.redraw = true;
-                        self.reached(self.position)
-                    }
-                    None => SinkStep::Redraw,
-                }
-            }
-            StreamEvent::Exited(status) => {
-                if self.replay.is_some() {
-                    // The program that would repaint is gone.
-                    let _ = self.finish_replay();
-                }
-                self.exited(status);
-                SinkStep::Ended
-            }
-        }
+        let Self { replay, terminal } = self;
+        replay.handle(&event, &mut |action| terminal.apply(action))
     }
 
-    fn output(&mut self, seq: u64, bytes: &[u8]) -> SinkStep {
-        let Some(until) = self.replay.as_ref().map(|replay| replay.until) else {
-            self.feed(bytes);
-            return SinkStep::Continue;
-        };
-        // One chunk can hold the last old bytes and the first new ones.
-        let old = usize::try_from(until.saturating_sub(seq))
-            .unwrap_or(usize::MAX)
-            .min(bytes.len());
-        self.feed(&bytes[..old]);
-        let step = self.reached(seq.saturating_add(old as u64));
-        if old < bytes.len() {
-            self.feed(&bytes[old..]);
-        }
-        step
+    /// When a synchronized update the program began and did not end has to
+    /// be shown anyway. `None` while nothing is held.
+    pub(super) fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.terminal.parser.sync_timeout().sync_timeout()
     }
 
-    /// The stream stands at `seq`. Ends the replay if that is where the
-    /// log ended.
-    fn reached(&mut self, seq: u64) -> SinkStep {
-        self.position = seq;
+    /// The stream went quiet. Shows what a synchronized update is holding
+    /// back once its time is up, as the `EventLoop` does when its poll
+    /// times out.
+    pub(super) fn quiet(&mut self) {
         if self
-            .replay
-            .as_ref()
-            .is_some_and(|replay| seq >= replay.until)
+            .sync_deadline()
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
         {
-            return self.finish_replay();
+            let terminal = &mut self.terminal;
+            terminal.parser.stop_sync(&mut *terminal.term.lock());
+            if self.replay.is_live() {
+                terminal.listener.send_event(AlacEvent::Wakeup);
+            }
         }
-        SinkStep::Continue
     }
 
-    fn finish_replay(&mut self) -> SinkStep {
-        let Some(replay) = self.replay.take() else {
-            return SinkStep::Continue;
-        };
+    /// The connection to the host is gone while the session was running.
+    /// The pane says so and ends, as for a shell that died: what became of
+    /// the session cannot be known from here.
+    pub(super) fn connection_lost(&mut self) {
+        let Self { replay, terminal } = self;
+        replay.abandon(&mut |action| terminal.apply(action));
+        terminal.parser.advance(
+            &mut *terminal.term.lock(),
+            b"\r\n\x1b[0;2mThe connection to the session host was lost.\x1b[0m\r\n",
+        );
+        terminal.term.lock().exit();
+        terminal.listener.send_event(AlacEvent::Wakeup);
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl SinkTerminal {
+    fn apply(&mut self, action: ReplayAction<'_>) {
+        match action {
+            ReplayAction::ResizeGrid { cols, rows } => {
+                resize_if_needed(&mut self.term.lock(), usize::from(cols), usize::from(rows));
+            }
+            ReplayAction::Feed { bytes, live } => self.feed(bytes, live),
+            ReplayAction::GoLive => self.go_live(),
+            ReplayAction::Exited(status) => self.exited(status),
+        }
+    }
+
+    fn go_live(&mut self) {
         if let Some(title) = self.gate.go_live() {
             self.listener.send_event(title);
         }
-        if let Some(cwd) = replay.cwd {
+        if let Some(cwd) = self.held_cwd.take() {
             let _ = self.cwd_tx.unbounded_send(cwd);
         }
-        if let Some(mark) = replay.mark {
+        if let Some(mark) = self.held_mark.take() {
             let _ = self.marks_tx.try_send(mark);
         }
         let _ = self.replay_finished_tx.unbounded_send(());
-        if replay.redraw {
-            SinkStep::Redraw
-        } else {
-            SinkStep::Continue
-        }
     }
 
     /// Run a chunk of the session's output through the scanners and the
     /// parser, and wake the window unless it is old output.
-    fn feed(&mut self, bytes: &[u8]) {
+    fn feed(&mut self, bytes: &[u8], live: bool) {
         if bytes.is_empty() {
             return;
         }
@@ -2561,42 +2472,40 @@ impl RemoteSink {
             marks_tx,
             last_command,
             status,
-            replay,
+            held_cwd,
+            held_mark,
             ..
         } = self;
         // Old output and new alike: what the program last said of itself is
         // what it last said, whenever that was. The question is not answered
         // from here, because the host that holds the PTY has answered it.
         status.advance(bytes, &mut |_| {});
-        match replay.as_mut() {
-            Some(replay) => {
-                cwd_scanner.advance(bytes, |cwd| replay.cwd = Some(cwd));
-                marks_scanner.feed(bytes, &mut |event| match event {
-                    ScanEvent::Mark(mark) => {
-                        if mark.kind == MarkKind::PromptStart {
-                            status.prompt_started();
-                        }
-                        replay.mark = Some(mark);
+        if live {
+            cwd_scanner.advance(bytes, |cwd| {
+                let _ = cwd_tx.unbounded_send(cwd);
+            });
+            marks_scanner.feed(bytes, &mut |event| match event {
+                ScanEvent::Mark(mark) => {
+                    if mark.kind == MarkKind::PromptStart {
+                        status.prompt_started();
                     }
-                    // The newest command is the newest command, whenever
-                    // it ran.
-                    ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
-                });
-            }
-            None => {
-                cwd_scanner.advance(bytes, |cwd| {
-                    let _ = cwd_tx.unbounded_send(cwd);
-                });
-                marks_scanner.feed(bytes, &mut |event| match event {
-                    ScanEvent::Mark(mark) => {
-                        if mark.kind == MarkKind::PromptStart {
-                            status.prompt_started();
-                        }
-                        let _ = marks_tx.try_send(mark);
+                    let _ = marks_tx.try_send(mark);
+                }
+                ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
+            });
+        } else {
+            cwd_scanner.advance(bytes, |cwd| *held_cwd = Some(cwd));
+            marks_scanner.feed(bytes, &mut |event| match event {
+                ScanEvent::Mark(mark) => {
+                    if mark.kind == MarkKind::PromptStart {
+                        status.prompt_started();
                     }
-                    ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
-                });
-            }
+                    *held_mark = Some(mark);
+                }
+                // The newest command is the newest command, whenever
+                // it ran.
+                ScanEvent::CommandLine(payload) => note_command_line(last_command, payload),
+            });
         }
         self.osc_filter.advance(bytes);
         self.filtered.clear();
@@ -2609,29 +2518,8 @@ impl RemoteSink {
         self.parser.advance(&mut *self.term.lock(), &self.filtered);
         // As the `EventLoop` does: no redraw while everything that was
         // read is being held for a synchronized update.
-        if self.replay.is_none() && self.parser.sync_bytes_count() < self.filtered.len() {
+        if live && self.parser.sync_bytes_count() < self.filtered.len() {
             self.listener.send_event(AlacEvent::Wakeup);
-        }
-    }
-
-    /// When a synchronized update the program began and did not end has to
-    /// be shown anyway. `None` while nothing is held.
-    pub(super) fn sync_deadline(&self) -> Option<std::time::Instant> {
-        self.parser.sync_timeout().sync_timeout()
-    }
-
-    /// The stream went quiet. Shows what a synchronized update is holding
-    /// back once its time is up, as the `EventLoop` does when its poll
-    /// times out.
-    pub(super) fn quiet(&mut self) {
-        if self
-            .sync_deadline()
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-        {
-            self.parser.stop_sync(&mut *self.term.lock());
-            if self.replay.is_none() {
-                self.listener.send_event(AlacEvent::Wakeup);
-            }
         }
     }
 
@@ -2641,19 +2529,6 @@ impl RemoteSink {
         if let Some(status) = exit_status_from_host(status) {
             self.listener.send_event(AlacEvent::ChildExit(status));
         }
-        self.term.lock().exit();
-        self.listener.send_event(AlacEvent::Wakeup);
-    }
-
-    /// The connection to the host is gone while the session was running.
-    /// The pane says so and ends, as for a shell that died: what became of
-    /// the session cannot be known from here.
-    pub(super) fn connection_lost(&mut self) {
-        let _ = self.finish_replay();
-        self.parser.advance(
-            &mut *self.term.lock(),
-            b"\r\n\x1b[0;2mThe connection to the session host was lost.\x1b[0m\r\n",
-        );
         self.term.lock().exit();
         self.listener.send_event(AlacEvent::Wakeup);
     }
