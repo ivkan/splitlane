@@ -8,6 +8,21 @@ authors.workspace = true
 repository.workspace = true
 description = "GPU-free session host for Splitlane: owns PTYs and their output logs so sessions outlive the window"
 
+[features]
+default = ["libghostty-linux"]
+# The Linux engine: libghostty-vt, which is what the window's panes run on
+# there. On by default so that the crate is built and tested with the engine
+# it ships with. A feature at all because the pinned libghostty archive
+# exists for the reviewed Linux targets only and its build script refuses
+# any other: an app built without its own `libghostty-linux`, whose panes
+# are Alacritty's, leaves this off too and gets a host without an engine.
+# The dependency is declared for Linux alone, so the feature is inert on
+# every other platform.
+libghostty-linux = [
+    "dep:splitlane-terminal-ghostty",
+    "splitlane-terminal-ghostty/native",
+]
+
 [dependencies]
 interprocess.workspace = true
 log.workspace = true
@@ -24,10 +39,13 @@ libc.workspace = true
 portable-pty = "0.9.0"
 
 # The emulator that answers a program's terminal queries. Each platform uses
-# the one its window uses, and that is this one on macOS only; elsewhere the
-# host runs without an engine for now.
+# the one its window uses: Alacritty's on macOS, libghostty-vt on Linux. The
+# host does not run on Windows yet and has no engine there.
 [target.'cfg(target_os = "macos")'.dependencies]
 alacritty_terminal.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+splitlane-terminal-ghostty = { path = "../splitlane-terminal-ghostty", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

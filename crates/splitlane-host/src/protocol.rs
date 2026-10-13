@@ -534,7 +534,9 @@ pub struct Facts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<Rgb>,
     /// Colours of the indexed palette, by index. Indices that are absent
-    /// are not answered for; the host has no palette of its own.
+    /// are not answered for; the host has no palette of its own. Where the
+    /// window's emulator does not answer for the palette at all, as
+    /// libghostty does not, the host does not either and these go unused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub palette: BTreeMap<u8, Rgb>,
     /// Size of one character cell in pixels.

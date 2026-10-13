@@ -274,7 +274,13 @@ differ from what the window would have said - a program would otherwise be
 told one thing at start-up and find another once a window shows it - so the
 host uses, on each platform, the emulator the window uses there, built with
 the same settings. On macOS that is `alacritty_terminal`, and a test in the
-app asks a pane's terminal and the host's the same questions and compares.
+app asks a pane's terminal and the host's the same questions and compares. On
+Linux it is libghostty-vt, which lives on a thread of its own in each session
+because its terminal cannot be handed between threads; it keeps a little
+scrollback, since without any the cursor is reported elsewhere once the
+terminal has grown taller. The two emulators answer differently - one says it
+has the keyboard protocol and names itself, the other does neither - and each
+session gets the answers of the platform it runs on.
 What only a window can know, its colours and the size of a cell in pixels, a
 client tells the host; until one has, those questions go unanswered, as in a
 terminal that does not support them. Answers go to the program without ever
@@ -290,9 +296,12 @@ first reply it gets as the verdict.
 
 Still open:
 
-- **Linux has no answering emulator yet.** The window there uses libghostty,
-  the host does not link it, and so on Linux the host answers no queries. The
-  emulator sits behind a small trait; adding one touches nothing else.
+- **A Linux build without libghostty has no answering emulator.** Such a
+  build's panes run on Alacritty's emulator, which the host carries on macOS
+  only, so its host answers no queries.
+- **The Linux emulator does not answer for the palette.** libghostty leaves a
+  query for an indexed colour unanswered in a pane too, so the palette a
+  client tells the host goes unused there.
 - **The picture comes from the program.** After a trim, what is on screen is
   whatever the program repaints. A program that does not repaint on a resize
   shows only what it prints from then on, and scrollback older than the ring
@@ -328,8 +337,8 @@ child the limit it was itself started with.
 On macOS, a window started with `SPLITLANE_SESSION_HOST=1` opens every new
 pane in the host. The variable is read once, at start; it is an environment
 variable and not a setting because the path is new and a setting is a promise
-to keep. Linux and Windows ignore it: the host has no answering emulator
-there.
+to keep. Linux and Windows ignore it: the window does not open panes in the
+host there yet.
 
 The emulator, the view and the renderer of such a pane are the ones every
 pane uses. What differs is the two ends of the byte stream:

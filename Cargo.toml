@@ -69,7 +69,9 @@ alacritty_terminal = "0.26"
 # Internal crates
 splitlane-acp = { path = "crates/splitlane-acp" }
 splitlane-config = { path = "crates/splitlane-config" }
-splitlane-host = { path = "crates/splitlane-host" }
+# Without its default features, so that the app decides whether the host's
+# libghostty engine is linked; see `libghostty-linux` in both manifests.
+splitlane-host = { path = "crates/splitlane-host", default-features = false }
 splitlane-ipc-client = { path = "crates/splitlane-ipc-client" }
 splitlane-process = { path = "crates/splitlane-process" }
 splitlane-telemetry = { path = "crates/splitlane-telemetry" }

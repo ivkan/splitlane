@@ -25,7 +25,10 @@ use splitlane_host::{
     ensure_running, AttachFrom, Attachment, Client, ExitStatus, HostConfig, HostError, SessionId,
     SessionInfo, SpawnSpec, StreamEvent,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", feature = "libghostty-linux")
+))]
 use splitlane_host::{Facts, Rgb};
 
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -838,8 +841,22 @@ fn read_hex(count: usize) -> String {
     format!("dd bs=1 count={count} 2>/dev/null | od -An -tx1 | tr -d ' \\n'")
 }
 
-// The three tests below need an engine, and the host has one on macOS only
-// so far.
+// The three tests below need an engine. Which one the host has depends on
+// the platform, because it is the emulator the window uses there, and so do
+// two of the answers a program gets.
+
+/// What the terminal says it is.
+#[cfg(target_os = "macos")]
+const WHAT_ARE_YOU: &[u8] = b"\x1b[?6c";
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+const WHAT_ARE_YOU: &[u8] = b"\x1b[?62;22;52c";
+
+/// What it says about the keyboard protocol: nothing where a pane's terminal
+/// is built without it, and the flags in effect where it has it.
+#[cfg(target_os = "macos")]
+const KEYBOARD_FLAGS: &[u8] = b"";
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+const KEYBOARD_FLAGS: &[u8] = b"\x1b[?0u";
 
 /// A program asks whether its status reports are read and, so as not to
 /// wait, what the terminal is; the first answer to arrive decides. The host
@@ -867,16 +884,20 @@ fn a_program_asking_whether_its_status_is_read_is_told_so_first() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", feature = "libghostty-linux")
+))]
 #[test]
 fn a_program_gets_its_answers_with_nobody_attached() {
     let host = TestHost::start(|_| {});
     let client = host.client();
     // Where is the cursor, is the keyboard protocol supported, what are
-    // you. The second goes unanswered, as it does in a pane, and the
-    // program reads exactly the two answers that are left: one more or one
-    // fewer and the digits printed would be different ones.
-    let answers = b"\x1b[1;3R\x1b[?6c";
+    // you. The second is answered as it is in a pane, which on one
+    // platform is not at all, and the program reads exactly the answers
+    // there are: one more or one fewer and the digits printed would be
+    // different ones.
+    let answers = [b"\x1b[1;3R", KEYBOARD_FLAGS, WHAT_ARE_YOU].concat();
     let script = format!(
         "stty raw -echo; printf 'ab\\033[6n\\033[?u\\033[c'; {}; printf ' end'",
         read_hex(answers.len())
@@ -890,12 +911,15 @@ fn a_program_gets_its_answers_with_nobody_attached() {
     let trace = whole_session(&client, session);
     assert_eq!(
         trace.text(),
-        format!("ab\x1b[6n\x1b[?u\x1b[c{} end", hex(answers))
+        format!("ab\x1b[6n\x1b[?u\x1b[c{} end", hex(&answers))
     );
     assert_eq!(info(&client, session).dropped_replies, 0);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", feature = "libghostty-linux")
+))]
 #[test]
 fn questions_about_the_window_are_answered_once_a_client_has_told_the_host() {
     let host = TestHost::start(|_| {});
@@ -910,7 +934,7 @@ fn questions_about_the_window_are_answered_once_a_client_has_told_the_host() {
         "stty raw -echo; printf '\\033]11;?\\007\\033[14t\\033[c'; {}; printf ' first '; \
          dd bs=1 count=1 2>/dev/null >/dev/null; printf '\\033]11;?\\007\\033[14t'; {}; printf ' second '; \
          dd bs=1 count=1 2>/dev/null >/dev/null; printf '\\033[14t'; {}; printf ' third'",
-        read_hex(5),
+        read_hex(WHAT_ARE_YOU.len()),
         read_hex(background.len() + pixels.len()),
         read_hex(resized.len()),
     );
@@ -922,7 +946,7 @@ fn questions_about_the_window_are_answered_once_a_client_has_told_the_host() {
     });
     assert!(trace
         .text()
-        .contains(&format!("{} first ", hex(b"\x1b[?6c"))));
+        .contains(&format!("{} first ", hex(WHAT_ARE_YOU))));
 
     client
         .set_facts(
@@ -977,7 +1001,10 @@ fn questions_about_the_window_are_answered_once_a_client_has_told_the_host() {
     assert_eq!(error.remote_code(), Some(protocol::ERR_NO_SESSION));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", feature = "libghostty-linux")
+))]
 #[test]
 fn answers_a_program_does_not_read_are_dropped_and_hold_nothing_back() {
     const QUESTIONS: u64 = 4 * 1024 * 1024;
