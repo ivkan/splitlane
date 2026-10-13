@@ -11,6 +11,9 @@ Notable changes to Splitlane are recorded here. The format follows
 - The fleet skill tells a lead agent that `splitlane wait` prints the
   session's state as it returns, and not to check it again with `status` or
   loop until such a check passes.
+- The fleet skill no longer takes every failure of its first command for
+  Splitlane not running. Only a message that says so means that; after any
+  other the lead tries `splitlane ls` and reports what went wrong.
 
 ### Fixed
 

@@ -35,10 +35,15 @@ Inside a Splitlane pane the variable `SPLITLANE_CLI` holds its full path: run
 say so and stop.
 
 If it prints a fleet table (or `(no agents)`), you are connected - continue. If it
-fails with a message like `cannot locate the IPC socket; is Splitlane running?`
-(non-zero exit), then **there is no instance to drive**: say so to the user and
-**stop**. Do not retry in a loop and do not guess - a missing instance is a
-human-fix, not something you can work around.
+fails with a message that ends `is Splitlane running?` - `cannot locate the IPC
+socket`, `cannot reach the app at ...` - then **there is no instance to drive**:
+say so to the user and **stop**. Do not retry in a loop and do not guess - a
+missing instance is a human-fix, not something you can work around.
+
+Any other failure is not a missing instance. An answer that could not be read
+(`invalid JSON-RPC response ...`), a refusal with an error code: the app is
+there and this one command went wrong. Run `splitlane ls`; if that answers,
+carry on, and tell the user what `ps` said, word for word.
 
 ## 1. Sessions you open yourself
 
