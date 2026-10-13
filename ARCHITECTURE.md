@@ -199,8 +199,8 @@ host is the process meant to take that ownership over. **By default the window
 does not use it:** every pane owns its PTY as described above. On macOS a
 window started with `SPLITLANE_SESSION_HOST=1` opens its panes in the host
 instead, which is described under [A pane in the host](#a-pane-in-the-host).
-That switch moves where a pane's PTY lives and nothing else yet: quitting the
-window still ends its sessions.
+With the switch on, a pane's session belongs to the host and outlives the
+window: see [Sessions that outlive the window](#sessions-that-outlive-the-window).
 
 The host is the app binary started as `splitlane __splitlane-host`. It leaves
 `main` before anything of the app is initialised and never loads GPUI; the
@@ -223,7 +223,10 @@ client sent and nothing from the host's own, because the host may have been
 started by another release or from another terminal. For each session the host
 starts the same watcher process the app starts for the PTYs it owns, keyed on
 the host's pid, so a host that is killed outright still takes its children
-with it.
+with it. The watcher is the app binary, and a host outlives the release it
+was started from: an update moves that binary away. When the watcher cannot
+be started the host forks instead, and the copy - which keeps nothing of the
+host's but one end of a pipe - does the watcher's job.
 
 **Attaching is replaying a log.** The host does not hand out a screen. It holds
 each session's raw output in a bounded ring (8 MiB by default), and a client
@@ -314,6 +317,12 @@ that has exited stays listed with its log until a client forgets it, but does
 not keep the host alive once nobody is connected. Its log goes to `host.log`
 in the app's cache directory.
 
+A host serves 1024 connections, one for each pane of a window and one for the
+window. The number is set where its open files would run out: a session costs
+the host seven descriptors and its pane one more, so the host raises its own
+limit on open files as far as the platform lets it and gives each session's
+child the limit it was itself started with.
+
 ### A pane in the host
 
 On macOS, a window started with `SPLITLANE_SESSION_HOST=1` opens every new
@@ -357,10 +366,7 @@ if the pane cannot be attached the session is ended and the pane shows the
 error.
 
 Closing a pane ends its session: the host is asked to terminate the process
-group, and to forget the session once the child is reaped. The window also
-starts its own watcher for every session's child, so a window that quits, is
-killed or is replaced by an update takes its sessions with it, exactly as it
-does for the PTYs it owns.
+group, and to forget the session once the child is reaped.
 
 A terminal can also be attached to a session that was already running. It
 then replays the session's log first, and a replay rebuilds the grid without
@@ -368,14 +374,85 @@ acting on anything: the output is as old as the session, so the window is not
 woken, nothing is copied to the clipboard, no bell rings, and of the titles,
 working directories and command marks the log holds only the last is kept.
 The host says where its log ended when the attach was made, and that position
-is where old output ends and new begins. The code and its tests exist; nothing
-in the window attaches this way yet.
+is where old output ends and new begins.
+
+### Sessions that outlive the window
+
+A session in the host is not the window's. The window starts no watcher for
+it, and a pane that is torn down because the window is going away lets go of
+its session without ending it. So a window that quits with the sessions to be
+kept, restarts into an update, or is killed, leaves them running in the host,
+and the host exits by itself only once it holds none and nobody is connected.
+What leaving does in each case is in `docs/internals/design-decisions.md`.
+
+**The saved layout is how sessions are found again.** A shell tab records the
+id of its session (`host_session`), and so does the record of an agent
+session, whether it is in a pane or not; the layout is written as soon as a
+pane's session is known. A window that starts restores panes as it always
+does, as descriptions, and each one settles its own case when it is first
+shown: if its session is still running it is attached to it, replay first; if
+the host does not have it, or its shell has ended, the pane gets a new shell
+and, for an agent, the command that resumes the conversation. That command is
+held back while the session may still be there, because typing it into a
+running agent's terminal would start a second agent beside the first.
+
+**Sessions the layout does not mention are listed.** When it starts, a window
+asks the host what it holds - on a thread, with a bound of 400 ms on the wait
+- and whatever no tab and no agent session refers to is shown on a card, each
+session to be opened in a pane or ended. A host that does not answer in time
+is taken to hold nothing: nothing is attached and nothing is ended.
+
+**A shell in the host is not told its pane's own id.** `SPLITLANE_SURFACE_ID`
+is what a shell's hooks and CLI calls say back to the app, and a pane's own id
+is a small number every window hands out again. A session that outlived its
+window would go on saying a number that, in the next window, is quite likely
+some other pane's - and nothing in a request tells the old shell from a
+script that read the number off a listing. So a shell started in the host is
+told an id made up for it, from a range no window hands out, and the window
+keeps a table from the ids programs say to the panes they mean now. Starting a
+shell adds an entry; attaching to a session adds one from what the host
+recorded when the session was started; a pane that goes takes its entries
+with it. The IPC layer reads every pane id it is given through that table
+first, hook frames and `surface.*` parameters alike. The same id does not
+appear in `surface.list`, which lists panes by their own ids: a script that
+compares the two finds no match, while a call that names the pane by either
+reaches it.
+
+`SPLITLANE_WORKSPACE_ID` needs no table. It is a project's or an agent
+session's id, both are written into the session file, and a window restores
+them as they were. Nor does `SPLITLANE_SOCKET_PATH`: the path has no part that
+changes between runs, so the next window listens where the last one did.
+
+**Shims stay where a session found them.** A shell has the directory of the
+release it was started under on its `PATH`, one directory per release
+(`bin/<version>/` in the cache). No release removes another's, so a session
+that outlives an update keeps its agent commands, and the agent detector
+recognises a shim in any of those directories, not only this build's.
+
+**An update leaves the host alone until it is empty.** The window that comes
+back after an update is a newer release than the host it finds; the two talk
+over the versioned contract, and the sessions go on. Each time such a window
+is about to open a pane it asks the host to stop if it holds nothing; the
+host refuses while a session runs, and once it has stopped the window starts
+a host of its own release. So new host code runs from the first moment it can
+without ending anything.
 
 Not there yet:
 
-- **Sessions do not outlive the window.** Keeping them when the window quits,
-  and finding and reattaching them when it starts, is what the switch is a
-  step towards.
+- **Nothing reads an agent's state while no window runs.** The detector and
+  the notifications are the window's. An agent that needs an answer waits
+  until a window is started.
+- **A host that crashes, or a restart of the machine, ends its sessions.**
+  They come back the way they do without the host: a new shell, and the
+  agent's own resume.
+- **The card of unshown sessions is shown once, at start.** Put away, it does
+  not come back until the next window; `splitlane host status` lists what the
+  host holds at any time.
+- **A window that restarts while the host is still stopping** can find the
+  host unable to take a session. Its panes then open in the window, and the
+  host is tried again half a minute later.
+- **An event subscription filtered by pane id** is matched against panes' own
+  ids only, not against the ids shells were told.
 - **A pane is told the window's colors when it is drawn.** After a theme
   change, a pane that is not on screen answers color queries with the old
   theme until it is shown again.
