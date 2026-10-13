@@ -1231,7 +1231,11 @@ fn kill_ends_the_whole_process_group() {
 /// SIGKILL and save nothing.
 #[test]
 fn kill_hangs_up_first_so_a_shell_can_save_what_it_has() {
-    let host = TestHost::start(|_| {});
+    // What is tested is the order: the hangup comes first and the shell is
+    // let finish. How fast a shell runs its trap is the machine's business,
+    // and a loaded one did not manage it in the tenth of a second a host
+    // gives by default.
+    let host = TestHost::start(|config| config.kill_grace = Duration::from_secs(5));
     let client = host.client();
     let dir = short_dir();
     let saved = dir.path().join("saved");

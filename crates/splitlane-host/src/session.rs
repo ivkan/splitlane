@@ -48,9 +48,6 @@ use crate::protocol::{ExitStatus, Facts, SessionId, SessionInfo, SpawnSpec};
 /// the host only starts it.
 pub const PTY_GUARD_SUBCOMMAND: &str = "__splitlane-pty-guard";
 
-/// How long a process group gets between SIGTERM and SIGKILL.
-pub(crate) const KILL_GRACE: Duration = Duration::from_millis(100);
-
 /// How long output is still collected after the child was reaped. A child's
 /// last words are already in the PTY when it exits, so this is normally one
 /// short read; the bound is for a background process that inherited the PTY
@@ -163,6 +160,7 @@ pub(crate) struct SessionSettings {
     pub(crate) log_capacity: usize,
     pub(crate) budget: Arc<LogBudget>,
     pub(crate) guard_exe: Option<PathBuf>,
+    pub(crate) kill_grace: Duration,
 }
 
 /// State guarded by one lock and announced through one condition variable:
@@ -234,6 +232,7 @@ pub(crate) struct Session {
     pub(crate) shared: Mutex<Shared>,
     pub(crate) changed: Condvar,
     budget: Arc<LogBudget>,
+    kill_grace: Duration,
     terminal: Mutex<Terminal>,
     /// Answers the program's terminal queries. `None` on a platform that
     /// has no engine, after the session ended, and after an engine failed.
@@ -341,6 +340,7 @@ impl Session {
             }),
             changed: Condvar::new(),
             budget: settings.budget.clone(),
+            kill_grace: settings.kill_grace,
             terminal: Mutex::new(Terminal {
                 master: Some(master),
                 asked: size,
@@ -736,8 +736,9 @@ impl Session {
             return;
         }
         let pid = self.pid;
+        let grace = self.kill_grace;
         let spawned = thread("killer", move || {
-            std::thread::sleep(KILL_GRACE);
+            std::thread::sleep(grace);
             signal_group(pid, libc::SIGKILL);
         });
         if spawned.is_err() {

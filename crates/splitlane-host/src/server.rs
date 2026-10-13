@@ -50,7 +50,7 @@ use crate::protocol::{
     ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId, SetFactsArgs, ShutdownArgs,
     SpawnArgs, SpawnResult, WireError,
 };
-use crate::session::{LogBudget, Session, SessionSettings, KILL_GRACE};
+use crate::session::{LogBudget, Session, SessionSettings};
 use crate::{lock, HostConfig, HostError, MAX_SOCKET_PATH_BYTES};
 
 /// How often the accept loop looks at everything that is not a connection:
@@ -142,6 +142,7 @@ pub(crate) fn run(config: HostConfig) -> Result<(), HostError> {
             log_capacity: config.log_capacity_bytes,
             budget: LogBudget::new(config.total_log_capacity_bytes),
             guard_exe: config.guard_exe.clone(),
+            kill_grace: config.kill_grace,
         },
         sessions: Mutex::new(Vec::new()),
         clients: AtomicUsize::new(0),
@@ -259,7 +260,7 @@ fn end_sessions(host: &Host) {
     for session in &running {
         session.terminate();
     }
-    let grace = Instant::now() + KILL_GRACE;
+    let grace = Instant::now() + host.settings.kill_grace;
     while Instant::now() < grace && running.iter().any(|session| session.group_alive()) {
         std::thread::sleep(Duration::from_millis(10));
     }
