@@ -30,6 +30,16 @@
 //! window. That thread puts messages on a queue and sets flags, and
 //! dropping a connection, which can wait behind a stuck write, is left to
 //! the pane's reader.
+//!
+//! # Who ends a session
+//!
+//! A session belongs to the host, and the host's own watcher is what ends
+//! its processes if the host dies. The window starts no watcher for it and
+//! does not end it by going away: a window that quits, is updated or
+//! crashes leaves its sessions running, and the next window finds them.
+//! Two things end a session from here. Closing its pane does, and so does
+//! leaving the app with the sessions to be stopped, which asks the host to
+//! end everything it holds.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -41,12 +51,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
+use splitlane_host::protocol::ERR_LIVE_SESSIONS;
 use splitlane_host::protocol::{ERR_NO_SESSION, ERR_SESSION_EXITED, ERR_SESSION_LIVE};
 use splitlane_host::{
-    AttachFrom, Attachment, Client, Facts, HOST_SUBCOMMAND, HostError, SessionId, SpawnSpec,
-    StreamEvent,
+    AttachFrom, Attachment, Client, Facts, HOST_SUBCOMMAND, HostError, SessionId, SessionInfo,
+    SpawnSpec, StreamEvent,
 };
 
+use super::held_sessions::HeldSession;
 use super::pty_session::{
     AttachMode, ForegroundSignalMask, MAX_PENDING_INPUT_BYTES, PendingTerminalBackend, RemoteSink,
     RemoteSinkChannels, SinkStep, SpawnParams, SpawnedPty, StreamStart, TerminalState,
@@ -63,6 +75,10 @@ const END_WAIT: Duration = Duration::from_secs(3);
 /// How often the reader looks up from the stream to see whether its pane
 /// was closed.
 const STREAM_TICK: Duration = Duration::from_millis(100);
+
+/// How long a host of another release that holds nothing is given to go
+/// away before a host of this release is started in its place.
+const RETIRE_WAIT: Duration = Duration::from_secs(3);
 
 /// What a pane has to tell its session in the host.
 ///
@@ -200,7 +216,10 @@ pub(super) fn process_endpoint() -> Option<Arc<HostEndpoint>> {
             let launcher = std::env::current_exe().ok()?;
             Some(HostEndpoint::new(
                 socket.path().to_path_buf(),
-                Some(launcher),
+                Some(Launcher {
+                    exe: launcher,
+                    args: vec![HOST_SUBCOMMAND.to_string()],
+                }),
             ))
         })
         .clone()
@@ -217,10 +236,32 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// panes share for starting and ending sessions.
 pub(super) struct HostEndpoint {
     socket: PathBuf,
-    /// The binary to start as a host when none answers. `None` only
-    /// connects, for a host somebody else runs.
-    launcher: Option<PathBuf>,
+    /// What to start as a host when none answers. `None` only connects,
+    /// for a host somebody else runs.
+    launcher: Option<Launcher>,
+    /// The release this window is, to tell a host of another one by.
+    release: String,
     state: Mutex<EndpointState>,
+    /// Set once the window is going away and its sessions are to stay.
+    /// From then on a pane that is dropped lets go of its session without
+    /// ending it.
+    leaving: AtomicBool,
+    /// The sessions this window's panes follow, with the pid of each one's
+    /// child: what is ended by hand when the host cannot be asked to.
+    followed: Mutex<BTreeMap<SessionId, u32>>,
+}
+
+/// A command that runs as a session host.
+pub(super) struct Launcher {
+    pub(super) exe: PathBuf,
+    pub(super) args: Vec<String>,
+}
+
+impl Launcher {
+    fn start(&self, socket: &std::path::Path) -> Result<Client, HostError> {
+        let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        splitlane_host::ensure_running(&self.exe, &args, socket)
+    }
 }
 
 #[derive(Default)]
@@ -231,12 +272,82 @@ struct EndpointState {
 }
 
 impl HostEndpoint {
-    pub(super) fn new(socket: PathBuf, launcher: Option<PathBuf>) -> Arc<Self> {
+    pub(super) fn new(socket: PathBuf, launcher: Option<Launcher>) -> Arc<Self> {
+        Self::of_release(socket, launcher, env!("CARGO_PKG_VERSION"))
+    }
+
+    /// An endpoint of a window that is the release `release`.
+    pub(super) fn of_release(
+        socket: PathBuf,
+        launcher: Option<Launcher>,
+        release: &str,
+    ) -> Arc<Self> {
         Arc::new(Self {
             socket,
             launcher,
+            release: release.to_string(),
             state: Mutex::new(EndpointState::default()),
+            leaving: AtomicBool::new(false),
+            followed: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// The window is going away and what runs in the host stays. Every way
+    /// out of the process that the toolkit knows of comes here before the
+    /// panes are torn down; a process that is killed outright never tears
+    /// them down.
+    pub(super) fn leave_sessions_running(&self) {
+        self.leaving.store(true, Ordering::Release);
+    }
+
+    pub(super) fn leaving(&self) -> bool {
+        self.leaving.load(Ordering::Acquire)
+    }
+
+    /// Let a host of another release go once it holds nothing, and start
+    /// one of this release in its place. Returns the connection to use.
+    ///
+    /// A host outlives the window that started it, so after an update the
+    /// new window is served by the old release's host. That is wanted for
+    /// as long as the host holds a session, and for no longer: with nothing
+    /// to lose, the code that runs should be the code that is installed.
+    /// The host itself decides - it refuses to stop while a session runs -
+    /// so a session started by somebody else in the meantime is safe.
+    fn retire_other_release(&self, control: Client) -> Result<Client, HostError> {
+        let Some(launcher) = &self.launcher else {
+            return Ok(control);
+        };
+        if control.host().version == self.release {
+            return Ok(control);
+        }
+        match control.shutdown(false) {
+            Ok(()) => {}
+            Err(e) if e.remote_code() == Some(ERR_LIVE_SESSIONS) => return Ok(control),
+            Err(e) => {
+                log::warn!(
+                    target: "splitlane::terminal::host",
+                    "the session host of release {} would not make way: {e}",
+                    control.host().version
+                );
+                return Ok(control);
+            }
+        }
+        log::info!(
+            target: "splitlane::terminal::host",
+            "the session host of release {} held nothing and was stopped; starting {}",
+            control.host().version,
+            self.release
+        );
+        drop(control);
+        let until = Instant::now() + RETIRE_WAIT;
+        loop {
+            match Client::connect(&self.socket) {
+                Err(HostError::NotRunning) => break,
+                _ if Instant::now() >= until => break,
+                _ => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        launcher.start(&self.socket)
     }
 
     /// The shared connection, for starting a session. Starts a host if
@@ -260,15 +371,19 @@ impl HostEndpoint {
         if let Some(control) = state
             .control
             .as_ref()
-            .filter(|control| !control.is_closed())
+            // A host of another release is asked again each time, for it
+            // may have emptied since.
+            .filter(|control| !control.is_closed() && control.host().version == self.release)
         {
             return Ok(control.clone());
         }
+        // Let go of first: the host counts it as somebody connected.
+        state.control = None;
         let connected = match &self.launcher {
-            Some(exe) => splitlane_host::ensure_running(exe, &[HOST_SUBCOMMAND], &self.socket),
+            Some(launcher) => launcher.start(&self.socket),
             None => Client::connect(&self.socket),
         };
-        match connected {
+        match connected.and_then(|control| self.retire_other_release(control)) {
             Ok(control) => {
                 let control = Arc::new(control);
                 state.control = Some(control.clone());
@@ -367,9 +482,6 @@ pub(super) struct SpawnedRemote {
     pub(super) cwd: PathBuf,
     pub(super) channels: RemoteSinkChannels,
     pub(super) handle: RemoteHandle,
-    /// Ends the session's processes if the window dies without doing it.
-    #[cfg(not(test))]
-    pub(super) pty_guard: Option<crate::agents::parent_guard::PtyGuardHandle>,
 }
 
 /// Why a pane could not be opened in the host. Which of the two it is
@@ -388,6 +500,7 @@ pub(super) fn open_remote(
     pending: &PendingTerminalBackend,
     endpoint: &Arc<HostEndpoint>,
     facts: Facts,
+    surface: u64,
 ) -> Result<SpawnedRemote, OpenError> {
     let control = endpoint.for_new_session().map_err(OpenError::BeforeSpawn)?;
     // The pane's own connection before the shell, not after: a host that
@@ -397,7 +510,7 @@ pub(super) fn open_remote(
         endpoint.failed();
         OpenError::BeforeSpawn(anyhow!(e).context("cannot open the pane's connection"))
     })?;
-    start_and_follow(params, pending, endpoint, &control, pane, facts)
+    start_and_follow(params, pending, endpoint, &control, pane, facts, surface)
 }
 
 /// The rest of [`open_remote`], with both connections in hand: start the
@@ -409,7 +522,11 @@ pub(super) fn start_and_follow(
     control: &Client,
     pane: Client,
     facts: Facts,
+    surface: u64,
 ) -> Result<SpawnedRemote, OpenError> {
+    // The id the shell is told is its pane's, which the view made up and
+    // recorded. Recorded again here for whoever opens a pane without one.
+    crate::surface_alias::remember(params.surface_id, surface);
     let started = spawn_spec(params, facts).and_then(|spec| {
         let (cwd, size) = (PathBuf::from(&spec.cwd), (spec.cols, spec.rows));
         let (session, pid) = control
@@ -421,15 +538,17 @@ pub(super) fn start_and_follow(
         endpoint.failed();
         OpenError::BeforeSpawn(e)
     })?;
-    // As for a PTY the window owns: if the window is killed outright, its
-    // sessions go with it.
-    #[cfg(not(test))]
-    let pty_guard = crate::agents::parent_guard::spawn_pty_guard(pid);
+    // No watcher is started here. The host has one for every session,
+    // which follows the host, and a session is meant to outlive this
+    // window.
     match follow(
         endpoint,
         pane,
-        session,
-        pid,
+        Followed {
+            session,
+            pid,
+            surface,
+        },
         pending,
         AttachMode::Fresh,
         Some(size),
@@ -440,10 +559,9 @@ pub(super) fn start_and_follow(
             cwd,
             channels,
             handle,
-            #[cfg(not(test))]
-            pty_guard,
         }),
         Err(e) => {
+            crate::surface_alias::forget(surface);
             // Not waited for: ending a session takes as long as its child
             // takes to die, and the pane has an error to show now.
             let endpoint = endpoint.clone();
@@ -458,44 +576,102 @@ pub(super) fn start_and_follow(
     }
 }
 
+/// Why a terminal could not be attached to a session it was saved with.
+#[derive(Debug)]
+pub(super) enum ReattachError {
+    /// The session is not there to attach to: no host answers, the host
+    /// does not know it, or its child has ended. The terminal was not
+    /// touched and can be given a new shell.
+    Gone(anyhow::Error),
+    /// The session is there and the terminal could not follow it.
+    Failed(anyhow::Error),
+}
+
 /// Attach a terminal to a session that is already running in the host.
-/// The terminal first replays what the session has printed.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "a window does not look for its sessions yet")
-)]
+/// The terminal first replays what the session has printed. `surface` is
+/// the pane the terminal is shown in.
+///
+/// The session's program was told its pane's id when it started, under a
+/// window that may be gone; what it and its hooks say from now on carries
+/// that id, and it is recorded here as meaning `surface`.
 pub(super) fn reattach(
     endpoint: &Arc<HostEndpoint>,
     session: SessionId,
     pending: &PendingTerminalBackend,
-) -> anyhow::Result<SpawnedRemote> {
-    let control = endpoint
-        .for_existing_session()
-        .ok_or_else(|| anyhow!("no session host answers on {}", endpoint.socket.display()))?;
+    facts: Facts,
+    surface: u64,
+) -> Result<SpawnedRemote, ReattachError> {
+    let gone = ReattachError::Gone;
+    let control = endpoint.for_existing_session().ok_or_else(|| {
+        gone(anyhow!(
+            "no session host answers on {}",
+            endpoint.socket.display()
+        ))
+    })?;
     let info = control
-        .list()?
+        .list()
+        .map_err(|e| gone(anyhow!(e)))?
         .into_iter()
         .find(|info| info.id == session)
-        .ok_or_else(|| anyhow!("the session host has no session {session}"))?;
-    let pane = Client::connect(&endpoint.socket).context("cannot open the pane's connection")?;
+        .ok_or_else(|| gone(anyhow!("the session host has no session {session}")))?;
+    if info.exited.is_some() {
+        // Nobody will read its log now; a session that ended while no
+        // window was there is only held until somebody says so.
+        let _ = control.forget(session);
+        return Err(gone(anyhow!("session {session} has ended")));
+    }
+    let pane = Client::connect(&endpoint.socket)
+        .map_err(|e| gone(anyhow!(e).context("cannot open the pane's connection")))?;
+    let exported = exported_id(&info, EXPORTED_SURFACE);
+    if let Some(exported) = exported {
+        crate::surface_alias::remember(exported, surface);
+    }
+    let followed = Followed {
+        session,
+        pid: info.pid,
+        surface,
+    };
     let (sender, channels, handle) = follow(
         endpoint,
         pane,
-        session,
-        info.pid,
+        followed,
         pending,
         AttachMode::Reattach,
         None,
-    )?;
+    )
+    .map_err(|e| {
+        crate::surface_alias::forget(surface);
+        ReattachError::Failed(e)
+    })?;
+    // The session has the colors of the window it was started under, or of
+    // none.
+    sender.send(RemoteMsg::Facts(Box::new(facts)));
     Ok(SpawnedRemote {
         sender,
         child_pid: info.pid,
         cwd: PathBuf::from(info.cwd),
         channels,
         handle,
-        #[cfg(not(test))]
-        pty_guard: None,
     })
+}
+
+/// Keys of what a window records about a pane when it starts the pane's
+/// session, for the window that finds the session later.
+const EXPORTED_SURFACE: &str = "surface_id";
+const EXPORTED_WORKSPACE: &str = "workspace_id";
+
+fn exported_id(info: &SessionInfo, key: &str) -> Option<u64> {
+    info.exported.get(key)?.parse().ok()
+}
+
+/// A session a pane follows.
+#[derive(Clone, Copy)]
+struct Followed {
+    session: SessionId,
+    /// The session's child.
+    pid: u32,
+    /// The pane.
+    surface: u64,
 }
 
 /// Attach to `session` over `pane`, a connection for this pane alone, and
@@ -504,12 +680,12 @@ pub(super) fn reattach(
 fn follow(
     endpoint: &Arc<HostEndpoint>,
     pane: Client,
-    session: SessionId,
-    pid: u32,
+    followed: Followed,
     pending: &PendingTerminalBackend,
     mode: AttachMode,
     size: Option<(u16, u16)>,
 ) -> anyhow::Result<(RemoteSender, RemoteSinkChannels, RemoteHandle)> {
+    let Followed { session, pid, .. } = followed;
     let pane = Arc::new(pane);
     let attachment = pane
         .attach(session, AttachFrom::Start)
@@ -540,8 +716,7 @@ fn follow(
         .context("cannot start the pane's writer thread")?;
     let reader = PaneReader {
         endpoint: endpoint.clone(),
-        session,
-        pid,
+        followed,
         attachment,
         sink,
         to_writer: sender.clone(),
@@ -557,6 +732,7 @@ fn follow(
         sender.send(RemoteMsg::Shutdown);
         return Err(anyhow!(e).context("cannot start the pane's reader thread"));
     }
+    lock(&endpoint.followed).insert(session, pid);
     Ok((
         sender,
         channels,
@@ -572,10 +748,7 @@ fn follow(
 /// sink, and is where both are dropped.
 struct PaneReader {
     endpoint: Arc<HostEndpoint>,
-    session: SessionId,
-    /// The session's child, for ending its processes if the host cannot be
-    /// asked to.
-    pid: u32,
+    followed: Followed,
     attachment: Attachment,
     sink: RemoteSink,
     to_writer: RemoteSender,
@@ -589,12 +762,24 @@ impl PaneReader {
         // emptied, until the session's end comes through it or the wait
         // is over.
         let mut ending: Option<Instant> = None;
+        let Followed {
+            session,
+            pid,
+            surface,
+        } = self.followed;
+        // The pane was dropped because the window is going away, and the
+        // session stays.
+        let mut left = false;
         let exited = loop {
             if ending.is_none() && self.closing.load(Ordering::Acquire) {
+                if self.endpoint.leaving() {
+                    left = true;
+                    break false;
+                }
                 let asked = self
                     .endpoint
                     .for_existing_session()
-                    .is_some_and(|control| control.kill(self.session).is_ok());
+                    .is_some_and(|control| control.kill(session).is_ok());
                 if !asked {
                     // Nobody to wait for.
                     break false;
@@ -632,8 +817,7 @@ impl PaneReader {
                     if ending.is_none() {
                         log::warn!(
                             target: "splitlane::terminal::host",
-                            "session {}: the connection to the session host was lost",
-                            self.session
+                            "session {session}: the connection to the session host was lost"
                         );
                         self.sink.connection_lost();
                     }
@@ -644,14 +828,20 @@ impl PaneReader {
         self.to_writer.send(RemoteMsg::Shutdown);
         let PaneReader {
             endpoint,
-            session,
-            pid,
             attachment,
             ..
         } = self;
         // Let go of the stream before the session is forgotten, so the
         // host is not left writing to it.
         drop(attachment);
+        lock(&endpoint.followed).remove(&session);
+        crate::surface_alias::forget(surface);
+        // A window that goes away between the two checks still ends
+        // nothing: a session that has not ended is not ended from here
+        // once the window is leaving.
+        if left || (!exited && endpoint.leaving()) {
+            return;
+        }
         end_session(&endpoint, session, pid, exited);
     }
 }
@@ -785,6 +975,107 @@ fn write_requests(
     }
 }
 
+/// A session as the rest of the app is shown it.
+fn held(info: &SessionInfo) -> HeldSession {
+    HeldSession {
+        id: info.id.to_string(),
+        pid: info.pid,
+        cwd: info.cwd.clone(),
+        program: info.program.clone(),
+        created_at_ms: info.created_at_ms,
+        exported_surface: exported_id(info, EXPORTED_SURFACE),
+        exported_workspace: exported_id(info, EXPORTED_WORKSPACE),
+    }
+}
+
+impl HostEndpoint {
+    /// The sessions the host holds whose child is running. Empty when no
+    /// host answers; never starts one.
+    ///
+    /// Sessions whose child ended while no window was there are forgotten
+    /// on the way: their logs are held for a reader, and none will come.
+    pub(super) fn held_sessions(&self) -> Vec<HeldSession> {
+        let Some(control) = self.for_existing_session() else {
+            return Vec::new();
+        };
+        let listed = match control.list() {
+            Ok(listed) => listed,
+            Err(e) => {
+                log::warn!(
+                    target: "splitlane::terminal::host",
+                    "cannot list the sessions the session host holds: {e}"
+                );
+                return Vec::new();
+            }
+        };
+        let followed = lock(&self.followed).clone();
+        let mut held = Vec::new();
+        for info in &listed {
+            if info.exited.is_none() {
+                held.push(self::held(info));
+            } else if !followed.contains_key(&info.id) {
+                let _ = control.forget(info.id);
+            }
+        }
+        held
+    }
+
+    /// End a session nobody shows, and have the host forget it.
+    pub(super) fn end_held(&self, session: SessionId) {
+        end_session(self, session, 0, false);
+    }
+
+    /// Ask the host to end every session and exit. True when it said it
+    /// would, or when no host is there to hold anything.
+    fn stop_host(&self) -> bool {
+        match self.for_existing_session() {
+            Some(control) => control.shutdown(true).is_ok(),
+            None => true,
+        }
+    }
+}
+
+/// End everything the host of this build holds, because the app is being
+/// left with its sessions to be stopped. Waits up to `wait` for the host
+/// to take the request; a host that does not is not waited for, and the
+/// sessions this window shows are then ended from here, as they are for a
+/// PTY the window owns.
+pub(super) fn stop_all(endpoint: &Arc<HostEndpoint>, wait: Duration) {
+    let (done_tx, done_rx) = mpsc::channel();
+    let asked = std::thread::Builder::new()
+        .name("pane-host-stop".into())
+        .spawn({
+            let endpoint = endpoint.clone();
+            move || {
+                let _ = done_tx.send(endpoint.stop_host());
+            }
+        });
+    let stopped = asked.is_ok() && done_rx.recv_timeout(wait).unwrap_or(false);
+    // Whoever ends them, the panes about to be dropped must not each ask
+    // again.
+    endpoint.leave_sessions_running();
+    if !stopped {
+        log::warn!(
+            target: "splitlane::terminal::host",
+            "the session host did not take the request to stop; ending this window's sessions directly"
+        );
+        // Side by side: each takes the tenth of a second it gives a
+        // process group to go by itself.
+        let pids: Vec<u32> = lock(&endpoint.followed).values().copied().collect();
+        let enders: Vec<_> = pids
+            .into_iter()
+            .filter_map(|pid| {
+                std::thread::Builder::new()
+                    .spawn(move || end_process_group(pid))
+                    .ok()
+            })
+            .collect();
+        for ender in enders {
+            let _ = ender.join();
+        }
+    }
+}
+
 /// How a pane ended up with a shell.
 pub(super) enum Opened {
     InHost(SpawnedRemote),
@@ -805,9 +1096,10 @@ pub(super) fn open(
     params: SpawnParams,
     pending: PendingTerminalBackend,
     signal_mask: Option<ForegroundSignalMask>,
+    surface: u64,
 ) -> Opened {
     let refused = match endpoint {
-        Some(endpoint) => match open_remote(&params, &pending, endpoint, facts) {
+        Some(endpoint) => match open_remote(&params, &pending, endpoint, facts, surface) {
             Ok(spawned) => {
                 log::info!(
                     target: "splitlane::terminal::host",
@@ -852,9 +1144,9 @@ fn spawn_spec(params: &SpawnParams, facts: Facts) -> anyhow::Result<SpawnSpec> {
         .into_string()
         .map_err(|cwd| anyhow!("the working directory {cwd:?} is not UTF-8"))?;
     let mut exported = BTreeMap::new();
-    exported.insert("surface_id".to_string(), params.surface_id.to_string());
+    exported.insert(EXPORTED_SURFACE.to_string(), params.surface_id.to_string());
     if let Some(workspace_id) = params.env.get("SPLITLANE_WORKSPACE_ID") {
-        exported.insert("workspace_id".to_string(), workspace_id.clone());
+        exported.insert(EXPORTED_WORKSPACE.to_string(), workspace_id.clone());
     }
     exported.insert("window_pid".to_string(), std::process::id().to_string());
     Ok(SpawnSpec {

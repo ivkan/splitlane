@@ -268,6 +268,9 @@ impl SplitlaneApp {
             update::SelfUpdateStatus::ReadyToRestart
         ) {
             log::info!("self-update: ReadyToRestart click - invoking cx.restart()");
+            // An update ends the window and none of the sessions in the
+            // session host, whatever quitting is set to do with them.
+            crate::terminal::held_sessions::leave_running();
             cx.restart();
             return;
         }

@@ -1579,7 +1579,7 @@ impl SplitlaneApp {
             .and_then(|container| container.root.as_ref())
             .map(|root| root.collect_leaves())
             .unwrap_or_default();
-        let beside = match crate::app::ipc_handler::optional_id_param(params, "beside_surface_id") {
+        let beside = match self.surface_id_param(params, "beside_surface_id") {
             Ok(None) => None,
             Ok(Some(beside)) => {
                 let Some(pane) = leaves.iter().find(|pane| {

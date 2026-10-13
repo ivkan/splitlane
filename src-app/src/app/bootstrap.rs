@@ -85,6 +85,11 @@ impl SplitlaneApp {
         cx.subscribe(&title_bar, Self::handle_title_bar_event)
             .detach();
         let (ipc_rx, ipc_status, event_bus) = ipc::start_server();
+        // Asked now and read when the layout is restored below: which of
+        // the sessions the layout was saved with are still running in the
+        // session host. In a window that does not use the host this is
+        // nothing and takes no time.
+        crate::terminal::held_sessions::begin_listing();
 
         // Install the shared cursor-blink phase as a GPUI global
         // before any `TerminalView` is constructed. Each `TerminalView`
@@ -182,6 +187,27 @@ impl SplitlaneApp {
         // telemetry client is constructed below - load_session itself
         // runs too early in bootstrap to call `self.telemetry`.
         let (saved_session, session_corruption) = Self::load_session();
+        // What the session host holds that the layout does not mention.
+        // The wait is for the answer asked for above; the layout itself
+        // needs none, because each pane finds out about its own session
+        // when it is first shown.
+        let held_unshown = crate::app::held_sessions::unshown(
+            &crate::terminal::held_sessions::listing(crate::app::held_sessions::LISTING_WAIT),
+            saved_session.as_ref(),
+        );
+        if !held_unshown.is_empty() {
+            log::info!(
+                "{} session(s) in the session host that the saved layout does not mention",
+                held_unshown.len()
+            );
+        }
+        // The last word on what becomes of the sessions in the host, for
+        // the ways out that ask nobody (`app::exit_guard`).
+        cx.on_app_quit(|app, _| {
+            app.settle_host_sessions_on_quit();
+            async {}
+        })
+        .detach();
 
         // Pull the Agents-view bits out of
         // the saved session BEFORE the workspaces match consumes it.
@@ -1171,6 +1197,8 @@ impl SplitlaneApp {
             pending_exit_offers_keep: false,
             kept_while_away: None,
             kept_notice_shown: false,
+            held_unshown,
+            held_card_dismissed: false,
             exit_confirm_focus: cx.focus_handle(),
             // Fleet grep closed.
             launch_pad: None,

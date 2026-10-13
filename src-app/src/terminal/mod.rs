@@ -33,6 +33,7 @@ mod ghostty_session;
 mod ghostty_stress;
 // A pane can run in the session host on macOS only so far: it is the one
 // platform where the host has the emulator the window uses.
+pub(crate) mod held_sessions;
 #[cfg(target_os = "macos")]
 mod host_session;
 mod input;

@@ -3453,10 +3453,6 @@ impl TerminalState {
         // port scan, the foreground-process scan and the working-directory
         // poll all go by pid and need nothing else.
         self.child_pid = spawned.child_pid;
-        #[cfg(not(test))]
-        {
-            self.pty_guard = spawned.pty_guard;
-        }
         if self.current_cwd.is_none() {
             self.current_cwd = Some(spawned.cwd.to_string_lossy().into_owned());
         }
@@ -3475,6 +3471,22 @@ impl TerminalState {
     #[cfg(target_os = "macos")]
     pub(crate) fn is_in_host(&self) -> bool {
         self.remote.is_some()
+    }
+
+    /// The id of the session in the host this terminal shows, as it is
+    /// written into a saved layout. `None` for a terminal that owns its
+    /// PTY, on every platform.
+    pub(crate) fn host_session_id(&self) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        {
+            self.remote
+                .as_ref()
+                .map(|remote| remote.session().to_string())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
     }
 
     /// Tell the host what the window knows that a program may ask its

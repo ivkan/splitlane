@@ -1687,6 +1687,7 @@ impl Pane {
                 | TerminalEvent::ActivityBurst
                 | TerminalEvent::ServiceDetected(_)
                 | TerminalEvent::CancelSwapMode
+                | TerminalEvent::HostSessionChanged
                 | TerminalEvent::SelectionCopied
                 | TerminalEvent::OpenMarkdownPath(_)
                 | TerminalEvent::OpenCodePath { .. }

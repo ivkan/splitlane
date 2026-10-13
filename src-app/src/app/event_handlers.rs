@@ -938,6 +938,7 @@ impl SplitlaneApp {
                     }
                 }
             }
+            terminal::TerminalEvent::HostSessionChanged => self.save_session(cx),
             terminal::TerminalEvent::CancelSwapMode => {
                 self.cancel_swap_mode(cx);
             }

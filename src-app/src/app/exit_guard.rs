@@ -27,6 +27,16 @@
 //! This is the whole app staying up, not a process of its own holding the
 //! terminals: it does not survive an update or a crash.
 //!
+//! **Unless the panes run in the session host** (`terminal::held_sessions`).
+//! Then the terminals do have a process of their own, and keeping the
+//! sessions means what it says: the window's process ends and the sessions
+//! go on in the host, to be attached to by the next window. Nothing is put
+//! away, because nothing has to stay. Stopping them is then a request to
+//! the host, made on the way out, and the restart into an update asks
+//! nothing at all: it ends the window and no session. What the person
+//! gives up while no window runs is being told that an agent waits, and the
+//! card that offers to keep the sessions says so.
+//!
 //! **`running` only.** `waiting for you` is a person's to answer and they can
 //! see it; `idle` has nothing in flight; `starting` has sent nothing yet. Only a
 //! turn in progress is something the person would lose without knowing.
@@ -116,8 +126,9 @@ pub(crate) fn open_agent_sessions<'a>(
         .count()
 }
 
-/// The sentence on the card that offers to keep the sessions.
-pub(crate) fn keep_or_stop_body(open: usize, running: usize) -> String {
+/// How many sessions are open and how many of them are mid-turn, as the
+/// card that offers to keep them begins.
+fn open_sessions_clause(open: usize, running: usize) -> String {
     let sessions = match open {
         1 => "1 agent session is open".to_string(),
         n => format!("{n} agent sessions are open"),
@@ -127,6 +138,24 @@ pub(crate) fn keep_or_stop_body(open: usize, running: usize) -> String {
         1 => ", 1 of them mid-turn".to_string(),
         n => format!(", {n} of them mid-turn"),
     };
+    format!("{sessions}{mid_turn}")
+}
+
+/// The same card when the sessions run in the session host. Keeping them
+/// then ends the window for real, and with it the only thing that says an
+/// agent is waiting - which is the one cost of keeping, so it is named.
+pub(crate) fn keep_or_stop_body_in_host(open: usize, running: usize) -> String {
+    format!(
+        "{}. Keep running closes Splitlane and leaves them working; nothing tells you \
+         that one is waiting for you until you start Splitlane again. Stop and quit ends \
+         them: each session comes back on the next launch, a turn in progress does not.",
+        open_sessions_clause(open, running)
+    )
+}
+
+/// The sentence on the card that offers to keep the sessions.
+pub(crate) fn keep_or_stop_body(open: usize, running: usize) -> String {
+    let (sessions, mid_turn) = (open_sessions_clause(open, running), "");
     format!(
         "{sessions}{mid_turn}. Keep running puts the window away and leaves them working; \
          start Splitlane again to come back. Stop and quit ends them: each session comes \
@@ -196,6 +225,11 @@ impl SplitlaneApp {
     }
 
     fn leave_plan_for(&self, intent: ExitIntent) -> Leave {
+        // The sessions are the host's, and a window that restarts into an
+        // update takes none of them with it.
+        if intent == ExitIntent::Update && crate::terminal::held_sessions::enabled() {
+            return Leave::Now;
+        }
         leave_plan(
             intent,
             splitlane_config::loader::load_config().on_quit_mode(),
@@ -220,7 +254,7 @@ impl SplitlaneApp {
                 self.dismiss_exit_card();
                 self.perform_exit(intent, cx);
             }
-            Leave::Keep => self.keep_sessions_and_put_window_away(cx),
+            Leave::Keep => self.keep_sessions(cx),
             plan @ (Leave::AskKeepOrStop | Leave::AskLoseTurn) => {
                 if self.pending_exit == Some(intent) {
                     return;
@@ -233,6 +267,55 @@ impl SplitlaneApp {
                 self.pending_focus = Some(self.exit_confirm_focus.clone());
                 cx.notify();
             }
+        }
+    }
+
+    /// Leave every session working: in the session host if that is where
+    /// they run, and otherwise in this process with its window put away.
+    fn keep_sessions(&mut self, cx: &mut Context<Self>) {
+        if crate::terminal::held_sessions::enabled() {
+            self.leave_sessions_in_host_and_quit(cx);
+        } else {
+            self.keep_sessions_and_put_window_away(cx);
+        }
+    }
+
+    /// End the window's process and nothing else. The sessions are the
+    /// host's; the layout written here records which pane showed which, and
+    /// that is how the next window finds them.
+    fn leave_sessions_in_host_and_quit(&mut self, cx: &mut Context<Self>) {
+        self.dismiss_exit_card();
+        self.save_session_blocking(cx);
+        self.emit_app_exited_and_flush();
+        log::info!(
+            "leaving: {} agent session(s) kept working in the session host",
+            self.open_sessions()
+        );
+        // Before the panes are torn down: a pane that is dropped ends its
+        // session unless it was told the window is only going away.
+        crate::terminal::held_sessions::leave_running();
+        #[cfg(target_os = "linux")]
+        crate::window_chrome::linux_backdrop::clear_subtle_chrome_material();
+        cx.quit();
+    }
+
+    /// Decide what becomes of the sessions in the session host when the
+    /// process is ended by a door that did not come through
+    /// [`Self::request_exit`]: the Dock's Quit, a logout. Called as the app
+    /// quits, by whichever door; a door that has already decided is left
+    /// its decision.
+    ///
+    /// Such a door asks nothing, so the setting answers: `stop` ends them,
+    /// anything else leaves them, and they are found by the next window.
+    pub(crate) fn settle_host_sessions_on_quit(&mut self) {
+        use crate::terminal::held_sessions;
+        if !held_sessions::enabled() || held_sessions::settled() {
+            return;
+        }
+        if self.cached_config.on_quit_mode() == OnQuit::Stop {
+            held_sessions::stop_all();
+        } else {
+            held_sessions::leave_running();
         }
     }
 
@@ -302,7 +385,7 @@ impl SplitlaneApp {
     /// The card's "Keep running".
     fn keep_from_card(&mut self, cx: &mut Context<Self>) {
         if self.pending_exit.take().is_some() {
-            self.keep_sessions_and_put_window_away(cx);
+            self.keep_sessions(cx);
         }
     }
 
@@ -313,6 +396,11 @@ impl SplitlaneApp {
                 // Bounded to 2 s by the client; if PostHog is unreachable the
                 // worker detaches and the quit still proceeds.
                 self.emit_app_exited_and_flush();
+                // This door ends the sessions. The ones in the session
+                // host do not end with this process, so the host is asked
+                // to end everything it holds; a no-op in a window that
+                // does not use it.
+                crate::terminal::held_sessions::stop_all();
                 // Releases the Wayland/X11 backdrop before GPUI tears down its
                 // display - wanted on every way out, not only the window's
                 // close button, which was the one door that called it.
@@ -338,7 +426,11 @@ impl SplitlaneApp {
                 crate::app::confirm_dialog::ConfirmDialog {
                     id: "exit-keep-or-stop",
                     title: "Quit Splitlane".to_string(),
-                    body: keep_or_stop_body(self.open_sessions(), running.len()),
+                    body: if crate::terminal::held_sessions::enabled() {
+                        keep_or_stop_body_in_host(self.open_sessions(), running.len())
+                    } else {
+                        keep_or_stop_body(self.open_sessions(), running.len())
+                    },
                     confirm_label: "Stop and quit".to_string(),
                     safe: Some((
                         "Keep running".to_string(),
@@ -467,6 +559,14 @@ mod tests {
             "{body}"
         );
         assert!(keep_or_stop_body(1, 0).starts_with("1 agent session is open."));
+        let in_host = keep_or_stop_body_in_host(2, 1);
+        assert!(
+            in_host.starts_with(
+                "2 agent sessions are open, 1 of them mid-turn. Keep running closes Splitlane"
+            ),
+            "{in_host}"
+        );
+        assert!(in_host.contains("nothing tells you"), "{in_host}");
         assert_eq!(
             kept_notice(2),
             "Splitlane stayed open with 2 agent sessions working. To stop them too, use Quit and Stop Sessions."

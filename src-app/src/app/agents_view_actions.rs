@@ -807,7 +807,20 @@ impl SplitlaneApp {
                 binding,
                 thread.opening_prompt_key.as_deref(),
             );
-            view.read(cx).send_command(&cmd);
+            // A surface whose terminal still runs in the session host is
+            // attached to it, with the agent and its turn as they are, and
+            // launching the agent again would start a second one beside
+            // it. The command is kept for the case that the session is
+            // gone by the time the surface is shown.
+            let attached = thread.host_session.clone().is_some_and(|session| {
+                view.read(cx)
+                    .attach_to_held_session(session, Some(cmd.clone()))
+            });
+            if !attached {
+                view.read(cx).send_command(&cmd);
+            }
+        } else if let Some(session) = thread.host_session.clone() {
+            view.read(cx).attach_to_held_session(session, None);
         }
         // Mirror Zed's `AgentTerminal::refresh_terminal_metadata`
         // (agent_panel.rs around `TerminalEvent::TitleChanged`): every
@@ -821,14 +834,22 @@ impl SplitlaneApp {
         cx.subscribe(
             &view,
             move |this, src, event: &crate::terminal::view::TerminalEvent, cx| {
-                if let crate::terminal::view::TerminalEvent::TitleChanged = event {
-                    let new_title = src.read(cx).terminal.title.clone();
-                    this.handle_terminal_thread_title_changed(
-                        thread_id,
-                        new_title,
-                        TitleSource::Process,
-                        cx,
-                    );
+                match event {
+                    crate::terminal::view::TerminalEvent::TitleChanged => {
+                        let new_title = src.read(cx).terminal.title.clone();
+                        this.handle_terminal_thread_title_changed(
+                            thread_id,
+                            new_title,
+                            TitleSource::Process,
+                            cx,
+                        );
+                    }
+                    // The surface's record says which session its terminal
+                    // runs in; see the event.
+                    crate::terminal::view::TerminalEvent::HostSessionChanged => {
+                        this.save_session(cx);
+                    }
+                    _ => {}
                 }
             },
         )

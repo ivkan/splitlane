@@ -16,8 +16,8 @@ use splitlane_host::{
 
 use super::*;
 use crate::terminal::host_session::{
-    HostEndpoint, OpenError, Opened, child_environment, open, open_remote, reattach,
-    start_and_follow,
+    HostEndpoint, Launcher, OpenError, Opened, ReattachError, child_environment, open, open_remote,
+    reattach, start_and_follow, stop_all,
 };
 
 /// A terminal as a pane builds one, with a sink feeding it, and everything
@@ -638,6 +638,10 @@ fn sh(script: &str) -> SpawnParams {
     pane_params("/bin/sh", &["-c", script])
 }
 
+/// The pane every test's terminal is shown in, and the id its shell is
+/// told: the one `pane_params` resolves with.
+const PANE: u64 = 11;
+
 fn facts() -> Facts {
     window_facts(&crate::theme::active_theme(), None, None)
 }
@@ -645,7 +649,7 @@ fn facts() -> Facts {
 /// A pane opened in the host, the way the view opens one.
 fn pane_in_host(host: &TestHost, params: SpawnParams) -> TerminalState {
     let (mut state, pending) = TerminalState::new_pending(params.cols, params.rows);
-    match open(Some(&host.endpoint), facts(), params, pending, None) {
+    match open(Some(&host.endpoint), facts(), params, pending, None, PANE) {
         Opened::InHost(spawned) => state.promote_remote(spawned),
         Opened::InWindow(_) => unreachable!("the host did not take the pane"),
         Opened::Lost(e) => unreachable!("the pane lost its shell: {e:#}"),
@@ -764,7 +768,7 @@ fn input_written_before_the_shell_exists_reaches_it() {
     let (mut pane, pending) = TerminalState::new_pending(params.cols, params.rows);
     // An agent's launch command is written the moment its pane mounts.
     pane.write_to_pty(b"echo EARLY_$((1 + 1))\n".to_vec());
-    let spawned = match open_remote(&params, &pending, &host.endpoint, facts()) {
+    let spawned = match open_remote(&params, &pending, &host.endpoint, facts(), PANE) {
         Ok(spawned) => spawned,
         Err(OpenError::BeforeSpawn(e) | OpenError::AfterSpawn(e)) => {
             unreachable!("the pane was not opened in the host: {e:#}")
@@ -1051,7 +1055,7 @@ fn a_shell_started_for_a_pane_that_is_gone_is_ended() {
     let host = TestHost::start(|_| {});
     let params = sh("sleep 300");
     let (state, pending) = TerminalState::new_pending(params.cols, params.rows);
-    let spawned = match open(Some(&host.endpoint), facts(), params, pending, None) {
+    let spawned = match open(Some(&host.endpoint), facts(), params, pending, None, PANE) {
         Opened::InHost(spawned) => spawned,
         Opened::InWindow(_) => unreachable!("the host did not take the pane"),
         Opened::Lost(e) => unreachable!("the pane lost its shell: {e:#}"),
@@ -1123,7 +1127,8 @@ fn log_tail(host: &TestHost, session: SessionId) -> u64 {
 fn reattached(host: &TestHost, session: SessionId) -> TerminalState {
     let (mut state, pending) = TerminalState::new_pending(80, 24);
     state.set_terminal_focused(true);
-    let spawned = reattach(&host.endpoint, session, &pending).expect("the session can be attached");
+    let spawned = reattach(&host.endpoint, session, &pending, facts(), PANE)
+        .expect("the session can be attached");
     state.promote_remote(spawned);
     state
 }
@@ -1300,7 +1305,8 @@ fn a_host_that_cannot_be_reached_leaves_the_pane_to_the_window() {
     let nowhere = HostEndpoint::new(dir.path().join("nobody.sock"), None);
     let params = pane_params("/bin/sh", &[]);
     let (mut pane, pending) = TerminalState::new_pending(params.cols, params.rows);
-    let Opened::InWindow(Ok(spawned)) = open(Some(&nowhere), facts(), params, pending, None) else {
+    let Opened::InWindow(Ok(spawned)) = open(Some(&nowhere), facts(), params, pending, None, PANE)
+    else {
         unreachable!("the pane was not opened in the window");
     };
     pane.promote(spawned);
@@ -1313,7 +1319,7 @@ fn a_host_that_cannot_be_reached_leaves_the_pane_to_the_window() {
     // No place for a host at all is the same pane.
     let params = pane_params("/bin/sh", &[]);
     let (mut pane, pending) = TerminalState::new_pending(params.cols, params.rows);
-    let Opened::InWindow(Ok(spawned)) = open(None, facts(), params, pending, None) else {
+    let Opened::InWindow(Ok(spawned)) = open(None, facts(), params, pending, None, PANE) else {
         unreachable!("the pane was not opened in the window");
     };
     pane.promote(spawned);
@@ -1329,7 +1335,8 @@ fn a_host_that_refuses_the_shell_leaves_the_pane_to_the_window() {
     let mut params = pane_params("/bin/sh", &[]);
     params.cols = 0;
     let (mut pane, pending) = TerminalState::new_pending(80, 24);
-    let Opened::InWindow(Ok(spawned)) = open(Some(&host.endpoint), facts(), params, pending, None)
+    let Opened::InWindow(Ok(spawned)) =
+        open(Some(&host.endpoint), facts(), params, pending, None, PANE)
     else {
         unreachable!("the pane was not opened in the window");
     };
@@ -1345,7 +1352,7 @@ fn a_host_that_refuses_the_shell_leaves_the_pane_to_the_window() {
     let params = pane_params("/bin/sh", &[]);
     let (_pane, pending) = TerminalState::new_pending(80, 24);
     assert!(matches!(
-        open(Some(&host.endpoint), facts(), params, pending, None),
+        open(Some(&host.endpoint), facts(), params, pending, None, PANE),
         Opened::InWindow(Ok(_))
     ));
     assert!(host.sessions().is_empty());
@@ -1362,7 +1369,8 @@ fn a_host_with_no_room_for_the_pane_starts_nothing_and_leaves_it_to_the_window()
     });
     let params = pane_params("/bin/sh", &[]);
     let (mut pane, pending) = TerminalState::new_pending(80, 24);
-    let Opened::InWindow(Ok(spawned)) = open(Some(&host.endpoint), facts(), params, pending, None)
+    let Opened::InWindow(Ok(spawned)) =
+        open(Some(&host.endpoint), facts(), params, pending, None, PANE)
     else {
         unreachable!("the pane was not opened in the window");
     };
@@ -1392,6 +1400,7 @@ fn a_shell_the_host_started_and_the_pane_lost_is_ended_and_not_started_again() {
         &control,
         other.client(),
         facts(),
+        PANE,
     );
     let Err(OpenError::AfterSpawn(error)) = lost else {
         unreachable!("the pane was attached to a session of another host");
@@ -1437,4 +1446,351 @@ fn the_facts_a_window_states_are_the_colors_a_pane_answers_with() {
     let stated = window_facts(&theme, Some(cursor), Some((9, 18)));
     assert_eq!(stated.cursor, Some(Rgb(0x00, 0xff, 0x7f)));
     assert_eq!((stated.cell_width, stated.cell_height), (Some(9), Some(18)));
+}
+
+/// The one session a host holds, once it is as `ready` wants it.
+fn the_session(host: &TestHost, what: &str, ready: impl Fn(&SessionInfo) -> bool) -> SessionInfo {
+    wait_for(what, || {
+        host.sessions()
+            .into_iter()
+            .next()
+            .filter(|info| ready(info))
+    })
+}
+
+/// A pane of a window that starts after the one `host.endpoint` stands for
+/// is gone: another endpoint on the same host, and a pane with another id.
+fn pane_of_the_next_window(
+    host: &TestHost,
+    session: SessionId,
+    surface: u64,
+) -> (Arc<HostEndpoint>, Result<TerminalState, ReattachError>) {
+    let window = HostEndpoint::new(host.socket.clone(), None);
+    let (mut state, pending) = TerminalState::new_pending(80, 24);
+    state.set_terminal_focused(true);
+    let attached = reattach(&window, session, &pending, facts(), surface).map(|spawned| {
+        state.promote_remote(spawned);
+        state
+    });
+    (window, attached)
+}
+
+#[test]
+fn a_window_that_goes_away_leaves_its_sessions_running_and_the_next_one_finds_them() {
+    let host = TestHost::start(|_| {});
+    // The shell is told an id for its pane, as every shell in the host is.
+    // Ids of this test's own, because the record of what an id means is
+    // the process's and other tests run beside this one.
+    let (first_pane, told, next_pane) = (880_000, 880_001, 880_002);
+    let mut params = TerminalState::resolve_spawn_params(
+        Some(PathBuf::from("/")),
+        7,
+        told,
+        Some((80, 24)),
+        None,
+    );
+    params.shell = "/bin/sh".to_string();
+    params.extra_args = vec![
+        "-c".to_string(),
+        "echo before-$SPLITLANE_SURFACE_ID; read line; echo after-$line; sleep 300".to_string(),
+    ];
+    let (mut pane, pending) = TerminalState::new_pending(80, 24);
+    match open(
+        Some(&host.endpoint),
+        facts(),
+        params,
+        pending,
+        None,
+        first_pane,
+    ) {
+        Opened::InHost(spawned) => pane.promote_remote(spawned),
+        _ => unreachable!("the host did not take the pane"),
+    }
+    wait_for_text(&mut pane, "before-880001");
+    let saved = pane
+        .host_session_id()
+        .expect("a pane in the host has a session");
+    let session: SessionId = saved.parse().expect("the id a layout is saved with");
+    assert_eq!(crate::surface_alias::pane_meant(told), first_pane);
+
+    // The window quits with its sessions to be kept: the pane is torn
+    // down, and its session is not ended.
+    host.endpoint.leave_sessions_running();
+    drop(pane);
+    let left = the_session(&host, "the pane to let go of its session", |info| {
+        info.attached == 0
+    });
+    assert_eq!(left.id, session);
+    assert_eq!(left.exited, None, "the session was ended with its window");
+    // Nothing means the pane that is gone.
+    wait_for("the old pane's id to be free", || {
+        (crate::surface_alias::pane_meant(told) == told).then_some(())
+    });
+
+    // The next window lists what the host holds and finds it.
+    let window = HostEndpoint::new(host.socket.clone(), None);
+    let held = window.held_sessions();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].id, saved);
+    assert_eq!(held[0].exported_surface, Some(told));
+    assert_eq!(held[0].exported_workspace, Some(7));
+
+    // And shows it in a pane of its own: what was printed is there, the
+    // shell is the same one, and what its program says of its pane now
+    // means the new pane.
+    let (_window, attached) = pane_of_the_next_window(&host, session, next_pane);
+    let mut pane = attached.expect("the session is still there");
+    wait_for_text(&mut pane, "before-880001");
+    assert_eq!(pane.child_pid, left.pid);
+    assert_eq!(crate::surface_alias::pane_meant(told), next_pane);
+    pane.write_to_pty(b"typed\n".as_slice());
+    wait_for_text(&mut pane, "after-typed");
+
+    // Closing that pane is still an ending.
+    drop(pane);
+    wait_for("the host to forget the session", || {
+        host.sessions().is_empty().then_some(())
+    });
+    wait_for("the new pane's id to be free", || {
+        (crate::surface_alias::pane_meant(told) == told).then_some(())
+    });
+}
+
+#[test]
+fn a_session_that_ended_while_no_window_was_there_is_not_attached_to() {
+    let host = TestHost::start(|_| {});
+    let control = host.client();
+    let (session, _) = control
+        .spawn(SpawnSpec {
+            argv: vec!["/bin/sh".into(), "-c".into(), "echo done".into()],
+            env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+            cwd: "/".into(),
+            cols: 80,
+            rows: 24,
+            ..SpawnSpec::default()
+        })
+        .expect("a session");
+    the_session(&host, "the session to end", |info| info.exited.is_some());
+
+    // The pane is told the session is gone before anything of the pane
+    // was touched, so it can be given a new shell.
+    let (_window, attached) = pane_of_the_next_window(&host, session, 880_011);
+    assert!(matches!(attached, Err(ReattachError::Gone(_))));
+    // And the host no longer holds its log for a reader that will not come.
+    assert!(host.sessions().is_empty());
+
+    // The same for a session the host has never heard of, and for a host
+    // that is not there.
+    let (_window, attached) = pane_of_the_next_window(&host, SessionId::new_random(), 880_012);
+    assert!(matches!(attached, Err(ReattachError::Gone(_))));
+    let nowhere = HostEndpoint::new(short_dir().path().join("no.sock"), None);
+    let (_state, pending) = TerminalState::new_pending(80, 24);
+    assert!(matches!(
+        reattach(&nowhere, session, &pending, facts(), 880_013),
+        Err(ReattachError::Gone(_))
+    ));
+    assert!(nowhere.held_sessions().is_empty());
+}
+
+#[test]
+fn a_window_listing_what_the_host_holds_gets_the_running_sessions_only() {
+    let host = TestHost::start(|_| {});
+    let control = host.client();
+    let spawn = |script: &str| {
+        control
+            .spawn(SpawnSpec {
+                argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+                env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+                cwd: "/".into(),
+                cols: 80,
+                rows: 24,
+                ..SpawnSpec::default()
+            })
+            .expect("a session")
+    };
+    let (running, pid) = spawn("sleep 300");
+    let (ended, _) = spawn("true");
+    wait_for("one of the two to end", || {
+        host.sessions()
+            .iter()
+            .any(|info| info.id == ended && info.exited.is_some())
+            .then_some(())
+    });
+
+    let window = HostEndpoint::new(host.socket.clone(), None);
+    let held = window.held_sessions();
+    assert_eq!(held.len(), 1);
+    assert_eq!(
+        (held[0].id.as_str(), held[0].pid),
+        (running.to_string().as_str(), pid)
+    );
+    assert_eq!(held[0].cwd, "/");
+    // Started by nobody's pane, so it says nothing of one.
+    assert_eq!(held[0].exported_surface, None);
+    // The ended one was forgotten on the way.
+    assert_eq!(host.sessions().len(), 1);
+
+    // A session no pane shows can be ended from the list.
+    window.end_held(running);
+    assert!(host.sessions().is_empty());
+    assert!(window.held_sessions().is_empty());
+}
+
+#[test]
+fn leaving_with_the_sessions_to_be_stopped_ends_everything_the_host_holds() {
+    let mut host = TestHost::start(|_| {});
+    let mut shown = pane_in_host(&host, sh("echo shown; sleep 300"));
+    wait_for_text(&mut shown, "shown");
+    let shown_pid = shown.child_pid;
+    // One that no pane of this window shows: it is stopped too.
+    let (_, unshown_pid) = host
+        .client()
+        .spawn(SpawnSpec {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 300".into()],
+            env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+            cwd: "/".into(),
+            cols: 80,
+            rows: 24,
+            ..SpawnSpec::default()
+        })
+        .expect("a session");
+
+    stop_all(&host.endpoint, Duration::from_secs(10));
+    // The pane is torn down after that, as the window's are, and must not
+    // hold anything up.
+    drop(shown);
+    let thread = host.thread.take().expect("the host's thread");
+    wait_for("the host to exit", || thread.is_finished().then_some(()));
+    thread
+        .join()
+        .expect("the host's thread")
+        .expect("a clean exit");
+    for pid in [shown_pid, unshown_pid] {
+        // SAFETY: signal 0 only asks whether the process is there.
+        assert!(
+            unsafe { libc::kill(pid as libc::pid_t, 0) } != 0,
+            "process {pid} outlived the host"
+        );
+    }
+}
+
+/// Socket name that makes [`host_process_entry`] a host process.
+const RELAUNCHED_SOCKET: &str = "/relaunched.sock";
+
+/// Not a test of its own: when the test binary is started with a socket
+/// path of that name among its arguments, this is the host process an
+/// endpoint launches in the test below. In a normal run it does nothing.
+#[test]
+fn host_process_entry() {
+    let Some(socket) = std::env::args().find(|arg| arg.ends_with(RELAUNCHED_SOCKET)) else {
+        return;
+    };
+    splitlane_host::close_inherited_descriptors();
+    let mut config = HostConfig::new(&socket);
+    config.idle_grace = Duration::from_secs(2);
+    config.version = "this-release".to_string();
+    let outcome = splitlane_host::run(config);
+    std::process::exit(if outcome.is_ok() { 0 } else { 3 });
+}
+
+#[test]
+fn a_host_of_another_release_serves_the_window_until_it_holds_nothing_and_then_makes_way() {
+    let dir = short_dir();
+    let socket = dir.path().join("relaunched.sock");
+    // The host an earlier release left running, with a session in it.
+    let old_host = std::thread::spawn({
+        let mut config = HostConfig::new(&socket);
+        config.version = "the-release-before".to_string();
+        move || splitlane_host::run(config)
+    });
+    let old = wait_for("the old host to answer", || Client::connect(&socket).ok());
+    let (kept, kept_pid) = old
+        .spawn(SpawnSpec {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 300".into()],
+            env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+            cwd: "/".into(),
+            cols: 80,
+            rows: 24,
+            ..SpawnSpec::default()
+        })
+        .expect("a session");
+    drop(old);
+
+    // The window of this release.
+    let window = HostEndpoint::of_release(
+        socket.clone(),
+        Some(Launcher {
+            exe: std::env::current_exe().expect("this test binary"),
+            args: [
+                "--exact",
+                "terminal::pty_session::host_tests::host_process_entry",
+                socket.to_str().expect("a path that is text"),
+                "--nocapture",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+        }),
+        "this-release",
+    );
+    let open_pane = |script: &str| {
+        let params = sh(script);
+        let (mut state, pending) = TerminalState::new_pending(params.cols, params.rows);
+        match open(Some(&window), facts(), params, pending, None, PANE) {
+            Opened::InHost(spawned) => state.promote_remote(spawned),
+            _ => unreachable!("the host did not take the pane"),
+        }
+        state
+    };
+    let host_release = || {
+        Client::connect(&socket)
+            .ok()
+            .map(|client| client.host().version.clone())
+    };
+
+    // While the old host holds a session it stays, and new panes open in
+    // it: its sessions are worth more than running the newer code.
+    let mut first = open_pane("echo in-the-old-host; sleep 300");
+    wait_for_text(&mut first, "in-the-old-host");
+    assert_eq!(host_release().as_deref(), Some("the-release-before"));
+    assert!(!old_host.is_finished());
+
+    // Everything in it ends.
+    drop(first);
+    let control = wait_for("a connection to the old host", || {
+        Client::connect(&socket).ok()
+    });
+    control.kill(kept).expect("the kept session is ended");
+    wait_for("the old host to hold nothing", || {
+        let sessions = control.list().ok()?;
+        let _ = control.forget(kept);
+        sessions.is_empty().then_some(())
+    });
+    drop(control);
+    // SAFETY: signal 0 only asks whether the process is there.
+    wait_for("the kept session's shell to be gone", || {
+        (unsafe { libc::kill(kept_pid as libc::pid_t, 0) } != 0).then_some(())
+    });
+
+    // The next pane the window opens is in a host of the window's release,
+    // and the old host has exited by itself.
+    let mut second = open_pane("echo in-the-new-host; sleep 300");
+    wait_for_text(&mut second, "in-the-new-host");
+    assert_eq!(host_release().as_deref(), Some("this-release"));
+    wait_for("the old host to exit", || {
+        old_host.is_finished().then_some(())
+    });
+    old_host
+        .join()
+        .expect("the old host's thread")
+        .expect("a clean exit");
+
+    drop(second);
+    let new = wait_for("a connection to the new host", || {
+        Client::connect(&socket).ok()
+    });
+    assert_ne!(new.host().pid, Some(std::process::id()));
+    new.shutdown(true).expect("the new host stops");
+    wait_for("the new host to exit", || {
+        matches!(Client::connect(&socket), Err(HostError::NotRunning)).then_some(())
+    });
 }
