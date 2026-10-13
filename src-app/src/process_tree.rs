@@ -681,9 +681,35 @@ pub(crate) fn worker_against(
     }
 }
 
-/// Whether `pid` is running an executable this build staged.
+/// Whether `pid` is running an executable a build of this app staged.
 fn is_ours(pid: u32, shim_dir: &Path) -> bool {
-    exe_path_of(pid).is_some_and(|exe| exe.starts_with(shim_dir))
+    exe_path_of(pid).is_some_and(|exe| staged_by_a_release(&exe, shim_dir))
+}
+
+/// Whether `exe` is a file some release of this app staged, given the
+/// directory `shim_dir` this build stages into.
+///
+/// Each release stages into a directory of its own, `bin/<version>/`, and
+/// none of them is ever removed. A session that outlives an update - one
+/// in the session host does - goes on running the shim of the release it
+/// was started under, from that release's directory. Asking only about
+/// this build's would stop recognising that shim the moment the app is
+/// updated, and the agent under it with it.
+///
+/// So a file directly inside any sibling of this build's directory counts.
+/// Only when the directory is laid out that way: a packaged build stages
+/// beside its own executable, where the siblings are not ours.
+fn staged_by_a_release(exe: &Path, shim_dir: &Path) -> bool {
+    if exe.starts_with(shim_dir) {
+        return true;
+    }
+    let Some(releases) = shim_dir
+        .parent()
+        .filter(|releases| releases.file_name().is_some_and(|name| name == "bin"))
+    else {
+        return false;
+    };
+    exe.parent().and_then(Path::parent) == Some(releases)
 }
 
 /// The path of the executable `pid` is running.
@@ -1438,6 +1464,45 @@ fn exe_path_impl(_pid: u32) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shim_staged_by_another_release_is_still_ours() {
+        let staged = Path::new("/cache/splitlane/bin/0.3.0");
+        // This build's own.
+        assert!(staged_by_a_release(
+            Path::new("/cache/splitlane/bin/0.3.0/claude"),
+            staged
+        ));
+        // The release a session that outlived the update was started under.
+        assert!(staged_by_a_release(
+            Path::new("/cache/splitlane/bin/0.2.6/claude"),
+            staged
+        ));
+        // Not a file of a release directory: deeper, shallower, elsewhere.
+        for other in [
+            "/cache/splitlane/bin/0.2.6/nested/claude",
+            "/cache/splitlane/bin/claude",
+            "/cache/splitlane/claude",
+            "/usr/local/bin/claude",
+        ] {
+            assert!(!staged_by_a_release(Path::new(other), staged), "{other}");
+        }
+        // A build that stages beside its own executable has no release
+        // directories next to it, only other people's.
+        let packaged = Path::new("/opt/splitlane/bin");
+        assert!(staged_by_a_release(
+            Path::new("/opt/splitlane/bin/claude"),
+            packaged
+        ));
+        assert!(!staged_by_a_release(
+            Path::new("/opt/splitlane/other/claude"),
+            packaged
+        ));
+        assert!(!staged_by_a_release(
+            Path::new("/opt/other/claude"),
+            Path::new("/opt/bin/bin")
+        ));
+    }
 
     /// The tests below assert about the **test process's own** children, which
     /// is state every test in this binary shares. Cargo runs them on threads of
