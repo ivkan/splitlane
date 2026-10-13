@@ -1014,6 +1014,32 @@ fn closing_a_pane_ends_its_session_and_everything_in_it() {
     });
 }
 
+/// A pane closed while its shell was being started is gone by the time the
+/// shell is there, and what was started is dropped without ever having been
+/// the pane's.
+#[test]
+fn a_shell_started_for_a_pane_that_is_gone_is_ended() {
+    let host = TestHost::start(|_| {});
+    let params = sh("sleep 300");
+    let (state, pending) = TerminalState::new_pending(params.cols, params.rows);
+    let spawned = match open(Some(&host.endpoint), facts(), params, pending, None) {
+        Opened::InHost(spawned) => spawned,
+        Opened::InWindow(_) => unreachable!("the host did not take the pane"),
+        Opened::Lost(e) => unreachable!("the pane lost its shell: {e:#}"),
+    };
+    let pid = spawned.child_pid;
+    assert!(group_alive(pid));
+
+    drop(state);
+    drop(spawned);
+    wait_for("the process group to be gone", || {
+        (!group_alive(pid)).then_some(())
+    });
+    wait_for("the host to forget the session", || {
+        host.sessions().is_empty().then_some(())
+    });
+}
+
 /// Input a program does not read is not taken off the pane's connection by
 /// the host, and everything the pane says after it waits behind it. Ending
 /// the session must not be one of the things that wait.

@@ -340,6 +340,17 @@ impl RemoteHandle {
     }
 }
 
+/// A handle that is let go of ends its session, closed or not. A pane that
+/// is closed while its shell is still being started never gets as far as
+/// owning the handle: what was started for it is dropped where the pane
+/// should have been, and the shell would otherwise run on with nobody to
+/// end it.
+impl Drop for RemoteHandle {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 fn pack_size(cols: u16, rows: u16) -> u32 {
     (u32::from(cols) << 16) | u32::from(rows)
 }
