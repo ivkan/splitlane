@@ -1160,10 +1160,9 @@ fn kill_ends_the_whole_process_group() {
     assert!(process_exists(pid) && process_exists(grandchild));
 
     client.kill(session).unwrap();
-    assert_eq!(
-        trace.follow_to_exit(&attachment).signal,
-        Some(libc::SIGTERM)
-    );
+    // Hung up on first, as by a terminal that closed, and that is what a
+    // program with no handler of its own dies of.
+    assert_eq!(trace.follow_to_exit(&attachment).signal, Some(libc::SIGHUP));
     wait_for("both processes to be gone", || {
         (!process_exists(pid) && !process_exists(grandchild)).then_some(())
     });
@@ -1171,15 +1170,41 @@ fn kill_ends_the_whole_process_group() {
     client.kill(session).unwrap();
 }
 
+/// An interactive shell ignores SIGTERM and saves its history when its
+/// terminal hangs up. Killed with SIGTERM alone it would be left for the
+/// SIGKILL and save nothing.
+#[test]
+fn kill_hangs_up_first_so_a_shell_can_save_what_it_has() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let dir = short_dir();
+    let saved = dir.path().join("saved");
+    let (session, _) = client
+        .spawn(sh(&format!(
+            "trap '' TERM; trap 'echo history > {}; exit 0' HUP; echo ready; while :; do sleep 0.05; done",
+            saved.display()
+        )))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the traps to be set", |t| {
+        t.text().contains("ready")
+    });
+
+    client.kill(session).unwrap();
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), "history\n");
+}
+
 #[test]
 fn kill_reaches_a_process_that_ignores_the_polite_request() {
     let host = TestHost::start(|_| {});
     let client = host.client();
-    // The shell dies of SIGTERM at once. The `sleep` inherits the ignored
-    // signal and is left for the SIGKILL that follows.
+    // The shell dies of the hangup at once. The `sleep` inherits the
+    // ignored signals and is left for the SIGKILL that follows.
     let (session, pid) = client
         .spawn(sh(
-            "(trap '' TERM; sleep 300 & echo \"child=$!\"; wait) & wait",
+            "(trap '' HUP TERM; sleep 300 & echo \"child=$!\"; wait) & wait",
         ))
         .unwrap();
     let attachment = client.attach(session, AttachFrom::Start).unwrap();
