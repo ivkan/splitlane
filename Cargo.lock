@@ -5996,7 +5996,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-host"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "alacritty_terminal",
  "interprocess",
