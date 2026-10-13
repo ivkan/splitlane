@@ -67,6 +67,16 @@ impl BoundedOscFilter {
             self.state = match state {
                 BoundedState::Ground if c1_osc => BoundedState::Collect(vec![b'\x9d']),
                 BoundedState::Ground if byte == b'\x1b' => BoundedState::Escape,
+                // CAN and SUB outside any sequence cancel nothing and do
+                // nothing. The pinned libghostty prints them as a cell
+                // there, so they are kept from it; inside a sequence it
+                // gets them, because there they end the sequence.
+                BoundedState::Ground
+                    if matches!(byte, b'\x18' | b'\x1a')
+                        && self.parser_state == ParserState::Ground =>
+                {
+                    BoundedState::Ground
+                }
                 BoundedState::Ground => {
                     self.push_byte(&mut output, byte, raw_c1);
                     BoundedState::Ground

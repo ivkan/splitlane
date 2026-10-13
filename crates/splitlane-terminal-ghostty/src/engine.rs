@@ -284,6 +284,37 @@ mod tests {
         assert_eq!(replies_to(b"\x1b]0;abc\x1b\\\x1b[5n"), b"\x1b[0n");
     }
 
+    /// The first row of a terminal fed `stream`, without trailing blanks.
+    fn first_row_after(stream: &[u8]) -> String {
+        let size = WindowSize::new(80, 24, 8, 16).expect("valid terminal size");
+        let mut terminal = DisplayTerminal::new(size, 100).expect("terminal must initialize");
+        terminal.feed(stream).expect("stream must parse");
+        let content = terminal.snapshot().expect("snapshot");
+        let mut row = vec![' '; 80];
+        for cell in content.cells.iter().filter(|cell| cell.point.line == 0) {
+            row[cell.point.column] = cell.character;
+        }
+        row.into_iter().collect::<String>().trim_end().to_owned()
+    }
+
+    #[test]
+    fn a_cancel_outside_any_sequence_leaves_nothing_on_the_grid() {
+        // What a stream that starts mid-log begins with, when there was
+        // nothing to cancel after all.
+        assert_eq!(first_row_after(b"\x18tail"), "tail");
+        assert_eq!(first_row_after(b"\x1atail"), "tail");
+        assert_eq!(first_row_after(b"a\x18b\x1ac"), "abc");
+        // Inside a sequence it still cancels the sequence: the parameter
+        // bytes are not acted on and what follows is text.
+        assert_eq!(first_row_after(b"\x1b[3\x18ok"), "ok");
+        assert_eq!(first_row_after(b"\x1b]0;title\x18ok"), "ok");
+        // And the modes a preamble sets behind it are set.
+        let size = WindowSize::new(80, 24, 8, 16).expect("valid terminal size");
+        let mut terminal = DisplayTerminal::new(size, 100).expect("terminal must initialize");
+        terminal.feed(b"\x18\x1b[?2004h").expect("preamble");
+        assert!(terminal.modes().expect("modes").bracketed_paste);
+    }
+
     #[test]
     fn oversized_c1_osc_tail_is_dropped_and_native_parser_recovers() {
         let size = WindowSize::new(80, 24, 8, 16).expect("valid terminal size");
