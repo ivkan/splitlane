@@ -682,3 +682,7 @@ fn forward_input(inner: &SessionInner, sender: Option<&RemoteSender>, bytes: &[u
         inner.refused_input.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+#[cfg(test)]
+#[path = "ghostty_remote_tests.rs"]
+mod tests;

@@ -5818,9 +5818,17 @@ pub(super) fn terminate_windows_process_tree(
     result
 }
 
+#[cfg(all(test, host_panes))]
+#[path = "host_test_support.rs"]
+mod host_test_support;
+
 #[cfg(all(test, target_os = "macos"))]
 #[path = "pty_session_host_tests.rs"]
 mod host_tests;
+
+#[cfg(all(test, host_panes, not(target_os = "macos")))]
+#[path = "ghostty_host_tests.rs"]
+mod ghostty_host_tests;
 
 #[cfg(test)]
 mod tests {

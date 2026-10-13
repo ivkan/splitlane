@@ -437,7 +437,7 @@ impl HostEndpoint {
     }
 
     /// Whether new panes are being kept away from the host for now.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     pub(super) fn is_avoided(&self) -> bool {
         lock(&self.state)
             .failed_at
