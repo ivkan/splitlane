@@ -158,6 +158,12 @@ fn ensure_binaries_extracted_uncached() -> Result<PathBuf> {
     {
         let cache_root = dirs::cache_dir()
             .ok_or_else(|| anyhow!("dirs::cache_dir() returned None; cannot extract"))?;
+        // One directory per release, and an older release's directory is
+        // left where it is. A shell started under that release has it on
+        // its `PATH` and in `SPLITLANE_BIN_DIR`, and a shell in the session
+        // host outlives the update: removing the directory would take the
+        // agent commands away from under it. The agent detector counts on
+        // them staying too (`process_tree::staged_by_a_release`).
         let target_dir = cache_root
             .join(crate::runtime_paths::APP_SUBDIR)
             .join("bin")
