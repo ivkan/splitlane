@@ -142,6 +142,14 @@ struct StateTarget {
     /// for finding the rollout written for it. `None` for every surface that
     /// has a session or is not Codex.
     codex_claim: Option<crate::codex_state::LaunchClaim>,
+    /// What the surface's program reports about itself through OSC 7501,
+    /// for the trace and nothing else.
+    ///
+    /// Filled only when [`TRACE`] logging is on, like the name below, and
+    /// never handed to anything that decides a state: a report is written
+    /// next to what the sources below concluded so the two can be compared
+    /// on real sessions before a report is trusted with anything.
+    reported: Option<crate::terminal::program_status::Reported>,
     /// The surface's name, for the trace and nothing else.
     ///
     /// Filled only when [`TRACE`] logging is actually on, because a pass that
@@ -595,6 +603,15 @@ impl SplitlaneApp {
                     .turn_ends
                     .get(&thread_id)
                     .and_then(|watch| watch.file_len),
+                reported: log::log_enabled!(target: TRACE, log::Level::Debug)
+                    .then(|| {
+                        view.terminal
+                            .program_status
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take_for_trace()
+                    })
+                    .flatten(),
                 label: log::log_enabled!(target: TRACE, log::Level::Debug)
                     .then(|| thread.title.clone()),
             });
@@ -1862,10 +1879,19 @@ fn pty_flow_outranked_by(thread: &crate::project::Thread) -> Option<&'static str
 /// The snapshot is taken once for the whole pass rather than once per surface,
 /// because every platform answers "who are this pid's children" by enumerating
 /// - so per-surface asking would repeat the walk for every pane on screen.
-fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReading>) {
+fn read_states(mut targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReading>) {
     // Stamped before the reads rather than after, so a slow pass is ordered by
     // the state of the world it saw and not by when it happened to finish.
     let read_at = std::time::Instant::now();
+    // Taken out before the sources are asked, so that nothing below can come
+    // to depend on it; it meets their answer again only in the trace.
+    let reported: Vec<_> = targets
+        .iter_mut()
+        .filter_map(|target| {
+            let reported = target.reported.take()?;
+            Some((target.thread_id, target.label.clone(), reported))
+        })
+        .collect();
     // **Taken before the transcripts, and that order is load-bearing.** The
     // baseline below is only allowed to be taken when the tail says the turn is
     // over, and the tail is read *after* this. Calls are only ever added to a
@@ -2192,8 +2218,124 @@ fn read_states(targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateReadi
                 agent_found: agent_pid.is_some(),
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    for (thread_id, label, reported) in reported {
+        let concluded = states
+            .iter()
+            .find(|reading| reading.thread_id == thread_id)
+            .and_then(|reading| reading.state.as_ref());
+        trace_reported(
+            label.as_deref().unwrap_or("?"),
+            thread_id,
+            &reported,
+            concluded,
+            read_at,
+        );
+    }
     (read_at, states)
+}
+
+/// Write what a surface's program reported about itself next to what this
+/// pass concluded about it.
+///
+/// One line for every change since the last pass, because a pass sees a
+/// surface every two seconds and a program can go from working to blocked
+/// and back inside that; then one line that compares. A report that has
+/// stood for less than a pass and differs is the two sources being read at
+/// different moments. One that has stood longer and differs is what this
+/// trace exists to find.
+fn trace_reported(
+    name: &str,
+    thread_id: u64,
+    reported: &crate::terminal::program_status::Reported,
+    concluded: Option<&AgentState>,
+    read_at: std::time::Instant,
+) {
+    use crate::terminal::program_status::Said;
+
+    let describe = |record: &crate::terminal::program_status::Record| {
+        let mut text = record.state.as_str().to_owned();
+        if let Some(kind) = record.kind {
+            text.push('/');
+            text.push_str(kind.as_str());
+        }
+        if let Some(app) = &record.app {
+            text.push_str(" app=");
+            text.push_str(app);
+        }
+        if let Some(msg) = &record.msg {
+            // Shortened, and quoted so that nothing in it reads as part of
+            // the line it is written into.
+            let short: String = msg.chars().take(80).collect();
+            text.push_str(&format!(" msg={short:?}"));
+        }
+        text
+    };
+    if reported.lost > 0 {
+        log::debug!(
+            target: TRACE,
+            "{name} (#{thread_id}) program status: {} earlier changes not kept",
+            reported.lost,
+        );
+    }
+    for entry in &reported.since_last {
+        let said = match &entry.said {
+            Said::Root(record) => describe(record),
+            Said::Cleared => "clear".to_owned(),
+            Said::EndedByPrompt => "ended by a new shell prompt".to_owned(),
+            Said::Child { id, state } => format!(
+                "{} for record {id:?} (not kept)",
+                state.map_or("clear", |state| state.as_str()),
+            ),
+        };
+        log::debug!(
+            target: TRACE,
+            "{name} (#{thread_id}) program status: {said}, {:.2}s before this pass",
+            read_at.saturating_duration_since(entry.at).as_secs_f32(),
+        );
+    }
+    let state = reported.root.as_ref().map(|(record, _)| record.state);
+    log::debug!(
+        target: TRACE,
+        "{name} (#{thread_id}) program status: reports {}; sources say {concluded:?} -> {}",
+        match &reported.root {
+            Some((record, since)) => format!(
+                "{} for {:.1}s",
+                describe(record),
+                read_at.saturating_duration_since(*since).as_secs_f32(),
+            ),
+            None => "nothing".to_owned(),
+        },
+        if report_agrees(state, concluded) {
+            "same"
+        } else {
+            "differs"
+        },
+    );
+}
+
+/// Whether a program's own report and the pass's conclusion say the same
+/// thing about a surface.
+///
+/// The two do not share a vocabulary. A program tells a finished turn
+/// nobody has looked at from a prompt at rest; the pass has one word for a
+/// turn that is over and none at all for a surface at rest. Both of the
+/// program's words are taken to match either of the pass's.
+fn report_agrees(
+    reported: Option<crate::terminal::program_status::State>,
+    concluded: Option<&AgentState>,
+) -> bool {
+    use crate::terminal::program_status::State;
+    match reported {
+        Some(State::Working) => {
+            matches!(concluded, Some(AgentState::Thinking | AgentState::Stalled))
+        }
+        Some(State::Blocked) => matches!(concluded, Some(AgentState::WaitingForInput)),
+        Some(State::Error) => matches!(concluded, Some(AgentState::Errored)),
+        Some(State::Idle | State::Done) | None => {
+            matches!(concluded, None | Some(AgentState::Finished))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2212,6 +2354,40 @@ mod tests {
 
     fn surface() -> Thread {
         Thread::new_terminal("agent", "/tmp", None)
+    }
+
+    #[test]
+    fn a_report_is_compared_in_the_passes_own_words() {
+        use super::report_agrees;
+        use crate::terminal::program_status::State;
+
+        for (reported, concluded, same) in [
+            (Some(State::Working), Some(AgentState::Thinking), true),
+            (Some(State::Working), Some(AgentState::Stalled), true),
+            (Some(State::Working), Some(AgentState::Finished), false),
+            (
+                Some(State::Blocked),
+                Some(AgentState::WaitingForInput),
+                true,
+            ),
+            (Some(State::Blocked), Some(AgentState::Thinking), false),
+            // A question asked in plain text: the program reports its turn
+            // as done, and a pass that says a person is waited on differs.
+            (Some(State::Done), Some(AgentState::WaitingForInput), false),
+            (Some(State::Done), Some(AgentState::Finished), true),
+            (Some(State::Done), None, true),
+            (Some(State::Idle), None, true),
+            (Some(State::Idle), Some(AgentState::Thinking), false),
+            (Some(State::Error), Some(AgentState::Errored), true),
+            (None, None, true),
+            (None, Some(AgentState::WaitingForInput), false),
+        ] {
+            assert_eq!(
+                report_agrees(reported, concluded.as_ref()),
+                same,
+                "{reported:?} against {concluded:?}"
+            );
+        }
     }
 
     /// Asked once the status says the turn is over, a transcript that ends on

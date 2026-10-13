@@ -40,6 +40,7 @@ mod listener;
 mod marks;
 #[cfg(all(test, target_os = "linux"))]
 mod portable_pty_probe;
+pub(crate) mod program_status;
 mod pty_session;
 mod resize_journal;
 mod search;

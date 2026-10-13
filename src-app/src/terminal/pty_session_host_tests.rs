@@ -29,6 +29,7 @@ fn terminal_with_sink(mode: AttachMode, start: StreamStart) -> (TerminalState, R
     state.cwd_rx = Some(channels.cwd_rx);
     state.marks_rx = Some(channels.marks_rx);
     state.last_command = channels.last_command;
+    state.program_status = channels.program_status;
     state.set_osc52_mode(Osc52Mode::CopyPaste);
     state.set_terminal_focused(true);
     (state, sink)
@@ -142,6 +143,34 @@ fn a_busy_session_in(dir: &str, word: &str, port: u16) -> Vec<u8> {
 
 fn a_busy_session(word: &str, port: u16) -> Vec<u8> {
     a_busy_session_in("/tmp", word, port)
+}
+
+/// What a program last said of itself is what it last said, whether the
+/// pane was there to hear it or reads it out of the log afterwards.
+#[test]
+fn a_status_report_is_read_from_old_output_and_from_new() {
+    use crate::terminal::program_status::State;
+
+    let old = b"\x1b]7501;?\x1b\\\x1b]7501;state=working:app=x\x1b\\\
+        \x1b]7501;state=blocked:kind=permission:app=x\x1b\\";
+    let tail = old.len() as u64;
+    let (state, mut sink) = terminal_with_sink(AttachMode::Reattach, start_at(0, tail));
+    let reported = |state: &TerminalState| {
+        state
+            .program_status
+            .lock()
+            .expect("status")
+            .take_for_trace()
+            .and_then(|reported| reported.root)
+            .map(|(record, _)| record.state)
+    };
+
+    assert_eq!(sink.handle(output(0, old)), SinkStep::Continue);
+    assert_eq!(reported(&state), Some(State::Blocked));
+
+    let new = b"\x1b]7501;state=done:app=x\x1b\\";
+    assert_eq!(sink.handle(output(tail, new)), SinkStep::Continue);
+    assert_eq!(reported(&state), Some(State::Done));
 }
 
 #[test]
