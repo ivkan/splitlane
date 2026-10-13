@@ -403,17 +403,24 @@ impl HostEndpoint {
     /// The shared connection, for a session that exists. Never starts a
     /// host: one started now would not have the session.
     pub(super) fn for_existing_session(&self) -> Option<Arc<Client>> {
+        self.existing_session().ok()
+    }
+
+    /// [`Self::for_existing_session`], saying why there is no connection:
+    /// nothing listening and a host that would not answer are different
+    /// news about a session.
+    fn existing_session(&self) -> Result<Arc<Client>, HostError> {
         let mut state = lock(&self.state);
         if let Some(control) = state
             .control
             .as_ref()
             .filter(|control| !control.is_closed())
         {
-            return Some(control.clone());
+            return Ok(control.clone());
         }
-        let control = Arc::new(Client::connect(&self.socket).ok()?);
+        let control = Arc::new(Client::connect(&self.socket)?);
         state.control = Some(control.clone());
-        Some(control)
+        Ok(control)
     }
 
     /// Note that the host would not do what a new pane needs.
@@ -585,6 +592,11 @@ pub(super) enum ReattachError {
     Gone(anyhow::Error),
     /// The session is there and the terminal could not follow it.
     Failed(anyhow::Error),
+    /// A host is there and did not say whether the session is, or said it
+    /// is and would not take the pane's connection. The session may be
+    /// running, with an agent in it: a new shell that resumed the same
+    /// conversation would put a second agent beside the first.
+    Unanswered(anyhow::Error),
 }
 
 /// Attach a terminal to a session that is already running in the host.
@@ -602,15 +614,24 @@ pub(super) fn reattach(
     surface: u64,
 ) -> Result<SpawnedRemote, ReattachError> {
     let gone = ReattachError::Gone;
-    let control = endpoint.for_existing_session().ok_or_else(|| {
-        gone(anyhow!(
+    // Nothing listening is an answer: a host takes its sessions with it.
+    // Anything else a host says or fails to say is not.
+    let control = endpoint.existing_session().map_err(|e| match e {
+        HostError::NotRunning => gone(anyhow!(
             "no session host answers on {}",
             endpoint.socket.display()
-        ))
+        )),
+        other => ReattachError::Unanswered(
+            anyhow!(other).context("the session host could not be asked about the session"),
+        ),
     })?;
     let info = control
         .list()
-        .map_err(|e| gone(anyhow!(e)))?
+        .map_err(|e| {
+            ReattachError::Unanswered(
+                anyhow!(e).context("the session host did not say what it holds"),
+            )
+        })?
         .into_iter()
         .find(|info| info.id == session)
         .ok_or_else(|| gone(anyhow!("the session host has no session {session}")))?;
@@ -620,8 +641,9 @@ pub(super) fn reattach(
         let _ = control.forget(session);
         return Err(gone(anyhow!("session {session} has ended")));
     }
-    let pane = Client::connect(&endpoint.socket)
-        .map_err(|e| gone(anyhow!(e).context("cannot open the pane's connection")))?;
+    let pane = Client::connect(&endpoint.socket).map_err(|e| {
+        ReattachError::Unanswered(anyhow!(e).context("cannot open the pane's connection"))
+    })?;
     let exported = exported_id(&info, EXPORTED_SURFACE);
     if let Some(exported) = exported {
         crate::surface_alias::remember(exported, surface);

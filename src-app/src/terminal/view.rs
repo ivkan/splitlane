@@ -900,7 +900,7 @@ impl TerminalView {
                     // Blocking PTY open (`tty::new` forks) runs off the render thread,
                     // and so does param resolution (shell lookup + shell-integration
                     // rc write).
-                    let (shell_quoting, outcome, attached_to_held) = executor
+                    let (shell_quoting, outcome, attached_to_held, held_unanswered) = executor
                         .spawn(async move {
                             let params = TerminalState::resolve_spawn_params_with_profile(
                                 cwd,
@@ -1014,7 +1014,9 @@ impl TerminalView {
                                 TerminalState::open_pty_and_eventloop(params, pending, signal_mask),
                             );
                             #[cfg(not(target_os = "macos"))]
-                            let attached_to_held = false;
+                            let (attached_to_held, held_unanswered) = (false, false);
+                            #[cfg(target_os = "macos")]
+                            let mut held_unanswered = false;
                             #[cfg(target_os = "macos")]
                             let (outcome, attached_to_held) = match hosted {
                                 Some((endpoint, facts)) => {
@@ -1049,6 +1051,16 @@ impl TerminalView {
                                                 }
                                                 Err(ReattachError::Failed(error)) => {
                                                     Some(Err(error))
+                                                }
+                                                // Not known to be gone, so
+                                                // not replaced: the pane
+                                                // says so and starts
+                                                // nothing.
+                                                Err(ReattachError::Unanswered(error)) => {
+                                                    held_unanswered = true;
+                                                    Some(Err(error.context(
+                                                        "this pane's session may still be running in the session host, so it was not started again; restart Splitlane to attach to it",
+                                                    )))
                                                 }
                                             }
                                         },
@@ -1091,7 +1103,7 @@ impl TerminalView {
                                     false,
                                 ),
                             };
-                            (shell_quoting, outcome, attached_to_held)
+                            (shell_quoting, outcome, attached_to_held, held_unanswered)
                         })
                         .await;
                     let _ = this.update(cx, |view, cx| {
@@ -1101,7 +1113,12 @@ impl TerminalView {
                         // is typed the command that was held back for it.
                         // Typed before the shell is connected, so it waits
                         // in the same queue as anything typed since.
-                        if let Some(held) = view.held_attach.borrow_mut().take()
+                        //
+                        // A session the host would not answer about stays
+                        // what the surface is recorded with: the next
+                        // window asks again.
+                        if !held_unanswered
+                            && let Some(held) = view.held_attach.borrow_mut().take()
                             && !attached_to_held
                         {
                             view.needs_initial_clear

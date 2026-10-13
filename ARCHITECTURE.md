@@ -394,7 +394,13 @@ shown: if its session is still running it is attached to it, replay first; if
 the host does not have it, or its shell has ended, the pane gets a new shell
 and, for an agent, the command that resumes the conversation. That command is
 held back while the session may still be there, because typing it into a
-running agent's terminal would start a second agent beside the first.
+running agent's terminal would start a second agent beside the first. Nothing
+listening on the socket counts as the session being gone, since a host takes
+its sessions with it. A host that is there and does not answer, or will not
+take the pane's connection, has said nothing: the pane then starts no shell,
+says that its session may still be running, and stays recorded with that
+session for the next window to ask again. A second agent resumed on the
+same conversation is worse than a pane that has to be opened twice.
 
 **Sessions the layout does not mention are listed.** When it starts, a window
 asks the host what it holds - on a thread, with a bound of 400 ms on the wait
