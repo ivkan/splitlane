@@ -46,7 +46,7 @@ mod session;
 
 pub use client::{ensure_running, AttachFrom, Attachment, Client, StreamEvent};
 #[cfg(unix)]
-pub use descriptors::close_inherited_descriptors;
+pub use descriptors::{close_inherited_descriptors, raise_descriptor_limit};
 pub use protocol::{ExitStatus, Facts, Rgb, SessionId, SessionInfo, SpawnSpec};
 
 /// Lock a mutex, carrying on after a panic in another holder. Everything
@@ -108,6 +108,10 @@ impl HostError {
 #[cfg(not(unix))]
 pub fn close_inherited_descriptors() {}
 
+/// No host runs on this platform yet, so there is no limit of its to raise.
+#[cfg(not(unix))]
+pub fn raise_descriptor_limit() {}
+
 /// How a host is run. Built with [`HostConfig::new`] and adjusted field by
 /// field, so a field added later does not break a caller.
 #[derive(Debug, Clone)]
@@ -130,6 +134,10 @@ pub struct HostConfig {
     /// The binary that implements the kill-on-host-death watcher. `None`
     /// starts no watcher, which is what tests want.
     pub guard_exe: Option<PathBuf>,
+    /// Connections served at once; one more is told the host is busy. A
+    /// window holds one for each pane and one for itself, so this bounds
+    /// the panes a host serves, and it is set where the descriptors would
+    /// run out anyway: see [`raise_descriptor_limit`].
     pub max_connections: usize,
     /// Treat SIGTERM and SIGINT as a forced shutdown. Process-wide, so it
     /// is off unless the host is the whole process.
@@ -147,7 +155,7 @@ impl HostConfig {
             total_log_capacity_bytes: 128 * 1024 * 1024,
             idle_grace: Duration::from_secs(10),
             guard_exe: None,
-            max_connections: 64,
+            max_connections: 1024,
             handle_signals: false,
             version: env!("CARGO_PKG_VERSION").to_string(),
         }

@@ -275,6 +275,38 @@ fn whole_session(client: &Client, session: SessionId) -> Trace {
     trace
 }
 
+/// The host allows itself more open files than it was started with. A
+/// shell in it must be allowed what the host was, not what the host took.
+#[test]
+fn a_child_is_allowed_the_open_files_the_host_was_started_with() {
+    let soft_limit = || {
+        let mut limits = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `limits` is a valid out-pointer for the call.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) },
+            0
+        );
+        limits.rlim_cur
+    };
+    let before = soft_limit();
+    splitlane_host::raise_descriptor_limit();
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client.spawn(sh("ulimit -n")).unwrap();
+    let trace = whole_session(&client, session);
+    let expected = if before == libc::RLIM_INFINITY {
+        "unlimited".to_string()
+    } else {
+        before.to_string()
+    };
+    assert_eq!(trace.text().trim(), expected);
+    // Where the limit could be raised at all, it was.
+    assert!(soft_limit() >= before);
+}
+
 #[test]
 fn a_child_sees_exactly_the_environment_it_was_given() {
     let host = TestHost::start(|_| {});

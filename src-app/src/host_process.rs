@@ -24,6 +24,10 @@ pub fn run() -> i32 {
     // would otherwise stay open for as long as the host lives.
     splitlane_host::close_inherited_descriptors();
     install_file_logger();
+    // After the logger, so a refusal is on record. A host is allowed 256
+    // open files when started from a desktop session, and each pane in it
+    // costs eight.
+    splitlane_host::raise_descriptor_limit();
     let Some(socket) = runtime_paths::host_socket_path_spec() else {
         return fail("cannot work out where the session host socket belongs");
     };

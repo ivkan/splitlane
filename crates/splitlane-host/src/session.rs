@@ -968,6 +968,7 @@ fn spawn_child(
             // Nothing of the host's may reach the child: not a client's
             // connection, not another session's terminal.
             descriptors::seal_inherited(descriptor_limit);
+            descriptors::restore_limit_for_child();
             // The host handles SIGTERM and SIGINT itself and a handler does
             // not survive exec, but an ignored signal and a blocked one do.
             for signal in [
