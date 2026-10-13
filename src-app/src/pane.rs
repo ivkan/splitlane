@@ -275,9 +275,9 @@ impl ContextFact {
         match self.ceiling.filter(|c| *c > 0) {
             Some(ceiling) => {
                 lines.push(format!("ceiling {}", thousands(ceiling)));
-                lines.push("where this session last compacted on its own".to_string());
+                lines.push("where this session last filled up and compacted".to_string());
             }
-            None => lines.push("no ceiling until this session compacts on its own".to_string()),
+            None => lines.push("no ceiling until this session fills up and compacts".to_string()),
         }
         if self.compactions_seen > 0 {
             lines.push(match self.compactions_seen {
@@ -4016,7 +4016,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l == "where this session last compacted on its own"),
+                .any(|l| l == "where this session last filled up and compacted"),
             "{lines:?}"
         );
         assert!(lines.iter().any(|l| l == "compacted 3 times"), "{lines:?}");
@@ -4033,7 +4033,7 @@ mod tests {
             unknown
                 .tooltip_lines()
                 .iter()
-                .any(|l| l == "no ceiling until this session compacts on its own")
+                .any(|l| l == "no ceiling until this session fills up and compacts")
         );
     }
 

@@ -1210,7 +1210,17 @@ pub struct TailFacts {
     /// is the only honest denominator there is: nothing on disk states the
     /// context window, and it belongs to the plan rather than to the model.
     ///
-    /// **Only an automatic compaction says anything.** A manual one happens
+    /// **Only an automatic compaction that fired mid-work says anything.**
+    /// The agent also compacts by itself when a session has sat idle for
+    /// most of an hour, at whatever size it happens to be: on this machine
+    /// all 37 automatic compactions of one week came 3 210 to 3 238 seconds
+    /// after the last turn, at sizes from 201 806 to 592 896 tokens, in
+    /// sessions with a window of a million. One of those taken as the
+    /// ceiling printed `219k / 217k` beside an agent reporting itself a
+    /// quarter full. So an automatic compaction counts only when a turn was
+    /// written shortly before it began; see [`IDLE_COMPACTION_SECS`].
+    ///
+    /// A manual one happens
     /// wherever the person asked for it: measured over this machine's corpus,
     /// 28 manual compactions fired between 116 712 and 801 793 tokens while
     /// all 8 automatic ones fired between 919 686 and 1 002 336. Taking a
@@ -1235,6 +1245,13 @@ pub struct TailFacts {
     /// happened since.
     pub compaction: Option<CompactionSeen>,
 }
+
+/// How long after the last turn an automatic compaction can begin and still
+/// be the context filling up. The idle one comes about fifty-four minutes
+/// after the last turn and the full one within the turn that overflowed, so
+/// anything between tells them apart; this leaves room for a turn that
+/// waited on a permission prompt before it overflowed.
+const IDLE_COMPACTION_SECS: i64 = 30 * 60;
 
 /// One compaction, as the transcript states it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1290,6 +1307,9 @@ pub fn read_tail_facts(path: &Path) -> Option<TailFacts> {
     let mut context_tokens: Option<u64> = None;
     let mut auto_compacted_at: Option<u64> = None;
     let mut compaction: Option<CompactionSeen> = None;
+    // When the newest turn so far was written, to tell a compaction that
+    // interrupted work from one that tidied up an idle session.
+    let mut last_turn_at: Option<i64> = None;
     let mut buf = String::new();
     loop {
         buf.clear();
@@ -1322,7 +1342,19 @@ pub fn read_tail_facts(path: &Path) -> Option<TailFacts> {
             && pre > 0
         {
             let automatic = meta.get("trigger").and_then(|v| v.as_str()) == Some("auto");
-            if automatic {
+            let at = value
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .map(crate::agent_sessions::last_activity_secs_from_iso)
+                .unwrap_or(0);
+            // The record is written when the compaction ends; it began its
+            // own duration earlier. With no turn in this window to measure
+            // from, or no timestamps, nothing says the context was full.
+            let began = at - meta.get("durationMs").and_then(|v| v.as_i64()).unwrap_or(0) / 1000;
+            let mid_work = at > 0
+                && last_turn_at
+                    .is_some_and(|turn| began.saturating_sub(turn) < IDLE_COMPACTION_SECS);
+            if automatic && mid_work {
                 auto_compacted_at = Some(pre);
             }
             // The context is now what the compaction left. The next turn's
@@ -1336,11 +1368,7 @@ pub fn read_tail_facts(path: &Path) -> Option<TailFacts> {
                 context_tokens = Some(post);
             }
             compaction = Some(CompactionSeen {
-                at: value
-                    .get("timestamp")
-                    .and_then(|v| v.as_str())
-                    .map(crate::agent_sessions::last_activity_secs_from_iso)
-                    .unwrap_or(0),
+                at,
                 pre_tokens: pre,
                 post_tokens: meta.get("postTokens").and_then(|v| v.as_u64()).unwrap_or(0),
                 automatic,
@@ -1368,6 +1396,14 @@ pub fn read_tail_facts(path: &Path) -> Option<TailFacts> {
         }
         if value.get("type").and_then(|v| v.as_str()) != Some("assistant") {
             continue;
+        }
+        if let Some(at) = value
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(crate::agent_sessions::last_activity_secs_from_iso)
+            .filter(|at| *at > 0)
+        {
+            last_turn_at = Some(at);
         }
         let Some(model) = value
             .get("message")
@@ -3918,20 +3954,61 @@ mod tests {
             "a manual compaction says nothing about the ceiling"
         );
 
+        let turn = r#"{"type":"assistant","timestamp":"2026-09-06T10:00:00.000Z","message":{"id":"m","model":"claude-opus-4-1-20250805","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":999000,"cache_creation_input_tokens":0}}}"#;
         let auto = dir.path().join("auto.jsonl");
         std::fs::write(
             &auto,
-            concat!(
+            format!(
+                "{}\n{turn}\n{}\n",
                 r#"{"type":"system","compactMetadata":{"trigger":"manual","preTokens":116712,"postTokens":9000}}"#,
-                "\n",
-                r#"{"type":"system","compactMetadata":{"trigger":"auto","preTokens":1000132,"postTokens":9399}}"#,
-                "\n",
+                r#"{"type":"system","timestamp":"2026-09-06T10:01:30.000Z","compactMetadata":{"trigger":"auto","preTokens":1000132,"postTokens":9399,"durationMs":60000}}"#,
             ),
         )
         .expect("write fixture");
         assert_eq!(
             read_tail_facts(&auto).expect("facts").auto_compacted_at,
             Some(1_000_132)
+        );
+    }
+
+    #[test]
+    fn a_compaction_of_an_idle_session_measures_nothing() {
+        // The agent compacts a session that has sat idle for most of an hour,
+        // whatever its size. Traced on one session with a window of a
+        // million: eight automatic compactions between 206 137 and 464 108
+        // tokens, each 3 285 to 3 322 seconds after the last turn. The one
+        // below is the seventh, and the meter read `219k / 217k` after it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let turn = r#"{"type":"assistant","timestamp":"2026-10-12T12:16:43.000Z","message":{"id":"m","model":"claude-opus-4-1-20250805","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":217000,"cache_creation_input_tokens":0}}}"#;
+        let idle = dir.path().join("idle.jsonl");
+        std::fs::write(
+            &idle,
+            format!(
+                "{turn}\n{}\n",
+                r#"{"type":"system","timestamp":"2026-10-12T13:12:24.786Z","compactMetadata":{"trigger":"auto","preTokens":217501,"postTokens":15653,"durationMs":56484}}"#,
+            ),
+        )
+        .expect("write fixture");
+        let facts = read_tail_facts(&idle).expect("facts");
+        assert_eq!(facts.auto_compacted_at, None);
+        // It is still a compaction: the context dropped and the ring says why.
+        assert_eq!(facts.context_tokens, Some(15_653));
+        assert!(facts.compaction.is_some_and(|seen| seen.automatic));
+
+        // With no turn in the window to measure from, nothing says the
+        // context was full either.
+        let alone = dir.path().join("alone.jsonl");
+        std::fs::write(
+            &alone,
+            concat!(
+                r#"{"type":"system","timestamp":"2026-10-12T13:12:24.786Z","compactMetadata":{"trigger":"auto","preTokens":217501,"postTokens":15653,"durationMs":56484}}"#,
+                "\n",
+            ),
+        )
+        .expect("write fixture");
+        assert_eq!(
+            read_tail_facts(&alone).expect("facts").auto_compacted_at,
+            None
         );
     }
 
@@ -3981,7 +4058,7 @@ mod tests {
                 r#"{{"type":"assistant","uuid":"{uuid}","timestamp":"2026-09-06T10:00:00.000Z","message":{{"id":"{uuid}","model":"claude-opus-4-1-20250805","usage":{{"input_tokens":0,"output_tokens":10,"cache_read_input_tokens":{read},"cache_creation_input_tokens":0}}}}}}"#
             )
         };
-        let compaction = r#"{"type":"system","compactMetadata":{"trigger":"auto","preTokens":295318,"postTokens":21717}}"#;
+        let compaction = r#"{"type":"system","timestamp":"2026-09-06T10:02:00.000Z","compactMetadata":{"trigger":"auto","preTokens":295318,"postTokens":21717,"durationMs":60000}}"#;
         std::fs::write(&path, format!("{}\n{compaction}\n", turn("a", 293_517)))
             .expect("write fixture");
         let facts = read_tail_facts(&path).expect("facts");
