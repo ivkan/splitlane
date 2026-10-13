@@ -1684,6 +1684,50 @@ fn write_input_bytes<W: Write>(
     }
 }
 
+/// The terminal a runtime draws with, at the size the session was made
+/// with and in the theme's colours, and that size. The shared state shows
+/// it before this returns.
+fn new_display_terminal(
+    inner: &SessionInner,
+    max_scrollback: usize,
+) -> anyhow::Result<(ghostty::DisplayTerminal, TerminalWindowSize)> {
+    let initial_size = inner
+        .resize
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .requested;
+    let ghostty_size =
+        window_size(initial_size).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut terminal = ghostty::DisplayTerminal::new(ghostty_size, max_scrollback)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let theme = crate::theme::active_theme();
+    let foreground = ghostty_rgb(theme.foreground);
+    let background = ghostty_rgb(theme.ansi_background);
+    let cursor = ghostty_rgb(theme.cursor);
+    terminal
+        .set_default_colors(foreground, background, cursor)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    refresh_shared_state(inner, &mut terminal).map_err(|error| anyhow::anyhow!(error))?;
+    Ok((terminal, initial_size))
+}
+
+/// The command a pane's shell is started with: the program, where it
+/// starts, and its environment - this process's, with the pane's variables
+/// and the terminal's identity on top.
+fn shell_command(params: &SpawnParams) -> CommandBuilder {
+    let mut command = CommandBuilder::new(&params.shell);
+    command.args(&params.extra_args);
+    command.cwd(&params.cwd);
+    for (key, value) in &params.env {
+        command.env(key, value);
+    }
+    // Match Ghostty and cmux: keep the portable TERM contract while exposing
+    // the renderer identity that terminal applications use for capabilities.
+    command.env("TERM_PROGRAM", "ghostty");
+    command.env("TERM_PROGRAM_VERSION", ghostty::GHOSTTY_APP_VERSION);
+    command
+}
+
 fn run_runtime(
     inner: Arc<SessionInner>,
     mailbox: Arc<RuntimeMailbox>,
@@ -1694,43 +1738,13 @@ fn run_runtime(
     startup_state: Arc<StartupState>,
 ) {
     let _mailbox_close = MailboxCloseGuard(mailbox.clone());
-    let initial_size = inner
-        .resize
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .requested;
-    let ghostty_size = match window_size(initial_size) {
-        Ok(size) => size,
+    let (mut terminal, initial_size) = match new_display_terminal(&inner, max_scrollback) {
+        Ok(built) => built,
         Err(error) => {
-            let _ = startup_tx.send(StartupReport::InitializationFailed(anyhow::anyhow!(
-                error.to_string()
-            )));
+            let _ = startup_tx.send(StartupReport::InitializationFailed(error));
             return;
         }
     };
-    let mut terminal = match ghostty::DisplayTerminal::new(ghostty_size, max_scrollback) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            let _ = startup_tx.send(StartupReport::InitializationFailed(anyhow::anyhow!(
-                error.to_string()
-            )));
-            return;
-        }
-    };
-    let theme = crate::theme::active_theme();
-    let foreground = ghostty_rgb(theme.foreground);
-    let background = ghostty_rgb(theme.ansi_background);
-    let cursor = ghostty_rgb(theme.cursor);
-    if let Err(error) = terminal.set_default_colors(foreground, background, cursor) {
-        let _ = startup_tx.send(StartupReport::InitializationFailed(anyhow::anyhow!(
-            error.to_string()
-        )));
-        return;
-    }
-    if let Err(error) = refresh_shared_state(&inner, &mut terminal) {
-        let _ = startup_tx.send(StartupReport::InitializationFailed(anyhow::anyhow!(error)));
-        return;
-    }
 
     let pair = match native_pty_system().openpty(pty_size(initial_size)) {
         Ok(pair) => pair,
@@ -1757,16 +1771,7 @@ fn run_runtime(
     };
     #[cfg(target_os = "windows")]
     let mut master = DrainablePtyMaster::new(pair.master, master_closer);
-    let mut command = CommandBuilder::new(&params.shell);
-    command.args(&params.extra_args);
-    command.cwd(&params.cwd);
-    for (key, value) in &params.env {
-        command.env(key, value);
-    }
-    // Match Ghostty and cmux: keep the portable TERM contract while exposing
-    // the renderer identity that terminal applications use for capabilities.
-    command.env("TERM_PROGRAM", "ghostty");
-    command.env("TERM_PROGRAM_VERSION", ghostty::GHOSTTY_APP_VERSION);
+    let command = shell_command(&params);
 
     #[cfg(unix)]
     let child = {
@@ -1950,62 +1955,6 @@ fn run_runtime(
                     lifecycle.record_eof();
                 }
             }
-            Ok(RuntimeMessage::Input(bytes)) => {
-                release_queued_input_bytes(&inner, bytes.len());
-                write_input_bytes(&inner, &mut writer, &bytes, &mut runtime_failed);
-                notify_command_capacity(&inner);
-            }
-            Ok(RuntimeMessage::KeyInput(input)) => {
-                release_queued_input_bytes(
-                    &inner,
-                    std::mem::size_of::<ghostty::KeyInput>().saturating_add(input.text.len()),
-                );
-                match terminal.encode_key(&input) {
-                    Ok(bytes) => {
-                        write_input_bytes(&inner, &mut writer, &bytes, &mut runtime_failed)
-                    }
-                    Err(error) => reject_input(&inner, "key", error),
-                }
-                notify_command_capacity(&inner);
-            }
-            Ok(RuntimeMessage::MouseInput { input, repeat }) => {
-                release_queued_input_bytes(
-                    &inner,
-                    std::mem::size_of::<ghostty::MouseInput>().saturating_add(repeat),
-                );
-                for _ in 0..repeat {
-                    match terminal.encode_mouse(input) {
-                        Ok(bytes) => {
-                            write_input_bytes(&inner, &mut writer, &bytes, &mut runtime_failed)
-                        }
-                        Err(error) => {
-                            reject_input(&inner, "mouse", error);
-                            break;
-                        }
-                    }
-                }
-                notify_command_capacity(&inner);
-            }
-            Ok(RuntimeMessage::FocusInput(event)) => {
-                release_queued_input_bytes(&inner, std::mem::size_of::<ghostty::FocusEvent>());
-                match terminal.encode_focus(event) {
-                    Ok(bytes) => {
-                        write_input_bytes(&inner, &mut writer, &bytes, &mut runtime_failed)
-                    }
-                    Err(error) => reject_input(&inner, "focus", error),
-                }
-                notify_command_capacity(&inner);
-            }
-            Ok(RuntimeMessage::PasteInput { text, allow_unsafe }) => {
-                release_queued_input_bytes(&inner, text.len());
-                match terminal.encode_paste(&text, allow_unsafe) {
-                    Ok(bytes) => {
-                        write_input_bytes(&inner, &mut writer, &bytes, &mut runtime_failed)
-                    }
-                    Err(error) => reject_input(&inner, "paste", error),
-                }
-                notify_command_capacity(&inner);
-            }
             Ok(RuntimeMessage::Resize(command)) => {
                 let size = command.size;
                 #[cfg(target_os = "linux")]
@@ -2015,21 +1964,7 @@ fn run_runtime(
                 if !resize_allowed {
                     complete_resize_during_drain(&inner);
                 } else {
-                    let resized = window_size(size)
-                        .map_err(|error| error.to_string())
-                        .and_then(|ghostty_size| {
-                            terminal
-                                .resize(ghostty_size)
-                                .map_err(|error| error.to_string())
-                        })
-                        .and_then(|()| {
-                            if command.clear_initial {
-                                terminal
-                                    .clear_screen_and_scrollback()
-                                    .map_err(|error| error.to_string())?;
-                            }
-                            Ok(())
-                        })
+                    let resized = resize_grid(&mut terminal, size, command.clear_initial)
                         .and_then(|()| {
                             #[cfg(target_os = "linux")]
                             let active_master = Some(master.as_ref());
@@ -2062,168 +1997,6 @@ fn run_runtime(
                     complete_resize(&inner, command, resize_succeeded);
                 }
             }
-            Ok(RuntimeMessage::Scroll(scroll)) => {
-                terminal.scroll(scroll);
-                if let Err(error) = refresh_shared_state(&inner, &mut terminal) {
-                    log::warn!(target: "splitlane::terminal::ghostty", "Ghostty scroll failed: {error}");
-                }
-            }
-            Ok(RuntimeMessage::ScrollToViewportRow(row)) => {
-                let result = terminal
-                    .scroll_to_viewport_row(row)
-                    .map_err(|error| error.to_string())
-                    .and_then(|()| refresh_shared_state(&inner, &mut terminal));
-                if let Err(error) = result {
-                    log::warn!(
-                        target: "splitlane::terminal::ghostty",
-                        "Ghostty absolute scroll failed: {error}"
-                    );
-                }
-            }
-            Ok(RuntimeMessage::ApplySelection(generation)) => {
-                let range = {
-                    let mut selection = inner
-                        .selection_update
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if selection.queued_generation == Some(generation) {
-                        selection.queued_generation = None;
-                    }
-                    if selection.generation != generation {
-                        None
-                    } else {
-                        let range = selection.requested.take();
-                        selection.in_flight =
-                            range.as_ref().map(|range| (generation, range.clone()));
-                        range
-                    }
-                };
-                if let Some(range) = range {
-                    let shared_range = selection_range_from_ghostty(range.clone());
-                    match terminal.set_selection(range.clone()) {
-                        Ok(()) => {
-                            let mut selection = inner
-                                .selection_update
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if selection.in_flight.as_ref().is_some_and(
-                                |(pending_generation, pending)| {
-                                    *pending_generation == generation && pending == &range
-                                },
-                            ) {
-                                selection.in_flight = None;
-                            }
-                            let publish = selection.generation == generation;
-                            if publish {
-                                selection.applied = Some(range);
-                            }
-                            drop(selection);
-                            if publish {
-                                update_shared_selection(&inner, Some(shared_range));
-                            }
-                        }
-                        Err(error) => {
-                            let mut selection = inner
-                                .selection_update
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if selection.in_flight.as_ref().is_some_and(
-                                |(pending_generation, pending)| {
-                                    *pending_generation == generation && pending == &range
-                                },
-                            ) {
-                                selection.in_flight = None;
-                            }
-                            drop(selection);
-                            log::warn!(
-                                target: "splitlane::terminal::ghostty",
-                                "Ghostty selection update failed: {error}"
-                            );
-                        }
-                    }
-                }
-            }
-            Ok(RuntimeMessage::SelectWord(point)) => {
-                let _ = terminal.select_word(point);
-                let mut selection = inner
-                    .selection_update
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                selection.in_flight = None;
-                selection.applied = None;
-                drop(selection);
-                let _ = refresh_shared_state(&inner, &mut terminal);
-            }
-            Ok(RuntimeMessage::SelectLine(point)) => {
-                let _ = terminal.select_line(point);
-                let mut selection = inner
-                    .selection_update
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                selection.in_flight = None;
-                selection.applied = None;
-                drop(selection);
-                let _ = refresh_shared_state(&inner, &mut terminal);
-            }
-            Ok(RuntimeMessage::ClearSelection) => match terminal.clear_selection() {
-                Ok(()) => {
-                    let mut selection = inner
-                        .selection_update
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    selection.in_flight = None;
-                    selection.applied = None;
-                    drop(selection);
-                    update_shared_selection(&inner, None);
-                }
-                Err(error) => log::warn!(
-                    target: "splitlane::terminal::ghostty",
-                    "Ghostty selection clear failed: {error}"
-                ),
-            },
-            Ok(RuntimeMessage::Search {
-                query,
-                regex,
-                case_sensitive,
-                reply,
-            }) => {
-                let _ = reply.send(
-                    terminal
-                        .search(&query, regex, case_sensitive)
-                        .map_err(|error| error.to_string()),
-                );
-            }
-            Ok(RuntimeMessage::SearchScrollback {
-                query,
-                max_matches,
-                reply,
-            }) => {
-                let _ = reply.send(search_scrollback_lines(&terminal, &query, max_matches));
-            }
-            Ok(RuntimeMessage::SelectionText(reply)) => {
-                let _ = reply.send(terminal.selection_text().map_err(|error| error.to_string()));
-            }
-            Ok(RuntimeMessage::Hyperlink { point, reply }) => {
-                let _ = reply.send(
-                    terminal
-                        .hyperlink_at(point)
-                        .map_err(|error| error.to_string()),
-                );
-            }
-            Ok(RuntimeMessage::ExtractScrollback(reply)) => {
-                let _ = reply.send(
-                    terminal
-                        .extract_scrollback()
-                        .map_err(|error| error.to_string()),
-                );
-            }
-            Ok(RuntimeMessage::ExtractText(reply)) => {
-                let _ = reply.send(terminal.extract_text().map_err(|error| error.to_string()));
-            }
-            Ok(RuntimeMessage::RestoreScrollback(text)) => {
-                let _ = terminal.restore_scrollback(&text);
-                let _ = refresh_shared_state(&inner, &mut terminal);
-            }
             #[cfg(test)]
             Ok(RuntimeMessage::SimulateWorkerCrash) => {
                 panic!("Ghostty runtime worker failure injected for test");
@@ -2241,6 +2014,15 @@ fn run_runtime(
                 {
                     shutdown_requested = true;
                 }
+            }
+            Ok(message) => {
+                let message = handle_input_message(&inner, &mut terminal, message, &mut |bytes| {
+                    write_input_bytes(&inner, &mut writer, bytes, &mut runtime_failed);
+                });
+                // What is left after that is output and its end, which
+                // have arms of their own above.
+                let _ =
+                    message.and_then(|message| handle_view_message(&inner, &mut terminal, message));
             }
             Err(MailboxRecvError::Disconnected) => {
                 #[cfg(target_os = "linux")]
@@ -2465,6 +2247,263 @@ fn run_runtime(
             }
         }
     }
+}
+
+/// Give the grid a size, and clear it if this is the first size a new pane
+/// is given. The PTY is not touched: whoever owns it is told separately.
+fn resize_grid(
+    terminal: &mut ghostty::DisplayTerminal,
+    size: TerminalWindowSize,
+    clear: bool,
+) -> Result<(), String> {
+    let ghostty_size = window_size(size).map_err(|error| error.to_string())?;
+    terminal
+        .resize(ghostty_size)
+        .map_err(|error| error.to_string())?;
+    if clear {
+        terminal
+            .clear_screen_and_scrollback()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Take a message that is input for the program: let go of the room it
+/// held in the queue, have the terminal encode it for the modes in effect,
+/// and hand the bytes to `write`. Any other message is given back.
+fn handle_input_message(
+    inner: &SessionInner,
+    terminal: &mut ghostty::DisplayTerminal,
+    message: RuntimeMessage,
+    write: &mut impl FnMut(&[u8]),
+) -> Option<RuntimeMessage> {
+    match message {
+        RuntimeMessage::Input(bytes) => {
+            release_queued_input_bytes(inner, bytes.len());
+            write(&bytes);
+            notify_command_capacity(inner);
+        }
+        RuntimeMessage::KeyInput(input) => {
+            release_queued_input_bytes(
+                inner,
+                std::mem::size_of::<ghostty::KeyInput>().saturating_add(input.text.len()),
+            );
+            match terminal.encode_key(&input) {
+                Ok(bytes) => write(&bytes),
+                Err(error) => reject_input(inner, "key", error),
+            }
+            notify_command_capacity(inner);
+        }
+        RuntimeMessage::MouseInput { input, repeat } => {
+            release_queued_input_bytes(
+                inner,
+                std::mem::size_of::<ghostty::MouseInput>().saturating_add(repeat),
+            );
+            for _ in 0..repeat {
+                match terminal.encode_mouse(input) {
+                    Ok(bytes) => write(&bytes),
+                    Err(error) => {
+                        reject_input(inner, "mouse", error);
+                        break;
+                    }
+                }
+            }
+            notify_command_capacity(inner);
+        }
+        RuntimeMessage::FocusInput(event) => {
+            release_queued_input_bytes(inner, std::mem::size_of::<ghostty::FocusEvent>());
+            match terminal.encode_focus(event) {
+                Ok(bytes) => write(&bytes),
+                Err(error) => reject_input(inner, "focus", error),
+            }
+            notify_command_capacity(inner);
+        }
+        RuntimeMessage::PasteInput { text, allow_unsafe } => {
+            release_queued_input_bytes(inner, text.len());
+            match terminal.encode_paste(&text, allow_unsafe) {
+                Ok(bytes) => write(&bytes),
+                Err(error) => reject_input(inner, "paste", error),
+            }
+            notify_command_capacity(inner);
+        }
+        other => return Some(other),
+    }
+    None
+}
+
+/// Take a message that concerns only the terminal and what the window
+/// shows of it - scrolling, the selection, search, links, the text - and
+/// never the program. Any other message is given back.
+fn handle_view_message(
+    inner: &SessionInner,
+    terminal: &mut ghostty::DisplayTerminal,
+    message: RuntimeMessage,
+) -> Option<RuntimeMessage> {
+    match message {
+        RuntimeMessage::Scroll(scroll) => {
+            terminal.scroll(scroll);
+            if let Err(error) = refresh_shared_state(inner, terminal) {
+                log::warn!(target: "splitlane::terminal::ghostty", "Ghostty scroll failed: {error}");
+            }
+        }
+        RuntimeMessage::ScrollToViewportRow(row) => {
+            let result = terminal
+                .scroll_to_viewport_row(row)
+                .map_err(|error| error.to_string())
+                .and_then(|()| refresh_shared_state(inner, terminal));
+            if let Err(error) = result {
+                log::warn!(
+                    target: "splitlane::terminal::ghostty",
+                    "Ghostty absolute scroll failed: {error}"
+                );
+            }
+        }
+        RuntimeMessage::ApplySelection(generation) => {
+            let range = {
+                let mut selection = inner
+                    .selection_update
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if selection.queued_generation == Some(generation) {
+                    selection.queued_generation = None;
+                }
+                if selection.generation != generation {
+                    None
+                } else {
+                    let range = selection.requested.take();
+                    selection.in_flight = range.as_ref().map(|range| (generation, range.clone()));
+                    range
+                }
+            };
+            if let Some(range) = range {
+                let shared_range = selection_range_from_ghostty(range.clone());
+                match terminal.set_selection(range.clone()) {
+                    Ok(()) => {
+                        let mut selection = inner
+                            .selection_update
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if selection.in_flight.as_ref().is_some_and(
+                            |(pending_generation, pending)| {
+                                *pending_generation == generation && pending == &range
+                            },
+                        ) {
+                            selection.in_flight = None;
+                        }
+                        let publish = selection.generation == generation;
+                        if publish {
+                            selection.applied = Some(range);
+                        }
+                        drop(selection);
+                        if publish {
+                            update_shared_selection(inner, Some(shared_range));
+                        }
+                    }
+                    Err(error) => {
+                        let mut selection = inner
+                            .selection_update
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if selection.in_flight.as_ref().is_some_and(
+                            |(pending_generation, pending)| {
+                                *pending_generation == generation && pending == &range
+                            },
+                        ) {
+                            selection.in_flight = None;
+                        }
+                        drop(selection);
+                        log::warn!(
+                            target: "splitlane::terminal::ghostty",
+                            "Ghostty selection update failed: {error}"
+                        );
+                    }
+                }
+            }
+        }
+        RuntimeMessage::SelectWord(point) => {
+            let _ = terminal.select_word(point);
+            let mut selection = inner
+                .selection_update
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            selection.in_flight = None;
+            selection.applied = None;
+            drop(selection);
+            let _ = refresh_shared_state(inner, terminal);
+        }
+        RuntimeMessage::SelectLine(point) => {
+            let _ = terminal.select_line(point);
+            let mut selection = inner
+                .selection_update
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            selection.in_flight = None;
+            selection.applied = None;
+            drop(selection);
+            let _ = refresh_shared_state(inner, terminal);
+        }
+        RuntimeMessage::ClearSelection => match terminal.clear_selection() {
+            Ok(()) => {
+                let mut selection = inner
+                    .selection_update
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                selection.in_flight = None;
+                selection.applied = None;
+                drop(selection);
+                update_shared_selection(inner, None);
+            }
+            Err(error) => log::warn!(
+                target: "splitlane::terminal::ghostty",
+                "Ghostty selection clear failed: {error}"
+            ),
+        },
+        RuntimeMessage::Search {
+            query,
+            regex,
+            case_sensitive,
+            reply,
+        } => {
+            let _ = reply.send(
+                terminal
+                    .search(&query, regex, case_sensitive)
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        RuntimeMessage::SearchScrollback {
+            query,
+            max_matches,
+            reply,
+        } => {
+            let _ = reply.send(search_scrollback_lines(terminal, &query, max_matches));
+        }
+        RuntimeMessage::SelectionText(reply) => {
+            let _ = reply.send(terminal.selection_text().map_err(|error| error.to_string()));
+        }
+        RuntimeMessage::Hyperlink { point, reply } => {
+            let _ = reply.send(
+                terminal
+                    .hyperlink_at(point)
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        RuntimeMessage::ExtractScrollback(reply) => {
+            let _ = reply.send(
+                terminal
+                    .extract_scrollback()
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        RuntimeMessage::ExtractText(reply) => {
+            let _ = reply.send(terminal.extract_text().map_err(|error| error.to_string()));
+        }
+        RuntimeMessage::RestoreScrollback(text) => {
+            let _ = terminal.restore_scrollback(&text);
+            let _ = refresh_shared_state(inner, terminal);
+        }
+        other => return Some(other),
+    }
+    None
 }
 
 fn search_scrollback_lines(
@@ -2909,6 +2948,22 @@ fn verified_process_group(child_pid: u32) -> Option<i32> {
     (unsafe { libc::getpgid(pid) } == pid).then_some(pid)
 }
 
+/// What a signal is called, as the exit of a child killed by it is shown.
+#[cfg(target_os = "linux")]
+fn signal_name(signal: i32) -> String {
+    // SAFETY: strsignal only reads its argument; the string it returns is
+    // copied before anything else can call it again.
+    let name = unsafe { libc::strsignal(signal) };
+    if name.is_null() {
+        format!("Signal {signal}")
+    } else {
+        // SAFETY: a non-null result is a NUL-terminated string.
+        unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn observe_child_exit(
     _child: &mut dyn portable_pty::Child,
@@ -2944,15 +2999,7 @@ fn observe_child_exit(
     let exit = match info.si_code {
         libc::CLD_EXITED => portable_pty::ExitStatus::with_exit_code(status.max(0) as u32),
         libc::CLD_KILLED | libc::CLD_DUMPED => {
-            let signal = unsafe { libc::strsignal(status) };
-            let signal = if signal.is_null() {
-                format!("Signal {status}")
-            } else {
-                unsafe { std::ffi::CStr::from_ptr(signal) }
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            portable_pty::ExitStatus::with_signal(&signal)
+            portable_pty::ExitStatus::with_signal(&signal_name(status))
         }
         code => {
             return Err(std::io::Error::other(format!(
