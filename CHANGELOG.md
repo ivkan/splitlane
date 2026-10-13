@@ -20,6 +20,12 @@ Notable changes to Splitlane are recorded here. The format follows
 - `splitlane --help` lists every scripting command with a line on what it
   does. It named five of twenty-one, and the error for a mistyped command
   sent the reader there for the list.
+- The context meter in a pane's header no longer shows a ceiling far below
+  the real one (`219k / 217k` for a session a quarter full). Claude Code
+  also compacts a session that has sat idle for most of an hour, at whatever
+  size it is, and that was taken for the context window filling up. Only a
+  compaction that interrupts work measures the ceiling now; until one does,
+  the meter shows a count.
 
 ## [0.2.7] - 2026-10-13
 
