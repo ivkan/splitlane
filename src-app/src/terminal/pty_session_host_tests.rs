@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use splitlane_host::{
@@ -14,6 +13,7 @@ use splitlane_host::{
     SpawnSpec, StreamEvent,
 };
 
+use super::host_test_support::*;
 use super::*;
 use crate::terminal::host_session::{
     HostEndpoint, Launcher, OpenError, Opened, ReattachError, child_environment, open, open_remote,
@@ -537,111 +537,6 @@ fn a_lost_connection_ends_the_pane_and_says_why() {
 // From here on: a real host on a temporary socket, real children.
 // ---------------------------------------------------------------------------
 
-const DEADLINE: Duration = Duration::from_secs(20);
-
-/// Poll `probe` until it yields something, or fail naming `what`.
-fn wait_for<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        if let Some(found) = probe() {
-            return found;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// A host running on a thread of the test, on a socket of its own, and the
-/// endpoint a window would use to reach it.
-struct TestHost {
-    // Field order matters: the directory is removed last.
-    thread: Option<JoinHandle<Result<(), HostError>>>,
-    endpoint: Arc<HostEndpoint>,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
-}
-
-/// A directory short enough for a socket path: macOS allows 104 bytes and
-/// its default temporary directory uses half of them.
-fn short_dir() -> tempfile::TempDir {
-    tempfile::Builder::new()
-        .prefix("slp")
-        .tempdir_in("/tmp")
-        .expect("a temporary directory")
-}
-
-impl TestHost {
-    fn start(configure: impl FnOnce(&mut HostConfig)) -> Self {
-        let dir = short_dir();
-        let socket = dir.path().join("h").join("host.sock");
-        let mut config = HostConfig::new(&socket);
-        configure(&mut config);
-        let thread = std::thread::spawn(move || splitlane_host::run(config));
-        let host = TestHost {
-            thread: Some(thread),
-            // No launcher: the host is this thread, and a test that loses
-            // it must fail, not start another.
-            endpoint: HostEndpoint::new(socket.clone(), None),
-            socket,
-            _dir: dir,
-        };
-        drop(host.client());
-        host
-    }
-
-    fn client(&self) -> Client {
-        wait_for("the host to answer", || {
-            assert!(
-                !self.thread.as_ref().is_some_and(JoinHandle::is_finished),
-                "the host exited before answering"
-            );
-            Client::connect(&self.socket).ok()
-        })
-    }
-
-    fn sessions(&self) -> Vec<SessionInfo> {
-        self.client().list().expect("the host lists its sessions")
-    }
-}
-
-impl Drop for TestHost {
-    fn drop(&mut self) {
-        let Some(thread) = self.thread.take() else {
-            return;
-        };
-        // Over the endpoint's connection if it has one: a host that was
-        // told to take no more would refuse a new one.
-        if !thread.is_finished() {
-            let asked = self
-                .endpoint
-                .for_existing_session()
-                .is_some_and(|control| control.shutdown(true).is_ok());
-            if !asked && let Ok(client) = Client::connect(&self.socket) {
-                let _ = client.shutdown(true);
-            }
-        }
-        let _ = thread.join();
-    }
-}
-
-/// What a pane is started with, for a program of the test's choosing in
-/// place of the user's shell. Everything else is what a pane resolves.
-fn pane_params(program: &str, args: &[&str]) -> SpawnParams {
-    let mut params =
-        TerminalState::resolve_spawn_params(Some(PathBuf::from("/")), 7, 11, Some((80, 24)), None);
-    params.shell = program.to_string();
-    params.extra_args = args.iter().map(|arg| arg.to_string()).collect();
-    params
-}
-
-fn sh(script: &str) -> SpawnParams {
-    pane_params("/bin/sh", &["-c", script])
-}
-
-/// The pane every test's terminal is shown in, and the id its shell is
-/// told: the one `pane_params` resolves with.
-const PANE: u64 = 11;
-
 fn facts() -> Facts {
     window_facts(&crate::theme::active_theme(), None, None)
 }
@@ -703,11 +598,6 @@ fn wait_for_exit(state: &mut TerminalState) -> i32 {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-
-fn group_alive(pid: u32) -> bool {
-    // SAFETY: signal 0 to a process group only asks whether it has members.
-    unsafe { libc::kill(-(pid as libc::pid_t), 0) == 0 }
 }
 
 fn session_of(state: &TerminalState) -> SessionId {
@@ -909,22 +799,6 @@ fn a_change_of_cell_size_alone_reaches_the_program_as_a_resize() {
         wait_for_text(&mut pane, "resized-2");
     }
 }
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// A shell command that reads exactly `count` bytes of input and prints
-/// them as hexadecimal digits. The terminal must be in raw mode.
-fn read_hex(count: usize) -> String {
-    format!("dd bs=1 count={count} 2>/dev/null | od -An -tx1 | tr -d ' \\n'")
-}
-
-/// A shell command that prints whatever input arrives within a third of a
-/// second, as hexadecimal digits between brackets: empty brackets when the
-/// terminal had nothing more to say.
-const READ_STRAGGLERS: &str = "stty min 0 time 3; printf ' more[%s]' \
-     \"$(dd bs=64 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n')\"; stty min 1 time 0";
 
 /// The pane's text with the rows joined, for output longer than a row.
 fn on_one_line(state: &TerminalState) -> String {
