@@ -63,6 +63,17 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.8" date="2026-10-14">
+      <description>
+        <p>On macOS and Linux, agent sessions outlive the window: they run in
+        a process of their own, so quitting with the sessions kept, an update
+        and a crash of the window leave them working, and the next start shows
+        each in its pane again. On Linux, keeping the sessions is now the
+        default when quitting. A lead agent is told when a session it opened
+        finishes even if that took only seconds, and the context meter no
+        longer takes an idle compaction for the size of the context window.</p>
+      </description>
+    </release>
     <release version="0.2.7" date="2026-10-13">
       <description>
         <p>Quitting no longer has to stop your agents: with agent sessions

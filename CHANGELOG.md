@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-14
+
 ### Added
 
 - On macOS and Linux, agent sessions outlive the window: every pane's terminal
@@ -514,7 +516,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/ivkan/splitlane/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/ivkan/splitlane/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/ivkan/splitlane/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/ivkan/splitlane/compare/v0.2.4...v0.2.5
