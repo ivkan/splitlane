@@ -243,6 +243,11 @@
       "description": "Tell a session when a session it opened ends a turn. Null/true (default): if the opener is not already waiting on it with 'splitlane wait', Splitlane writes one line into the opener and submits it, once the opener is idle and its input line is empty. False: nothing is written.",
       "default": true
     },
+    "session_host": {
+      "type": ["boolean", "null"],
+      "description": "Run the terminal sessions of panes in the session host, a process apart from the window, so that they outlive it. Null/true (default): on macOS and on Linux, quitting with the sessions kept, an update and a crash of the window leave every session running, and the next start shows each in its pane again. False: every pane runs in the window and its session ends with it. Read when Splitlane starts. SPLITLANE_SESSION_HOST=0 or =1 in the environment Splitlane is started from overrides it.",
+      "default": true
+    },
     "script_sessions": {
       "type": ["boolean", "null"],
       "description": "Let a program that is not running in a pane open agent sessions. Null/true (default): a script, a scheduled job or another program of yours may run 'splitlane add' in a directory of a project open in Splitlane, and write to and close the sessions it opened with the key 'add' gave it. At most 8 such sessions run at a time. False: a caller outside a pane needs the app to be launched with SPLITLANE_IPC_ORCHESTRATION=1, as before.",
