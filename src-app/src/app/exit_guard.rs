@@ -127,9 +127,7 @@ pub(crate) fn open_agent_sessions<'a>(
                 .agent_seen_secs
                 .is_some_and(|seen| now - seen <= OPEN_SESSION_WINDOW_SECS)
         })
-        .filter(|thread| {
-            !crate::app::agents_sidebar::is_shell_surface(thread) || thread.shell_runs_agent
-        })
+        .filter(|thread| crate::app::agents_sidebar::is_agent_session(thread))
         .count()
 }
 

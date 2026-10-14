@@ -2397,6 +2397,13 @@ pub(crate) fn is_shell_surface(thread: &crate::project::Thread) -> bool {
     thread.kind == crate::project::ThreadKind::Terminal && thread.terminal_agent.is_none()
 }
 
+/// A surface that holds an agent session: an agent surface, or a shell in
+/// which somebody started an agent by hand. A shell with only a prompt in it
+/// is not one - the Activity chip and the quit guard count the same set.
+pub(crate) fn is_agent_session(thread: &crate::project::Thread) -> bool {
+    !is_shell_surface(thread) || thread.shell_runs_agent
+}
+
 /// Whether a slot holds nothing - the launcher, which is not in this list.
 ///
 /// The rail is the inventory of what exists; an empty pane names no surface

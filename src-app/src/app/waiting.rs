@@ -69,7 +69,30 @@ impl SplitlaneApp {
     /// report through `Thread::status`. The chip and the chord name the same
     /// destination in `FOCUS.md`, so they read the same list.
     pub(crate) fn stops_matching(&self, state: AgentState, cx: &Context<Self>) -> Vec<WaitingStop> {
-        let thread_status = ThreadStatus::from_agent_state(state.clone());
+        self.stops_in(
+            ThreadStatus::from_agent_state(state.clone()),
+            std::slice::from_ref(&state),
+            cx,
+        )
+    }
+
+    /// Every agent at work, by the same two doors. A pane session whose agent
+    /// has gone quiet mid-turn is still in its turn, which is how a surface's
+    /// status already reads it.
+    pub(crate) fn running_stops(&self, cx: &Context<Self>) -> Vec<WaitingStop> {
+        self.stops_in(
+            ThreadStatus::Thinking,
+            &[AgentState::Thinking, AgentState::Stalled],
+            cx,
+        )
+    }
+
+    fn stops_in(
+        &self,
+        thread_status: ThreadStatus,
+        session_states: &[AgentState],
+        cx: &Context<Self>,
+    ) -> Vec<WaitingStop> {
         let mut stops = Vec::new();
         for (ws_idx, ws) in self.workspaces.iter().enumerate() {
             for (thread_idx, thread) in ws.threads.iter().enumerate() {
@@ -83,7 +106,7 @@ impl SplitlaneApp {
             let waiting: std::collections::HashSet<u64> = ws
                 .agent_sessions
                 .values()
-                .filter(|session| session.state == state)
+                .filter(|session| session_states.contains(&session.state))
                 .filter_map(|session| session.surface_id)
                 .collect();
             if waiting.is_empty() {
@@ -128,12 +151,20 @@ impl SplitlaneApp {
     /// separately is exactly how the chip once said "3 agents waiting" over a
     /// popover listing two.
     pub(crate) fn activity_counts(&self, cx: &Context<Self>) -> ActivityCounts {
-        ActivityCounts::from_rows(&self.attention_queue_rows(cx))
+        let mut counts = ActivityCounts::from_rows(&self.attention_queue_rows(cx));
+        counts.agents_open = counts.running > 0
+            || !counts.is_empty()
+            || self
+                .workspaces
+                .iter()
+                .flat_map(|ws| ws.threads.iter())
+                .any(crate::app::agents_sidebar::is_agent_session);
+        counts
     }
 }
 
-/// The three things Activity holds, and how far the reader has got with the
-/// third. [`chip_state`] turns this into a rung, a shape and a sentence.
+/// What Activity holds, and how far the reader has got with the finished
+/// part. [`chip_state`] turns this into a rung and a summary.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ActivityCounts {
     /// Runs that fell over.
@@ -144,6 +175,11 @@ pub(crate) struct ActivityCounts {
     pub(crate) finished: usize,
     /// How many of those nobody has seen even in the list.
     pub(crate) finished_unacknowledged: usize,
+    /// Agents at work. Counted, never announced: see [`Self::is_empty`].
+    pub(crate) running: usize,
+    /// Whether any agent session is open at all - the chip's whole condition
+    /// for being on screen. A session where only a shell runs does not count.
+    pub(crate) agents_open: bool,
 }
 
 impl ActivityCounts {
@@ -153,6 +189,9 @@ impl ActivityCounts {
     /// headings are then the same arithmetic over the same rows rather than
     /// three walks that can disagree - which is what once let the chip say
     /// "3 agents waiting" over a popover listing two.
+    ///
+    /// `agents_open` is not a fact about rows; the caller that can see the
+    /// rail sets it.
     pub(crate) fn from_rows(rows: &[crate::app::attention_queue::QueueRow]) -> Self {
         use crate::app::attention_queue::QueueKind;
         let count = |kind: QueueKind| rows.iter().filter(|row| row.kind == kind).count();
@@ -161,11 +200,17 @@ impl ActivityCounts {
             waiting: count(QueueKind::Waiting),
             finished: count(QueueKind::Finished),
             finished_unacknowledged: rows.iter().filter(|row| row.unacknowledged).count(),
+            running: count(QueueKind::Running),
+            agents_open: false,
         }
     }
 
-    /// Is there anything at all? This is the queue's own emptiness, and so the
-    /// thing the announcement's edge is an edge of.
+    /// Is there anything standing on the reader? This is the queue's own
+    /// emptiness, and so the thing the announcement's edge is an edge of.
+    ///
+    /// `running` is left out on purpose: an agent starting work needs nobody,
+    /// and an announcement for it would be the chip calling about the one
+    /// thing on screen that moves by itself.
     pub(crate) fn is_empty(&self) -> bool {
         self.failed == 0 && self.waiting == 0 && self.finished == 0
     }
@@ -232,133 +277,172 @@ impl SplitlaneApp {
     }
 }
 
-/// The chip's label. Pure, because "1 agent waiting" and "2 agents waiting" is
-/// the whole of it and the plural is the only thing that can be wrong.
-pub(crate) fn waiting_label(count: usize) -> String {
-    if count == 1 {
-        "1 agent waiting".to_string()
-    } else {
-        format!("{count} agents waiting")
-    }
-}
-
-/// Which rung of the chip's scale is speaking. **Tone carries the rung**, and
-/// nothing else does.
+/// Which rung of the chip's scale is speaking: what the pill itself says.
 ///
-/// The current scale is a rebuild rather than an addition. It
-/// used to run `error > waiting > finished > running > idle` with an unread
-/// result at the bottom of what the chip could show - which drew this app's
-/// main documented failure mode, a pile of results nobody has collected,
-/// quieter than everything else. Two arguments moved it:
-///
-/// > A waiting agent is standing because it needs an answer; a finished one is
-/// > standing because its result has been accepted by nobody. "Just done" would
-/// > assume an agent's output can be trusted unread; an uncollected finish is
-/// > unchecked work, not a closed task. One thing holds both, and one action
-/// > releases both.
-///
-/// So the real axis is **read / unread**, `running` is not on the scale at all
-/// (a running session is the one thing on screen that moves by itself, and it
-/// needs nobody), and the two kinds are told apart by the dot's *shape* rather
-/// than by brightness - which is the app's own rule about spending hue, shape
-/// or presence before the axis that carries rank and legibility.
+/// The chip used to speak for its highest rung only - `1 failed`, else
+/// `2 agents waiting`, else `3 finished` - and was on screen only when one of
+/// them was. It is now on screen whenever an agent session is open and says a
+/// summary of up to three parts (see [`chip_state`]); the rung is what is left
+/// of the old scale, and it decides the pill alone. The reasoning is in
+/// `docs/internals/agent-state-and-the-rail.md`, under the Activity chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChipRung {
-    /// A run fell over: the question is whether to start it again. Its own rung
-    /// above waiting, and **nothing on the reading axis clears it** - which is
-    /// the answer to the objection that kept `failed` out of the chip until
-    /// now ("an error that vanishes when glanced at is wrong"). It goes when
-    /// the session goes somewhere else.
+    /// A run fell over. The one rung that tints the pill: nothing on the
+    /// reading axis clears it, and it goes when the session goes somewhere
+    /// else.
     Failed,
-    /// Standing on the reader, and not yet acknowledged: they have not seen
-    /// even the list. The accent rung.
-    Unacknowledged,
-    /// The quiet mark - known, not collected. Opening Activity lowers a mark to
-    /// here; only the surface coming up in a pane takes it away.
-    Quiet,
+    /// Somebody is waiting for an answer. The pill stays neutral and the dot
+    /// carries the attention hue; this rung differs from [`Self::Neutral`] only
+    /// in having no hover of its own.
+    Waiting,
+    /// Agents are open and none of them wants anything. The neighbouring
+    /// buttons' step, so a chip that is always there does not shout.
+    Neutral,
 }
 
-/// The chip's leading dot, whose **shape carries the kind** - never the rank.
+/// One part of the chip's summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChipDot {
-    /// Filled: the session is standing by itself and wants something from you.
-    /// Waiting and failed are both this - a failed run has nothing to accept,
-    /// and the action is to decide rather than to read.
-    Filled,
-    /// Hollow: there is something here to accept.
-    Hollow,
+pub(crate) enum ChipPart {
+    Failed(usize),
+    Waiting(usize),
+    Running(usize),
 }
 
-/// What the chip says, in which tone, with which dot - or nothing, when there
-/// is nothing to say.
+impl ChipPart {
+    /// The part as words (`2 waiting`) or, once width has run out, as its
+    /// number alone - the dot beside it still says which number it is.
+    pub(crate) fn text(self, short: bool) -> String {
+        let (count, word) = match self {
+            ChipPart::Failed(count) => (count, "failed"),
+            ChipPart::Waiting(count) => (count, "waiting"),
+            ChipPart::Running(count) => (count, "running"),
+        };
+        if short {
+            count.to_string()
+        } else {
+            format!("{count} {word}")
+        }
+    }
+
+    /// `failed` and `waiting` are what the chip answers for, so width never
+    /// takes them - the rule a folded group's summary already follows.
+    fn stays(self) -> bool {
+        !matches!(self, ChipPart::Running(_))
+    }
+}
+
+/// What the chip says, how loudly - or nothing, when no agent session is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChipState {
-    pub(crate) label: String,
+    /// In reading order: `failed`, `waiting`, `running`. Empty when agents
+    /// are open and none of the three applies.
+    pub(crate) parts: Vec<ChipPart>,
+    /// Whether the parts are drawn as numbers alone.
+    pub(crate) short: bool,
     pub(crate) rung: ChipRung,
-    pub(crate) dot: ChipDot,
 }
 
-/// The scale, in one function.
+impl ChipState {
+    /// The summary as one line of text - what a test or a screen reader reads.
+    pub(crate) fn label(&self) -> String {
+        if self.parts.is_empty() {
+            return EMPTY_CHIP_LABEL.to_string();
+        }
+        self.parts
+            .iter()
+            .map(|part| part.text(self.short))
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ")
+    }
+}
+
+/// What the chip says when agents are open and none of them is failed,
+/// waiting or running: the name of the surface it opens.
+pub(crate) const EMPTY_CHIP_LABEL: &str = "Activity";
+
+/// The chip, in one function, given how many pixels its text may take.
 ///
-/// **The chip is on screen when the popover has something to say**, and the
-/// scale decides *how loudly*. Order: a fallen run, then anything
-/// standing on the reader, then the quiet mark. Waiting and an uncollected
-/// finish share the accent rung and are told apart by the dot; within the rung
-/// waiting still speaks, because it is the half whose count the reader can act
-/// on immediately and the other number is one click away.
+/// **On screen whenever an agent session is open**, and absent otherwise. It
+/// was on screen only while the list had something to say, which answered
+/// "is anything standing on me?" and left "where is work happening?" to a
+/// rail that scrolls once there are many projects.
 ///
-/// **Waiting is never "acknowledged".** Reading a list does not answer an
-/// agent's question - what takes a waiting agent off this rung is the agent
-/// moving on. Only the finished mark has a reader-side level, which is why it
-/// is the only one that can go quiet.
-pub(crate) fn chip_state(counts: ActivityCounts) -> Option<ChipState> {
-    let ActivityCounts {
-        failed,
-        waiting,
-        finished,
-        finished_unacknowledged,
-    } = counts;
-    if failed > 0 {
-        return Some(ChipState {
-            label: failed_label(failed),
-            rung: ChipRung::Failed,
-            dot: ChipDot::Filled,
-        });
+/// At most three parts, `failed \u{b7} waiting \u{b7} running`: what needs
+/// sorting out first stands on the left. `finished` is not one of them - an
+/// unread result already has the ring on its rail row and its own section in
+/// the list.
+///
+/// When `room` is short the words give way to bare numbers first, and then
+/// `running` goes. `failed` and `waiting` always stay.
+pub(crate) fn chip_state(counts: ActivityCounts, room: f32) -> Option<ChipState> {
+    if !counts.agents_open {
+        return None;
     }
-    if waiting > 0 {
-        return Some(ChipState {
-            label: waiting_label(waiting),
-            rung: ChipRung::Unacknowledged,
-            dot: ChipDot::Filled,
-        });
-    }
-    if finished > 0 {
-        return Some(ChipState {
-            // The whole pile, not just its unread part: the popover lists all
-            // of them, and a chip that counted one set over a list of another
-            // is the exact defect that made the chip and the popover read one
-            // list in the first place.
-            label: finished_label(finished),
-            rung: if finished_unacknowledged > 0 {
-                ChipRung::Unacknowledged
-            } else {
-                ChipRung::Quiet
-            },
-            dot: ChipDot::Hollow,
-        });
-    }
-    None
+    let parts: Vec<ChipPart> = [
+        (counts.failed > 0).then_some(ChipPart::Failed(counts.failed)),
+        (counts.waiting > 0).then_some(ChipPart::Waiting(counts.waiting)),
+        (counts.running > 0).then_some(ChipPart::Running(counts.running)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let rung = if counts.failed > 0 {
+        ChipRung::Failed
+    } else if counts.waiting > 0 {
+        ChipRung::Waiting
+    } else {
+        ChipRung::Neutral
+    };
+    let (parts, short) = fit_chip_parts(&parts, room, chip_char_width(), CHIP_PART_OVERHEAD);
+    Some(ChipState { parts, short, rung })
 }
 
-/// The muted chip's label. No noun: `finished` already says what finished, and
-/// the row it came from names which one.
-pub(crate) fn finished_label(count: usize) -> String {
-    format!("{count} finished")
+/// One character of the chip's text at its size. The face is proportional,
+/// so this is a deliberate over-estimate: the chip giving way one step early
+/// costs nothing, a chip pushing the path out of the bar does.
+fn chip_char_width() -> f32 {
+    f32::from(crate::ui_tokens::text::CAPTION) * 0.6
 }
 
-/// The top rung's label, in the app's own status word.
-pub(crate) fn failed_label(count: usize) -> String {
-    format!("{count} failed")
+/// What one part costs besides its text: its dot, the gap after the dot, and
+/// the gap before the next part.
+const CHIP_PART_OVERHEAD: f32 = 6. + 5. + 8.;
+
+/// Which parts fit in `available` pixels, and whether as numbers alone.
+/// Pure - unit-tested.
+pub(crate) fn fit_chip_parts(
+    parts: &[ChipPart],
+    available: f32,
+    char_width: f32,
+    overhead: f32,
+) -> (Vec<ChipPart>, bool) {
+    let width = |parts: &[ChipPart], short: bool| -> f32 {
+        parts
+            .iter()
+            .map(|part| part.text(short).chars().count() as f32 * char_width + overhead)
+            .sum()
+    };
+    if width(parts, false) <= available {
+        return (parts.to_vec(), false);
+    }
+    if width(parts, true) <= available {
+        return (parts.to_vec(), true);
+    }
+    (
+        parts.iter().copied().filter(|part| part.stays()).collect(),
+        true,
+    )
+}
+
+/// How many pixels the chip's summary may take in a bar `width` wide, of which
+/// the rail takes `rail`.
+///
+/// A third of what is right of the rail. The chip shares the bar with the
+/// centred project path, which is the thing the bar is for, and with the
+/// palette hint and the window controls; a third keeps all three parts in
+/// words at an ordinary window size and gives way well before the path does.
+pub(crate) fn chip_room(width: f32, rail: f32) -> f32 {
+    ((width - rail) / 3.).max(0.)
 }
 
 /// The popover's subtitle: a summary of the halves that exist rather than a
@@ -377,6 +461,11 @@ pub(crate) fn activity_summary(counts: ActivityCounts) -> Option<String> {
     }
     if counts.finished > 0 {
         parts.push(format!("{} finished", counts.finished));
+    }
+    // Last, as its section is: work in progress is listed for finding, not
+    // for sorting out.
+    if counts.running > 0 {
+        parts.push(format!("{} running", counts.running));
     }
     // **Nothing at all when there is nothing to count**. It read
     // `nothing waiting`; the empty body below now says what an empty Activity
@@ -411,7 +500,8 @@ pub(crate) fn activity_summary(counts: ActivityCounts) -> Option<String> {
 /// reader opens to check all three, in the app's most authoritative voice.
 pub(crate) const EMPTY_ACTIVITY_TITLE: &str = "Nothing in Activity";
 /// The rule line under [`EMPTY_ACTIVITY_TITLE`].
-pub(crate) const EMPTY_ACTIVITY_RULE: &str = "Failed, waiting and unread runs appear here.";
+pub(crate) const EMPTY_ACTIVITY_RULE: &str =
+    "Failed, waiting, unread and running sessions appear here.";
 
 /// The failed section's own heading, above the waiting one.
 pub(crate) fn failed_section_label(count: usize) -> String {
@@ -422,83 +512,55 @@ pub(crate) fn failed_section_label(count: usize) -> String {
     }
 }
 
-/// The chip's tones, in one place, keyed by rung.
+/// The pill's fill and border, keyed by rung.
 ///
 /// **Every value here is a role**, which is the rule worth keeping
 /// past this control: *a hex literal in a spec is a bug report about a missing
 /// role, never a value to ship* - in this codebase most of all, where a
 /// hard-coded colour is one no theme can reach. The failed rung takes
-/// `agent_error`, the role the rail's own failed dot has always used, and its
-/// pill is that hue through the same two blends `accent_surface` and
+/// `agent_error` through the same two blends `accent_surface` and
 /// `accent_border` are - so the top rung cannot drift from the one below it.
 ///
-/// **Only a failure tints the pill.** A waiting session and an unread result
-/// both sit on the neutral pill and say which they are with the dot: filled
-/// in the attention hue for "waiting for you", a ring in the accent for
-/// "finished, not looked at". The pill used to take the accent for both, back
-/// when the accent meant waiting; with the accent meaning work in progress a
-/// tinted pill would have read as "something is running".
-fn chip_tones(
-    rung: ChipRung,
-    dot: ChipDot,
-    ui: crate::theme::UiColors,
-) -> (Hsla, Hsla, Hsla, Hsla) {
+/// **Only a failure tints the pill.** Waiting and running both sit on the
+/// neutral pill and say which they are with their dots.
+fn chip_tones(rung: ChipRung, ui: crate::theme::UiColors) -> (Hsla, Hsla) {
     match rung {
-        // Hue, not brightness, is what puts this above the accent - and the
-        // accent deliberately never sat at the top of the range, precisely so
-        // an error would have somewhere to go.
         ChipRung::Failed => (
-            ui.agent_error,
             ui.tinted_surface(ui.agent_error),
             ui.tinted_border(ui.agent_error),
-            ui.agent_error,
         ),
-        ChipRung::Unacknowledged => (
-            ui.text,
-            ui.subtle,
-            ui.border_strong,
-            match dot {
-                ChipDot::Filled => ui.attention,
-                ChipDot::Hollow => ui.accent,
-            },
-        ),
-        ChipRung::Quiet => (ui.text_tertiary, ui.subtle, ui.border_strong, ui.dim),
+        ChipRung::Waiting | ChipRung::Neutral => (ui.subtle, ui.border_strong),
     }
 }
 
-/// The chip itself: one pill, one dot, one sentence - **and one drawing.**
+/// A part's dot and number tones. The number of what needs the reader is in
+/// the name tone; `running` is a step down, in the rail's own row tone - it
+/// is there to be found, not to call.
+fn part_tones(part: ChipPart, ui: crate::theme::UiColors) -> (Hsla, Hsla) {
+    match part {
+        ChipPart::Failed(_) => (ui.agent_error, ui.text),
+        ChipPart::Waiting(_) => (ui.attention, ui.text),
+        ChipPart::Running(_) => (ui.accent, ui.text_secondary),
+    }
+}
+
+/// The chip itself: one pill, a dot and a number per part - **and one
+/// drawing.**
 ///
 /// It used to be two, one per window frame, under "one decision, two
 /// drawings", which held while the only shared thing was *whether* the chip
-/// existed. The scale then gave it three rungs and two dot shapes and the
-/// announcement gave it a movement, and three axes duplicated across two files
-/// is three ways for the frames to disagree. So the tone, the shape and the
-/// announcement live here; the two frames keep their own geometry, their own
-/// id and their own tooltip, which is what genuinely differs between a 22px
-/// title bar and a 24px toolbar.
-///
-/// **Three levels, not two**. The neutral
-/// state is deliberately *not* level with `Add pane` and `Files`: that would
-/// erase the line between a state of the system and a button, and the failure
-/// mode in this app is not a missed question - an idle agent reasserts itself
-/// by standing still - but a pile of uncollected results, which grows
-/// invisibly when it is drawn like navigation.
-///
-/// ```text
-/// failed           error text · error dot   · error fill  · error border
-/// unacknowledged   accent text · accent dot · accent fill · accent border
-/// quiet            dim text   · dim dot     · tinted fill · neutral border
-/// buttons          text tone  · no dot      · surf fill   · button border
-/// ```
+/// existed. Rungs, parts and the announcement are three axes, and three axes
+/// duplicated across two files are three ways for the frames to disagree. So
+/// the tones, the parts and the announcement live here; the two frames keep
+/// their own geometry, their own id and their own tooltip, which is what
+/// genuinely differs between a 22px title bar and a 24px toolbar.
 ///
 /// The pill against the buttons' rounded rectangle stays the only difference in
 /// silhouette, which is the row's one shape rule: status versus command.
 ///
-/// The one place the two prototypes name different roles is the resting border
-/// (`border_strong` dark, `border` light) and `UiColors` writes one name, so it
-/// cannot be both. `border_strong` is the answer, because it is the only single
-/// role that keeps the chip's edge as visible on its own fill as a button's is
-/// on its - the chip sits on `subtle` and a button on `overlay`, so it measures
+/// The resting border is `border_strong`, because it is the only single role
+/// that keeps the chip's edge as visible on its own fill as a button's is on
+/// its - the chip sits on `subtle` and a button on `overlay`, so it measures
 /// 1.180 : 1 against the button's 1.173 in dark and 1.408 against 1.505 in
 /// light, where plain `border` would give 1.246.
 pub(crate) fn chip_body(
@@ -509,70 +571,100 @@ pub(crate) fn chip_body(
     announcing: Option<crate::app::announce::AnnouncePhase>,
     ui: crate::theme::UiColors,
 ) -> gpui::Stateful<gpui::Div> {
-    use gpui::{InteractiveElement, ParentElement, Styled, div, px};
+    use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, Styled, div, px};
 
-    let (text, fill, border, dot) = chip_tones(chip.rung, chip.dot, ui);
-    div()
+    let (fill, border) = chip_tones(chip.rung, ui);
+    let mut body = div()
         .id(id)
+        .role(gpui::Role::Button)
+        // The parts are dots and numbers on screen; read aloud they are words.
+        .aria_label(
+            ChipState {
+                short: false,
+                ..chip.clone()
+            }
+            .label(),
+        )
         .flex_none()
         .h(px(height))
         .px(crate::ui_tokens::space::LG)
         .flex()
         .flex_row()
         .items_center()
-        .gap(crate::ui_tokens::space::SM)
+        .gap(crate::ui_tokens::space::LG)
         .rounded_full()
         .border_1()
         .border_color(border)
         .bg(fill)
         .text_size(crate::ui_tokens::text::CAPTION)
-        .text_color(text)
-        .cursor_pointer()
-        .child(crate::app::announce::announceable_dot(
-            gpui::SharedString::from(id),
-            dot_size,
-            match chip.dot {
-                ChipDot::Filled => crate::app::announce::DotFill::Solid(dot),
-                ChipDot::Hollow => crate::app::announce::DotFill::Ring(dot),
-            },
-            // The halo is the attention hue in every rung: the dot is the
-            // state and carries the rank, the halo is the event and carries
-            // none.
-            ui.attention,
-            announcing,
-        ))
-        .child(chip.label.clone())
+        .cursor_pointer();
+    // With nothing to sum up, the surface's name and a neutral dot - the dot
+    // so an announcement still has somewhere to play.
+    let parts: Vec<(Hsla, Hsla, String)> = if chip.parts.is_empty() {
+        vec![(ui.dim, ui.text_tertiary, EMPTY_CHIP_LABEL.to_string())]
+    } else {
+        chip.parts
+            .iter()
+            .map(|part| {
+                let (dot, text) = part_tones(*part, ui);
+                (dot, text, part.text(chip.short))
+            })
+            .collect()
+    };
+    for (index, (dot, text, label)) in parts.into_iter().enumerate() {
+        // Only the first dot carries the announcement: the edge is one event
+        // whatever the number of parts. The halo is the attention hue in
+        // every rung - the dot is the state and carries the rank, the halo is
+        // the event and carries none.
+        let dot = if index == 0 {
+            crate::app::announce::announceable_dot(
+                gpui::SharedString::from(id),
+                dot_size,
+                crate::app::announce::DotFill::Solid(dot),
+                ui.attention,
+                announcing,
+            )
+        } else {
+            gpui::IntoElement::into_any_element(
+                div().flex_none().size(px(dot_size)).rounded_full().bg(dot),
+            )
+        };
+        body = body.child(
+            div()
+                .flex_none()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(crate::ui_tokens::space::SM)
+                .child(dot)
+                .child(div().text_color(text).child(label)),
+        );
+    }
+    body
 }
 
-/// What the chip's tooltip promises.
+/// What the chip's tooltip promises, keyed on the part that leads.
 ///
-/// **Keyed on what the chip is counting, not on its rung**, and worded in the
-/// popover's own section headings rather than in new vocabulary: a chip reading
-/// `3 finished` on the accent rung is still about finishes, and promising
-/// "waiting" there would name the wrong half.
-///
-/// The title bar used to say `Go to the first agent waiting for you` while the
-/// toolbar said `See which sessions are waiting for you` - two sentences for
-/// one control in two frames, and the first was simply untrue: the chip opens
-/// Activity, it does not travel anywhere.
+/// Worded in the popover's own section headings rather than in new
+/// vocabulary, and never a promise to travel: the chip opens Activity.
 pub(crate) fn chip_tooltip(chip: &ChipState) -> &'static str {
-    match (chip.rung, chip.dot) {
-        (ChipRung::Failed, _) => "See which runs failed",
-        (_, ChipDot::Filled) => "See which sessions are waiting for you",
-        (_, ChipDot::Hollow) => "See what finished while you were away",
+    match chip.parts.first() {
+        Some(ChipPart::Failed(_)) => "See which runs failed",
+        Some(ChipPart::Waiting(_)) => "See which sessions are waiting for you",
+        Some(ChipPart::Running(_)) => "See which sessions are running",
+        None => "Open Activity",
     }
 }
 
 /// Whether this rung's chip has a hover treatment of its own.
 ///
-/// The two tinted rungs do not: in the design their hover border **is** their
-/// resting one, so there is nothing to animate. The quiet rung takes the shared
-/// `border_hover` and deliberately not a softer one - a softer hover would be a
-/// fourth carrier on top of hue, dot and fill, spending brightness - the axis
-/// this interface reserves for rank and availability - and hover answers "is
-/// this clickable?", which the chip is.
+/// The failed rung does not: in the design its hover border **is** its
+/// resting one. Waiting does not either, for the reason it never did - the
+/// rung is a signal, not a resting control. The neutral rung takes the shared
+/// `border_hover` and deliberately not a softer one: hover answers "is this
+/// clickable?", which the chip is.
 pub(crate) fn chip_hovers(rung: ChipRung) -> bool {
-    rung == ChipRung::Quiet
+    rung == ChipRung::Neutral
 }
 
 /// The waiting section's own heading, which is always true where it stands.
@@ -612,8 +704,8 @@ pub(crate) fn cycle_hint(chord: Option<&str>, has_waiting: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActivityCounts, ChipDot, ChipRung, activity_summary, chip_state, cycle_hint, failed_label,
-        failed_section_label, finished_label, waiting_label, waiting_section_label,
+        ActivityCounts, ChipPart, ChipRung, activity_summary, chip_state, cycle_hint,
+        failed_section_label, fit_chip_parts, waiting_section_label,
     };
 
     fn counts(
@@ -627,8 +719,18 @@ mod tests {
             waiting,
             finished,
             finished_unacknowledged: unacknowledged,
+            running: 0,
+            agents_open: true,
         }
     }
+
+    fn with_running(mut counts: ActivityCounts, running: usize) -> ActivityCounts {
+        counts.running = running;
+        counts
+    }
+
+    /// Wide enough for every part in words.
+    const WIDE: f32 = 10_000.;
 
     /// The footer follows the sections, for the same reason `Waiting for you`
     /// came off the title: with nothing waiting, promising things to answer is
@@ -650,60 +752,75 @@ mod tests {
         assert!(cycle_hint(None, true).starts_with("cycling them is unassigned"));
     }
 
+    /// No agent session open, no chip - whatever else is counted.
     #[test]
-    fn the_chip_counts_in_words_and_gets_the_plural_right() {
-        assert_eq!(waiting_label(1), "1 agent waiting");
-        assert_eq!(waiting_label(2), "2 agents waiting");
-        assert_eq!(waiting_label(11), "11 agents waiting");
+    fn the_chip_is_there_exactly_while_an_agent_session_is_open() {
+        let mut none = counts(0, 0, 0, 0);
+        none.agents_open = false;
+        assert_eq!(chip_state(none, WIDE), None);
+
+        // Open, and nothing failed, waiting or running: the surface's name on
+        // a neutral pill.
+        let idle = chip_state(counts(0, 0, 0, 0), WIDE).expect("agents are open");
+        assert!(idle.parts.is_empty());
+        assert_eq!(idle.label(), "Activity");
+        assert_eq!(idle.rung, ChipRung::Neutral);
     }
 
-    /// The scale in one test: on screen when the popover has something to say,
-    /// a fallen run above everything, and waiting speaking for its own rung.
+    /// At most three parts, in the order `failed \u{b7} waiting \u{b7} running`,
+    /// and `finished` never one of them.
     #[test]
-    fn the_chip_speaks_for_the_highest_rung_that_has_anything_on_it() {
-        assert_eq!(chip_state(counts(0, 0, 0, 0)), None);
-
-        let waiting = chip_state(counts(0, 2, 0, 0)).expect("two agents waiting");
-        assert_eq!(waiting.label, "2 agents waiting");
-        assert_eq!(waiting.rung, ChipRung::Unacknowledged);
-        assert_eq!(waiting.dot, ChipDot::Filled);
-
-        // The scale's whole point: an uncollected result stands on the *same*
-        // rung as a waiting agent, and the dot's shape is what tells them
-        // apart.
-        let unread = chip_state(counts(0, 0, 3, 3)).expect("three uncollected");
-        assert_eq!(unread.label, "3 finished");
-        assert_eq!(unread.rung, ChipRung::Unacknowledged);
-        assert_eq!(unread.dot, ChipDot::Hollow);
-
-        // Seen in the list and still uncollected: same shape, quieter tone.
-        let quiet = chip_state(counts(0, 0, 3, 0)).expect("three, all seen");
-        assert_eq!(quiet.rung, ChipRung::Quiet);
-        assert_eq!(quiet.dot, ChipDot::Hollow);
-
-        // A fallen run outranks both, and takes the filled dot: there is
-        // nothing to accept, the action is to decide.
-        let failed = chip_state(counts(1, 2, 3, 3)).expect("one failed run");
-        assert_eq!(failed.label, "1 failed");
-        assert_eq!(failed.rung, ChipRung::Failed);
-        assert_eq!(failed.dot, ChipDot::Filled);
-
-        // Within the accent rung, waiting still speaks.
+    fn the_summary_is_failed_then_waiting_then_running() {
+        let all = chip_state(with_running(counts(1, 2, 5, 5), 3), WIDE).expect("open");
         assert_eq!(
-            chip_state(counts(0, 2, 3, 3)).map(|chip| chip.label),
-            Some("2 agents waiting".to_string())
+            all.parts,
+            [
+                ChipPart::Failed(1),
+                ChipPart::Waiting(2),
+                ChipPart::Running(3)
+            ]
         );
-        assert_eq!(finished_label(1), "1 finished");
-        assert_eq!(failed_label(1), "1 failed");
+        assert_eq!(all.label(), "1 failed \u{b7} 2 waiting \u{b7} 3 running");
+        assert_eq!(all.rung, ChipRung::Failed);
+
+        let waiting = chip_state(with_running(counts(0, 2, 0, 0), 3), WIDE).expect("open");
+        assert_eq!(waiting.label(), "2 waiting \u{b7} 3 running");
+        assert_eq!(waiting.rung, ChipRung::Waiting);
+
+        let running = chip_state(with_running(counts(0, 0, 4, 4), 3), WIDE).expect("open");
+        assert_eq!(running.label(), "3 running");
+        // Neutral: running alone is not a claim on anybody.
+        assert_eq!(running.rung, ChipRung::Neutral);
     }
 
-    /// The chip counts the whole pile, not its unread part - the popover lists
-    /// all of them, and two numbers six pixels apart may not disagree.
+    /// Words give way to numbers first, then `running` goes; `failed` and
+    /// `waiting` never do.
     #[test]
-    fn the_finished_count_is_the_pile_and_the_rung_is_the_unread_part() {
-        let mixed = chip_state(counts(0, 0, 5, 1)).expect("five, one unseen");
-        assert_eq!(mixed.label, "5 finished");
-        assert_eq!(mixed.rung, ChipRung::Unacknowledged);
+    fn a_short_chip_drops_words_then_running() {
+        let parts = [
+            ChipPart::Failed(1),
+            ChipPart::Waiting(2),
+            ChipPart::Running(3),
+        ];
+        // `1 failed` 8, `2 waiting` 9, `3 running` 9 characters; one pixel a
+        // character and ten for each part's dot and gaps.
+        assert_eq!(
+            fit_chip_parts(&parts, 56., 1., 10.),
+            (parts.to_vec(), false)
+        );
+        assert_eq!(fit_chip_parts(&parts, 55., 1., 10.), (parts.to_vec(), true));
+        assert_eq!(fit_chip_parts(&parts, 33., 1., 10.), (parts.to_vec(), true));
+        assert_eq!(
+            fit_chip_parts(&parts, 32., 1., 10.),
+            (vec![ChipPart::Failed(1), ChipPart::Waiting(2)], true)
+        );
+        // However short: the two that need the reader stay.
+        assert_eq!(
+            fit_chip_parts(&parts, 0., 1., 10.),
+            (vec![ChipPart::Failed(1), ChipPart::Waiting(2)], true)
+        );
+        let short = chip_state(with_running(counts(1, 2, 0, 0), 3), 0.).expect("open");
+        assert_eq!(short.label(), "1 \u{b7} 2");
     }
 
     #[test]
@@ -727,6 +844,10 @@ mod tests {
         assert_eq!(
             activity_summary(counts(1, 2, 3, 0)).as_deref(),
             Some("1 failed \u{b7} 2 waiting \u{b7} 3 finished")
+        );
+        assert_eq!(
+            activity_summary(with_running(counts(0, 2, 0, 0), 4)).as_deref(),
+            Some("2 waiting \u{b7} 4 running")
         );
         assert_eq!(waiting_section_label(1), "1 waiting for you");
         assert_eq!(failed_section_label(1), "1 run failed");
