@@ -2463,6 +2463,9 @@ impl Render for SplitlaneApp {
         // monospace family from `splitlane.json#font_family`, so the
         // terminal output is unaffected.
         let mut app_content = div()
+            // The root of every focus path, so a binding can be scoped to
+            // "anywhere but a terminal" (`keybindings::registry::OUTSIDE_TEXT_ENTRY`).
+            .key_context("SplitlaneWindow")
             .font_family(crate::ui_tokens::font::UI)
             .relative()
             .flex()

@@ -1600,8 +1600,14 @@ a short rail from reading as a broken one.** It counts hidden session rows and
 the projects something was hidden from, and is not drawn when nothing is
 hidden. The filter is a preference of the window, not a setting, so it is kept
 in the session file (`rail_active_only`) beside the rail's width rather than in
-`splitlane.json`. Its chord is `⌥A` on every platform; it is global, because
-the rail is not a focus target and the filter is wanted from inside a pane.
+`splitlane.json`. Its chord is `⌥A` on every platform, and it is
+**not** global: Option+A types `å` on a Mac layout and is Meta-A to anyone
+using Option as Meta, so a global binding would take a key the terminal needs.
+It fires only while neither a terminal nor a text field is on the focus path
+(`keybindings::registry::OUTSIDE_TEXT_ENTRY`, anchored on the window's root
+context `SplitlaneWindow`). Most of the time the keyboard is in a terminal, so
+the toggle in the rail and the palette entry are the main ways in; the chord
+is for the moments focus is on a diff, a file or a group label.
 
 ## The queue's edge, and the one thing this app announces
 

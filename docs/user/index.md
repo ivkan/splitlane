@@ -87,14 +87,16 @@ and last, under a quieter heading, the sessions that are running, with their
 project and how long the current turn has run. Choosing a row takes you to
 that session and closes the list.
 
-**Active only**, in the rail's `PROJECTS` row (`⌥A`, `Alt+A` on Linux and
-Windows), hides the sessions nothing is happening in. It keeps the sessions
+**Active only**, in the rail's `PROJECTS` row, hides the sessions nothing is happening in. It keeps the sessions
 that are running, waiting, failed, finished and unread, or idle with a shell
 still running, the projects that hold them, and the project you are in. A
 session that has just gone idle stays until you move away from it. The line
 at the foot of the rail - `14 hidden in 6 projects · Show all` - says what
 is hidden and turns the filter off. Splitlane remembers the filter between
-launches.
+launches. `⌥A` (`Alt+A` on Linux and Windows) toggles it too, but only while
+neither a terminal nor a text field has the keyboard - in a terminal that key
+types `å` or reaches the shell as Meta-A. The command palette has it as
+**Show active sessions only**.
 
 You answer an agent in its own terminal. Any other CLI runs in an ordinary shell
 pane.

@@ -22,6 +22,14 @@ use crate::{
 };
 use crate::{FontSizeDecrease, FontSizeIncrease, FontSizeReset, ToggleFleetSearch};
 
+/// Anywhere in the window except where typing goes: a terminal (and its find
+/// bar, which lives inside it) or a text field. `SplitlaneWindow` is the
+/// window's root context, so the predicate has something to match when
+/// nothing deeper holds the keyboard; the negations look at the whole focus
+/// path, so a terminal anywhere under focus rules it out.
+pub(crate) const OUTSIDE_TEXT_ENTRY: &str =
+    "SplitlaneWindow && !Terminal && !TextInput && !SplitlaneTextArea";
+
 /// Metadata for a single dispatchable action.
 ///
 /// Empty `context` means the action is global (no `KeyBindingContextPredicate`).
@@ -543,7 +551,7 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
     ActionMeta {
         name: "toggle_active_only",
         factory: || Box::new(crate::ToggleActiveOnly),
-        context: "",
+        context: OUTSIDE_TEXT_ENTRY,
         description: "Show active sessions only",
     },
     ActionMeta {

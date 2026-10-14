@@ -511,14 +511,15 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "open_attention_queue",
         context: Some("Terminal"),
     },
-    // The rail's `Active only` filter, `\u{2325}A` per the design. Global:
-    // the rail is not a focus target of its own, and the filter is wanted
-    // from inside a pane. It is the same chord everywhere because no
-    // platform's window manager takes it.
+    // The rail's `Active only` filter, `\u{2325}A` per the design - but never
+    // while a terminal or a text field has the keyboard. Option+A types `\u{e5}`
+    // on a Mac layout and is Meta-A to anyone using Option as Meta, so a
+    // global binding would take a key the terminal needs. Outside those it
+    // is free on every platform.
     DefaultBinding {
         key: "alt-a",
         action_name: "toggle_active_only",
-        context: None,
+        context: Some(super::registry::OUTSIDE_TEXT_ENTRY),
     },
     // Global, not `Terminal`, since the rewrite: the Launch pad lists the
     // preset library, which belongs to no pane, and its old pane-scoped guard
