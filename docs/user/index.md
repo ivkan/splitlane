@@ -75,8 +75,26 @@ depends on the agent:
   exits.
 
 A run that finished while you were not looking stays marked until its pane is
-on screen. `⌥⇥` (`Ctrl+Shift+J`) jumps to the next session waiting for you, and
-the chip in the title bar opens the list of sessions that want attention.
+on screen. `⌥⇥` (`Ctrl+Shift+J`) jumps to the next session waiting for you.
+
+The **Activity** chip in the title bar is there whenever an agent session is
+open. It sums up what your agents are doing - `1 failed · 2 waiting ·
+3 running`, each part with its own dot - and only failed and waiting sessions
+make it stand out. In a narrow window the words become numbers, and then the
+running count goes; failed and waiting always stay. A click opens the list:
+failed runs, sessions waiting for you, runs that finished while you were away,
+and last, under a quieter heading, the sessions that are running, with their
+project and how long the current turn has run. Choosing a row takes you to
+that session and closes the list.
+
+**Active only**, in the rail's `PROJECTS` row (`⌥A`, `Alt+A` on Linux and
+Windows), hides the sessions nothing is happening in. It keeps the sessions
+that are running, waiting, failed, finished and unread, or idle with a shell
+still running, the projects that hold them, and the project you are in. A
+session that has just gone idle stays until you move away from it. The line
+at the foot of the rail - `14 hidden in 6 projects · Show all` - says what
+is hidden and turns the filter off. Splitlane remembers the filter between
+launches.
 
 You answer an agent in its own terminal. Any other CLI runs in an ordinary shell
 pane.

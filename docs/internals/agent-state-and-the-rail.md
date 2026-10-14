@@ -1367,8 +1367,9 @@ was refused: a mark that fades on a timer is an event again, lost on anyone who
 looked away for longer than the fuse, and 40 seconds of cooling cannot be told
 apart from four minutes. Unseen-until-read has no fuse.
 
-**The chip is on screen whenever the popover has something to say**, and that
-sentence is the whole rule. When the chip appeared only for `waiting > 0`, news
+**The chip was on screen whenever the popover had something to say** - the
+rule until it became "whenever an agent session is open", for the reasons in
+the next section. When the chip appeared only for `waiting > 0`, news
 on the rows had **no entrance from the top**: three runs finishing out of sight
 left the title bar empty, and the only trace was a word on rail rows that scroll
 and that a folded project does not draw at all. It was reported from live use as
@@ -1513,6 +1514,94 @@ design is built on. And **the other sections clear by being read or by the
 session moving on**, while `running` clears only when the work ends, which would
 turn the popover from "what wants me, and what happened while I was out" into a
 dashboard held open. The rail is already the list of everything.
+
+## Running sessions in Activity, and the rail's `Active only`
+
+**The list once left running sessions out, and the reasons were sound for a
+few projects.** With four agents, "running" was usually all of them, and a
+list that holds everything helps nobody find anything; `running` makes no claim
+on anyone, so a section for it would blur "working" against "waiting for you";
+and a section that never empties turns a triage list into a dashboard. All
+three rested on one assumption: a handful of agents, one or two projects, a
+rail that fits on screen.
+
+**With ten projects and twenty sessions the first reason turns over.** Three or
+four of twenty are running, and that small set is exactly what has to be
+found. A folded project's `n running` says where something is but does not lead
+to the session, and says nothing once an expanded project has scrolled out of
+the rail. The second reason still holds and is kept **by volume rather than by
+absence**: the running section comes last, its heading is `faint` in regular
+weight, its rows are in the rail's own tones (name `text_secondary`, project
+and time `faint`) and only the dot carries the accent. The third is answered by
+behaviour: the list closes after a jump, so nobody keeps it open to watch it.
+`n running` on a folded project stays - it answers "where", the section
+answers "who, and take me there".
+
+**The running rows are in the rail's order, never sorted by their clock.**
+Every turn's clock moves on every repaint, and a section ordered by it would
+reshuffle under the pointer; the rail's order also groups the rows by project
+for free (`attention_queue::sort_rows`, `running_rows`). The time is the
+current turn's, from the clock that already measures a run for its
+finish notification (`running_since`) or, for a session bound to a pane, the
+hook's own turn stamp (`AgentSession::turn_started`). Where neither exists the
+column is empty: a number nothing measured is not drawn. Running sessions are
+listed but never announced (`ActivityCounts::is_empty`,
+`activity_member_threads`): an agent starting work needs nobody. The section
+has no length limit; the list scrolls past `popover::ACTIVITY_LIST_MAX`, and
+what needs action stays on top because it sorts first.
+
+**The chip is on screen whenever an agent session is open** - a session where
+only a shell runs does not count (`agents_sidebar::is_agent_session`, the same
+set the quit guard counts). It says a summary of at most three parts,
+`failed · waiting · running`: what needs sorting out first stands on the left.
+Each part has its own dot (`agent_error`, `attention`, `accent`); the numbers
+of `failed` and `waiting` are in `text`, `running`'s in `text_secondary`.
+Only a failure tints the pill; waiting keeps the neutral pill and its own
+yellow dot, and with nothing failed or waiting the chip sits at the
+neighbouring buttons' step. `finished` is left out of the summary: an unread
+result already has the ring on its rail row and its section in the list. With
+agents open and none of the three to report, the chip names the surface it
+opens - `Activity` - on a neutral dot, so an announcement still has somewhere
+to play.
+
+**When the bar is short, words go first and then `running`;
+`failed` and `waiting` always stay** - the rule a folded group's summary
+already follows, for the same reason: those are the two the chip answers for.
+The room is a third of the bar right of the rail (`waiting::chip_room`), and
+the text width is an over-estimate, so the chip gives way a step early rather
+than pushing the project path out.
+
+The risk the design names and nothing here can rule out: a chip that is always
+there may become background nobody looks at, and take the yellow step down with
+it. The neutral resting step and the signal kept to waiting and failure are the
+defence; only a week of use says whether it holds. If the list is kept open to
+watch `running`, the chip is being used as a dashboard and the question should
+come back.
+
+**`Active only` answers a different question from the running section.** The
+section says where to go; the filter is how to work in the rail all day. With
+it on, the rail keeps the sessions that are running (or starting), waiting,
+failed, finished and unread, or idle while still holding a shell - a background
+command the agent left alive, or an agent somebody started in a shell by hand
+(`active_only::keeps`). Projects stay when anything in them stays, and groups
+when any of their projects do, because the projects are filtered before the
+rail is cut into sections. The project in focus always stays, even with
+nothing happening in it, and in that project the views, the slot tree's own
+terminals and the `+ agent` buttons are drawn as usual: they are what is on
+screen.
+
+**A session that has just gone idle leaves only once focus has left it.** The
+session holding the keyboard is always kept, so a row does not vanish from
+under the pointer of the person reading it, and the rule needs no timer or
+memory: the next frame after focus moves elsewhere drops it.
+
+**A line under the list - `14 hidden in 6 projects · Show all` - is what keeps
+a short rail from reading as a broken one.** It counts hidden session rows and
+the projects something was hidden from, and is not drawn when nothing is
+hidden. The filter is a preference of the window, not a setting, so it is kept
+in the session file (`rail_active_only`) beside the rail's width rather than in
+`splitlane.json`. Its chord is `⌥A` on every platform; it is global, because
+the rail is not a focus target and the filter is wanted from inside a pane.
 
 ## The queue's edge, and the one thing this app announces
 
