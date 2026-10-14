@@ -506,6 +506,11 @@ pub struct Thread {
     /// agent: a session file created inside it may be this surface's even
     /// after it was closed. Transient.
     pub agent_seen_secs: Option<i64>,
+    /// A shell surface in which the per-pane scan last found an agent
+    /// running: one a person started by hand. Such a shell counts as an
+    /// agent session when the app is left, and an idle shell does not.
+    /// Transient.
+    pub shell_runs_agent: bool,
     /// This surface's agent was started again on a conversation that
     /// already existed, by a write that found it not running. Its own file
     /// then speaks before the agent does, so the file is not what says the
@@ -590,6 +595,7 @@ impl Thread {
             // restamps it.
             launched_at_secs: Some(now_unix_secs()),
             agent_seen_secs: None,
+            shell_runs_agent: false,
             resumed_for_a_write: false,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
@@ -676,6 +682,7 @@ impl Thread {
             // restamps it.
             launched_at_secs: Some(now_unix_secs()),
             agent_seen_secs: None,
+            shell_runs_agent: false,
             resumed_for_a_write: false,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
@@ -874,6 +881,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         opening_prompt_key: None,
         launched_at_secs: None,
         agent_seen_secs: None,
+        shell_runs_agent: false,
         resumed_for_a_write: false,
         wait_announced: None,
         rail: crate::rail_state::RailRecord::default(),

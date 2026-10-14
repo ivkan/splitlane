@@ -113,6 +113,10 @@ pub(crate) fn leave_plan(intent: ExitIntent, mode: OnQuit, open: usize, running:
 const OPEN_SESSION_WINDOW_SECS: i64 = 6;
 
 /// How many agent sessions have a terminal behind them now.
+///
+/// A shell counts only while an agent runs in it. Leaving with nothing but
+/// shells open ends them: what the person was not asked to keep, a window
+/// that is gone must not leave running where nobody can see it.
 pub(crate) fn open_agent_sessions<'a>(
     threads: impl Iterator<Item = &'a Thread>,
     now: i64,
@@ -122,6 +126,9 @@ pub(crate) fn open_agent_sessions<'a>(
             thread
                 .agent_seen_secs
                 .is_some_and(|seen| now - seen <= OPEN_SESSION_WINDOW_SECS)
+        })
+        .filter(|thread| {
+            !crate::app::agents_sidebar::is_shell_surface(thread) || thread.shell_runs_agent
         })
         .count()
 }
@@ -472,7 +479,11 @@ mod tests {
     use super::*;
 
     fn agent(title: &str, status: ThreadStatus) -> Thread {
-        let mut thread = Thread::new_terminal(title, "/tmp", None);
+        let mut thread = Thread::new_terminal(
+            title,
+            "/tmp",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+        );
         thread.status = status;
         thread
     }
@@ -550,6 +561,18 @@ mod tests {
         let threads = [seen, gone, never];
         assert_eq!(open_agent_sessions(threads.iter(), 1_004), 1);
         assert_eq!(open_agent_sessions(threads.iter(), 1_100), 0);
+    }
+
+    /// The case that showed it: a window with one shell open was closed,
+    /// and the shell went on in the session host, where nothing shows it.
+    #[test]
+    fn a_shell_is_an_open_session_only_while_an_agent_runs_in_it() {
+        let mut shell = Thread::new_terminal("shell", "/tmp", None);
+        shell.agent_seen_secs = Some(1_000);
+        assert!(crate::app::agents_sidebar::is_shell_surface(&shell));
+        assert_eq!(open_agent_sessions([&shell].into_iter(), 1_004), 0);
+        shell.shell_runs_agent = true;
+        assert_eq!(open_agent_sessions([&shell].into_iter(), 1_004), 1);
     }
 
     #[test]

@@ -30,6 +30,10 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- Quitting with only shells open ends them, as it was meant to. A shell row
+  counted as an open agent session whenever its terminal was alive, so
+  closing such a window kept it running; now a shell counts only while an
+  agent runs in it.
 - A lead agent is told that a session it opened has finished when that
   session answered within seconds, while the lead was still in the turn that
   opened it. A lead whose wait sat inside a script that kept running was
