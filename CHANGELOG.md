@@ -6,6 +6,12 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The TLS library used for update checks and downloads is updated to
+  rustls 0.23.46, which fixes four published security advisories
+  (RUSTSEC-2026-0346 to RUSTSEC-2026-0349).
+
 ## [0.2.8] - 2026-10-14
 
 ### Added
