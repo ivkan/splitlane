@@ -280,6 +280,7 @@ pub fn try_parse_and_validate(json: &str) -> Result<SplitlaneConfig, serde_json:
     set_field!(ai_injection_fence);
     set_field!(fleet_skill);
     set_field!(tell_opener);
+    set_field!(session_host);
     set_field!(script_sessions);
     set_field!(on_quit);
     set_field!(codex_drive);
@@ -1114,6 +1115,7 @@ mod tests {
             ai_injection_fence: None,
             fleet_skill: None,
             tell_opener: None,
+            session_host: None,
             script_sessions: None,
             on_quit: None,
             codex_drive: None,

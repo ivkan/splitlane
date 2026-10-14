@@ -225,6 +225,15 @@ pub struct SplitlaneConfig {
     /// non-boolean value resolves to `None` (on) with a warn.
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub tell_opener: Option<bool>,
+    /// Run the terminal sessions of panes in the session host, a process
+    /// apart from the window, so that they outlive it: quitting with the
+    /// sessions kept, an update and a crash of the window leave them running.
+    /// `Some(true)` / `None` (the default): on, where the platform has the
+    /// host (macOS, and Linux built with libghostty). `Some(false)`: every
+    /// pane runs in the window, and its session ends with it. Read when the
+    /// app starts. A non-boolean value resolves to `None` (on) with a warn.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub session_host: Option<bool>,
     /// Let a program that is not running in a pane open agent sessions.
     /// `Some(true)` / `None` (the default): a script, a scheduled job or any
     /// other program of the person's may open a session in a project that is
@@ -364,8 +373,18 @@ impl OnQuit {
     /// everything. Elsewhere the window can only be minimised, and a close
     /// button that silently minimises reads as a button that did not work -
     /// so there the first answer is asked for.
+    ///
+    /// Where sessions run in the session host the window leaves the screen
+    /// on every platform: keeping them ends it. So there keeping is the
+    /// default too.
     pub fn platform_default() -> Self {
-        if cfg!(target_os = "macos") {
+        Self::default_for(false)
+    }
+
+    /// The default for a window whose sessions do or do not run in the
+    /// session host.
+    pub fn default_for(sessions_in_host: bool) -> Self {
+        if sessions_in_host || cfg!(target_os = "macos") {
             Self::Keep
         } else {
             Self::Ask
@@ -550,6 +569,12 @@ impl SplitlaneConfig {
         self.tell_opener.unwrap_or(true)
     }
 
+    /// Whether panes run in the session host. Default ON: only an explicit
+    /// `false` turns it off.
+    pub fn session_host_enabled(&self) -> bool {
+        self.session_host.unwrap_or(true)
+    }
+
     /// Whether a program outside a pane may open sessions. Default ON: only
     /// an explicit `false` turns it off.
     pub fn script_sessions_enabled(&self) -> bool {
@@ -558,12 +583,19 @@ impl SplitlaneConfig {
 
     /// What leaving the app does to the agent sessions that are open.
     pub fn on_quit_mode(&self) -> OnQuit {
+        self.on_quit_mode_for(false)
+    }
+
+    /// What leaving the app does to the agent sessions that are open, in a
+    /// window whose sessions do or do not run in the session host.
+    pub fn on_quit_mode_for(&self, sessions_in_host: bool) -> OnQuit {
+        let fallback = OnQuit::default_for(sessions_in_host);
         let Some(word) = self.on_quit.as_deref() else {
-            return OnQuit::platform_default();
+            return fallback;
         };
         OnQuit::from_wire(word).unwrap_or_else(|| {
             tracing::warn!("on_quit: unknown value {word:?}; using the platform default");
-            OnQuit::platform_default()
+            fallback
         })
     }
 
@@ -2430,6 +2462,7 @@ mod tests {
             ai_injection_fence: Some(false),
             fleet_skill: Some(false),
             tell_opener: Some(false),
+            session_host: Some(false),
             script_sessions: Some(false),
             on_quit: Some("stop".to_string()),
             codex_drive: Some(true),
@@ -2855,6 +2888,11 @@ mod tests {
         }
         let cfg: SplitlaneConfig = serde_json::from_str(r#"{"on_quit": "later"}"#).unwrap();
         assert_eq!(cfg.on_quit_mode(), OnQuit::platform_default());
+        // Where the sessions run in the session host, keeping ends the
+        // window on every platform, and is the default everywhere.
+        assert_eq!(cfg.on_quit_mode_for(true), OnQuit::Keep);
+        let asked: SplitlaneConfig = serde_json::from_str(r#"{"on_quit": "ask"}"#).unwrap();
+        assert_eq!(asked.on_quit_mode_for(true), OnQuit::Ask);
     }
 
     #[test]
@@ -2866,6 +2904,11 @@ mod tests {
 
     #[test]
     fn an_opener_is_told_unless_that_is_turned_off() {
+        assert!(SplitlaneConfig::default().session_host_enabled());
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"session_host": false}"#).unwrap();
+        assert!(!cfg.session_host_enabled());
+        let cfg: SplitlaneConfig = serde_json::from_str(r#"{"session_host": "no"}"#).unwrap();
+        assert!(cfg.session_host_enabled());
         assert!(SplitlaneConfig::default().tell_opener_enabled());
         let cfg: SplitlaneConfig = serde_json::from_str(r#"{"tell_opener": false}"#).unwrap();
         assert!(!cfg.tell_opener_enabled());
