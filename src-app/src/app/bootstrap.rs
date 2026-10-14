@@ -260,6 +260,9 @@ impl SplitlaneApp {
                 },
             )
             .unwrap_or_default();
+        let restored_active_only = saved_session
+            .as_ref()
+            .is_some_and(|session| session.rail_active_only);
         let restored_files_width = saved_session
             .as_ref()
             .and_then(|s| s.files_width)
@@ -1209,6 +1212,7 @@ impl SplitlaneApp {
             // Command palette closed.
             rail_width: restored_rail_width,
             files_width: restored_files_width,
+            rail_active_only: restored_active_only,
             claude_limits: restored_limits,
             codex_limits: None,
             codex_limits_reading: false,

@@ -1694,6 +1694,10 @@ pub struct SessionState {
     /// read is clamped to the range the design states.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files_width: Option<f32>,
+    /// Whether the rail shows only the sessions something is happening in.
+    /// Absent means off, which is how every session file before it reads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rail_active_only: bool,
     /// The newest plan-limits reading, kept so a relaunch has something to
     /// subtract the next one from.
     ///
@@ -2369,6 +2373,7 @@ pub mod legacy_v1 {
             rail_width: None,
             limits_reading: None,
             files_width: None,
+            rail_active_only: false,
             groups: Vec::new(),
             diff_scope: v1.diff_scope,
         }

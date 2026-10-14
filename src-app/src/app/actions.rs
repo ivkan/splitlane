@@ -178,6 +178,9 @@ actions!(
         ToggleFilesSidebar,
         OpenAttentionQueue,
         OpenLaunchPad,
+        // The rail's `Active only` filter: hides the sessions nothing is
+        // happening in, and the projects left with none.
+        ToggleActiveOnly,
         // The rail's `+ worktree`, beside `+ agent` and `+ shell`. It has no
         // default chord: the design gives worktree creation an affordance
         // where the project lives, not a key, and every unclaimed letter in a

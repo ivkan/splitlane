@@ -18,6 +18,7 @@
 //! [`Self::render_agents_sidebar`] -- no consumer touches the row
 //! widgets directly.
 
+mod active_only;
 mod affordances;
 mod context_menus;
 mod create;
@@ -158,9 +159,11 @@ impl SplitlaneApp {
         // The one section label, fixed above the scroll area with its own
         // create button: `+` at the root of the rail has exactly one answer,
         // and it is a container.
+        let active_only_toggle = self.render_active_only_toggle(ui, cx);
         sidebar = sidebar.child(section_eyebrow(
             "PROJECTS",
             Some(SharedString::from("rail-add-project")),
+            Some(active_only_toggle),
             ui,
             cx,
         ));
@@ -180,12 +183,14 @@ impl SplitlaneApp {
 
         let renaming = self.agents_view.agents_renaming;
         let rename_input = self.agents_view.agents_rename_input.clone();
+        let focus = self.focused_surface(window, cx);
         let shared = RowSharedState {
-            focus: self.focused_surface(window, cx),
+            focus,
             panes_on_screen: self.panes_surface_visible().then_some(self.active_idx),
             renaming,
             rename_input,
             ui,
+            active_only: self.active_only_view(focus),
         };
 
         if self.workspaces.is_empty() {
@@ -200,7 +205,12 @@ impl SplitlaneApp {
             cache.order = order;
             cache.signature = Some(signature);
         }
-        let display_order = self.sidebar_order_cache.borrow().order.clone();
+        let mut display_order = self.sidebar_order_cache.borrow().order.clone();
+        // The filter takes whole projects out before the sections are cut, so
+        // a group left with nothing in it is not drawn either.
+        if let Some(view) = &shared.active_only {
+            display_order.retain(|ws_idx| view.projects.contains(ws_idx));
+        }
         // Projects without a group first, under `PROJECTS`, then each group.
         // With no group anywhere this is the loop the rail always had.
         let sections = crate::app::project_groups::rail_sections(
@@ -238,6 +248,13 @@ impl SplitlaneApp {
             .pb(tok::space::MD)
             .child(list);
         sidebar = sidebar.child(self.sidebar_list_wrapper(list, cx));
+        if let Some(line) = shared
+            .active_only
+            .as_ref()
+            .and_then(|view| self.render_hidden_line(view, ui, cx))
+        {
+            sidebar = sidebar.child(line);
+        }
         for banner in self.render_sidebar_banners(cx) {
             sidebar = sidebar.child(banner);
         }
@@ -383,6 +400,10 @@ impl SplitlaneApp {
                 } => (idx, bracket, opened),
             };
             let thread = &threads[thread_idx];
+            if !shared.keeps_row(thread.id) {
+                rows_in_project -= 1;
+                continue;
+            }
             let opened = opened.map(|opened| OpenedMark {
                 count: opened.sessions.len(),
                 folded: opened.folded,
@@ -397,31 +418,49 @@ impl SplitlaneApp {
             list = list.child(self.agents_thread_row_for(target, thread, under, shared, cx));
         }
 
+        // Under the filter, the views, the slot tree's own terminals and the
+        // buttons that start a session are drawn only for the project in
+        // focus: elsewhere they are not sessions at work, and in the project
+        // in focus they are what is on screen.
+        let full_project = shared.active_only.is_none() || ws_idx == self.active_idx;
+
         // Views: the container's diff, when it is open.
-        for row in self.container_view_rows(ws_idx, shared, cx) {
-            list = list.child(row);
-            rows_in_project += 1;
+        if full_project {
+            for row in self.container_view_rows(ws_idx, shared, cx) {
+                list = list.child(row);
+                rows_in_project += 1;
+            }
         }
 
         // Shells: the parked ones, then every terminal in the slot tree.
         for thread_idx in shell_order {
             let thread = &self.workspaces[ws_idx].threads[thread_idx];
+            if !shared.keeps_row(thread.id) {
+                rows_in_project -= 1;
+                continue;
+            }
             let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
             let alone = RowUnderOpener::default();
             list = list.child(self.agents_thread_row_for(target, thread, alone, shared, cx));
         }
-        for row in self.container_pane_rows(ws_idx, shared, cx) {
-            list = list.child(row);
-            rows_in_project += 1;
+        if full_project {
+            for row in self.container_pane_rows(ws_idx, shared, cx) {
+                list = list.child(row);
+                rows_in_project += 1;
+            }
         }
 
-        if rows_in_project == 0 {
+        // An empty project says so - but not one the filter emptied, where
+        // the line at the rail's foot already says what was hidden.
+        if rows_in_project == 0 && shared.active_only.is_none() {
             list = list.child(empty_project_hint(ui));
         }
 
         // The two ways to start a session, at the foot of the container
         // they start it in.
-        list = list.child(self.new_session_buttons(ws_idx, ui, cx));
+        if full_project {
+            list = list.child(self.new_session_buttons(ws_idx, ui, cx));
+        }
         list
     }
 
@@ -1868,6 +1907,18 @@ struct RowSharedState {
     renaming: Option<AgentsRenameTarget>,
     rename_input: Option<gpui::Entity<crate::widgets::text_area::TextArea>>,
     ui: crate::theme::UiColors,
+    /// What the `Active only` filter keeps this frame, or `None` while it is
+    /// off.
+    active_only: Option<active_only::ActiveOnlyView>,
+}
+
+impl RowSharedState {
+    /// Whether the session row `thread_id` is drawn this frame.
+    fn keeps_row(&self, thread_id: u64) -> bool {
+        self.active_only
+            .as_ref()
+            .is_none_or(|view| view.threads.contains(&thread_id))
+    }
 }
 
 /// Does the active inline-rename target point at `target`'s row? Maps the
@@ -2474,6 +2525,7 @@ fn pane_shows_agent_surface(pane: &gpui::Entity<crate::Pane>, cx: &gpui::App) ->
 fn section_eyebrow(
     label: &str,
     add_button_id: Option<SharedString>,
+    before_add: Option<gpui::AnyElement>,
     ui: crate::theme::UiColors,
     cx: &mut Context<SplitlaneApp>,
 ) -> gpui::AnyElement {
@@ -2488,7 +2540,8 @@ fn section_eyebrow(
                 .flex_1()
                 .min_w_0()
                 .truncate(),
-        );
+        )
+        .children(before_add);
     if let Some(id) = add_button_id {
         let hover_background = crate::app::constants::sidebar_tab_active_background();
         let resting_background = hover_background.opacity(0.0);
