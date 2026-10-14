@@ -6,6 +6,27 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Activity lists the sessions that are running, in a last section under the
+  ones that need you: each row names the session and its project and says how
+  long the current turn has run. The rows keep the rail's order, a click or
+  `Enter` goes to the session, and the list scrolls when it is long.
+- `Active only` in the rail's `PROJECTS` row (`⌥A`, `Alt+A` on Linux and
+  Windows) hides the sessions nothing is happening in, and the projects left
+  with none. Sessions that are running, waiting, failed, finished and unread,
+  or idle with a shell still running stay, and so does the project you are
+  in. A line under the list says how much is hidden, with `Show all` to turn
+  the filter off. The filter is remembered between launches.
+
+### Changed
+
+- The Activity chip is on screen whenever an agent session is open, and sums
+  up what they are doing: `1 failed · 2 waiting · 3 running`, each with its
+  own dot. Finished sessions are no longer counted in the chip; they keep their
+  ring in the rail and their section in the list. When the title bar is short
+  the words become numbers, and then the running count goes.
+
 ### Fixed
 
 - The TLS library used for update checks and downloads is updated to
