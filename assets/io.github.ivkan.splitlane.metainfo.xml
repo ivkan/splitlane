@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.9" date="2026-10-14">
+      <description>
+        <p>The Activity chip shows how many agent sessions are failed, waiting
+        and running, and its list now includes the running ones, with a way
+        to jump to each. An Active only filter hides the sessions nothing is
+        happening in. The TLS library used for updates is updated for four
+        security advisories.</p>
+      </description>
+    </release>
     <release version="0.2.8" date="2026-10-14">
       <description>
         <p>On macOS and Linux, agent sessions outlive the window: they run in
