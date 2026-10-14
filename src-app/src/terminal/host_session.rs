@@ -223,10 +223,17 @@ pub(super) fn enabled() -> bool {
 /// The setting, unless the environment says otherwise. Anything but `0` or
 /// `1` is not taken as an answer.
 fn decided(variable: Option<std::ffi::OsString>, setting: bool) -> bool {
-    match variable.as_deref().and_then(std::ffi::OsStr::to_str) {
-        Some("1") => true,
-        Some("0") => false,
-        _ => setting,
+    match variable.as_deref().map(|value| value.to_str()) {
+        Some(Some("1")) => true,
+        Some(Some("0")) => false,
+        None => setting,
+        Some(unclear) => {
+            log::warn!(
+                target: "splitlane::terminal::host",
+                "SPLITLANE_SESSION_HOST={unclear:?} is neither 0 nor 1; going by the setting"
+            );
+            setting
+        }
     }
 }
 
