@@ -98,7 +98,7 @@ impl SplitlaneApp {
         // ── When quitting (on_quit) ─────────────────────────────────────
         // The row shows what an unset key resolves to on this platform, so
         // the chip never says "default" where a behaviour is meant.
-        let on_quit = config.on_quit_mode();
+        let on_quit = config.on_quit_mode_for(crate::terminal::held_sessions::enabled());
         let on_quit_opts: Vec<SelectOption> = [
             (OnQuit::Keep, "Keep sessions running"),
             (OnQuit::Ask, "Ask"),
@@ -122,11 +122,15 @@ impl SplitlaneApp {
         let on_quit_row = self.general_choice_row(
             GeneralDropdown::OnQuit,
             "When quitting",
-            Some(SharedString::from(if cfg!(target_os = "macos") {
-                "kept sessions work on with the window hidden"
-            } else {
-                "kept sessions work on with the window minimised"
-            })),
+            Some(SharedString::from(
+                if crate::terminal::held_sessions::enabled() {
+                    "kept sessions work on with the window closed"
+                } else if cfg!(target_os = "macos") {
+                    "kept sessions work on with the window hidden"
+                } else {
+                    "kept sessions work on with the window minimised"
+                },
+            )),
             on_quit_label,
             on_quit_opts,
             "on_quit",

@@ -203,15 +203,31 @@ impl RemoteReceiver {
 
 /// Whether new panes are opened in the session host.
 ///
-/// Off unless the window was started with `SPLITLANE_SESSION_HOST=1`. An
-/// environment variable and not a setting, on purpose: the path is new,
-/// and a setting is a promise to keep. Read once, so a window is one or
-/// the other for as long as it runs.
+/// On unless `"session_host": false` is set; `SPLITLANE_SESSION_HOST=0` or
+/// `=1` in the window's environment overrides the setting either way, for
+/// a person who has to rule the host out of a fault without editing their
+/// configuration. Read once, so a window is one or the other for as long
+/// as it runs.
+///
+/// A test binary runs its panes in the window unless the variable says
+/// otherwise: a test that wants a host starts one of its own, and every
+/// other pane a test makes would start a real host behind it.
 pub(super) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var_os("SPLITLANE_SESSION_HOST").is_some_and(|value| value == "1")
+        let setting = !cfg!(test) && splitlane_config::loader::load_config().session_host_enabled();
+        decided(std::env::var_os("SPLITLANE_SESSION_HOST"), setting)
     })
+}
+
+/// The setting, unless the environment says otherwise. Anything but `0` or
+/// `1` is not taken as an answer.
+fn decided(variable: Option<std::ffi::OsString>, setting: bool) -> bool {
+    match variable.as_deref().and_then(std::ffi::OsStr::to_str) {
+        Some("1") => true,
+        Some("0") => false,
+        _ => setting,
+    }
 }
 
 /// The session host of this build: where it listens, and this binary to
@@ -222,6 +238,12 @@ pub(super) fn process_endpoint() -> Option<Arc<HostEndpoint>> {
         .get_or_init(|| {
             let socket = crate::runtime_paths::host_socket_path_spec()?;
             let launcher = std::env::current_exe().ok()?;
+            #[cfg(target_os = "linux")]
+            let launcher = from_the_appimage(
+                launcher,
+                std::env::var_os("APPIMAGE"),
+                std::env::var_os("APPDIR"),
+            );
             Some(HostEndpoint::new(
                 socket.path().to_path_buf(),
                 Some(Launcher {
@@ -231,6 +253,32 @@ pub(super) fn process_endpoint() -> Option<Arc<HostEndpoint>> {
             ))
         })
         .clone()
+}
+
+/// What to start the host with when this window runs out of an AppImage:
+/// the AppImage itself, not the binary inside it.
+///
+/// The binary inside lives in a directory the AppImage's runtime mounts for
+/// as long as the window runs and takes away when it ends - which is when
+/// the host has to keep running. Started through the AppImage, the host has
+/// a mount of its own that lasts as long as it does. Both variables are the
+/// runtime's, and the binary has to be in the directory one of them names:
+/// a window built from source and started from a shell an AppImage window
+/// opened inherits them too, and must start its own host.
+#[cfg(target_os = "linux")]
+fn from_the_appimage(
+    current: PathBuf,
+    appimage: Option<std::ffi::OsString>,
+    appdir: Option<std::ffi::OsString>,
+) -> PathBuf {
+    match (appimage, appdir) {
+        (Some(appimage), Some(appdir))
+            if !appimage.is_empty() && !appdir.is_empty() && current.starts_with(&appdir) =>
+        {
+            PathBuf::from(appimage)
+        }
+        _ => current,
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1456,6 +1504,46 @@ pub(super) fn password_entry() -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_environment_overrides_the_setting_only_with_a_clear_answer() {
+        use std::ffi::OsString;
+        for setting in [true, false] {
+            assert_eq!(decided(None, setting), setting);
+            assert!(decided(Some(OsString::from("1")), setting));
+            assert!(!decided(Some(OsString::from("0")), setting));
+            for unclear in ["", "yes", "true", "off", " 1"] {
+                assert_eq!(decided(Some(OsString::from(unclear)), setting), setting);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_window_in_an_appimage_starts_its_host_through_the_appimage() {
+        use std::ffi::OsString;
+        let inside = PathBuf::from("/tmp/.mount_SplitlXyz/usr/bin/splitlane");
+        let appimage = || Some(OsString::from("/home/me/Apps/Splitlane.AppImage"));
+        let appdir = || Some(OsString::from("/tmp/.mount_SplitlXyz"));
+        assert_eq!(
+            from_the_appimage(inside.clone(), appimage(), appdir()),
+            PathBuf::from("/home/me/Apps/Splitlane.AppImage")
+        );
+        // A build from source started in a shell that window opened has
+        // both variables and is not in the AppImage.
+        let elsewhere = PathBuf::from("/home/me/splitlane/target/debug/splitlane");
+        assert_eq!(
+            from_the_appimage(elsewhere.clone(), appimage(), appdir()),
+            elsewhere
+        );
+        // Not an AppImage, or not said fully.
+        assert_eq!(from_the_appimage(inside.clone(), None, appdir()), inside);
+        assert_eq!(from_the_appimage(inside.clone(), appimage(), None), inside);
+        assert_eq!(
+            from_the_appimage(inside.clone(), Some(OsString::new()), appdir()),
+            inside
+        );
+    }
 
     #[test]
     fn input_waits_up_to_the_limit_and_is_refused_beyond_it() {

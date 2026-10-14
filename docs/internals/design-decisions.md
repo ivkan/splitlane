@@ -760,7 +760,11 @@ whole app staying up. `Quit`, `CloseWindow` and both close buttons ask the
 The default differs by platform, and that is a concession, not a preference.
 GPUI can hide an app only on macOS; on Linux and Windows the nearest thing is
 a minimised window, and a close button that minimises without a word reads as
-a button that did not work. So macOS keeps and the other two ask.
+a button that did not work. So where the window's process holds the sessions,
+macOS keeps and the other two ask. Where the session host holds them - macOS
+and Linux, by default - keeping closes the window outright and nothing is
+left minimised, so the concession is not needed and keeping is the default
+there too.
 
 With no agent session open the app quits whatever the setting says: a window
 put away with nothing behind it is an app that will not quit. "Open" is a
@@ -775,15 +779,15 @@ application menu a setting of `keep` would otherwise leave no way out. The resta
 update is the other such door. Both keep the question about a turn in
 progress.
 
-What this does not do, and the process of its own will: survive an update, a
-crash, a logout, or the Dock's Quit, which ends the process without passing
-through `request_exit`. The session is saved before the window is put away for
+What keeping in the window's process does not do, and the session host does:
+survive an update, a crash, or the Dock's Quit, which ends the process
+without passing through `request_exit`. The session is saved before the window is put away for
 that reason.
 
 **When the panes run in the session host, keeping the sessions ends the
-window.** That process of its own exists behind a switch
-(`SPLITLANE_SESSION_HOST=1`, macOS and Linux; see `ARCHITECTURE.md`), and
-with it the same three answers mean what they say:
+window.** That process of its own holds the sessions on macOS and Linux
+unless `"session_host": false` is set (see `ARCHITECTURE.md`), and with it
+the same three answers mean what they say:
 
 - `keep` saves the layout, ends the window's process and leaves every session
   in the host. Nothing is put away, because nothing has to stay up. The next

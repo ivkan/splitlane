@@ -97,25 +97,33 @@ failure is always reported.
 
 ### Leaving while agents are open
 
-Quitting need not stop anything. With agent sessions open, Quit (`⌘Q`) and the
-window's close button put the window away and leave every session working:
-the app hides on macOS and minimises on Linux and Windows. Start Splitlane
-again - or click it in the Dock or the taskbar - to come back. This is the
-default on macOS; on Linux and Windows the app asks first, because a window
-that can only be minimised would otherwise look like a close button that did
-nothing. **Settings > General > When quitting** chooses between keeping,
-stopping and asking (`on_quit`).
+Quitting need not stop anything. On macOS and Linux every pane's terminal
+session runs in the session host, a process of Splitlane's apart from the
+window. With agent sessions open, Quit (`⌘Q`) and the window's close button
+close the window and leave every session working; start Splitlane again and
+each one is back in its pane, with what it printed meanwhile. A session no
+pane was showing any more is offered on a card, to open in the pane you are
+in or to end. **Settings > General > When quitting** chooses between keeping,
+stopping and asking (`on_quit`); keeping is the default.
+
+On Windows the sessions run in the window's process: keeping minimises the
+window, and the app asks first by default, because a window that can only be
+minimised would otherwise look like a close button that did nothing. To run
+the panes in the window on macOS and Linux as well, set `"session_host": false`.
 
 **Quit and Stop Sessions** (`⌥⌘Q` on macOS, where it is also in the application menu; `Ctrl+Alt+Q` on
 Linux and Windows) ends the
-app and every process it started. So does a restart into an update, and so
-does Quit when the setting says stop. The conversation survives those - the
-next launch reopens each session with `--resume` - but a turn that was
-executing does not, so each of them asks first whenever an agent is mid-turn,
-and names the sessions.
+app and every process it started. So does Quit when the setting says stop, and
+so does a restart into an update on Windows; on macOS and Linux an update
+leaves the sessions running. Where sessions end, the conversation survives -
+the next launch reopens each session with `--resume` - but a turn that was
+executing does not, so each of these asks first whenever an agent is
+mid-turn, and names the sessions.
 
-The sessions that are kept live in the app's own process. They do not survive
-an update, a crash, a logout or the Dock's own Quit.
+Sessions in the session host also outlive a crash of the window, the Dock's
+own Quit and an update. A logout or a restart of the machine can end them; the
+conversation survives that too, and the next launch resumes it. On Windows the
+kept sessions live in the app's own process and survive none of these.
 
 ## Diff and files
 
