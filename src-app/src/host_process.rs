@@ -22,7 +22,20 @@ const MAX_LOG_BYTES: u64 = 1024 * 1024;
 pub fn run() -> i32 {
     // Before anything is opened: whatever the launcher had open at the fork
     // would otherwise stay open for as long as the host lives.
-    splitlane_host::close_inherited_descriptors();
+    //
+    // Not when the host runs inside an AppImage. Its runtime hands the
+    // program a pipe it writes to from time to time, and takes the mount the
+    // program runs from away the moment that pipe is closed - with this
+    // binary's own pages on it. The window that started the host closed
+    // what it had open before starting the AppImage, so what is open here
+    // is the runtime's.
+    if !runs_inside_an_appimage(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os("APPIMAGE"),
+        std::env::var_os("APPDIR"),
+    ) {
+        splitlane_host::close_inherited_descriptors();
+    }
     install_file_logger();
     // After the logger, so a refusal is on record. A host is allowed 256
     // open files when started from a desktop session, and each pane in it
@@ -47,6 +60,23 @@ pub fn run() -> i32 {
             0
         }
         Err(e) => fail(&e.to_string()),
+    }
+}
+
+/// Whether this binary was started by an AppImage's runtime, from the
+/// directory it mounted. Both variables are the runtime's, and the binary
+/// has to be in the one `APPDIR` names: a build from source started from a
+/// shell an AppImage window opened inherits them too.
+fn runs_inside_an_appimage(
+    exe: Option<&Path>,
+    appimage: Option<std::ffi::OsString>,
+    appdir: Option<std::ffi::OsString>,
+) -> bool {
+    match (exe, appimage, appdir) {
+        (Some(exe), Some(appimage), Some(appdir)) => {
+            !appimage.is_empty() && !appdir.is_empty() && exe.starts_with(&appdir)
+        }
+        _ => false,
     }
 }
 
@@ -115,6 +145,41 @@ fn open_log(path: &Path) -> Option<File> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_binary_in_the_appimage_mount_counts_as_inside_it() {
+        use std::ffi::OsString;
+        let inside = Path::new("/tmp/.mount_SplitlXyz/usr/bin/splitlane");
+        let appimage = || Some(OsString::from("/home/me/Apps/Splitlane.AppImage"));
+        let appdir = || Some(OsString::from("/tmp/.mount_SplitlXyz"));
+        assert!(super::runs_inside_an_appimage(
+            Some(inside),
+            appimage(),
+            appdir()
+        ));
+        let elsewhere = Path::new("/home/me/splitlane/target/debug/splitlane");
+        assert!(!super::runs_inside_an_appimage(
+            Some(elsewhere),
+            appimage(),
+            appdir()
+        ));
+        assert!(!super::runs_inside_an_appimage(
+            Some(inside),
+            None,
+            appdir()
+        ));
+        assert!(!super::runs_inside_an_appimage(
+            Some(inside),
+            appimage(),
+            None
+        ));
+        assert!(!super::runs_inside_an_appimage(None, appimage(), appdir()));
+        assert!(!super::runs_inside_an_appimage(
+            Some(inside),
+            Some(OsString::new()),
+            appdir()
+        ));
+    }
+
     use super::*;
 
     #[test]
