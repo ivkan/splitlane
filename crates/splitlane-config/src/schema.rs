@@ -594,7 +594,7 @@ impl SplitlaneConfig {
             return fallback;
         };
         OnQuit::from_wire(word).unwrap_or_else(|| {
-            tracing::warn!("on_quit: unknown value {word:?}; using the platform default");
+            tracing::warn!("on_quit: unknown value {word:?}; using the default, {fallback:?}");
             fallback
         })
     }
