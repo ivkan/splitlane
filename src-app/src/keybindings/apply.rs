@@ -178,6 +178,53 @@ pub fn apply_keybindings(cx: &mut App, user_shortcuts: &HashMap<String, String>)
 
 #[cfg(test)]
 mod tests {
+    /// `\u{2325}A` toggles the rail's filter only where it cannot be text:
+    /// with a terminal, its find bar or a text field anywhere on the focus
+    /// path, the key goes to them.
+    #[test]
+    fn the_active_only_chord_never_fires_inside_a_terminal() {
+        let predicate =
+            gpui::KeyBindingContextPredicate::parse(super::super::registry::OUTSIDE_TEXT_ENTRY)
+                .expect("the predicate parses");
+        let path = |names: &[&str]| -> Vec<gpui::KeyContext> {
+            names
+                .iter()
+                .map(|name| gpui::KeyContext::parse(name).expect("a context parses"))
+                .collect()
+        };
+        assert!(predicate.depth_of(&path(&["SplitlaneWindow"])).is_some());
+        assert!(
+            predicate
+                .depth_of(&path(&["SplitlaneWindow", "RailGroup"]))
+                .is_some()
+        );
+        assert!(
+            predicate
+                .depth_of(&path(&["SplitlaneWindow", "DiffView"]))
+                .is_some()
+        );
+        assert!(
+            predicate
+                .depth_of(&path(&["SplitlaneWindow", "Terminal"]))
+                .is_none()
+        );
+        assert!(
+            predicate
+                .depth_of(&path(&["SplitlaneWindow", "Terminal", "Search"]))
+                .is_none()
+        );
+        assert!(
+            predicate
+                .depth_of(&path(&["SplitlaneWindow", "TextInput"]))
+                .is_none()
+        );
+        assert!(
+            predicate
+                .depth_of(&path(&["SplitlaneWindow", "SplitlaneTextArea"]))
+                .is_none()
+        );
+    }
+
     use super::*;
     use crate::SplitHorizontally;
 

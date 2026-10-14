@@ -197,7 +197,9 @@ impl SplitlaneApp {
         let on = self.rail_active_only;
         let chord = self.shortcut_for_action("toggle_active_only");
         let tooltip = match chord {
-            Some(chord) => format!("Show only the sessions at work ({chord})"),
+            // The chord is scoped away from terminals and text fields, and the
+            // tooltip says so: otherwise a press in a pane looks like a bug.
+            Some(chord) => format!("Show only the sessions at work ({chord} outside a terminal)"),
             None => "Show only the sessions at work".to_string(),
         };
         // On: the design's tag - a filled step and the accent dot, so the

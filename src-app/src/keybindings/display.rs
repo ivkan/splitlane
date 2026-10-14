@@ -225,6 +225,7 @@ pub fn context_group_label(group: &str) -> &str {
         "Markdown" => "Markdown",
         "MarkdownSearch" => "Markdown find",
         "DiffView" => "Review (diff)",
+        "SplitlaneWindow" => "Outside a terminal",
         other => other,
     }
 }
