@@ -232,7 +232,8 @@ impl SplitlaneApp {
         }
         leave_plan(
             intent,
-            splitlane_config::loader::load_config().on_quit_mode(),
+            splitlane_config::loader::load_config()
+                .on_quit_mode_for(crate::terminal::held_sessions::enabled()),
             self.open_sessions(),
             self.running_agents().len(),
         )
@@ -312,7 +313,11 @@ impl SplitlaneApp {
         if !held_sessions::enabled() || held_sessions::settled() {
             return;
         }
-        if self.cached_config.on_quit_mode() == OnQuit::Stop {
+        if self
+            .cached_config
+            .on_quit_mode_for(held_sessions::enabled())
+            == OnQuit::Stop
+        {
             held_sessions::stop_all();
         } else {
             held_sessions::leave_running();

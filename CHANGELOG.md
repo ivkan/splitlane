@@ -6,6 +6,19 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- On macOS and Linux, agent sessions outlive the window: every pane's terminal
+  session runs in the session host, a process of Splitlane's apart from the
+  window. Quitting with the sessions kept closes the window and leaves them
+  working; an update and a crash of the window leave them running too. The
+  next start shows each session in its pane again, with what it printed
+  meanwhile, and a card offers to open or end any session no pane shows. On
+  Linux, keeping is now the default when quitting, as on macOS: the window
+  closes instead of being minimised. `"session_host": false` in
+  `splitlane.json` runs the panes in the window as before. Windows is
+  unchanged.
+
 ### Changed
 
 - The fleet skill tells a lead agent that `splitlane wait` prints the

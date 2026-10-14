@@ -195,21 +195,31 @@ app state.
 
 ## The session host
 
-A terminal session today lives in the window's process: quit the app, update
-it or crash it, and every agent running in a pane ends with it. The session
-host is the process meant to take that ownership over. **By default the window
-does not use it:** every pane owns its PTY as described above. On macOS, and
-on Linux in a build with libghostty, a window started with
-`SPLITLANE_SESSION_HOST=1` opens its panes in the host instead, which is
-described under [A pane in the host](#a-pane-in-the-host).
-With the switch on, a pane's session belongs to the host and outlives the
-window: see [Sessions that outlive the window](#sessions-that-outlive-the-window).
+A terminal session that lives in the window's process ends with it: quit the
+app, update it or crash it, and every agent running in a pane ends too. The
+session host is the process that takes that ownership over. On macOS, and on
+Linux in a build with libghostty, a window opens its panes in the host, as
+described under [A pane in the host](#a-pane-in-the-host), and a pane's
+session belongs to the host and outlives the window: see
+[Sessions that outlive the window](#sessions-that-outlive-the-window).
+`"session_host": false` in `splitlane.json` puts every pane back in the
+window, where it owns its PTY as described above; so does Windows, and a
+Linux build without libghostty.
 
 The host is the app binary started as `splitlane __splitlane-host`. It leaves
 `main` before anything of the app is initialised and never loads GPUI; the
 code is the `splitlane-host` crate, which depends on neither. It is Unix-only
 for now. On Windows the crate compiles and its entry points report that the
 host is not supported there yet.
+
+A window that runs out of an AppImage starts the host through the AppImage
+file (`$APPIMAGE`), not the binary inside it: the binary lives in a directory
+the AppImage's runtime mounts for as long as the window runs and takes away
+when it ends, which is when the host has to keep running. Started that way
+the host has a mount of its own for as long as it lives. Both of the
+runtime's variables must be set and the window's binary must be in the
+directory `$APPDIR` names, because a window built from source in a shell an
+AppImage window opened inherits the variables too.
 
 **Socket.** The host listens on `splitlane-host.sock` (`splitlane-dev-host.sock`
 for a debug build) in the directory of the instance's IPC socket. The
@@ -338,12 +348,16 @@ child the limit it was itself started with.
 
 ### A pane in the host
 
-On macOS, and on Linux in a build with libghostty, a window started with
-`SPLITLANE_SESSION_HOST=1` opens every new pane in the host. The variable is
-read once, at start; it is an environment variable and not a setting because
-the path is new and a setting is a promise to keep. Windows ignores it, and
-so does a Linux build without libghostty: the host has no emulator to answer
-with there. So does a single pane set to the other emulator than the one the
+On macOS, and on Linux in a build with libghostty, every new pane opens in
+the host unless `"session_host": false` is set.
+`SPLITLANE_SESSION_HOST=0` or `=1` in the environment the window was started
+from overrides the setting either way, so a person can rule the host out of
+a fault without editing their configuration; anything else in it is not taken
+as an answer. Both are read once, at start, so a window is one or the other
+for as long as it runs. A test binary runs its panes in the window unless the
+variable says otherwise: a test that wants a host starts one of its own.
+Windows ignores both, and so does a Linux build without libghostty: the host
+has no emulator to answer with there. So does a single pane set to the other emulator than the one the
 host carries on its platform, which stays in the window - the host would tell
 its program one thing and the pane would show another. In the code, what
 exists only where a pane can run in the host is under `cfg(host_panes)`,
@@ -397,7 +411,7 @@ afterwards, a resize included, waits behind it. Ending the session never does.
 
 A host that cannot be reached, has no room for another connection or refuses
 the shell leaves the pane to the window, which opens it with a PTY of its own
-as it would without the switch; the host is then left alone for half a minute
+as it would with the host turned off; the host is then left alone for half a minute
 so that a window restoring many panes waits for it once. After the host has
 started the shell there is no falling back - that would be a second shell - so
 if the pane cannot be attached the session is ended and the pane shows the
