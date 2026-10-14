@@ -235,6 +235,20 @@ pub mod row {
     pub const GROUP: Pixels = px(24.);
 }
 
+/// Popovers that hang under a control in the window's frame.
+pub mod popover {
+    use super::*;
+
+    /// The tallest the Activity list grows before it scrolls. About fifteen
+    /// rows: the sections that need the reader stay on top and the running
+    /// ones scroll under them, rather than the card running off a laptop
+    /// screen.
+    pub const ACTIVITY_LIST_MAX: Pixels = px(440.);
+    /// The widest a running row's session name is drawn before it ends in an
+    /// ellipsis, so the project and the turn's time keep their place.
+    pub const RUNNING_NAME_MAX: Pixels = px(150.);
+}
+
 /// The rail's project group: a filled label, and a rule down its members.
 ///
 /// The label's own padding is stated by the design as 2 / 7 and kept as

@@ -31,6 +31,9 @@ pub struct TitleBar {
     /// that received them separately could reach a rung the popover does not
     /// draw.
     pub activity: crate::app::waiting::ActivityCounts,
+    /// How many pixels the chip's summary may take this frame
+    /// (`waiting::chip_room`), pushed with the counts.
+    pub chip_room: f32,
     /// The announcement in flight, when the queue's edge has just been crossed.
     ///
     /// It carries the edge's own instant, which is what binds the pulse to the
@@ -132,6 +135,7 @@ impl TitleBar {
             should_move: false,
             project_path: None,
             activity: crate::app::waiting::ActivityCounts::default(),
+            chip_room: f32::MAX,
             announcement: None,
             palette_chord: "⌘K".into(),
             sidebar_visible: true,
@@ -623,31 +627,37 @@ impl Render for TitleBar {
         // the user, or runs that finished while they were looking elsewhere.
         // The counts come from `SplitlaneApp`, which sees agent surfaces and pane
         // sessions alike. One destination either way: the popover.
-        let waiting_chip = crate::app::waiting::chip_state(self.activity).map(|chip| {
-            let chip_handle = cx.entity().downgrade();
-            let rung = chip.rung;
-            let element = waiting_chip(&chip, self.announcement, ui).on_mouse_down(
-                MouseButton::Left,
-                move |_, _, cx| {
-                    cx.stop_propagation();
-                    if let Some(entity) = chip_handle.upgrade() {
-                        entity.update(cx, |_this, cx| cx.emit(TitleBarEvent::WaitingChipClicked));
-                    }
-                },
-            );
-            // Applied here rather than inside the helper because
-            // `animated_hover` changes the element's type and the click
-            // listener has to go on first.
-            if crate::app::waiting::chip_hovers(rung) {
-                element
-                    .animated_hover(move |style, delta| {
-                        style.border_color(lerp_color(ui.border_strong, ui.border_hover, delta));
-                    })
-                    .into_any_element()
-            } else {
-                element.into_any_element()
-            }
-        });
+        let waiting_chip =
+            crate::app::waiting::chip_state(self.activity, self.chip_room).map(|chip| {
+                let chip_handle = cx.entity().downgrade();
+                let rung = chip.rung;
+                let element = waiting_chip(&chip, self.announcement, ui).on_mouse_down(
+                    MouseButton::Left,
+                    move |_, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(entity) = chip_handle.upgrade() {
+                            entity
+                                .update(cx, |_this, cx| cx.emit(TitleBarEvent::WaitingChipClicked));
+                        }
+                    },
+                );
+                // Applied here rather than inside the helper because
+                // `animated_hover` changes the element's type and the click
+                // listener has to go on first.
+                if crate::app::waiting::chip_hovers(rung) {
+                    element
+                        .animated_hover(move |style, delta| {
+                            style.border_color(lerp_color(
+                                ui.border_strong,
+                                ui.border_hover,
+                                delta,
+                            ));
+                        })
+                        .into_any_element()
+                } else {
+                    element.into_any_element()
+                }
+            });
         let palette_hint = palette_hint(self.palette_chord.clone(), ui);
 
         let bar = div()

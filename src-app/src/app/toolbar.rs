@@ -114,7 +114,9 @@ impl SplitlaneApp {
 
         // D2: with no title-bar row, these two move here and nothing else does.
         if show_waiting_cluster {
-            if let Some(chip) = crate::app::waiting::chip_state(self.activity()) {
+            if let Some(chip) =
+                crate::app::waiting::chip_state(self.activity(), self.activity_chip_room)
+            {
                 row = row.child(self.toolbar_waiting_chip(&chip, ui, cx));
             }
             row = row.child(toolbar_palette_hint(

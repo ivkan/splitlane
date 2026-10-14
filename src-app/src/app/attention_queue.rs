@@ -48,18 +48,21 @@ const ANCHOR_GAP: f32 = 6.;
 /// the card's right edge lines up with the chip's.
 const ANCHOR_INSET: f32 = 14.;
 
-/// Which of Activity's three kinds a row is - and the order
+/// Which of Activity's four kinds a row is - and the order
 /// they come out in.
 ///
 /// **Triage lives in the sort order.** Outside, the chip answers "is anything
 /// standing?"; inside, the list answers "where do I start?" - a fallen run
 /// first, because the question there is whether to run it again at all, then
 /// the agents holding a question, then the results nobody has collected.
+/// Work in progress comes last, under a quieter heading: it is in the list to
+/// be found, not to be sorted out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum QueueKind {
     Failed,
     Waiting,
     Finished,
+    Running,
 }
 
 /// One row of the queue: one thing standing on the user.
@@ -178,10 +181,18 @@ pub(crate) fn fold_private_groups(
 ///
 /// An untimed row is not "standing zero seconds", so it must not sort as if it
 /// were - it would jump its whole section every time.
+///
+/// **The running section keeps the rail's order** and is never sorted by its
+/// clock. Every turn's clock moves on every repaint, so a section ordered by
+/// it would reshuffle under the pointer; the rail's order already groups the
+/// rows by project.
 pub(crate) fn sort_rows(rows: &mut [QueueRow]) {
     rows.sort_by(|a, b| {
-        a.kind
-            .cmp(&b.kind)
+        let by_kind = a.kind.cmp(&b.kind);
+        if by_kind != std::cmp::Ordering::Equal || a.kind == QueueKind::Running {
+            return by_kind;
+        }
+        by_kind
             .then(a.waiting_secs.is_none().cmp(&b.waiting_secs.is_none()))
             .then(b.waiting_secs.cmp(&a.waiting_secs))
     });
@@ -205,6 +216,18 @@ pub(crate) fn one_row_per_session(rows: &mut Vec<QueueRow>) {
         // the mark lives on a record.
         None => true,
     });
+}
+
+/// Which of the list's scroller children row `idx` is: the rows before it plus
+/// one heading for each section that has started by then. Pure - unit-tested.
+pub(crate) fn scroll_child_of(kinds: &[QueueKind], idx: usize) -> usize {
+    let headings = kinds
+        .iter()
+        .take(idx + 1)
+        .enumerate()
+        .filter(|(at, kind)| *at == 0 || kinds[at - 1] != **kind)
+        .count();
+    idx + headings
 }
 
 /// A row's second line: `project \u{b7} branch`, or the project alone when the
@@ -283,7 +306,99 @@ impl SplitlaneApp {
                     .filter_map(|stop| self.queue_row(QueueKind::Waiting, stop, cx)),
             )
             .chain(self.finished_rows(cx))
+            .chain(self.running_rows(cx))
             .collect()
+    }
+
+    /// The agents at work, as rows, in the rail's order: projects as the rail
+    /// draws them, groups included, and inside a project its surfaces as the
+    /// rail draws them.
+    ///
+    /// The line under the name is the project alone, and the time is how
+    /// long the current turn has run - the clock that measures a finished run
+    /// for its notification, or the hook's own turn stamp for a session in a
+    /// pane. Where neither clock exists the column stays empty rather than
+    /// showing a number nothing measured.
+    fn running_rows(&self, cx: &Context<Self>) -> Vec<QueueRow> {
+        let projects = self.rail_project_positions();
+        let mut ranked: Vec<((usize, usize), QueueRow)> = self
+            .running_stops(cx)
+            .into_iter()
+            .filter_map(|stop| {
+                let mut row = self.queue_row(QueueKind::Running, stop, cx)?;
+                let ws_idx = crate::app::waiting::stop_ws_idx(&row.stop)?;
+                let ws = self.workspaces.get(ws_idx)?;
+                row.meta = ws.title.clone();
+                row.waiting_secs = self.turn_secs(&row, cx);
+                let surface_rank = row
+                    .thread_id
+                    .and_then(|id| {
+                        let order = crate::app::agents_sidebar::surface_row_order(&ws.threads);
+                        order
+                            .agents
+                            .iter()
+                            .chain(order.shells.iter())
+                            .position(|&idx| ws.threads.get(idx).map(|t| t.id) == Some(id))
+                    })
+                    .unwrap_or(usize::MAX);
+                let project_rank = projects.get(&ws_idx).copied().unwrap_or(usize::MAX);
+                Some(((project_rank, surface_rank), row))
+            })
+            .collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        ranked.into_iter().map(|(_, row)| row).collect()
+    }
+
+    /// Where each project stands in the rail, top to bottom: the projects
+    /// without a group, then each group's members.
+    fn rail_project_positions(&self) -> std::collections::HashMap<usize, usize> {
+        let order = Self::compute_display_order(&self.workspaces);
+        let sections = crate::app::project_groups::rail_sections(
+            &order,
+            |index| self.workspaces.get(index).and_then(|ws| ws.group),
+            &self.project_groups,
+        );
+        sections
+            .ungrouped
+            .iter()
+            .chain(
+                sections
+                    .groups
+                    .iter()
+                    .flat_map(|(_, members)| members.iter()),
+            )
+            .enumerate()
+            .map(|(position, &ws_idx)| (ws_idx, position))
+            .collect()
+    }
+
+    /// How long a running row's current turn has run, in seconds.
+    fn turn_secs(&self, row: &QueueRow, cx: &Context<Self>) -> Option<u64> {
+        if let Some(started) = row.thread_id.and_then(|id| self.running_since.get(&id)) {
+            return Some(started.elapsed().as_secs());
+        }
+        let WaitingStop::Pane {
+            ws_idx,
+            pane,
+            tab_idx,
+        } = &row.stop
+        else {
+            return None;
+        };
+        let surface_id = pane
+            .read(cx)
+            .tabs
+            .get(*tab_idx)?
+            .as_terminal()?
+            .entity_id()
+            .as_u64();
+        self.workspaces
+            .get(*ws_idx)?
+            .agent_sessions
+            .values()
+            .find(|session| session.surface_id == Some(surface_id))?
+            .turn_started
+            .map(|since| since.elapsed().as_secs())
     }
 
     /// The uncollected results, as rows.
@@ -521,14 +636,24 @@ impl SplitlaneApp {
             }
             "up" if len > 0 && self.attention_queue_selected > 0 => {
                 self.attention_queue_selected -= 1;
+                self.scroll_queue_to_selected(&rows);
                 cx.notify();
             }
             "down" if len > 0 && self.attention_queue_selected + 1 < len => {
                 self.attention_queue_selected += 1;
+                self.scroll_queue_to_selected(&rows);
                 cx.notify();
             }
             _ => {}
         }
+    }
+
+    /// Bring the chosen row into view. Only on a key: done every frame, it
+    /// would also pull the list back each time the wheel moved it.
+    fn scroll_queue_to_selected(&self, rows: &[QueueRow]) {
+        let kinds: Vec<QueueKind> = rows.iter().map(|row| row.kind).collect();
+        self.attention_queue_scroll
+            .scroll_to_item(scroll_child_of(&kinds, self.attention_queue_selected));
     }
 
     /// The queue as the design draws it: a popover anchored under the title
@@ -654,25 +779,28 @@ impl SplitlaneApp {
                     ),
             );
         } else {
-            // One list in three sections, in the triage order the design gives
+            // One list in four sections, in the triage order the design gives
             // it: a fallen run, then the agents holding a question, then the
-            // results nobody has collected. The rule under it is older and
-            // survives the rebuild - the accent never reaches below the last
-            // section's own rule, so the hierarchy reads whatever is in it.
-            let mut section = div().flex().flex_col().p(tok::space::SM);
+            // results nobody has collected, then the work in progress. The
+            // rule above each section is older and survives the rebuild - the
+            // accent never reaches below the last section's own rule, so the
+            // hierarchy reads whatever is in it.
+            //
+            // Every heading and row is a direct child of the scroller, because
+            // `scroll_to_item` counts the scroller's children: that is how the
+            // arrow keys keep the chosen row in view.
             let mut drawn: Option<QueueKind> = None;
-            let mut list = div().flex().flex_col();
+            let mut list = div()
+                .id("attention-queue-list")
+                .flex()
+                .flex_col()
+                .max_h(tok::popover::ACTIVITY_LIST_MAX)
+                .overflow_y_scroll()
+                .track_scroll(&self.attention_queue_scroll)
+                .pb(tok::space::SM);
             for (idx, row) in rows.iter().enumerate() {
                 if drawn != Some(row.kind) {
-                    if drawn.is_some() {
-                        list = list.child(section);
-                        section = div()
-                            .flex()
-                            .flex_col()
-                            .border_t_1()
-                            .border_color(ui.border)
-                            .p(tok::space::SM);
-                    }
+                    let first = drawn.is_none();
                     drawn = Some(row.kind);
                     // Sessions, not rows: a private group's one row stands
                     // for several.
@@ -680,6 +808,7 @@ impl SplitlaneApp {
                         QueueKind::Failed => counts.failed,
                         QueueKind::Waiting => counts.waiting,
                         QueueKind::Finished => counts.finished,
+                        QueueKind::Running => counts.running,
                     };
                     let (heading, tone) = match row.kind {
                         QueueKind::Failed => (
@@ -696,20 +825,37 @@ impl SplitlaneApp {
                         QueueKind::Finished => {
                             (format!("{count} finished while you were away"), ui.dim)
                         }
+                        // The quietest heading in the list, so the line where
+                        // "needs you" ends is visible at a glance.
+                        QueueKind::Running => (format!("{count} running"), ui.faint),
                     };
-                    section = section.child(
+                    list = list.child(
                         div()
-                            .px(tok::space::LG)
-                            .py(tok::space::MD)
-                            .font_family(tok::font::MONO)
-                            .text_size(tok::mono::LABEL)
-                            .text_color(tone)
-                            .child(SharedString::from(heading)),
+                            .flex_none()
+                            .px(tok::space::SM)
+                            .pt(tok::space::SM)
+                            .when(!first, |heading| {
+                                heading.border_t_1().border_color(ui.border)
+                            })
+                            .child(
+                                div()
+                                    .px(tok::space::LG)
+                                    .py(tok::space::MD)
+                                    .font_family(tok::font::MONO)
+                                    .text_size(tok::mono::LABEL)
+                                    .text_color(tone)
+                                    .child(SharedString::from(heading)),
+                            ),
                     );
                 }
-                section = section.child(self.attention_queue_row(row, idx == selected, ui, cx));
+                list = list.child(
+                    div()
+                        .flex_none()
+                        .px(tok::space::SM)
+                        .child(self.attention_queue_row(row, idx == selected, ui, cx)),
+                );
             }
-            card = card.child(list.child(section));
+            card = card.child(list);
         }
 
         // The chord is stated inside the block rather than in a bordered
@@ -797,6 +943,9 @@ impl SplitlaneApp {
         if let Some(private) = row.private_group {
             return self.private_group_queue_row(row, private, row_id, resting_background, ui, cx);
         }
+        if row.kind == QueueKind::Running {
+            return self.running_queue_row(row, row_id, resting_background, ui, cx);
+        }
         let meta: SharedString = row.meta.clone().into();
         div()
             .id(row_id)
@@ -870,6 +1019,77 @@ impl SplitlaneApp {
 }
 
 impl SplitlaneApp {
+    /// A running row: the accent dot, the session's name, its project and how
+    /// long the current turn has run - on one line, in the rail's own tones.
+    ///
+    /// No accent in the text: a running session is in the list to be found,
+    /// and the dot already says what it is doing. The name takes the rail
+    /// row's tone, a step under the standing rows' names, and the project and
+    /// time take `faint`.
+    fn running_queue_row(
+        &self,
+        row: &QueueRow,
+        row_id: SharedString,
+        resting_background: gpui::Hsla,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let stop = row.stop.clone();
+        let thread_id = row.thread_id;
+        div()
+            .id(row_id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tok::space::LG)
+            .px(tok::space::LG)
+            .h(tok::row::PROJECT)
+            .rounded(tok::radius::CONTROL)
+            .bg(resting_background)
+            .child(div().flex_none().size(px(6.)).rounded_full().bg(ui.accent))
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(tok::popover::RUNNING_NAME_MAX)
+                    .truncate()
+                    .text_size(tok::text::ROW)
+                    .text_color(ui.text_secondary)
+                    .child(SharedString::from(row.name.clone())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(tok::font::MONO)
+                    .text_size(tok::mono::HINT)
+                    .text_color(ui.faint)
+                    .child(SharedString::from(row.meta.clone())),
+            )
+            .when_some(row.waiting_secs, |element, secs| {
+                element.child(
+                    div()
+                        .flex_none()
+                        .font_family(tok::font::MONO)
+                        .text_size(tok::mono::HINT)
+                        .text_color(ui.faint)
+                        .child(SharedString::from(wait_label(secs))),
+                )
+            })
+            .cursor_pointer()
+            .animated_hover(move |style, delta| {
+                style.bg(lerp_color(resting_background, ui.subtle, delta));
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.attention_queue_activate(stop.clone(), thread_id, window, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+}
+
+impl SplitlaneApp {
     /// A private group's row: the rung's dot, the group's name as typed in
     /// mono, and on the right how many sessions are on that rung. One line,
     /// because a second line would be where names go.
@@ -888,6 +1108,7 @@ impl SplitlaneApp {
             QueueKind::Failed => ("failed", ui.agent_error),
             QueueKind::Waiting => ("waiting", ui.attention),
             QueueKind::Finished => ("finished", ui.faint),
+            QueueKind::Running => ("running", ui.faint),
         };
         // The rail's own marks: filled while the session stands, a ring in
         // the accent for a result nobody has looked at.
@@ -898,6 +1119,7 @@ impl SplitlaneApp {
                 .border(px(1.5))
                 .border_color(ui.accent),
             QueueKind::Failed | QueueKind::Waiting => dot.bg(tone),
+            QueueKind::Running => dot.bg(ui.accent),
         };
         div()
             .id(row_id)
@@ -1062,6 +1284,52 @@ mod tests {
         // sorting as if it had been waiting zero seconds, which would put it
         // first every single frame.
         assert_eq!(order, vec!["b", "c", "a", "untimed"]);
+    }
+
+    /// The running section comes after everything that needs the reader, and
+    /// inside it the rail's order stands: a clock that moves every repaint
+    /// would reshuffle the rows under the pointer.
+    #[test]
+    fn running_rows_come_last_and_keep_the_rail_order() {
+        let mut rows = vec![
+            row(QueueKind::Running, "api", Some(240)),
+            row(QueueKind::Running, "plan", Some(4_320)),
+            row(QueueKind::Waiting, "web", Some(720)),
+            row(QueueKind::Running, "ios", Some(41)),
+            row(QueueKind::Finished, "docs", Some(480)),
+            row(QueueKind::Running, "ingest", None),
+            row(QueueKind::Failed, "infra", None),
+        ];
+        sort_rows(&mut rows);
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["infra", "web", "docs", "api", "plan", "ios", "ingest"]
+        );
+    }
+
+    /// The design's own examples for a turn's time.
+    #[test]
+    fn a_turn_reads_in_seconds_then_minutes_then_hours() {
+        assert_eq!(wait_label(41), "41s");
+        assert_eq!(wait_label(4 * 60 + 59), "4m");
+        assert_eq!(wait_label(72 * 60), "1h 12m");
+    }
+
+    /// Headings sit between the rows in the scroller, so the chosen row's
+    /// child index counts them.
+    #[test]
+    fn the_chosen_row_is_found_among_the_headings() {
+        let kinds = [
+            QueueKind::Failed,
+            QueueKind::Waiting,
+            QueueKind::Waiting,
+            QueueKind::Running,
+        ];
+        assert_eq!(scroll_child_of(&kinds, 0), 1);
+        assert_eq!(scroll_child_of(&kinds, 1), 3);
+        assert_eq!(scroll_child_of(&kinds, 2), 4);
+        assert_eq!(scroll_child_of(&kinds, 3), 6);
     }
 
     #[test]

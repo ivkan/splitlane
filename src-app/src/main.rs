@@ -1360,6 +1360,9 @@ struct SplitlaneApp {
     attention_queue_open: bool,
     attention_queue_selected: usize,
     attention_queue_focus: FocusHandle,
+    /// The Activity list's scroll position, moved by the arrow keys so the
+    /// chosen row stays in view once the list is longer than the card.
+    attention_queue_scroll: gpui::ScrollHandle,
     /// Leaving the app while an agent is mid-turn asks first
     /// (`app::exit_guard`). `Some` while the card is up.
     pending_exit: Option<crate::app::exit_guard::ExitIntent>,
@@ -1510,6 +1513,9 @@ struct SplitlaneApp {
     /// Clearing was later replaced with lowering, so the list is live again and
     /// the snapshot is gone with the thing that forced it.
     activity_counts_cache: crate::app::waiting::ActivityCounts,
+    /// How many pixels the Activity chip's summary may take, measured once a
+    /// frame from the window's width. Both frames' chips read it.
+    activity_chip_room: f32,
     /// Whether the attention queue was empty at the end of the last frame.
     ///
     /// The whole memory the queue's edge needs. It starts `false` on purpose:
@@ -2412,6 +2418,10 @@ impl Render for SplitlaneApp {
         // frame's chip, the popover under it and the queue's own edge cannot
         // be looking at three different lists.
         let activity = self.activity();
+        self.activity_chip_room = crate::app::waiting::chip_room(
+            f32::from(window.viewport_size().width),
+            title_bar_rail_width,
+        );
         let announcement = self.chip_announcement();
         let palette_chord: gpui::SharedString = self
             .shortcut_for_action("open_command_palette")
@@ -2424,6 +2434,7 @@ impl Render for SplitlaneApp {
         self.title_bar.update(cx, |tb, _| {
             tb.project_path = project_path;
             tb.activity = activity;
+            tb.chip_room = self.activity_chip_room;
             tb.announcement = announcement;
             tb.palette_chord = palette_chord.clone();
             tb.sidebar_visible = self.primary_sidebar_visible;

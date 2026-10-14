@@ -449,8 +449,11 @@ impl SplitlaneApp {
     /// nothing here, because the thing that pulses is a **rail row** and it has
     /// none.
     fn activity_member_threads(&self, cx: &Context<Self>) -> HashSet<u64> {
+        // Work in progress is listed but never announced: an agent starting a
+        // turn needs nobody.
         self.attention_queue_rows(cx)
             .into_iter()
+            .filter(|row| row.kind != crate::app::attention_queue::QueueKind::Running)
             .filter_map(|row| row.thread_id)
             .collect()
     }
