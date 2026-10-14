@@ -414,12 +414,12 @@ impl SplitlaneApp {
     /// Stamp every surface that has a running terminal behind it, so that a
     /// surface closed later is known to have been alive until about now.
     fn note_running_agents(&mut self, cx: &gpui::App) {
-        let mut running = std::collections::HashSet::new();
+        let mut running = std::collections::HashMap::new();
         self.each_agent_terminal(cx, &mut |view| {
             if let Some(thread_id) = view.agent_thread_id
                 && view.terminal.child_pid != 0
             {
-                running.insert(thread_id);
+                running.insert(thread_id, view.terminal.detected_agent.is_some());
             }
         });
         let now = crate::project::now_unix_secs();
@@ -427,9 +427,14 @@ impl SplitlaneApp {
             .workspaces
             .iter_mut()
             .flat_map(|container| container.threads.iter_mut())
-            .filter(|thread| running.contains(&thread.id))
         {
-            thread.agent_seen_secs = Some(now);
+            match running.get(&thread.id) {
+                Some(&agent_found) => {
+                    thread.agent_seen_secs = Some(now);
+                    thread.shell_runs_agent = agent_found;
+                }
+                None => thread.shell_runs_agent = false,
+            }
         }
     }
 

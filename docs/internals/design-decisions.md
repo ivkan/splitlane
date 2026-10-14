@@ -803,7 +803,11 @@ the same three answers mean what they say:
   that is killed outright ends nothing, so its sessions run on and the next
   window finds them.
 
-With no agent session open, Quit still ends everything, shells included. The
+With no agent session open, Quit still ends everything, shells included. A
+shell counts as an agent session only while the per-pane scan finds an agent
+running in it - one a person started there by hand. It used to count as soon
+as its terminal was alive, and a window with one shell open, closed, left the
+shell running in the host where nothing showed it. The
 case that forced keeping was an agent's turn; a host left holding three idle
 shells after the person quit is a process they did not ask for and cannot see.
 If an agent session is open, everything is kept, shells too, so the layout
