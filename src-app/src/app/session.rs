@@ -226,6 +226,7 @@ impl SplitlaneApp {
             diff_scope: Some(self.diff_mode.diff_scope.as_persisted().to_string()),
             rail_width: Some(self.rail_width),
             files_width: Some(self.files_width),
+            rail_active_only: self.rail_active_only,
             groups: saved_groups,
             // The newest reading, so the next launch has something to subtract
             // from instead of spending its first half hour unable to project.

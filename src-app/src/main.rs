@@ -1312,6 +1312,9 @@ struct SplitlaneApp {
     /// left edge and persisted with the session - which is why it is a field
     /// and not the constant it starts at, exactly as `rail_width` is.
     files_width: f32,
+    /// The rail's `Active only` filter. Saved in the session file, so it is
+    /// still on after a restart.
+    rail_active_only: bool,
     /// Live drag of that edge: the pointer x where the press landed and the
     /// width at that moment. `None` when no drag is in flight.
     files_resize_drag: Option<(f32, f32)>,
@@ -2565,6 +2568,7 @@ impl Render for SplitlaneApp {
             // Attention Queue + Launch Pad.
             .on_action(cx.listener(Self::handle_open_attention_queue))
             .on_action(cx.listener(Self::handle_open_launch_pad))
+            .on_action(cx.listener(Self::handle_toggle_active_only))
             .on_action(cx.listener(Self::handle_new_worktree))
             .on_action(cx.listener(Self::handle_start_preset_1))
             .on_action(cx.listener(Self::handle_start_preset_2))

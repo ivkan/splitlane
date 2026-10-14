@@ -1549,6 +1549,7 @@ mod tests {
             diff_scope: None,
             rail_width: None,
             files_width: None,
+            rail_active_only: false,
             groups: Vec::new(),
         }
     }

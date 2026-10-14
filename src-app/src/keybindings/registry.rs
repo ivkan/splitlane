@@ -541,6 +541,12 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         description: "Attention queue",
     },
     ActionMeta {
+        name: "toggle_active_only",
+        factory: || Box::new(crate::ToggleActiveOnly),
+        context: "",
+        description: "Show active sessions only",
+    },
+    ActionMeta {
         name: "open_launch_pad",
         factory: || Box::new(crate::OpenLaunchPad),
         context: "",

@@ -511,6 +511,15 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "open_attention_queue",
         context: Some("Terminal"),
     },
+    // The rail's `Active only` filter, `\u{2325}A` per the design. Global:
+    // the rail is not a focus target of its own, and the filter is wanted
+    // from inside a pane. It is the same chord everywhere because no
+    // platform's window manager takes it.
+    DefaultBinding {
+        key: "alt-a",
+        action_name: "toggle_active_only",
+        context: None,
+    },
     // Global, not `Terminal`, since the rewrite: the Launch pad lists the
     // preset library, which belongs to no pane, and its old pane-scoped guard
     // went with the worktree launcher that used to live behind this chord.
