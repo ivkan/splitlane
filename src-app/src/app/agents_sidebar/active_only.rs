@@ -54,16 +54,17 @@ impl RowFacts {
 /// just gone idle leaves the rail only once focus has left it: otherwise its
 /// row would vanish from under the pointer of the person who is reading it.
 pub(crate) fn keeps(row: RowFacts) -> bool {
-    matches!(
-        row.status,
+    // Exhaustive on purpose: a status word added later has to be placed on
+    // one side of the filter here, or the build stops - it can never be
+    // hidden by default.
+    let at_work = match row.status {
         ThreadStatus::Starting
-            | ThreadStatus::Thinking
-            | ThreadStatus::WaitingForInput
-            | ThreadStatus::Failed
-    ) || row.unread
-        || row.shells_beside_idle > 0
-        || row.shell_runs_agent
-        || row.focused
+        | ThreadStatus::Thinking
+        | ThreadStatus::WaitingForInput
+        | ThreadStatus::Failed => true,
+        ThreadStatus::Idle => false,
+    };
+    at_work || row.unread || row.shells_beside_idle > 0 || row.shell_runs_agent || row.focused
 }
 
 /// What the rail draws with the filter on.
