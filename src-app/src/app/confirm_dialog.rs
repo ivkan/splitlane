@@ -39,6 +39,25 @@ pub(crate) struct ConfirmDialog {
     pub focus: Option<FocusHandle>,
     pub on_cancel: ConfirmHandler,
     pub on_confirm: ConfirmHandler,
+    /// A button at the left edge that answers neither way - the quit card's
+    /// `Review…`.
+    pub aside: Option<(String, ConfirmHandler)>,
+    /// How the answers are weighted; see [`ConfirmTone`].
+    pub tone: ConfirmTone,
+}
+
+/// Which answer the card puts forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfirmTone {
+    /// `Cancel`, then the safe answer if there is one, then the confirming
+    /// one in red: what it does cannot be taken back.
+    Danger,
+    /// No `Cancel` button (`escape` and the backdrop still cancel); the safe
+    /// answer is the filled one and the confirming one is plain. For a
+    /// question where neither answer destroys anything - the quit card,
+    /// whose `Stop and quit` ends processes but keeps their output - so that
+    /// red does not become the colour of the usual way out.
+    SafeForward,
 }
 
 pub(crate) fn render_confirm_dialog(
@@ -55,6 +74,8 @@ pub(crate) fn render_confirm_dialog(
         focus,
         on_cancel,
         on_confirm,
+        aside,
+        tone,
     } = dialog;
     let on_enter = safe
         .as_ref()
@@ -97,51 +118,46 @@ pub(crate) fn render_confirm_dialog(
     }
 
     let backdrop_cancel = on_cancel.clone();
-    let backdrop = div()
-        .id(element_id("backdrop"))
-        .occlude()
-        .absolute()
-        .top(px(0.))
-        .left(px(0.))
-        .size_full()
-        .bg(gpui::black().opacity(0.45))
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, window, cx| backdrop_cancel(this, window, cx)),
-        )
-        .child(
-            card.child(
-                div()
-                    .text_size(tok::text::TITLE)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ui.text)
-                    .child(title),
+    let backdrop =
+        div()
+            .id(element_id("backdrop"))
+            .occlude()
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .size_full()
+            .bg(gpui::black().opacity(0.45))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| backdrop_cancel(this, window, cx)),
             )
             .child(
-                div()
-                    .text_size(tok::text::ROW)
-                    .text_color(ui.muted)
-                    .child(body),
-            )
-            .child(
-                div()
-                    .mt(tok::space::XS)
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap(tok::space::MD)
-                    .child(
+                card.child(
+                    div()
+                        .text_size(tok::text::TITLE)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(ui.text)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(tok::text::ROW)
+                        .text_color(ui.muted)
+                        .child(body),
+                )
+                .child({
+                    let plain = |part: &str, label: String, weight: FontWeight| {
                         div()
-                            .id(element_id("cancel"))
+                            .id(element_id(part))
                             .px(tok::space::XL)
                             .py(tok::space::MD)
                             .rounded(tok::radius::SMALL)
                             .bg(cancel_resting_background)
                             .text_size(tok::text::ROW)
-                            .font_weight(FontWeight::MEDIUM)
+                            .font_weight(weight)
                             .text_color(ui.text)
                             .animated_hover(move |style, delta| {
                                 style.bg(lerp_color(
@@ -151,56 +167,80 @@ pub(crate) fn render_confirm_dialog(
                                 ));
                             })
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                on_cancel(this, window, cx);
-                            }))
-                            .child("Cancel"),
-                    )
-                    .children(safe.map(|(label, handler)| {
-                        div()
-                            .id(element_id("safe"))
-                            .px(tok::space::XL)
-                            .py(tok::space::MD)
-                            .rounded(tok::radius::SMALL)
-                            .bg(cancel_resting_background)
-                            .text_size(tok::text::ROW)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ui.text)
-                            .animated_hover(move |style, delta| {
-                                style.bg(lerp_color(
-                                    cancel_resting_background,
-                                    cancel_hover_background,
-                                    delta,
-                                ));
-                            })
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                handler(this, window, cx);
-                            }))
                             .child(label)
-                    }))
-                    .child(
+                    };
+                    let filled = |part: &str, label: String, fill: gpui::Hsla, text: gpui::Hsla| {
                         div()
-                            .id(element_id("confirm"))
+                            .id(element_id(part))
                             .px(tok::space::XL)
                             .py(tok::space::MD)
                             .rounded(tok::radius::SMALL)
-                            .bg(ui.vc_deleted)
+                            .bg(fill)
                             .text_size(tok::text::ROW)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ui.base)
+                            .text_color(text)
                             .opacity(1.0)
                             .animated_hover(|style, delta| {
                                 style.opacity(1.0 - 0.12 * delta);
                             })
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                on_confirm(this, window, cx);
-                            }))
-                            .child(confirm_label),
-                    ),
-            ),
-        );
+                            .child(label)
+                    };
+                    let mut row = div()
+                        .mt(tok::space::XS)
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(tok::space::MD);
+                    if let Some((label, handler)) = aside {
+                        row =
+                            row.child(plain("aside", label, FontWeight::MEDIUM).on_click(
+                                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    handler(this, window, cx);
+                                }),
+                            ))
+                            .child(div().flex_1());
+                    }
+                    if tone == ConfirmTone::Danger {
+                        row = row.child(
+                            plain("cancel", "Cancel".to_string(), FontWeight::MEDIUM).on_click(
+                                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    on_cancel(this, window, cx);
+                                }),
+                            ),
+                        );
+                    }
+                    let safe_button = safe.map(|(label, handler)| {
+                        let click = cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            handler(this, window, cx);
+                        });
+                        match tone {
+                            ConfirmTone::Danger => {
+                                plain("safe", label, FontWeight::SEMIBOLD).on_click(click)
+                            }
+                            ConfirmTone::SafeForward => {
+                                filled("safe", label, ui.accent, ui.on_accent).on_click(click)
+                            }
+                        }
+                    });
+                    let confirm_click = cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        on_confirm(this, window, cx);
+                    });
+                    match tone {
+                        ConfirmTone::Danger => row.children(safe_button).child(
+                            filled("confirm", confirm_label, ui.vc_deleted, ui.base)
+                                .on_click(confirm_click),
+                        ),
+                        // The forward answer last, where the eye ends.
+                        ConfirmTone::SafeForward => row
+                            .child(
+                                plain("confirm", confirm_label, FontWeight::MEDIUM)
+                                    .on_click(confirm_click),
+                            )
+                            .children(safe_button),
+                    }
+                }),
+            );
 
     deferred(backdrop).priority(4).into_any_element()
 }

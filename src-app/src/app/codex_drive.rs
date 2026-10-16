@@ -164,6 +164,8 @@ impl SplitlaneApp {
                 focus: None,
                 on_cancel: std::rc::Rc::new(|this, _window, cx| this.cancel_codex_drive(cx)),
                 on_confirm: std::rc::Rc::new(|this, _window, cx| this.confirm_codex_drive(cx)),
+                aside: None,
+                tone: crate::app::confirm_dialog::ConfirmTone::Danger,
             },
             ui,
             cx,

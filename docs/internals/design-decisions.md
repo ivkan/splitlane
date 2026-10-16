@@ -835,6 +835,22 @@ decides, waiting at most a second and a half: a command started since the
 last pass would otherwise be ended. If an agent session or a command is at
 work, everything is kept, idle shells too, so the layout comes back whole.
 
+A door that ends the sessions - `stop`, `quit_and_stop`, the restart into an
+update where the window holds them - asks when a command would end, as it
+asks about a turn in progress, and names the commands. The card that offers
+to keep names them too, three by program and subcommand and then a count,
+and counts agents without naming them: their names are in Activity, and in
+one line with the commands they would be a jumble. Its `Review…` opens the
+Running sheet so one command can be stopped and another kept, which neither
+answer on the card allows; leaving the sheet asks again. Neither answer there
+is drawn in red: `Stop and quit` ends processes, but their conversations come
+back, and red on the usual way out would teach that red is routine.
+
+A keep nobody was asked about - `keep`, the default - is said afterwards,
+once. The window that closed cannot say it, so it leaves a file beside the
+saved session and the next launch shows the line, with `Review…`, and
+removes the file. A window only put away says it when it comes back.
+
 The one thing keeping costs in that mode is being told: reading an agent's
 state is the window's job, so with no window an agent that needs an answer
 waits in silence. The card that offers to keep the sessions says so in that

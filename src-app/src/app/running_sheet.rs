@@ -825,6 +825,8 @@ impl SplitlaneApp {
                     on_confirm: std::rc::Rc::new(|this, _window, cx| {
                         this.running_sheet_close_confirmed(cx);
                     }),
+                    aside: None,
+                    tone: crate::app::confirm_dialog::ConfirmTone::Danger,
                 },
                 ui,
                 cx,

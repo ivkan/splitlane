@@ -37,6 +37,8 @@ pub(crate) struct Toast {
 
 #[derive(Clone)]
 pub(crate) enum ToastAction {
+    /// "Review…" - opens the Running sheet.
+    ReviewRunning,
     /// "Retry" - re-dispatches the `StartSelfUpdate` action. The action
     /// handler's existing guards (busy check, attempt counter) apply.
     RetryUpdate,
@@ -124,9 +126,18 @@ impl SplitlaneApp {
         _cx: &mut Context<Self>,
     ) -> AnyElement {
         let has_actions = !toast.actions.is_empty();
-        let is_error = has_actions || toast_message_reads_like_error(&toast.message);
+        // An action button marks an error only when it is a way to recover
+        // from one; `Review…` is a way to look.
+        let recovers = toast
+            .actions
+            .iter()
+            .any(|action| !matches!(action, ToastAction::ReviewRunning));
+        let is_error = recovers || toast_message_reads_like_error(&toast.message);
         let (icon, icon_color, max_w) = if is_error {
             ("icons/triangle-alert.svg", ui.agent_error, px(440.))
+        } else if has_actions {
+            // A sentence with a button under it is read, not glanced at.
+            ("icons/check.svg", ui.vc_added, px(440.))
         } else {
             ("icons/check.svg", ui.vc_added, px(340.))
         };
@@ -147,9 +158,11 @@ impl SplitlaneApp {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_x_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
+                    // One line for a passing word; a toast with a button wraps
+                    // rather than cutting off the sentence the button acts on.
+                    .when(!has_actions, |text| {
+                        text.overflow_x_hidden().whitespace_nowrap().text_ellipsis()
+                    })
                     .text_size(tok::text::ROW)
                     .text_color(ui.text)
                     .child(toast.message.clone()),
@@ -165,6 +178,7 @@ impl SplitlaneApp {
             for (idx, action) in toast.actions.iter().enumerate() {
                 let (label, button_id): (&str, String) = match action {
                     ToastAction::RetryUpdate => ("Retry", format!("toast-retry-{idx}")),
+                    ToastAction::ReviewRunning => ("Review…", format!("toast-review-{idx}")),
                     ToastAction::OpenReleasesPage(_) => {
                         ("Open releases", format!("toast-releases-{idx}"))
                     }
@@ -191,6 +205,9 @@ impl SplitlaneApp {
                     .on_click(move |_, window, cx| match &action_clone {
                         ToastAction::RetryUpdate => {
                             window.dispatch_action(Box::new(StartSelfUpdate), cx);
+                        }
+                        ToastAction::ReviewRunning => {
+                            window.dispatch_action(Box::new(crate::OpenRunning), cx);
                         }
                         ToastAction::OpenReleasesPage(url) => {
                             if let Err(err) = crate::external_open::open_url(url) {
