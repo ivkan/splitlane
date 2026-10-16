@@ -766,10 +766,11 @@ and Linux, by default - keeping closes the window outright and nothing is
 left minimised, so the concession is not needed and keeping is the default
 there too.
 
-With no agent session open the app quits whatever the setting says: a window
-put away with nothing behind it is an app that will not quit. "Open" is a
-session whose terminal the state pass saw in the last six seconds, so a
-restored row that was never shown does not hold the app up.
+With nothing at work the app quits whatever the setting says: a window put
+away with nothing behind it is an app that will not quit. "At work" is an
+agent session whose terminal the state pass saw in the last six seconds, so a
+restored row that was never shown does not hold the app up, or a command
+running in a shell (below).
 
 There has to be a door that still ends everything, and it must not be the same
 key pressed twice (the auto-repeat rule above). It is its own action,
@@ -798,20 +799,41 @@ the same three answers mean what they say:
   sessions its own panes show, the way it ends a PTY of its own, and leaves.
 - The restart into an update asks nothing and ends no session, whatever the
   setting: it replaces the window, and the sessions were never the window's.
-- A door that asks nobody - the Dock's Quit, a logout - is answered by the
-  setting: `stop` stops, anything else leaves the sessions running. A window
-  that is killed outright ends nothing, so its sessions run on and the next
-  window finds them.
+- A door that asks nobody - the Dock's Quit, a logout - answers as Quit
+  would without asking: `stop` stops, and so does leaving with nothing at
+  work; otherwise the sessions are left running. It reads the shells again
+  on the spot, and counts an agent by its live terminal as well as by the
+  pass's stamp, because a window that has just started has made no stamp
+  yet. It used to leave everything running whenever the setting was not
+  `stop`, idle shells included, while Quit from the menu ended them. A
+  window that is killed outright ends nothing, so its sessions run on and
+  the next window finds them.
 
-With no agent session open, Quit still ends everything, shells included. A
-shell counts as an agent session only while the per-pane scan finds an agent
-running in it - one a person started there by hand. It used to count as soon
-as its terminal was alive, and a window with one shell open, closed, left the
-shell running in the host where nothing showed it. The
-case that forced keeping was an agent's turn; a host left holding three idle
-shells after the person quit is a process they did not ask for and cannot see.
-If an agent session is open, everything is kept, shells too, so the layout
-comes back whole.
+With nothing at work, Quit still ends everything, shells included. A shell at
+its prompt counts for nothing: it used to count as soon as its terminal was
+alive, and a window with one shell open, closed, left the shell running in
+the host where nothing showed it - a process the person did not ask for and
+cannot see. A shell counts as an agent session while the per-pane scan finds
+an agent running in it, one a person started there by hand.
+
+**A shell running a command counts too.** The rule above, alone, ended a dev
+server or a build that had run for twenty minutes, without a word, whenever no
+agent was open. A command is the job the shell's terminal is giving its
+keyboard to - the foreground process group, read from the kernel's `tpgid`,
+which works for a pane whose PTY is in the host - plus any job stopped with
+Ctrl+Z, which closing the session would end as well (`running_commands`).
+Every process group under the shell was the other reading, and it is wrong:
+prompt helpers such as `gitstatusd` sit in groups of their own for the life of
+the shell, which would never read as idle. The cost is that a job sent to the
+background with `&`, or run by a shell with job control off, is not seen.
+Windows has no process groups, so there every child of the shell but the
+console's own helpers counts, and a resident prompt helper would read as a
+command.
+
+The state pass reads them every two seconds, and Quit reads again before it
+decides, waiting at most a second and a half: a command started since the
+last pass would otherwise be ended. If an agent session or a command is at
+work, everything is kept, idle shells too, so the layout comes back whole.
 
 The one thing keeping costs in that mode is being told: reading an agent's
 state is the window's job, so with no window an agent that needs an answer

@@ -165,6 +165,11 @@ fn print_commands_table(result: &Value) {
         .get("commands")
         .and_then(Value::as_array)
         .filter(|c| !c.is_empty());
+    if result.get("commands").is_none() {
+        // An older app ignores `all` and answers with agents alone.
+        println!("(this Splitlane does not list commands; update it to use --all)");
+        return;
+    }
     let idle = result
         .get("idle_shells")
         .and_then(Value::as_u64)

@@ -203,8 +203,8 @@ impl SplitlaneApp {
         }
         // The last word on what becomes of the sessions in the host, for
         // the ways out that ask nobody (`app::exit_guard`).
-        cx.on_app_quit(|app, _| {
-            app.settle_host_sessions_on_quit();
+        cx.on_app_quit(|app, cx| {
+            app.settle_host_sessions_on_quit(cx);
             async {}
         })
         .detach();

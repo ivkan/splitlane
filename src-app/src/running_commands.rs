@@ -71,12 +71,19 @@ pub(crate) fn agent_of(command: &str, binaries: &[&'static str]) -> Option<&'sta
 const MAX_COMMAND_LEN: usize = 1024;
 
 /// The commands running under the session whose PTY child is `pty_child`,
-/// read from `snapshot`. Empty when nothing runs, and when nothing could be
-/// read: a session this cannot see into is reported as idle rather than
-/// guessed at.
+/// with `snapshot` to find its descendants in. Empty when nothing runs, and
+/// when the session itself cannot be read.
+///
+/// Without a snapshot the foreground job is still found - its leader is
+/// named by the shell's own `tpgid` - and only stopped jobs are missed, so a
+/// process table that could not be read does not turn a running dev server
+/// into an idle shell. Windows needs the table and finds nothing without it.
 ///
 /// Blocking: a handful of per-process reads. Call it off the render thread.
-pub(crate) fn commands_under(snapshot: &ProcessSnapshot, pty_child: u32) -> Vec<RunningCommand> {
+pub(crate) fn commands_under(
+    snapshot: Option<&ProcessSnapshot>,
+    pty_child: u32,
+) -> Vec<RunningCommand> {
     if pty_child == 0 {
         return Vec::new();
     }
@@ -186,13 +193,13 @@ fn commands_from(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn commands_under_impl(snapshot: &ProcessSnapshot, pty_child: u32) -> Vec<RunningCommand> {
+fn commands_under_impl(snapshot: Option<&ProcessSnapshot>, pty_child: u32) -> Vec<RunningCommand> {
     let Some(root) = proc_info(pty_child) else {
         return Vec::new();
     };
-    let descendants: Vec<(u32, ProcInfo)> = if is_shell(&root.name) {
+    let mut descendants: Vec<(u32, ProcInfo)> = if is_shell(&root.name) {
         snapshot
-            .descendants_of(pty_child)
+            .and_then(|snapshot| snapshot.descendants_of(pty_child))
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(pid, _)| proc_info(pid).map(|info| (pid, info)))
@@ -200,6 +207,17 @@ fn commands_under_impl(snapshot: &ProcessSnapshot, pty_child: u32) -> Vec<Runnin
     } else {
         Vec::new()
     };
+    // The foreground group's leader, asked about directly when the walk did
+    // not reach it: the table may be missing or overrun.
+    if is_shell(&root.name)
+        && root.tpgid > 0
+        && root.tpgid != root.pgid
+        && let Ok(leader) = u32::try_from(root.tpgid)
+        && !descendants.iter().any(|(pid, _)| *pid == leader)
+        && let Some(info) = proc_info(leader)
+    {
+        descendants.insert(0, (leader, info));
+    }
     commands_from((pty_child, &root), &descendants, &|pid, info| {
         command_line(pid).unwrap_or_else(|| info.name.clone())
     })
@@ -211,8 +229,11 @@ fn commands_under_impl(snapshot: &ProcessSnapshot, pty_child: u32) -> Vec<Runnin
 
 #[cfg(target_os = "linux")]
 fn proc_info(pid: u32) -> Option<ProcInfo> {
+    // Both are fixed for as long as the machine is up, so they are read once.
+    static CLOCK: std::sync::OnceLock<(Option<i64>, Option<i64>)> = std::sync::OnceLock::new();
+    let (boot, ticks) = *CLOCK.get_or_init(|| (boot_time(), clock_ticks()));
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    parse_stat(&stat, boot_time(), clock_ticks())
+    parse_stat(&stat, boot, ticks)
 }
 
 /// One `/proc/<pid>/stat` line. The name is in parentheses and may itself
@@ -379,7 +400,10 @@ fn parse_procargs(buf: &[u8]) -> Option<String> {
 const CONSOLE_HELPERS: &[&str] = &["conhost", "openconsole"];
 
 #[cfg(windows)]
-fn commands_under_impl(snapshot: &ProcessSnapshot, pty_child: u32) -> Vec<RunningCommand> {
+fn commands_under_impl(snapshot: Option<&ProcessSnapshot>, pty_child: u32) -> Vec<RunningCommand> {
+    let Some(snapshot) = snapshot else {
+        return Vec::new();
+    };
     let name_of = |pid: u32| {
         crate::process_tree::exe_path_of(pid).and_then(|path| {
             path.file_stem()
@@ -423,7 +447,10 @@ fn filetime_to_unix(filetime: u64) -> Option<i64> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn commands_under_impl(_snapshot: &ProcessSnapshot, _pty_child: u32) -> Vec<RunningCommand> {
+fn commands_under_impl(
+    _snapshot: Option<&ProcessSnapshot>,
+    _pty_child: u32,
+) -> Vec<RunningCommand> {
     Vec::new()
 }
 
@@ -557,10 +584,12 @@ mod tests {
             .spawn()
             .expect("sleep");
         let snapshot = ProcessSnapshot::capture().expect("snapshot");
-        let found = commands_under(&snapshot, child.id());
+        let found = commands_under(Some(&snapshot), child.id());
+        let without = commands_under(None, child.id());
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found, without);
         assert_eq!(found[0].command, "sleep 30");
         assert!(found[0].started_unix.is_some());
     }

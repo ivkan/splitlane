@@ -9,8 +9,26 @@
 //! last pass: a command started in the two seconds since would otherwise be
 //! ended without a word, and that is the one mistake the question at quit is
 //! there to prevent.
+//!
+//! A read can hang: on Linux, reading the command line of a process stuck in
+//! uninterruptible sleep blocks until it wakes. So one census runs at a time,
+//! a pass that finds one still out skips its turn rather than queueing
+//! another thread behind it, and a door out waits for it only so long before
+//! deciding on what it already has.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+/// A census is out. Set and cleared by [`census`] itself.
+static CENSUS_OUT: AtomicBool = AtomicBool::new(false);
+
+/// How long a door out waits for a fresh census before deciding without it.
+const EXIT_READ_WAIT: Duration = Duration::from_millis(1500);
+
+/// How long a detector pass waits for its census. A hung read must not hold
+/// up the agents' reading on the next beat.
+const PASS_READ_WAIT: Duration = Duration::from_secs(5);
 
 use crate::SplitlaneApp;
 use crate::running_commands::{RunningCommand, commands_under};
@@ -37,13 +55,23 @@ pub(crate) struct Census {
     held: HashMap<String, Vec<RunningCommand>>,
 }
 
-/// The blocking half: one process table, then each root's commands.
-fn census(roots: CensusRoots) -> Census {
+/// The blocking half: one process table, then each root's commands. `None`
+/// when another census is still out.
+fn census(roots: CensusRoots) -> Option<Census> {
+    if CENSUS_OUT.swap(true, Ordering::SeqCst) {
+        return None;
+    }
+    let found = census_now(roots);
+    CENSUS_OUT.store(false, Ordering::SeqCst);
+    Some(found)
+}
+
+fn census_now(roots: CensusRoots) -> Census {
     let binaries: Vec<&'static str> = crate::agent_launcher::TerminalAgent::ALL
         .iter()
         .map(|agent| agent.binary())
         .collect();
-    let read = |snapshot: &crate::process_tree::ProcessSnapshot, pid: u32| {
+    let read = |snapshot: Option<&crate::process_tree::ProcessSnapshot>, pid: u32| {
         let mut found = commands_under(snapshot, pid);
         for command in &mut found {
             command.agent = crate::running_commands::agent_of(&command.command, &binaries);
@@ -51,24 +79,20 @@ fn census(roots: CensusRoots) -> Census {
         found
     };
     let read_secs = crate::project::now_unix_secs();
-    let Some(snapshot) = crate::process_tree::ProcessSnapshot::capture() else {
-        return Census {
-            read_secs,
-            surfaces: HashMap::new(),
-            held: HashMap::new(),
-        };
-    };
+    // Without a table each shell's foreground job is still read; see
+    // `commands_under`.
+    let snapshot = crate::process_tree::ProcessSnapshot::capture();
     Census {
         read_secs,
         surfaces: roots
             .surfaces
             .into_iter()
-            .map(|(thread_id, pid)| (thread_id, read(&snapshot, pid)))
+            .map(|(thread_id, pid)| (thread_id, read(snapshot.as_ref(), pid)))
             .collect(),
         held: roots
             .held
             .into_iter()
-            .map(|(id, pid)| (id, read(&snapshot, pid)))
+            .map(|(id, pid)| (id, read(snapshot.as_ref(), pid)))
             .collect(),
     }
 }
@@ -139,7 +163,8 @@ impl SplitlaneApp {
     }
 
     /// Read now, off the render thread, then run `then` with the answer in
-    /// place.
+    /// place - or with the last one, if the read is not back within
+    /// [`EXIT_READ_WAIT`] or another census is still out.
     pub(crate) fn refresh_running_commands(
         &mut self,
         cx: &mut gpui::Context<Self>,
@@ -158,16 +183,37 @@ impl SplitlaneApp {
         }
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let found = smol::unblock(move || census(roots)).await;
+                let read = smol::unblock(move || census(roots));
+                let timeout = async {
+                    smol::Timer::after(EXIT_READ_WAIT).await;
+                    None
+                };
+                let found = smol::future::or(read, timeout).await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app: &mut Self, cx: &mut gpui::Context<Self>| {
-                        app.apply_census(found, cx);
+                        match found {
+                            Some(found) => app.apply_census(found, cx),
+                            None => log::warn!(
+                                "leaving: the shells could not be read in time; deciding on the last reading"
+                            ),
+                        }
                         then(app, cx);
                     })
                 });
             },
         )
         .detach();
+    }
+
+    /// Read now, on this thread. Only for the moment the process is ending
+    /// through a door that cannot wait - the Dock's Quit, a logout - where
+    /// nothing is drawn any more and deciding on a two-second-old reading
+    /// could end a command started since. A census still out is not waited
+    /// for: the last reading stands.
+    pub(crate) fn refresh_running_commands_blocking(&mut self, cx: &mut gpui::Context<Self>) {
+        if let Some(found) = census(self.census_roots(cx)) {
+            self.apply_census(found, cx);
+        }
     }
 
     /// The census for one detector pass.
@@ -179,7 +225,16 @@ impl SplitlaneApp {
         else {
             return false;
         };
-        let found = smol::unblock(move || census(roots)).await;
+        // A census still out from before is left to finish; this pass
+        // skips its turn.
+        let read = smol::unblock(move || census(roots));
+        let timeout = async {
+            smol::Timer::after(PASS_READ_WAIT).await;
+            None
+        };
+        let Some(found) = smol::future::or(read, timeout).await else {
+            return true;
+        };
         cx.update(|cx| {
             this.update(cx, |app: &mut Self, cx: &mut gpui::Context<Self>| {
                 app.apply_census(found, cx);
