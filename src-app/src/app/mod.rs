@@ -38,6 +38,7 @@ pub mod preset_launch;
 pub mod project_groups;
 pub mod project_ops;
 pub mod rail_resize;
+pub mod running_census;
 pub mod self_update_flow;
 pub mod send_answer;
 pub mod session;

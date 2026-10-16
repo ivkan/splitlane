@@ -58,6 +58,7 @@ splitlane ps   # prints "(no agents)" or a table when an instance is reachable
 splitlane ls --human                     # every terminal surface, in every project
 splitlane ps                             # agents Splitlane knows about, as a table
 splitlane ps --json
+splitlane ps --all                       # plus the commands running in shells
 splitlane status backend --json          # one surface's agent state
 splitlane read backend --lines 120       # the last 120 lines: history, then the screen
 splitlane search backend "test result" --max 5

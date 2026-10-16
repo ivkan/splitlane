@@ -367,6 +367,12 @@ impl SplitlaneApp {
                             break;
                         }
                     }
+                    // Shells are read on the same beat, from a table of their
+                    // own: the agents' read above is ordered against their
+                    // transcripts, and nothing here may move it.
+                    if !Self::run_census_pass(&this, cx).await {
+                        break;
+                    }
                     smol::Timer::after(INTERVAL).await;
                 }
             },
@@ -441,7 +447,7 @@ impl SplitlaneApp {
     /// Every terminal view that may hold an agent: the ones in panes first,
     /// then the ones the surface cache holds, in id order so that what a
     /// pass reads does not depend on the map's iteration.
-    fn each_agent_terminal(
+    pub(crate) fn each_agent_terminal(
         &self,
         cx: &gpui::App,
         visit: &mut dyn FnMut(&crate::terminal::view::TerminalView),

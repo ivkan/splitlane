@@ -511,6 +511,14 @@ pub struct Thread {
     /// agent session when the app is left, and an idle shell does not.
     /// Transient.
     pub shell_runs_agent: bool,
+    /// What the detector's periodic pass last found running in this
+    /// surface's terminal besides its shell, read by
+    /// [`crate::running_commands`]. Empty for a surface where an agent
+    /// runs: the agent is what the session is. Transient.
+    pub running_commands: Vec<crate::running_commands::RunningCommand>,
+    /// When [`Self::running_commands`] was last read, Unix seconds. A reading
+    /// older than a few passes says nothing about now. Transient.
+    pub commands_read_secs: Option<i64>,
     /// This surface's agent was started again on a conversation that
     /// already existed, by a write that found it not running. Its own file
     /// then speaks before the agent does, so the file is not what says the
@@ -596,6 +604,8 @@ impl Thread {
             launched_at_secs: Some(now_unix_secs()),
             agent_seen_secs: None,
             shell_runs_agent: false,
+            running_commands: Vec::new(),
+            commands_read_secs: None,
             resumed_for_a_write: false,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
@@ -683,6 +693,8 @@ impl Thread {
             launched_at_secs: Some(now_unix_secs()),
             agent_seen_secs: None,
             shell_runs_agent: false,
+            running_commands: Vec::new(),
+            commands_read_secs: None,
             resumed_for_a_write: false,
             wait_announced: None,
             rail: crate::rail_state::RailRecord::default(),
@@ -882,6 +894,8 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         launched_at_secs: None,
         agent_seen_secs: None,
         shell_runs_agent: false,
+        running_commands: Vec::new(),
+        commands_read_secs: None,
         resumed_for_a_write: false,
         wait_announced: None,
         rail: crate::rail_state::RailRecord::default(),

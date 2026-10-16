@@ -224,6 +224,10 @@ enum Commands {
         /// Emit the `{agents:[…]}` envelope as JSON instead of a table.
         #[arg(long)]
         json: bool,
+        /// Also list the commands running in shells, including sessions the
+        /// session host holds with no pane.
+        #[arg(long)]
+        all: bool,
     },
     /// Read one surface's agent state (thinking / waiting / idle / errored / …).
     Status {
@@ -725,7 +729,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             max,
             human,
         } => read_cmds::search(client, &target, &pattern, max, human),
-        Commands::Ps { json } => read_cmds::ps(client, json),
+        Commands::Ps { json, all } => read_cmds::ps(client, json, all),
         Commands::Status { target, json } => read_cmds::status(client, &target, json),
         Commands::Answer {
             target,
@@ -1081,10 +1085,30 @@ mod tests {
     #[test]
     fn ps_parses_with_optional_json_flag() {
         let cli = Cli::try_parse_from(["splitlane", "ps", "--json"]).expect("parse");
-        assert!(matches!(cli.command, Some(Commands::Ps { json: true })));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ps {
+                json: true,
+                all: false
+            })
+        ));
         // Default is the human table (like Unix `ps`), JSON is opt-in.
         let cli = Cli::try_parse_from(["splitlane", "ps"]).expect("parse");
-        assert!(matches!(cli.command, Some(Commands::Ps { json: false })));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ps {
+                json: false,
+                all: false
+            })
+        ));
+        let cli = Cli::try_parse_from(["splitlane", "ps", "--all"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ps {
+                json: false,
+                all: true
+            })
+        ));
     }
 
     #[test]

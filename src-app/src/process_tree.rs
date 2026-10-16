@@ -230,6 +230,12 @@ impl ProcessSnapshot {
     ///
     /// `None` on overrun rather than a truncated set, because a short set is
     /// indistinguishable from a small one and would read as "no worker".
+    /// The direct children of `pid` in this reading.
+    #[cfg(windows)]
+    pub(crate) fn children_of(&self, pid: u32) -> &[u32] {
+        self.children.get(&pid).map_or(&[], Vec::as_slice)
+    }
+
     pub(crate) fn descendants_of(&self, root: u32) -> Option<Vec<ProcId>> {
         if root == 0 {
             return None;

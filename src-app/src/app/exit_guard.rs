@@ -88,8 +88,9 @@ pub(crate) enum Leave {
     AskLoseTurn,
 }
 
-/// `open` counts the agent sessions with a terminal behind them, `running`
-/// the ones mid-turn.
+/// `open` counts what leaving would end - the agent sessions with a terminal
+/// behind them and the commands running in shells ([`OpenWork::total`]) -
+/// and `running` the agents mid-turn.
 pub(crate) fn leave_plan(intent: ExitIntent, mode: OnQuit, open: usize, running: usize) -> Leave {
     let ending = if running > 0 {
         Leave::AskLoseTurn
@@ -110,7 +111,7 @@ pub(crate) fn leave_plan(intent: ExitIntent, mode: OnQuit, open: usize, running:
 
 /// How long after the detector last saw a session's terminal the session
 /// still counts as open: three of its two-second passes.
-const OPEN_SESSION_WINDOW_SECS: i64 = 6;
+pub(crate) const OPEN_SESSION_WINDOW_SECS: i64 = 6;
 
 /// How many agent sessions have a terminal behind them now.
 ///
@@ -131,10 +132,62 @@ pub(crate) fn open_agent_sessions<'a>(
         .count()
 }
 
-/// How many sessions are open and how many of them are mid-turn, as the
-/// card that offers to keep them begins.
-fn open_sessions_clause(open: usize, running: usize) -> String {
-    let sessions = match open {
+/// What is still working when the app is left: the agent sessions with a
+/// terminal behind them, and the commands running in shells.
+///
+/// A command counts for the same reason an agent does. Leaving with only
+/// shells open used to end them all, and with them a dev server or a build
+/// that had been running for twenty minutes, without a word; a shell at its
+/// prompt still counts for nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OpenWork {
+    pub(crate) agents: usize,
+    pub(crate) commands: usize,
+}
+
+impl OpenWork {
+    pub(crate) fn total(self) -> usize {
+        self.agents + self.commands
+    }
+}
+
+/// How many commands are running in shells, by the last census that read
+/// them. A shell an agent runs in is counted as the agent instead.
+pub(crate) fn shell_commands_running<'a>(
+    threads: impl Iterator<Item = &'a Thread>,
+    now: i64,
+) -> usize {
+    threads
+        .filter(|thread| {
+            crate::app::agents_sidebar::is_shell_surface(thread) && !thread.shell_runs_agent
+        })
+        .filter(|thread| {
+            thread
+                .commands_read_secs
+                .is_some_and(|read| now - read <= OPEN_SESSION_WINDOW_SECS)
+        })
+        .map(|thread| thread.running_commands.len())
+        .sum()
+}
+
+/// `2 commands are running` and its kin.
+fn commands_clause(commands: usize, verb_first: bool) -> String {
+    match (commands, verb_first) {
+        (1, true) => "1 command is running".to_string(),
+        (n, true) => format!("{n} commands are running"),
+        (1, false) => "1 command running".to_string(),
+        (n, false) => format!("{n} commands running"),
+    }
+}
+
+/// How many sessions are open and how many of them are mid-turn, and how
+/// many commands run beside them, as the card that offers to keep them
+/// begins.
+fn open_sessions_clause(open: OpenWork, running: usize) -> String {
+    if open.agents == 0 {
+        return commands_clause(open.commands, true);
+    }
+    let sessions = match open.agents {
         1 => "1 agent session is open".to_string(),
         n => format!("{n} agent sessions are open"),
     };
@@ -143,13 +196,17 @@ fn open_sessions_clause(open: usize, running: usize) -> String {
         1 => ", 1 of them mid-turn".to_string(),
         n => format!(", {n} of them mid-turn"),
     };
-    format!("{sessions}{mid_turn}")
+    let commands = match open.commands {
+        0 => String::new(),
+        n => format!(", and {}", commands_clause(n, true)),
+    };
+    format!("{sessions}{mid_turn}{commands}")
 }
 
 /// The same card when the sessions run in the session host. Keeping them
 /// then ends the window for real, and with it the only thing that says an
 /// agent is waiting - which is the one cost of keeping, so it is named.
-pub(crate) fn keep_or_stop_body_in_host(open: usize, running: usize) -> String {
+pub(crate) fn keep_or_stop_body_in_host(open: OpenWork, running: usize) -> String {
     format!(
         "{}. Keep running closes Splitlane and leaves them working; nothing tells you \
          that one is waiting for you until you start Splitlane again. Stop and quit ends \
@@ -159,7 +216,7 @@ pub(crate) fn keep_or_stop_body_in_host(open: usize, running: usize) -> String {
 }
 
 /// The sentence on the card that offers to keep the sessions.
-pub(crate) fn keep_or_stop_body(open: usize, running: usize) -> String {
+pub(crate) fn keep_or_stop_body(open: OpenWork, running: usize) -> String {
     let (sessions, mid_turn) = (open_sessions_clause(open, running), "");
     format!(
         "{sessions}{mid_turn}. Keep running puts the window away and leaves them working; \
@@ -170,16 +227,19 @@ pub(crate) fn keep_or_stop_body(open: usize, running: usize) -> String {
 
 /// What the person is told, once, on coming back to a window that was put
 /// away without a question.
-pub(crate) fn kept_notice(kept: usize) -> String {
-    let sessions = if kept == 1 {
-        "1 agent session".to_string()
-    } else {
-        format!("{kept} agent sessions")
+pub(crate) fn kept_notice(kept: OpenWork) -> String {
+    let agents = match kept.agents {
+        0 => None,
+        1 => Some("1 agent session working".to_string()),
+        n => Some(format!("{n} agent sessions working")),
     };
-    format!(
-        "Splitlane stayed open with {sessions} working. To stop them too, use \
-         Quit and Stop Sessions."
-    )
+    let commands = (kept.commands > 0).then(|| commands_clause(kept.commands, false));
+    let what = match (agents, commands) {
+        (Some(agents), Some(commands)) => format!("{agents} and {commands}"),
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => "nothing working".to_string(),
+    };
+    format!("Splitlane stayed open with {what}. To stop them too, use Quit and Stop Sessions.")
 }
 
 /// The titles of the agents in the middle of a turn, in the order given.
@@ -217,16 +277,42 @@ pub(crate) fn exit_confirm_copy(
     (title.to_string(), body, confirm.to_string())
 }
 
+/// Whether a door that asks nothing - the Dock's Quit, a logout - ends what
+/// the session host holds. The same answer the menu's Quit reaches without
+/// a question: `stop` ends everything, and so does leaving with nothing at
+/// work, because a shell at its prompt left running where no window shows
+/// it is only clutter. Before, this door kept every shell whenever the
+/// setting was not `stop`, while the menu ended them.
+pub(crate) fn settles_by_stopping(mode: OnQuit, open: usize) -> bool {
+    mode == OnQuit::Stop || open == 0
+}
+
 impl SplitlaneApp {
     fn running_agents(&self) -> Vec<String> {
         running_agent_titles(self.workspaces.iter().flat_map(|ws| ws.threads.iter()))
     }
 
-    fn open_sessions(&self) -> usize {
-        open_agent_sessions(
-            self.workspaces.iter().flat_map(|ws| ws.threads.iter()),
-            crate::project::now_unix_secs(),
-        )
+    fn open_sessions(&self) -> OpenWork {
+        let now = crate::project::now_unix_secs();
+        let threads = || self.workspaces.iter().flat_map(|ws| ws.threads.iter());
+        // A session the host holds with no pane is still ended by a quit
+        // that stops the host, so what runs in it counts too.
+        let held: Vec<&crate::running_commands::RunningCommand> = if self
+            .held_commands_read_secs
+            .is_some_and(|read| now - read <= OPEN_SESSION_WINDOW_SECS)
+        {
+            self.held_commands.values().flatten().collect()
+        } else {
+            Vec::new()
+        };
+        let held_agents = held
+            .iter()
+            .filter(|command| command.agent.is_some())
+            .count();
+        OpenWork {
+            agents: open_agent_sessions(threads(), now) + held_agents,
+            commands: shell_commands_running(threads(), now) + held.len() - held_agents,
+        }
     }
 
     fn leave_plan_for(&self, intent: ExitIntent) -> Leave {
@@ -239,7 +325,7 @@ impl SplitlaneApp {
             intent,
             splitlane_config::loader::load_config()
                 .on_quit_mode_for(crate::terminal::held_sessions::enabled()),
-            self.open_sessions(),
+            self.open_sessions().total(),
             self.running_agents().len(),
         )
     }
@@ -251,7 +337,22 @@ impl SplitlaneApp {
     /// Takes no `Window` because two of the doors have none (the client-side
     /// title bar's event and the update action's shared entry); the card takes
     /// the keyboard on the next frame through `pending_focus`.
+    ///
+    /// What runs in the shells is read again first, off the render thread,
+    /// so a command started since the last pass is counted. A second press
+    /// while that read is out changes nothing either.
     pub(crate) fn request_exit(&mut self, intent: ExitIntent, cx: &mut Context<Self>) {
+        if self.exit_census_pending {
+            return;
+        }
+        self.exit_census_pending = true;
+        self.refresh_running_commands(cx, move |app, cx| {
+            app.exit_census_pending = false;
+            app.leave_by(intent, cx);
+        });
+    }
+
+    fn leave_by(&mut self, intent: ExitIntent, cx: &mut Context<Self>) {
         match self.leave_plan_for(intent) {
             Leave::Now => {
                 // Whatever was being asked is moot: a card left up for a
@@ -293,9 +394,11 @@ impl SplitlaneApp {
         self.dismiss_exit_card();
         self.save_session_blocking(cx);
         self.emit_app_exited_and_flush();
+        let open = self.open_sessions();
         log::info!(
-            "leaving: {} agent session(s) kept working in the session host",
-            self.open_sessions()
+            "leaving: {} agent session(s) and {} command(s) kept working in the session host",
+            open.agents,
+            open.commands
         );
         // Before the panes are torn down: a pane that is dropped ends its
         // session unless it was told the window is only going away.
@@ -311,18 +414,18 @@ impl SplitlaneApp {
     /// quits, by whichever door; a door that has already decided is left
     /// its decision.
     ///
-    /// Such a door asks nothing, so the setting answers: `stop` ends them,
-    /// anything else leaves them, and they are found by the next window.
+    /// Such a door asks nothing, so it answers as the menu's Quit would
+    /// without asking ([`settles_by_stopping`]): what is still at work is
+    /// left for the next window to find, unless the setting is `stop`.
     pub(crate) fn settle_host_sessions_on_quit(&mut self) {
         use crate::terminal::held_sessions;
         if !held_sessions::enabled() || held_sessions::settled() {
             return;
         }
-        if self
+        let mode = self
             .cached_config
-            .on_quit_mode_for(held_sessions::enabled())
-            == OnQuit::Stop
-        {
+            .on_quit_mode_for(held_sessions::enabled());
+        if settles_by_stopping(mode, self.open_sessions().total()) {
             held_sessions::stop_all();
         } else {
             held_sessions::leave_running();
@@ -337,7 +440,11 @@ impl SplitlaneApp {
         self.save_session(cx);
         let kept = self.open_sessions();
         self.kept_while_away = Some(kept);
-        log::info!("leaving: window put away, {kept} agent session(s) kept working");
+        log::info!(
+            "leaving: window put away, {} agent session(s) and {} command(s) kept working",
+            kept.agents,
+            kept.commands
+        );
         #[cfg(target_os = "macos")]
         cx.hide();
         // The toolkit can hide an app only on macOS. A minimised window is
@@ -431,7 +538,7 @@ impl SplitlaneApp {
         let running = self.running_agents();
         // Counted again on every frame, so a card left up while the last
         // session closes turns into the plain question, not a stale offer.
-        if self.pending_exit_offers_keep && self.open_sessions() > 0 {
+        if self.pending_exit_offers_keep && self.open_sessions().total() > 0 {
             return crate::app::confirm_dialog::render_confirm_dialog(
                 crate::app::confirm_dialog::ConfirmDialog {
                     id: "exit-keep-or-stop",
@@ -575,7 +682,7 @@ mod tests {
 
     #[test]
     fn the_offer_to_keep_says_what_each_answer_does() {
-        let body = keep_or_stop_body(3, 1);
+        let body = keep_or_stop_body(agents(3), 1);
         assert!(
             body.starts_with("3 agent sessions are open, 1 of them mid-turn."),
             "{body}"
@@ -584,8 +691,8 @@ mod tests {
             body.contains("start Splitlane again to come back"),
             "{body}"
         );
-        assert!(keep_or_stop_body(1, 0).starts_with("1 agent session is open."));
-        let in_host = keep_or_stop_body_in_host(2, 1);
+        assert!(keep_or_stop_body(agents(1), 0).starts_with("1 agent session is open."));
+        let in_host = keep_or_stop_body_in_host(agents(2), 1);
         assert!(
             in_host.starts_with(
                 "2 agent sessions are open, 1 of them mid-turn. Keep running closes Splitlane"
@@ -594,9 +701,77 @@ mod tests {
         );
         assert!(in_host.contains("nothing tells you"), "{in_host}");
         assert_eq!(
-            kept_notice(2),
+            kept_notice(agents(2)),
             "Splitlane stayed open with 2 agent sessions working. To stop them too, use Quit and Stop Sessions."
         );
+    }
+
+    fn agents(agents: usize) -> OpenWork {
+        OpenWork {
+            agents,
+            commands: 0,
+        }
+    }
+
+    #[test]
+    fn commands_are_named_beside_the_agents() {
+        let both = OpenWork {
+            agents: 2,
+            commands: 1,
+        };
+        assert!(
+            keep_or_stop_body_in_host(both, 1).starts_with(
+                "2 agent sessions are open, 1 of them mid-turn, and 1 command is running."
+            ),
+            "{}",
+            keep_or_stop_body_in_host(both, 1)
+        );
+        let only = OpenWork {
+            agents: 0,
+            commands: 2,
+        };
+        assert!(keep_or_stop_body(only, 0).starts_with("2 commands are running."));
+        assert_eq!(
+            kept_notice(both),
+            "Splitlane stayed open with 2 agent sessions working and 1 command running. To stop them too, use Quit and Stop Sessions."
+        );
+    }
+
+    /// The case behind it: a window with only shells open was quit while
+    /// one of them ran a dev server, and the server went with it.
+    #[test]
+    fn a_shell_running_a_command_is_open_work() {
+        let mut shell = Thread::new_terminal("shell", "/tmp", None);
+        shell.agent_seen_secs = Some(1_000);
+        shell.commands_read_secs = Some(1_000);
+        assert_eq!(shell_commands_running([&shell].into_iter(), 1_004), 0);
+        shell.running_commands = vec![crate::running_commands::RunningCommand {
+            pid: 42,
+            command: "npm run dev".to_string(),
+            started_unix: None,
+            stopped: false,
+            agent: None,
+        }];
+        assert_eq!(shell_commands_running([&shell].into_iter(), 1_004), 1);
+        // A reading from long ago says nothing about now.
+        assert_eq!(shell_commands_running([&shell].into_iter(), 1_100), 0);
+        // A shell running an agent is counted as the agent.
+        shell.shell_runs_agent = true;
+        assert_eq!(shell_commands_running([&shell].into_iter(), 1_004), 0);
+        // And the plan: commands alone are kept, not ended.
+        assert_eq!(
+            leave_plan(ExitIntent::Quit, OnQuit::Keep, 1, 0),
+            Leave::Keep
+        );
+    }
+
+    #[test]
+    fn a_door_that_asks_nothing_settles_as_the_menu_would() {
+        assert!(settles_by_stopping(OnQuit::Keep, 0));
+        assert!(settles_by_stopping(OnQuit::Ask, 0));
+        assert!(!settles_by_stopping(OnQuit::Keep, 1));
+        assert!(!settles_by_stopping(OnQuit::Ask, 2));
+        assert!(settles_by_stopping(OnQuit::Stop, 3));
     }
 
     #[test]

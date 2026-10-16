@@ -68,6 +68,7 @@ mod pricing;
 mod process_tree;
 mod project;
 mod rail_state;
+mod running_commands;
 mod runtime_paths;
 mod search;
 mod settings;
@@ -1373,13 +1374,20 @@ struct SplitlaneApp {
     pending_exit_offers_keep: bool,
     /// How many sessions were left working when the window was last put away
     /// without a question; taken when the window comes back.
-    kept_while_away: Option<usize>,
+    kept_while_away: Option<crate::app::exit_guard::OpenWork>,
+    /// A door out is waiting for the shells to be read before it decides.
+    exit_census_pending: bool,
     /// The notice about that is said once per run.
     kept_notice_shown: bool,
     /// Sessions the session host held when the window started that the
     /// saved layout did not mention (`app::held_sessions`), less the ones
     /// opened or ended since.
     held_unshown: Vec<crate::terminal::held_sessions::HeldSession>,
+    /// What the last census found running in each of them, by session id
+    /// (`app::running_census`).
+    held_commands: std::collections::HashMap<String, Vec<crate::running_commands::RunningCommand>>,
+    /// When that census was taken, Unix seconds.
+    held_commands_read_secs: Option<i64>,
     /// The card listing them was put away.
     held_card_dismissed: bool,
     exit_confirm_focus: FocusHandle,
