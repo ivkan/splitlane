@@ -115,14 +115,32 @@ pub(crate) fn short_command(command: &str) -> String {
 /// Stop the command led by `pid`: its process group gets `SIGTERM` on Unix,
 /// the process is terminated on Windows. Returns whether the signal went.
 ///
-/// The group is read now and checked to still hold `pid`, so a pid that was
-/// reused since the census named it is not what gets the signal; this app's
-/// own group, and the groups of init and the kernel, never do.
-pub(crate) fn stop_command(pid: u32) -> bool {
-    if pid <= 1 {
+/// `started_unix` is when the census saw that process start. A pid is reused
+/// once its process ends, so the signal goes only if the process holding the
+/// pid now started at that same second; a command whose start could not be
+/// read is not signalled at all. This app's own group, and the groups of
+/// init and the kernel, never are.
+pub(crate) fn stop_command(pid: u32, started_unix: Option<i64>) -> bool {
+    if pid <= 1 || started_unix.is_none() || started_of(pid) != started_unix {
         return false;
     }
     stop_impl(pid)
+}
+
+/// When the process holding `pid` now started, in Unix seconds.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn started_of(pid: u32) -> Option<i64> {
+    proc_info(pid)?.started_unix
+}
+
+#[cfg(windows)]
+fn started_of(pid: u32) -> Option<i64> {
+    crate::process_tree::start_token(pid).and_then(filetime_to_unix)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn started_of(_pid: u32) -> Option<i64> {
+    None
 }
 
 #[cfg(unix)]
@@ -667,11 +685,19 @@ mod tests {
             .process_group(0)
             .spawn()
             .expect("sleep");
-        assert!(stop_command(child.id()));
+        let started = started_of(child.id());
+        assert!(started.is_some());
+        // A pid whose process started at another moment is somebody else.
+        assert!(!stop_command(child.id(), started.map(|secs| secs - 3_600)));
+        assert!(!stop_command(child.id(), None));
+        assert!(stop_command(child.id(), started));
         let status = child.wait().expect("wait");
         assert!(!status.success());
         // This process's own group is never signalled.
-        assert!(!stop_command(std::process::id()));
+        assert!(!stop_command(
+            std::process::id(),
+            started_of(std::process::id())
+        ));
     }
 
     #[test]
