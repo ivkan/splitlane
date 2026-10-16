@@ -399,6 +399,8 @@ impl SplitlaneApp {
                 on_confirm: std::rc::Rc::new(|this, window, cx| {
                     this.execute_agents_confirm_delete(window, cx);
                 }),
+                aside: None,
+                tone: crate::app::confirm_dialog::ConfirmTone::Danger,
             },
             ui,
             cx,

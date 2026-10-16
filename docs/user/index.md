@@ -139,7 +139,16 @@ the window and leave every session working; start Splitlane again and
 each one is back in its pane, with what it printed meanwhile. A session no
 pane was showing any more is offered on a card, to open in the pane you are
 in or to end. **Settings > General > When quitting** chooses between keeping,
-stopping and asking (`on_quit`); keeping is the default.
+stopping and asking (`on_quit`); keeping is the default. A keep nobody was
+asked about is said once afterwards - `Kept running while Splitlane was
+closed: 3 agent sessions and 2 commands.` on the next launch - with
+**Review…**, which opens the Running sheet.
+
+When Splitlane asks, the card counts what is at work and names the commands
+by program and subcommand - `3 agents and 2 commands are running: cargo
+build, npm run dev.` **Keep running** is the forward answer, **Stop and quit**
+ends them, and **Review…** opens the Running sheet, where you can stop some
+and keep the rest; leaving the sheet asks again with the new counts.
 
 On Windows the sessions run in the window's process: keeping minimises the
 window, and the app asks first by default, because a window that can only be
@@ -153,7 +162,7 @@ so does a restart into an update on Windows; on macOS and Linux an update
 leaves the sessions running. Where sessions end, the conversation survives -
 the next launch reopens each session with `--resume` - but a turn that was
 executing does not, so each of these asks first whenever an agent is
-mid-turn, and names the sessions.
+mid-turn or a command is running in a shell, and names them.
 
 Sessions in the session host also outlive a crash of the window, the Dock's
 own Quit and an update. A logout or a restart of the machine can end them; the

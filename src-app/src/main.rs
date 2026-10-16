@@ -1374,7 +1374,7 @@ struct SplitlaneApp {
     pending_exit_offers_keep: bool,
     /// How many sessions were left working when the window was last put away
     /// without a question; taken when the window comes back.
-    kept_while_away: Option<crate::app::exit_guard::OpenWork>,
+    kept_while_away: Option<crate::app::exit_guard::KeptNotice>,
     /// A door out is waiting for the shells to be read before it decides.
     exit_census_pending: bool,
     /// The Running sheet, while it is up (`app::running_sheet`).

@@ -1199,7 +1199,9 @@ impl SplitlaneApp {
             attention_queue_scroll: gpui::ScrollHandle::new(),
             pending_exit: None,
             pending_exit_offers_keep: false,
-            kept_while_away: None,
+            // Word the last run left on its way out without a question; said
+            // when this window first becomes active.
+            kept_while_away: crate::app::exit_guard::take_kept_notice(),
             exit_census_pending: false,
             running_sheet: None,
             running_sheet_focus: cx.focus_handle(),
@@ -1513,6 +1515,7 @@ impl SplitlaneApp {
         // plus the liveness of its process. The hook stream is an accelerator
         // over this, not the source - see `app::agent_state_pass`.
         app.spawn_agent_state_pass(cx);
+        app.announce_kept_from_last_run(cx);
 
         app
     }
