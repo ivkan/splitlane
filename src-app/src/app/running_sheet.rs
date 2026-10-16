@@ -46,8 +46,10 @@ pub(crate) struct RunningSheetState {
     marked: HashSet<String>,
     /// Idle shells are listed too.
     show_idle: bool,
-    /// The rows the close card is asking about, by key.
-    confirming: Option<Vec<String>>,
+    /// The rows the close card is asking about, as they were when it asked:
+    /// what is stopped is what the card named, not whatever holds the same
+    /// key by the time the answer comes.
+    confirming: Option<Vec<SheetRow>>,
 }
 
 /// How a row's dot is coloured.
@@ -71,8 +73,9 @@ pub(crate) enum SheetTarget {
 /// What closing a row stops.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SheetClose {
-    /// Signal this command's process group.
-    Command { pid: u32 },
+    /// Signal this command's process group - if `pid` is still the process
+    /// that started then.
+    Command { pid: u32, started_unix: Option<i64> },
     /// Close this surface as the rail's Delete does.
     Surface(u64),
     /// End this held session.
@@ -149,6 +152,9 @@ pub(crate) fn close_card_copy(rows: &[&SheetRow]) -> (String, String, String) {
     let surfaces = rows
         .iter()
         .any(|row| matches!(row.close, SheetClose::Surface(_) | SheetClose::IdleShell(_)));
+    let held = rows
+        .iter()
+        .any(|row| matches!(row.close, SheetClose::Held(_)));
     if commands {
         body.push_str(" A command's output is kept in scrollback until you close its pane.");
     }
@@ -156,6 +162,9 @@ pub(crate) fn close_card_copy(rows: &[&SheetRow]) -> (String, String, String) {
         body.push_str(
             " A session's row is dropped; an agent's conversation stays where the agent wrote it.",
         );
+    }
+    if held {
+        body.push_str(" A session with no pane is ended whole, with everything running in it.");
     }
     (title, body, button)
 }
@@ -200,7 +209,10 @@ fn command_row(
             .started_unix
             .and_then(|started| u64::try_from(now - started).ok()),
         target,
-        close: SheetClose::Command { pid: command.pid },
+        close: SheetClose::Command {
+            pid: command.pid,
+            started_unix: command.started_unix,
+        },
     }
 }
 
@@ -408,58 +420,72 @@ impl SplitlaneApp {
         let Some(state) = self.running_sheet.as_mut() else {
             return;
         };
-        let keys: Vec<String> = if state.marked.is_empty() {
-            visible
-                .get(state.cursor)
-                .map(|row| row.key.clone())
-                .into_iter()
-                .collect()
+        let rows: Vec<SheetRow> = if state.marked.is_empty() {
+            visible.get(state.cursor).cloned().into_iter().collect()
         } else {
             visible
-                .iter()
+                .into_iter()
                 .filter(|row| state.marked.contains(&row.key))
-                .map(|row| row.key.clone())
                 .collect()
         };
-        if !keys.is_empty() {
-            state.confirming = Some(keys);
+        if !rows.is_empty() {
+            state.confirming = Some(rows);
             cx.notify();
         }
     }
 
     fn running_sheet_close_confirmed(&mut self, cx: &mut Context<Self>) {
-        let Some(keys) = self
+        let Some(rows) = self
             .running_sheet
             .as_mut()
             .and_then(|state| state.confirming.take())
         else {
             return;
         };
-        let rows: Vec<SheetRow> = self
-            .running_sheet_rows(true)
-            .rows
-            .into_iter()
-            .filter(|row| keys.contains(&row.key))
-            .collect();
+        let mut not_stopped = Vec::new();
+        let mut ended_held: Vec<String> = Vec::new();
         for row in &rows {
             match &row.close {
-                SheetClose::Command { pid } => {
-                    if !crate::running_commands::stop_command(*pid) {
-                        log::warn!("running sheet: could not stop pid {pid}");
+                SheetClose::Command { pid, started_unix } => {
+                    if !crate::running_commands::stop_command(*pid, *started_unix) {
+                        log::warn!("running sheet: did not stop pid {pid}");
+                        not_stopped.push(row.short.clone());
                     }
                 }
                 SheetClose::Surface(thread_id) | SheetClose::IdleShell(thread_id) => {
-                    if let Some(crate::project::AgentsTarget::Thread { ws_idx, thread_idx }) =
-                        crate::project::find_surface(&self.workspaces, *thread_id)
-                    {
-                        let _ = self.remove_thread(ws_idx, thread_idx, cx);
+                    let removed = match crate::project::find_surface(&self.workspaces, *thread_id) {
+                        Some(crate::project::AgentsTarget::Thread { ws_idx, thread_idx }) => {
+                            self.remove_thread(ws_idx, thread_idx, cx).is_ok()
+                        }
+                        _ => false,
+                    };
+                    if !removed {
+                        not_stopped.push(row.short.clone());
                     }
                 }
-                SheetClose::Held(id) => self.end_held_session(id, cx),
+                // Several rows can name one held session; it is ended once.
+                SheetClose::Held(id) if !ended_held.contains(id) => {
+                    ended_held.push(id.clone());
+                    self.end_held_session(id, cx);
+                }
+                SheetClose::Held(_) => {}
             }
         }
         if let Some(state) = self.running_sheet.as_mut() {
-            state.marked.retain(|key| !keys.contains(key));
+            state
+                .marked
+                .retain(|key| !rows.iter().any(|row| &row.key == key));
+        }
+        if !not_stopped.is_empty() {
+            // A command that ended meanwhile, or whose pid now names another
+            // process, is left alone rather than signalled.
+            self.show_toast(
+                format!(
+                    "Not stopped: {}. It may have ended already.",
+                    name_list(&not_stopped)
+                ),
+                cx,
+            );
         }
         self.save_session(cx);
         self.refresh_running_commands(cx, |_, cx| cx.notify());
@@ -507,6 +533,13 @@ impl SplitlaneApp {
                 if state.cursor + 1 < len {
                     state.cursor += 1;
                 }
+            }
+            // A filter can hold a space; marking is for the list as it stands
+            // before anything is typed, and a click on a row's box marks it
+            // either way.
+            "space" if !state.query.is_empty() => {
+                state.query.push(' ');
+                state.cursor = 0;
             }
             "space" => {
                 if let Some(row) = visible.get(state.cursor)
@@ -765,15 +798,9 @@ impl SplitlaneApp {
         // priority every confirmation uses, below a sheet's.
         .with_priority(if state.confirming.is_some() { 3 } else { 6 });
 
-        let Some(keys) = &state.confirming else {
+        let Some(asked) = &state.confirming else {
             return sheet.into_any_element();
         };
-        let asked: Vec<SheetRow> = self
-            .running_sheet_rows(true)
-            .rows
-            .into_iter()
-            .filter(|row| keys.contains(&row.key))
-            .collect();
         let (title, body, confirm_label) = close_card_copy(&asked.iter().collect::<Vec<_>>());
         div()
             .size_full()
@@ -951,13 +978,19 @@ mod tests {
                 "1",
                 "atlas",
                 "cargo build --release",
-                SheetClose::Command { pid: 1 },
+                SheetClose::Command {
+                    pid: 1,
+                    started_unix: None,
+                },
             ),
             row(
                 "2",
                 "landing",
                 "npm run dev",
-                SheetClose::Command { pid: 2 },
+                SheetClose::Command {
+                    pid: 2,
+                    started_unix: None,
+                },
             ),
         ];
         assert_eq!(filtered(&rows, "").len(), 2);
@@ -972,13 +1005,19 @@ mod tests {
             "1",
             "atlas",
             "cargo build --release",
-            SheetClose::Command { pid: 1 },
+            SheetClose::Command {
+                pid: 1,
+                started_unix: None,
+            },
         );
         let dev = row(
             "2",
             "landing",
             "npm run dev",
-            SheetClose::Command { pid: 2 },
+            SheetClose::Command {
+                pid: 2,
+                started_unix: None,
+            },
         );
         let (title, body, button) = close_card_copy(&[&build, &dev]);
         assert_eq!(title, "Close 2 sessions?");
@@ -998,5 +1037,8 @@ mod tests {
         let (_, body, _) = close_card_copy(&[&agent]);
         assert!(body.contains("row is dropped"), "{body}");
         assert!(!body.contains("scrollback"), "{body}");
+        let held = row("4", "atlas", "npm run dev", SheetClose::Held("s1".into()));
+        let (_, body, _) = close_card_copy(&[&held]);
+        assert!(body.contains("ended whole"), "{body}");
     }
 }
