@@ -417,15 +417,29 @@ impl SplitlaneApp {
     /// Such a door asks nothing, so it answers as the menu's Quit would
     /// without asking ([`settles_by_stopping`]): what is still at work is
     /// left for the next window to find, unless the setting is `stop`.
-    pub(crate) fn settle_host_sessions_on_quit(&mut self) {
+    pub(crate) fn settle_host_sessions_on_quit(&mut self, cx: &mut Context<Self>) {
         use crate::terminal::held_sessions;
         if !held_sessions::enabled() || held_sessions::settled() {
             return;
         }
+        // Nothing waits on this door, and nothing is drawn any more, so the
+        // shells are read here and now rather than trusted from the last pass.
+        self.refresh_running_commands_blocking(cx);
+        let open = self.open_sessions();
+        // An agent counts by its terminal being alive as well as by the
+        // pass's stamp, which a window that has just started has not made
+        // yet: a Dock Quit in those seconds must not end every agent.
+        let mut live_agents = 0;
+        self.each_agent_terminal(cx, &mut |view| {
+            if view.terminal.child_pid != 0 && view.terminal.detected_agent.is_some() {
+                live_agents += 1;
+            }
+        });
+        let open = open.total().max(live_agents + open.commands);
         let mode = self
             .cached_config
             .on_quit_mode_for(held_sessions::enabled());
-        if settles_by_stopping(mode, self.open_sessions().total()) {
+        if settles_by_stopping(mode, open) {
             held_sessions::stop_all();
         } else {
             held_sessions::leave_running();
