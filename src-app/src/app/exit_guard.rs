@@ -243,6 +243,7 @@ pub(crate) fn keep_or_stop_body(open: OpenWork, commands: &[String]) -> String {
 /// What was left at work when the app was left without a question, to be
 /// said once when the person is back.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct KeptNotice {
     pub(crate) agents: usize,
     pub(crate) commands: usize,
@@ -288,26 +289,40 @@ fn kept_notice_path() -> Option<std::path::PathBuf> {
 }
 
 /// Leave word for the next launch. Blocking, and only on the way out.
+/// Written beside and renamed into place, so a process ended mid-write
+/// leaves the old file or none, never half of one.
 fn write_kept_notice(kept: KeptNotice) {
     let Some(path) = kept_notice_path() else {
+        log::warn!("leaving: no place for the kept notice; the next launch will not say it");
         return;
     };
-    match serde_json::to_vec(&kept) {
-        Ok(bytes) => {
-            if let Err(err) = std::fs::write(&path, bytes) {
-                log::warn!("leaving: could not write {}: {err}", path.display());
-            }
-        }
-        Err(err) => log::warn!("leaving: could not encode the kept notice: {err}"),
+    let partial = path.with_extension("json.partial");
+    let written = serde_json::to_vec(&kept)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| std::fs::write(&partial, bytes))
+        .and_then(|()| std::fs::rename(&partial, &path));
+    if let Err(err) = written {
+        log::warn!("leaving: could not write {}: {err}", path.display());
     }
 }
 
-/// The word the last run left, taken once: the file goes as it is read.
+/// The word the last run left, taken once: the file goes as it is read. One
+/// that cannot be read is logged and dropped too - it would read no better
+/// on the next launch, and the write above never leaves half a file.
 pub(crate) fn take_kept_notice() -> Option<KeptNotice> {
     let path = kept_notice_path()?;
     let bytes = std::fs::read(&path).ok()?;
     let _ = std::fs::remove_file(&path);
-    serde_json::from_slice(&bytes).ok()
+    match serde_json::from_slice(&bytes) {
+        Ok(kept) => Some(kept),
+        Err(err) => {
+            log::warn!(
+                "the kept notice at {} could not be read: {err}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 /// The titles of the agents in the middle of a turn, in the order given.
@@ -497,8 +512,8 @@ impl SplitlaneApp {
     fn leave_sessions_in_host_and_quit(&mut self, unasked: bool, cx: &mut Context<Self>) {
         self.dismiss_exit_card();
         self.save_session_blocking(cx);
-        self.emit_app_exited_and_flush();
         let open = self.open_sessions();
+        // Before anything that can take the process down with it.
         if unasked {
             write_kept_notice(KeptNotice {
                 agents: open.agents,
@@ -506,6 +521,7 @@ impl SplitlaneApp {
                 closed: true,
             });
         }
+        self.emit_app_exited_and_flush();
         log::info!(
             "leaving: {} agent session(s) and {} command(s) kept working in the session host",
             open.agents,
