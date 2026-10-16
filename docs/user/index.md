@@ -98,6 +98,20 @@ neither a terminal nor a text field has the keyboard - in a terminal that key
 types `å` or reaches the shell as Meta-A. The command palette has it as
 **Show active sessions only**.
 
+**Running** (`⌥⌘P`, `Ctrl+Alt+P` on Linux and Windows, also **Window >
+Running…** on macOS and **Running sessions and commands** in the palette)
+lists everything at work: the agent sessions, every command running in a
+shell - a dev server, a build, an editor - with how long it has run, and the
+sessions the session host keeps with no pane, marked `no pane`. Rows are
+grouped by project in the rail's order; typing filters them. Idle shells are
+counted at the bottom and shown on request. `⏎` or a click goes to a row
+(a session with no pane opens in the pane you are in). `Space` marks rows and
+`⌘⌫` (`Ctrl+Backspace`) closes the marked ones, or the one under the cursor,
+after one question: a command is stopped and its pane keeps the output, an
+agent session is closed as the rail's Delete closes it, and a session with no
+pane is ended. When commands are running, the last line of the Activity list
+says how many and opens the sheet.
+
 You answer an agent in its own terminal. Any other CLI runs in an ordinary shell
 pane.
 

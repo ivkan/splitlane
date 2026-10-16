@@ -247,6 +247,12 @@ pub mod popover {
     /// The widest a running row's session name is drawn before it ends in an
     /// ellipsis, so the project and the turn's time keep their place.
     pub const RUNNING_NAME_MAX: Pixels = px(150.);
+    /// The Running sheet's width: room for most command lines whole.
+    pub const RUNNING_SHEET_WIDTH: Pixels = px(590.);
+    /// The tallest its list grows before it scrolls.
+    pub const RUNNING_SHEET_LIST_MAX: Pixels = px(420.);
+    /// The column its times are right-aligned in.
+    pub const RUNNING_SHEET_TIME: Pixels = px(50.);
 }
 
 /// The rail's project group: a filled label, and a rule down its members.

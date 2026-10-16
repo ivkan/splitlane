@@ -67,6 +67,7 @@ while a particular kind of surface has keyboard focus.
 | `jump_next_waiting` | Jump to the next session waiting for you | `⌥⇥` | `Ctrl+Shift+J` | anywhere |
 | `open_attention_queue` | Attention queue | `⌘⇧K` | `Ctrl+Shift+K` | terminal |
 | `toggle_active_only` | Show active sessions only | `⌥A` | `Alt+A` | outside a terminal or text field |
+| `open_running` | Running sessions and commands | `⌥⌘P` | `Ctrl+Alt+P` | anywhere |
 | `open_composer` | Send to agent | `⌘⇧Space` | `Ctrl+Shift+Space` | terminal |
 | `toggle_broadcast_member` | Toggle pane in broadcast group | `⌘⇧B` | `Ctrl+Shift+B` | terminal |
 | `open_broadcast_groups` | Broadcast groups | `⌘⇧M` | `Ctrl+Shift+M` | terminal |

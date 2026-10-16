@@ -1377,6 +1377,12 @@ struct SplitlaneApp {
     kept_while_away: Option<crate::app::exit_guard::OpenWork>,
     /// A door out is waiting for the shells to be read before it decides.
     exit_census_pending: bool,
+    /// The Running sheet, while it is up (`app::running_sheet`).
+    running_sheet: Option<crate::app::running_sheet::RunningSheetState>,
+    running_sheet_focus: FocusHandle,
+    /// The door out whose card opened the sheet, asked again when the sheet
+    /// closes.
+    running_sheet_return_to_exit: Option<crate::app::exit_guard::ExitIntent>,
     /// The notice about that is said once per run.
     kept_notice_shown: bool,
     /// Sessions the session host held when the window started that the
@@ -2084,7 +2090,7 @@ impl Render for SplitlaneApp {
                 && self
                     .focused_rail_group
                     .is_some_and(|id| self.project_group(id).is_some());
-            let holders: [(bool, Option<&FocusHandle>); 13] = [
+            let holders: [(bool, Option<&FocusHandle>); 14] = [
                 (settings_open, Some(&self.settings_focus)),
                 (
                     self.command_palette.is_some(),
@@ -2102,6 +2108,10 @@ impl Render for SplitlaneApp {
                     Some(&self.broadcast_picker_focus),
                 ),
                 (self.show_theme_picker, Some(&self.theme_picker_focus)),
+                (
+                    self.running_sheet.is_some(),
+                    Some(&self.running_sheet_focus),
+                ),
                 (self.launch_pad.is_some(), Some(&self.launch_pad_focus)),
                 (
                     self.worktree_dialog.is_some(),
@@ -2580,6 +2590,7 @@ impl Render for SplitlaneApp {
             .on_action(cx.listener(Self::handle_open_attention_queue))
             .on_action(cx.listener(Self::handle_open_launch_pad))
             .on_action(cx.listener(Self::handle_toggle_active_only))
+            .on_action(cx.listener(Self::handle_open_running_sheet))
             .on_action(cx.listener(Self::handle_new_worktree))
             .on_action(cx.listener(Self::handle_start_preset_1))
             .on_action(cx.listener(Self::handle_start_preset_2))
@@ -2975,6 +2986,10 @@ impl Render for SplitlaneApp {
 
         if self.show_theme_picker {
             app_content = app_content.child(self.render_theme_picker(cx));
+        }
+
+        if self.running_sheet.is_some() {
+            app_content = app_content.child(self.render_running_sheet(cx));
         }
 
         // Broadcast-group picker modal.

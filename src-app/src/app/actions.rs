@@ -181,6 +181,9 @@ actions!(
         // The rail's `Active only` filter: hides the sessions nothing is
         // happening in, and the projects left with none.
         ToggleActiveOnly,
+        // The Running sheet: every agent session, command and held session
+        // at work, to look over and close.
+        OpenRunning,
         // The rail's `+ worktree`, beside `+ agent` and `+ shell`. It has no
         // default chord: the design gives worktree creation an affordance
         // where the project lives, not a key, and every unclaimed letter in a
