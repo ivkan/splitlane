@@ -120,21 +120,90 @@ fn print_surfaces_table(result: &Value) {
     }
 }
 
-/// `splitlane ps [--json]` - list running agents across the fleet.
+/// `splitlane ps [--json] [--all]` - list running agents across the fleet.
 /// Defaults to a human table (like Unix `ps`); `--json` emits the
-/// `{agents:[…]}` envelope for scripts.
-pub fn ps(client: &impl IpcTransport, json_out: bool) -> Result<i32, CliError> {
+/// `{agents:[…]}` envelope for scripts. `--all` adds the commands running in
+/// shells and the number of shells at their prompt.
+pub fn ps(client: &impl IpcTransport, json_out: bool, all: bool) -> Result<i32, CliError> {
+    let params = if all {
+        json!({ "all": true })
+    } else {
+        json!({})
+    };
     let result = super::reject_legacy_error(
         client
-            .call("fleet.list", json!({}))
+            .call("fleet.list", params)
             .map_err(CliError::runtime)?,
     )?;
     if json_out {
         super::print_json(&result)?;
     } else {
         print_agents_table(&result);
+        if all {
+            println!();
+            print_commands_table(&result);
+        }
     }
     Ok(EXIT_OK)
+}
+
+/// `41s`, `4m`, `1h 12m`: how long a command has run, in the words the
+/// Activity list uses.
+fn running_for(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m", secs / 60),
+        _ => match (secs / 3600, secs % 3600 / 60) {
+            (hours, 0) => format!("{hours}h"),
+            (hours, minutes) => format!("{hours}h {minutes}m"),
+        },
+    }
+}
+
+fn print_commands_table(result: &Value) {
+    let commands = result
+        .get("commands")
+        .and_then(Value::as_array)
+        .filter(|c| !c.is_empty());
+    let idle = result
+        .get("idle_shells")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    match commands {
+        None => println!("(no commands running)"),
+        Some(commands) => {
+            println!(
+                "{:>7}  {:>7}  {:<20}  {:<20}  COMMAND",
+                "PID", "TIME", "PROJECT", "PANE"
+            );
+            for c in commands {
+                let pid = c.get("pid").and_then(Value::as_u64).unwrap_or(0);
+                let time = c
+                    .get("running_secs")
+                    .and_then(Value::as_u64)
+                    .map_or_else(|| "-".to_string(), running_for);
+                let project = c.get("project").and_then(Value::as_str).unwrap_or("-");
+                let pane = if c.get("pane").and_then(Value::as_bool) == Some(false) {
+                    "no pane"
+                } else {
+                    c.get("surface_name").and_then(Value::as_str).unwrap_or("-")
+                };
+                let command = c.get("command").and_then(Value::as_str).unwrap_or("");
+                let stopped = if c.get("state").and_then(Value::as_str) == Some("stopped") {
+                    " (stopped)"
+                } else if c.get("agent").is_some_and(|agent| !agent.is_null()) {
+                    " (agent)"
+                } else {
+                    ""
+                };
+                println!("{pid:>7}  {time:>7}  {project:<20}  {pane:<20}  {command}{stopped}");
+            }
+        }
+    }
+    if idle > 0 {
+        let shells = if idle == 1 { "shell" } else { "shells" };
+        println!("{idle} idle {shells} not shown");
+    }
 }
 
 /// `splitlane status <target> [--json]` - read one surface's agent state.
@@ -187,5 +256,18 @@ fn print_agents_table(result: &Value) {
         let ws = a.get("workspace").and_then(Value::as_u64).unwrap_or(0);
         let pane = a.get("surface_name").and_then(Value::as_str).unwrap_or("-");
         println!("{pid:>7}  {tool:<10}  {state:<18}  {ws:>2}  {pane}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::running_for;
+
+    #[test]
+    fn a_running_time_reads_like_the_activity_list() {
+        assert_eq!(running_for(41), "41s");
+        assert_eq!(running_for(4 * 60 + 5), "4m");
+        assert_eq!(running_for(3600), "1h");
+        assert_eq!(running_for(3600 + 12 * 60), "1h 12m");
     }
 }

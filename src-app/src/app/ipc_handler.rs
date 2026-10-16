@@ -1033,6 +1033,39 @@ impl SurfaceScope {
     }
 }
 
+/// Where a running command is, for its `fleet.list` row.
+struct CommandPlace<'a> {
+    surface_id: Option<u64>,
+    surface_name: Option<&'a str>,
+    workspace: Option<usize>,
+    project: Option<&'a str>,
+    /// The session host's id for a session no pane shows.
+    held_session: Option<&'a str>,
+}
+
+/// One `fleet.list` `commands` row. `pane` is false for a session the host
+/// holds with no pane in this window.
+fn command_row(
+    command: &crate::running_commands::RunningCommand,
+    place: CommandPlace<'_>,
+    now: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "pid": command.pid,
+        "command": command.command,
+        "state": if command.stopped { "stopped" } else { "running" },
+        "agent": command.agent,
+        "started_at": command.started_unix,
+        "running_secs": command.started_unix.map(|started| (now - started).max(0)),
+        "surface_id": place.surface_id,
+        "surface_name": place.surface_name,
+        "workspace": place.workspace,
+        "project": place.project,
+        "pane": place.held_session.is_none(),
+        "held_session": place.held_session,
+    })
+}
+
 struct SurfaceEntry {
     entity: Entity<TerminalView>,
     custom_name: Option<String>,
@@ -2102,6 +2135,72 @@ impl SplitlaneApp {
             "surface list has a repeated surface_id"
         );
         metas
+    }
+
+    /// `fleet.list` with `all`: every command running in a shell, and how
+    /// many shells sit at their prompt. Read from the last census
+    /// (`app::running_census`); a surface it has not read lately is left out
+    /// rather than reported idle.
+    fn fleet_command_rows(
+        &self,
+        name_by_sid: &HashMap<u64, String>,
+        cx: &App,
+    ) -> (Vec<serde_json::Value>, usize) {
+        let now = crate::project::now_unix_secs();
+        let fresh = |read: Option<i64>| {
+            read.is_some_and(|read| now - read <= crate::app::exit_guard::OPEN_SESSION_WINDOW_SECS)
+        };
+        let mut rows = Vec::new();
+        let mut idle_shells = 0;
+        for entry in self.collect_surface_entries(cx) {
+            let Some(thread) = entry.thread_id.and_then(|id| self.thread_by_id(id)) else {
+                continue;
+            };
+            if !crate::app::agents_sidebar::is_shell_surface(thread)
+                || thread.shell_runs_agent
+                || !fresh(thread.commands_read_secs)
+            {
+                continue;
+            }
+            if thread.running_commands.is_empty() {
+                idle_shells += 1;
+            }
+            let surface_id = entry.entity.entity_id().as_u64();
+            let ws = entry
+                .workspace_id
+                .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id));
+            for command in &thread.running_commands {
+                rows.push(command_row(
+                    command,
+                    CommandPlace {
+                        surface_id: Some(surface_id),
+                        surface_name: name_by_sid.get(&surface_id).map(String::as_str),
+                        workspace: ws,
+                        project: ws.map(|idx| self.workspaces[idx].title.as_str()),
+                        held_session: None,
+                    },
+                    now,
+                ));
+            }
+        }
+        if fresh(self.held_commands_read_secs) {
+            for held in &self.held_unshown {
+                for command in self.held_commands.get(&held.id).into_iter().flatten() {
+                    rows.push(command_row(
+                        command,
+                        CommandPlace {
+                            surface_id: None,
+                            surface_name: None,
+                            workspace: None,
+                            project: None,
+                            held_session: Some(held.id.as_str()),
+                        },
+                        now,
+                    ));
+                }
+            }
+        }
+        (rows, idle_shells)
     }
 
     fn collect_surface_entries(&self, cx: &App) -> Vec<SurfaceEntry> {
@@ -3258,7 +3357,15 @@ impl SplitlaneApp {
                     .collect();
                 let agents =
                     build_fleet_rows(&fleets, &surfaces, &name_by_sid, std::time::Instant::now());
-                serde_json::json!({ "agents": agents })
+                if params.get("all").and_then(|v| v.as_bool()) != Some(true) {
+                    return serde_json::json!({ "agents": agents });
+                }
+                let (commands, idle_shells) = self.fleet_command_rows(&name_by_sid, cx);
+                serde_json::json!({
+                    "agents": agents,
+                    "commands": commands,
+                    "idle_shells": idle_shells,
+                })
             }
             "surface.status" => {
                 // One pane's agent state.

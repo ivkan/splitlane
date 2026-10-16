@@ -1200,8 +1200,11 @@ impl SplitlaneApp {
             pending_exit: None,
             pending_exit_offers_keep: false,
             kept_while_away: None,
+            exit_census_pending: false,
             kept_notice_shown: false,
             held_unshown,
+            held_commands: std::collections::HashMap::new(),
+            held_commands_read_secs: None,
             held_card_dismissed: false,
             exit_confirm_focus: cx.focus_handle(),
             // Fleet grep closed.

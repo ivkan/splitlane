@@ -119,8 +119,9 @@ failure is always reported.
 
 Quitting need not stop anything. On macOS and Linux every pane's terminal
 session runs in the session host, a process of Splitlane's apart from the
-window. With agent sessions open, Quit (`⌘Q`) and the window's close button
-close the window and leave every session working; start Splitlane again and
+window. With agent sessions open, or a command running in a shell - a dev
+server, a build, an editor - Quit (`⌘Q`) and the window's close button close
+the window and leave every session working; start Splitlane again and
 each one is back in its pane, with what it printed meanwhile. A session no
 pane was showing any more is offered on a card, to open in the pane you are
 in or to end. **Settings > General > When quitting** chooses between keeping,

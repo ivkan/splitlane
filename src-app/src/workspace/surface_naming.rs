@@ -44,6 +44,14 @@ const SHELLS: &[&str] = &[
     "xonsh",
 ];
 
+/// Whether a process name is one of the interactive shells above. A login
+/// shell's leading `-` and a Windows `.exe` are not part of the name.
+pub(crate) fn is_shell_program(name: &str) -> bool {
+    let name = name.trim_start_matches('-').to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    SHELLS.contains(&name)
+}
+
 /// Fallback name for a surface with no usable signal.
 const FALLBACK: &str = "shell";
 

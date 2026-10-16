@@ -18,7 +18,7 @@ like a verb but is not one exits with code `2`.
 | `ls` | `--human` | `surface.list` | JSON (default) or a table |
 | `read <target>` | `--lines N`, `--offset N`, `--json`, `--raw` | `surface.read` | Text (default) or the JSON result |
 | `search <target> <pattern>` | `--max N`, `--human` | `surface.search` | JSON (default) or `line: text` |
-| `ps` | `--json` | `fleet.list` | Table (default) or JSON |
+| `ps` | `--json`, `--all` | `fleet.list` | Table (default) or JSON. `--all` adds the commands running in shells |
 | `status <target>` | `--json` | `surface.status` | `state (tool)` line (default) or JSON |
 | `answer <target>` | `--after N`, `--max-bytes BYTES`, `--out FILE`, `--raw`, `--json` | `surface.status`, then the agent's own conversation file | The answer, fenced (default), or JSON |
 | `new` | `--name NAME`, `--cwd DIR` | `workspace.create` | JSON |
@@ -398,6 +398,18 @@ null}`.
 `fleet.list` has a row for every agent in a turn that a hook reports from,
 and for every agent session - one opened from the launcher or by `add` -
 for as long as its agent runs.
+
+With `{"all": true}` it also returns `commands`, one row per command running
+in a shell, and `idle_shells`, how many shells sit at their prompt. A command
+is the job the terminal is giving its keyboard to, or one stopped with
+Ctrl+Z; a job sent to the background with `&` is not listed. Each row has
+`pid`, `command` (the whole command line; on Windows only the program's
+name), `state` (`running` or `stopped`), `agent` (the agent CLI the command
+is, when its program is one - a session with no pane can be an agent's), `started_at` and `running_secs`,
+`surface_id`, `surface_name`, `workspace`, `project`, and `pane`, which is
+`false` for a session the session host holds with no pane in this window -
+its id is then in `held_session`. A shell an agent runs in is reported as
+the agent, not here. The rows come from a reading taken every two seconds.
 
 For an agent in a shell pane these fields report what its hook last said, and
 `rail` is what the rail row for that surface shows. The two can differ: while
