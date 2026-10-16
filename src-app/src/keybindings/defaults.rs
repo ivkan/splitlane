@@ -521,6 +521,13 @@ pub(super) const DEFAULTS: &[DefaultBinding] = &[
         action_name: "toggle_active_only",
         context: Some(super::registry::OUTSIDE_TEXT_ENTRY),
     },
+    // The Running sheet, `\u{2325}\u{2318}P` per the design. Global: it is
+    // about the whole window, and a terminal has no use for the chord.
+    DefaultBinding {
+        key: "secondary-alt-p",
+        action_name: "open_running",
+        context: None,
+    },
     // Global, not `Terminal`, since the rewrite: the Launch pad lists the
     // preset library, which belongs to no pane, and its old pane-scoped guard
     // went with the worktree launcher that used to live behind this chord.

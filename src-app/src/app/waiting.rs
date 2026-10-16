@@ -499,6 +499,9 @@ pub(crate) fn activity_summary(counts: ActivityCounts) -> Option<String> {
 /// waiting - but answered about one of three memberships, in a surface the
 /// reader opens to check all three, in the app's most authoritative voice.
 pub(crate) const EMPTY_ACTIVITY_TITLE: &str = "Nothing in Activity";
+/// The same empty state while commands run in shells: Activity has nothing,
+/// but something is at work, and the Running sheet's line under it says what.
+pub(crate) const EMPTY_ACTIVITY_TITLE_COMMANDS: &str = "No agents need you";
 /// The rule line under [`EMPTY_ACTIVITY_TITLE`].
 pub(crate) const EMPTY_ACTIVITY_RULE: &str =
     "Failed, waiting, unread and running sessions appear here.";

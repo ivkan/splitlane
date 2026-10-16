@@ -351,7 +351,7 @@ impl SplitlaneApp {
 
     /// Where each project stands in the rail, top to bottom: the projects
     /// without a group, then each group's members.
-    fn rail_project_positions(&self) -> std::collections::HashMap<usize, usize> {
+    pub(crate) fn rail_project_positions(&self) -> std::collections::HashMap<usize, usize> {
         let order = Self::compute_display_order(&self.workspaces);
         let sections = crate::app::project_groups::rail_sections(
             &order,
@@ -687,6 +687,9 @@ impl SplitlaneApp {
         // failure with the two numbers put even closer together.
         let summary = crate::app::waiting::activity_summary(counts);
         let has_waiting = rows.iter().any(|row| row.kind == QueueKind::Waiting);
+        // Commands are not Activity's: they are counted on its last line, as
+        // a way to the Running sheet, and add nothing to the chip.
+        let commands = self.running_sheet_rows(false).commands;
 
         let mut card = div()
             .id("attention-queue")
@@ -769,7 +772,14 @@ impl SplitlaneApp {
                         div()
                             .text_size(tok::text::ROW)
                             .text_color(ui.muted)
-                            .child(crate::app::waiting::EMPTY_ACTIVITY_TITLE),
+                            // With commands running, "nothing" would read as
+                            // nothing at work at all; the line below says what
+                            // is.
+                            .child(if commands > 0 {
+                                crate::app::waiting::EMPTY_ACTIVITY_TITLE_COMMANDS
+                            } else {
+                                crate::app::waiting::EMPTY_ACTIVITY_TITLE
+                            }),
                     )
                     .child(
                         div()
@@ -882,6 +892,38 @@ impl SplitlaneApp {
                         self.shortcut_for_action("jump_next_waiting"),
                         has_waiting,
                     ))),
+            );
+        }
+
+        if commands > 0 {
+            let words = if commands == 1 {
+                "1 command running".to_string()
+            } else {
+                format!("{commands} commands running")
+            };
+            card = card.child(
+                div()
+                    .id("attention-queue-running-link")
+                    .h(tok::row::PROJECT)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tok::space::SM)
+                    .px(tok::space::XXL)
+                    .border_t_1()
+                    .border_color(ui.border)
+                    .font_family(tok::font::MONO)
+                    .text_size(tok::mono::HINT)
+                    .text_color(ui.faint)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.close_attention_queue_and_restore_focus(window, cx);
+                        this.open_running_sheet(window, cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(SharedString::from(words))
+                    .child("·")
+                    .child(crate::app::running_sheet::OPEN_CHORD_LABEL),
             );
         }
 

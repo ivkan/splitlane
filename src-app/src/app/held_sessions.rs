@@ -92,7 +92,12 @@ fn row_label(held: &HeldSession) -> String {
 
 impl SplitlaneApp {
     /// Show a held session in a new tab of the pane the person is in.
-    fn open_held_session(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_held_session(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(at) = self.held_unshown.iter().position(|held| held.id == id) else {
             return;
         };
@@ -119,7 +124,7 @@ impl SplitlaneApp {
     }
 
     /// End a held session without ever showing it.
-    fn end_held_session(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn end_held_session(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(at) = self.held_unshown.iter().position(|held| held.id == id) else {
             return;
         };

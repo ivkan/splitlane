@@ -90,6 +90,77 @@ pub(crate) fn commands_under(
     commands_under_impl(snapshot, pty_child)
 }
 
+/// A command as a card names it: the program and up to two words after it,
+/// stopping at the first flag, each without its directory - `npm run dev`,
+/// `cargo build`, `python backfill.py`. Where it is asked "what is this" and
+/// not "which one exactly".
+pub(crate) fn short_command(command: &str) -> String {
+    let base = |word: &str| word.rsplit(['/', '\\']).next().unwrap_or(word).to_string();
+    let mut words = command.split_whitespace();
+    let Some(program) = words.next() else {
+        return String::new();
+    };
+    let program = base(program);
+    let program = program.strip_suffix(".exe").unwrap_or(&program).to_string();
+    let mut out = vec![program];
+    out.extend(
+        words
+            .take_while(|word| !word.starts_with('-'))
+            .take(2)
+            .map(base),
+    );
+    out.join(" ")
+}
+
+/// Stop the command led by `pid`: its process group gets `SIGTERM` on Unix,
+/// the process is terminated on Windows. Returns whether the signal went.
+///
+/// The group is read now and checked to still hold `pid`, so a pid that was
+/// reused since the census named it is not what gets the signal; this app's
+/// own group, and the groups of init and the kernel, never do.
+pub(crate) fn stop_command(pid: u32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    stop_impl(pid)
+}
+
+#[cfg(unix)]
+fn stop_impl(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: both are queries with no preconditions; `getpgid` answers -1
+    // for a process that is gone.
+    let (group, own) = unsafe { (libc::getpgid(pid), libc::getpgrp()) };
+    if group <= 1 || group == own {
+        return false;
+    }
+    // SAFETY: a signal to a group just read from a live member.
+    unsafe { libc::kill(-group, libc::SIGTERM) == 0 }
+}
+
+#[cfg(windows)]
+fn stop_impl(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    // SAFETY: Win32 calls; a non-null handle is closed on every path out.
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let ok = TerminateProcess(handle, 1) != 0;
+        CloseHandle(handle);
+        ok
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn stop_impl(_pid: u32) -> bool {
+    false
+}
+
 fn is_shell(name: &str) -> bool {
     crate::workspace::surface_naming::is_shell_program(name) || {
         let name = name.to_ascii_lowercase();
@@ -566,6 +637,41 @@ mod tests {
         assert_eq!(agent_of("C:\\tools\\codex.exe", &binaries), Some("codex"));
         assert_eq!(agent_of("npm run dev", &binaries), None);
         assert_eq!(agent_of("claude-code-cli", &binaries), None);
+    }
+
+    #[test]
+    fn a_card_names_the_program_and_its_subcommand() {
+        assert_eq!(short_command("npm run dev"), "npm run dev");
+        assert_eq!(
+            short_command("cargo build --release --features tls"),
+            "cargo build"
+        );
+        assert_eq!(
+            short_command("python scripts/backfill.py --since 2026-09"),
+            "python backfill.py"
+        );
+        assert_eq!(short_command("/usr/bin/htop"), "htop");
+        assert_eq!(
+            short_command("C:\\tools\\node.exe server.js"),
+            "node server.js"
+        );
+        assert_eq!(short_command(""), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_command_is_gone() {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("sleep");
+        assert!(stop_command(child.id()));
+        let status = child.wait().expect("wait");
+        assert!(!status.success());
+        // This process's own group is never signalled.
+        assert!(!stop_command(std::process::id()));
     }
 
     #[test]

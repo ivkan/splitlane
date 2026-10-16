@@ -555,6 +555,12 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         description: "Show active sessions only",
     },
     ActionMeta {
+        name: "open_running",
+        factory: || Box::new(crate::OpenRunning),
+        context: "",
+        description: "Running sessions and commands",
+    },
+    ActionMeta {
         name: "open_launch_pad",
         factory: || Box::new(crate::OpenLaunchPad),
         context: "",

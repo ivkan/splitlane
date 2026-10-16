@@ -1201,6 +1201,9 @@ impl SplitlaneApp {
             pending_exit_offers_keep: false,
             kept_while_away: None,
             exit_census_pending: false,
+            running_sheet: None,
+            running_sheet_focus: cx.focus_handle(),
+            running_sheet_return_to_exit: None,
             kept_notice_shown: false,
             held_unshown,
             held_commands: std::collections::HashMap::new(),
@@ -1582,7 +1585,7 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
 
     use crate::{
         About, CheckForUpdatesNow, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp,
-        Paste, Quit, QuitAndStop,
+        OpenRunning, Paste, Quit, QuitAndStop,
     };
 
     cx.set_menus(vec![
@@ -1609,6 +1612,8 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
             MenuItem::action("Close Project", CloseWorkspace),
             MenuItem::separator(),
             MenuItem::action("Next Project", NextWorkspace),
+            MenuItem::separator(),
+            MenuItem::action("Running…", OpenRunning),
         ]),
         // macOS convention: every app ships a Help menu (even if it only
         // points to an online doc/repo). Without one, Apple's HIG-conforming
@@ -1632,7 +1637,7 @@ pub(crate) fn install_macos_menu_bar(cx: &mut gpui::App) {
 pub(crate) fn install_macos_menu_action_fallbacks(cx: &mut gpui::App) {
     use crate::{
         About, CheckForUpdatesNow, CloseWorkspace, Copy, NewWorkspace, NextWorkspace, OpenHelp,
-        Paste, Quit, QuitAndStop, SplitlaneApp,
+        OpenRunning, Paste, Quit, QuitAndStop, SplitlaneApp,
     };
 
     fn with_active_splitlane_window(
@@ -1688,6 +1693,12 @@ pub(crate) fn install_macos_menu_action_fallbacks(cx: &mut gpui::App) {
             app.close_workspace_at(app.active_idx, window, cx);
         });
     });
+    cx.on_action(|_: &OpenRunning, cx| {
+        with_active_splitlane_window(cx, |app, window, cx| {
+            app.open_running_sheet(window, cx);
+        });
+    });
+
     cx.on_action(|_: &NextWorkspace, cx| {
         with_active_splitlane_window(cx, |app, window, cx| {
             if !app.workspaces.is_empty() {
