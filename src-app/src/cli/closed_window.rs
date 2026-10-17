@@ -20,22 +20,29 @@
 //! finished long ago. Every answer says so (`window: "closed"`, and how long
 //! ago the window last spoke), and the human output prints it.
 
+use std::cell::{Cell, RefCell};
+
 use serde_json::{Value, json};
+use splitlane_host::protocol::ProgramReport;
 use splitlane_host::{Client, HostError, SessionInfo};
 use splitlane_ipc_client::IpcTransport;
 
 /// What the CLI answers from while the window is closed: the running
 /// sessions the host holds and what a window last said about each.
 pub struct ClosedWindow {
-    sessions: Vec<SessionInfo>,
-    now_ms: u64,
-    /// For `read`, which asks the host for each session's text.
+    /// Read again on every request while there is a host to ask, so that
+    /// `wait`, which asks over and over, sees the program's reports arrive.
+    sessions: RefCell<Vec<SessionInfo>>,
+    now_ms: Cell<u64>,
+    /// For the requests that go to the host: `read`, `send`, and reading
+    /// the sessions again.
     client: Option<Client>,
 }
 
 /// What is said for a request the closed window cannot answer.
 pub(super) const ONLY_READS: &str = "Splitlane is not running. With its window closed, only `ps`, \
-     `status`, `answer`, `read` and `send` work; start Splitlane for the rest.";
+     `status`, `answer`, `read`, `send` and `wait --until turn-end` or `--state` work; start \
+     Splitlane for the rest.";
 
 /// What `send` is told when the host does not take writes.
 const WRITES_OFF: &str = "send with the window closed goes through the session host, and the \
@@ -66,41 +73,78 @@ impl ClosedWindow {
 
     fn from_sessions(sessions: Vec<SessionInfo>, now_ms: u64) -> Self {
         Self {
-            sessions: sessions
-                .into_iter()
-                .filter(|session| session.exited.is_none())
-                .collect(),
-            now_ms,
+            sessions: RefCell::new(sessions),
+            now_ms: Cell::new(now_ms),
             client: None,
         }
     }
 
-    /// Each session a window published a state for, with that state.
+    /// Read the host's sessions again. A host that stopped answering
+    /// leaves the last reading in place.
     ///
-    /// A state published before `send` wrote into the session was decided
-    /// before the write, and the program may be answering it now. It is
-    /// shown as a turn in flight, which is all that is known: otherwise
-    /// `answer` straight after a `send` would hand back the answer before
-    /// it, and say nothing.
-    fn published(&self) -> impl Iterator<Item = (&SessionInfo, Value, u64)> {
-        self.sessions.iter().filter_map(|session| {
-            let published = session.agent_state.as_ref()?;
-            if !published.state.is_object() {
-                return None;
-            }
-            let mut state = published.state.clone();
-            if session
-                .sent_at_ms
-                .is_some_and(|sent| sent >= published.published_at_ms)
-            {
-                state["status"] = json!("running");
-                state["source"] = json!("none");
-                state["tier"] = json!("T3");
-                state["message"] = Value::Null;
-                state["sent_with_window_closed"] = json!(true);
-            }
-            Some((session, state, published.published_at_ms))
-        })
+    /// A host that stops answering is an error: a `wait` polling a reading
+    /// that can no longer change would sit out its whole timeout.
+    fn refresh(&self) -> Result<(), String> {
+        let Some(client) = self.client.as_ref() else {
+            return Ok(());
+        };
+        let sessions = client
+            .list()
+            .map_err(|e| format!("the session host stopped answering: {e}"))?;
+        *self.sessions.borrow_mut() = sessions;
+        self.now_ms.set(now_ms());
+        Ok(())
+    }
+
+    /// Each session a window published a state for, with that state as it
+    /// reads now.
+    ///
+    /// Two things that happened after the window spoke change it:
+    ///
+    /// - The program reported on itself (OSC 7501). Its newest report is
+    ///   taken over the window's older word, with the turns it saw end
+    ///   added to the window's count, and marked as the program's own,
+    ///   unchecked claim (`source: "program_report"`).
+    /// - `send` wrote into the session and no report came after. The state
+    ///   was decided before the write, and the program may be answering it
+    ///   now, so it reads as a turn in flight: otherwise `answer` straight
+    ///   after a `send` would hand back the answer before it, and say
+    ///   nothing.
+    fn published(&self) -> impl Iterator<Item = (SessionInfo, Value, u64)> {
+        let sessions = self.sessions.borrow();
+        let published: Vec<_> = sessions
+            .iter()
+            .filter_map(|session| {
+                let published = session.agent_state.as_ref()?;
+                if !published.state.is_object() {
+                    return None;
+                }
+                let mut state = published.state.clone();
+                // A session that ended stays, so that a `wait` on it hears
+                // it ended rather than lose its target.
+                if session.exited.is_some() {
+                    state["exited"] = json!(true);
+                }
+                let sent = session
+                    .sent_at_ms
+                    .filter(|&sent| sent >= published.published_at_ms);
+                let report = session.program_report.as_ref().filter(|report| {
+                    report.at_ms > published.published_at_ms
+                        && sent.is_none_or(|sent| report.at_ms > sent)
+                });
+                if let Some(report) = report {
+                    apply_report(&mut state, report, published.turns_ended_at_publish);
+                } else if sent.is_some() {
+                    state["status"] = json!("running");
+                    state["source"] = json!("none");
+                    state["tier"] = json!("T3");
+                    state["message"] = Value::Null;
+                    state["sent_with_window_closed"] = json!(true);
+                }
+                Some((session.clone(), state, published.published_at_ms))
+            })
+            .collect();
+        published.into_iter()
     }
 
     fn surface_id(state: &Value) -> Option<u64> {
@@ -108,7 +152,7 @@ impl ClosedWindow {
     }
 
     fn seen_ago_secs(&self, published_at_ms: u64) -> u64 {
-        self.now_ms.saturating_sub(published_at_ms) / 1000
+        self.now_ms.get().saturating_sub(published_at_ms) / 1000
     }
 
     fn surfaces(&self) -> Value {
@@ -312,6 +356,7 @@ impl ClosedWindow {
 
 impl IpcTransport for ClosedWindow {
     fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.refresh()?;
         match method {
             "surface.list" => Ok(self.surfaces()),
             "fleet.list" => {
@@ -329,6 +374,32 @@ impl IpcTransport for ClosedWindow {
             _ => Err(ONLY_READS.to_string()),
         }
     }
+}
+
+/// Read the program's newest report into `state`, a window's rail object;
+/// see [`ClosedWindow::published`]. `turns_at_publish` is the program's
+/// count of ended turns when the window published `state`.
+fn apply_report(state: &mut Value, report: &ProgramReport, turns_at_publish: u64) {
+    let (status, message) = match report.state.as_deref() {
+        Some("working") => ("running", None),
+        Some("blocked") => (
+            "waiting",
+            report.msg.clone().or_else(|| report.kind.clone()),
+        ),
+        Some("error") => ("failed", None),
+        // `done`, `idle`, and a record the program cleared.
+        _ => ("idle", None),
+    };
+    let since = report.turns_ended.saturating_sub(turns_at_publish);
+    if since > 0 {
+        let runs = state.get("runs_ended").and_then(Value::as_u64).unwrap_or(0);
+        state["runs_ended"] = json!(runs + since);
+        state["last_outcome"] = json!(report.last_outcome);
+    }
+    state["status"] = json!(status);
+    state["message"] = json!(message);
+    state["source"] = json!("program_report");
+    state["tier"] = json!("T3");
 }
 
 /// The older `state` word `fleet.list` and `surface.status` carry, from the
@@ -364,6 +435,7 @@ mod tests {
                 state,
                 published_at_ms,
                 live: false,
+                turns_ended_at_publish: 0,
             }),
         }))
         .unwrap()
@@ -503,8 +575,74 @@ mod tests {
         assert_eq!(status["rail"]["status"], "idle");
     }
 
+    fn report(state: &str, turns_ended: u64, at_ms: u64) -> ProgramReport {
+        ProgramReport {
+            state: Some(state.into()),
+            kind: (state == "blocked").then(|| "permission".to_string()),
+            msg: (state == "blocked").then(|| "Allow Bash?".to_string()),
+            at_ms,
+            turns_ended,
+            last_outcome: (turns_ended > 0).then(|| "finished".to_string()),
+        }
+    }
+
+    fn status_of(session: SessionInfo) -> Value {
+        ClosedWindow::from_sessions(vec![session], 10_000)
+            .call("surface.status", json!({ "surface_id": 7 }))
+            .unwrap()
+    }
+
     #[test]
-    fn an_exited_session_is_not_listed() {
+    fn a_turn_the_program_reports_ended_counts_after_the_windows() {
+        // The window published at 1 000 with two runs ended and the
+        // program's count at 3; the program then reported a fourth end.
+        let mut ended = session(Some(rail(ThreadStatus::Thinking)), 1_000);
+        ended.agent_state.as_mut().unwrap().turns_ended_at_publish = 3;
+        ended.program_report = Some(report("done", 4, 2_000));
+        let rail = &status_of(ended)["rail"];
+        assert_eq!(rail["status"], "idle");
+        assert_eq!(rail["runs_ended"], 3);
+        assert_eq!(rail["last_outcome"], "finished");
+        assert_eq!(rail["source"], "program_report");
+        assert_eq!(rail["tier"], "T3");
+    }
+
+    #[test]
+    fn a_blocked_report_reads_as_waiting_with_its_question() {
+        let mut blocked = session(Some(rail(ThreadStatus::Thinking)), 1_000);
+        blocked.program_report = Some(report("blocked", 0, 2_000));
+        let status = status_of(blocked);
+        assert_eq!(status["rail"]["status"], "waiting");
+        assert_eq!(status["rail"]["message"], "Allow Bash?");
+        assert_eq!(status["state"], "waiting_for_input");
+    }
+
+    #[test]
+    fn a_report_older_than_the_window_or_the_send_does_not_count() {
+        // Older than what the window published: the window's word stands.
+        let mut old = session(Some(rail(ThreadStatus::Idle)), 3_000);
+        old.program_report = Some(report("working", 0, 2_000));
+        assert_eq!(status_of(old)["rail"]["status"], "idle");
+
+        // Newer than the window, older than a send: the send stands.
+        let mut sent = session(Some(rail(ThreadStatus::Idle)), 1_000);
+        sent.program_report = Some(report("done", 1, 2_000));
+        sent.sent_at_ms = Some(3_000);
+        let read = &status_of(sent)["rail"];
+        assert_eq!(read["status"], "running");
+        assert_eq!(read["sent_with_window_closed"], true);
+
+        // A report after the send: the program has answered it.
+        let mut answered = session(Some(rail(ThreadStatus::Idle)), 1_000);
+        answered.sent_at_ms = Some(2_000);
+        answered.program_report = Some(report("done", 1, 3_000));
+        let answer = &status_of(answered)["rail"];
+        assert_eq!(answer["status"], "idle");
+        assert_eq!(answer["runs_ended"], 3);
+    }
+
+    #[test]
+    fn an_exited_session_is_not_listed_but_says_it_ended() {
         let mut ended = session(Some(rail(ThreadStatus::Idle)), 0);
         ended.exited = Some(splitlane_host::ExitStatus {
             code: Some(0),
@@ -513,5 +651,11 @@ mod tests {
         let closed = ClosedWindow::from_sessions(vec![ended], 0);
         let fleet = closed.call("fleet.list", json!({})).unwrap();
         assert!(fleet["agents"].as_array().unwrap().is_empty());
+        // A `wait` on it is told it ended, which it reports as a failure,
+        // rather than losing its target.
+        let status = closed
+            .call("surface.status", json!({ "surface_id": 7 }))
+            .unwrap();
+        assert_eq!(status["rail"]["exited"], true);
     }
 }

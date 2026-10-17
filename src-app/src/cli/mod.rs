@@ -731,6 +731,15 @@ fn reads_agent_state(command: &Commands) -> bool {
             | Commands::Answer { .. }
             | Commands::Read { .. }
             | Commands::Send { .. }
+            | Commands::Wait {
+                until: Some(WaitUntil::TurnEnd),
+                ..
+            }
+            | Commands::Wait {
+                until: None,
+                state: Some(_),
+                ..
+            }
     )
 }
 
@@ -784,6 +793,48 @@ fn dispatch_closed(
                 json,
             },
         ),
+        Commands::Wait {
+            selector,
+            timeout,
+            any,
+            all,
+            until,
+            state,
+            after,
+            through_waiting,
+            settled,
+            start_grace,
+            ..
+        } => {
+            let wait = match (until, state.as_deref()) {
+                (Some(WaitUntil::TurnEnd), _) => wait_rail::RailWait::TurnEnd,
+                (None, Some(words)) => {
+                    wait_rail::RailWait::State(wait_rail::parse_state_words(words)?)
+                }
+                _ => return Err(CliError::runtime(closed_window::ONLY_READS)),
+            };
+            let mode = if all {
+                wait_cmd::MatchMode::All
+            } else if any {
+                wait_cmd::MatchMode::Any
+            } else {
+                wait_cmd::MatchMode::Single
+            };
+            let (timeout, start_grace) = wait_rail::durations(timeout, start_grace);
+            wait_rail::wait_rail(
+                closed,
+                &selector,
+                wait_rail::RailWaitOptions {
+                    wait,
+                    after,
+                    through_waiting,
+                    settled,
+                    start_grace,
+                    timeout,
+                    mode,
+                },
+            )
+        }
         _ => Err(CliError::runtime(closed_window::ONLY_READS)),
     }
 }

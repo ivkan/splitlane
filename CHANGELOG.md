@@ -13,8 +13,10 @@ Notable changes to Splitlane are recorded here. The format follows
   how long ago that was. `splitlane read` works too, and its text is current:
   the session host rebuilds it from the session's output. So does `splitlane
   send` when the Splitlane that started the session host was launched with
-  `SPLITLANE_IPC_SCRIPTING=1`; the host decides. Before, every command failed
-  until Splitlane was started again.
+  `SPLITLANE_IPC_SCRIPTING=1`; the host decides. For an agent that reports its
+  own state (Claude Code), `status` follows its reports and `wait --until
+  turn-end` waits for its turn to end, marked as the agent's own word. Before,
+  every command failed until Splitlane was started again.
 
 ### Fixed
 

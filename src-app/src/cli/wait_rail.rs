@@ -16,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use splitlane_ipc_client::{IpcClient, IpcTransport, StreamEvent};
+use splitlane_ipc_client::{IpcTransport, StreamEvent};
 
 use super::selector::{resolve_all, resolve_target};
 use super::wait_cmd::MatchMode;
@@ -81,6 +81,10 @@ enum Observation {
 struct Rail {
     status: String,
     tier: String,
+    /// Who decided the word. `program_report` is the program's own report,
+    /// read with the window closed: on the lowest tier, and still a source
+    /// that says when a turn ends.
+    source: String,
     runs_ended: u64,
     last_outcome: Option<String>,
     exited: bool,
@@ -98,6 +102,7 @@ impl Observation {
         Observation::Rail(Rail {
             status: text("status").unwrap_or_default(),
             tier: text("tier").unwrap_or_default(),
+            source: text("source").unwrap_or_default(),
             runs_ended: rail.get("runs_ended").and_then(Value::as_u64).unwrap_or(0),
             last_outcome: text("last_outcome"),
             exited: rail.get("exited").and_then(Value::as_bool).unwrap_or(false),
@@ -273,7 +278,7 @@ fn decide_turn_end(
     if status == "waiting" && !options.through_waiting {
         return Step::Done(Outcome::Waiting);
     }
-    if rail.tier == "T3" {
+    if rail.tier == "T3" && rail.source != "program_report" {
         if track.saw_turn_signal {
             return Step::Done(Outcome::Degraded);
         }
@@ -399,6 +404,10 @@ impl Session {
                     "outcome": target.outcome.as_ref().map(Outcome::wire_str),
                     "status": rail.map(|r| r.status.as_str()),
                     "tier": rail.map(|r| r.tier.as_str()),
+                    // Who decided the word; `program_report` is the
+                    // program's own unchecked report, read with the
+                    // window closed.
+                    "source": rail.map(|r| r.source.as_str()).filter(|s| !s.is_empty()),
                     "runs_ended": rail.map(|r| r.runs_ended),
                     "last_outcome": rail.and_then(|r| r.last_outcome.as_deref()),
                     "background_shells": rail.map(|r| r.background_shells),
@@ -461,7 +470,7 @@ fn run_polling(
 
 /// `splitlane wait --match <sel> --until turn-end | --state <words>`.
 pub fn wait_rail(
-    client: &IpcClient,
+    client: &impl IpcTransport,
     target: &str,
     options: RailWaitOptions,
 ) -> Result<i32, CliError> {
@@ -532,6 +541,21 @@ pub fn wait_rail(
 
 fn finish((report, code): (Value, i32)) -> Result<i32, CliError> {
     super::print_json(&report)?;
+    let from_the_program = report
+        .get("targets")
+        .and_then(Value::as_array)
+        .is_some_and(|targets| {
+            targets.iter().any(|target| {
+                target.get("source").and_then(Value::as_str) == Some("program_report")
+            })
+        });
+    if from_the_program {
+        eprintln!(
+            "splitlane: with the window closed, this is the agent's own report of its turn \
+             (OSC 7501), which Splitlane does not check. It can miss a question asked in plain \
+             text at the end of a turn."
+        );
+    }
     match report.get("outcome").and_then(Value::as_str) {
         Some("no_turn_signal" | "degraded") => eprintln!(
             "splitlane: nothing that reports for this surface can say a turn ended. \
@@ -848,6 +872,32 @@ mod tests {
             Step::Continue
         );
         assert_eq!(Outcome::NoTurnSignal.exit_code(), EXIT_NO_TURN_SIGNAL);
+    }
+
+    /// With the window closed the program's own report is on the lowest tier
+    /// and still says when a turn ends, so it is waited on, not refused.
+    #[test]
+    fn the_programs_own_report_is_waited_on_though_on_the_lowest_tier() {
+        let reported = |status: &str, runs_ended| {
+            Observation::Rail(Rail {
+                status: status.to_string(),
+                tier: "T3".to_string(),
+                source: "program_report".to_string(),
+                runs_ended,
+                ..Rail::default()
+            })
+        };
+        assert_eq!(
+            decide(&reported("running", 0), Some(0), LATE),
+            Step::Continue
+        );
+        assert_eq!(
+            decide(&reported("idle", 1), Some(0), LATE),
+            Step::Done(Outcome::Finished)
+        );
+        // An idle report with no turn counted past the baseline is not an
+        // end: a program can say `done` without having worked.
+        assert_eq!(decide(&reported("idle", 0), Some(0), LATE), Step::Continue);
     }
 
     /// A surface that gains a source inside the grace is waited on like any

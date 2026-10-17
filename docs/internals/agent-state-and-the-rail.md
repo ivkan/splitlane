@@ -1254,6 +1254,20 @@ marked as nobody's. With the window gone, the CLI answers `ps`, `status` and
 `answer` from that store and says how old it is. It does not try to bring the
 state up to date: a word nobody decided is worse than an old word with its age.
 
+**With the window closed, the program's own report is the one thing that moves
+the state forward.** Everything above says why the window decides nothing on
+an OSC 7501 report. The window is not there to decide anything, though. The
+session host already reads the reports, since it answers the program's
+question about them, so it keeps the newest root record and counts a `done`,
+`idle` or `error` that follows `working` or `blocked` as a turn that ended. The
+CLI takes a report newer than the window's last state over that state, adds the
+turns counted since the window published, and marks the result
+`source: "program_report"`. `wait --until turn-end` waits on that source,
+though it is on the lowest tier, because unlike the byte counter it can say
+that a turn ended. The four reasons above still stand: the result is labelled
+as the program's claim, and a question asked in plain text at the end of a turn
+reads as `done`.
+
 A surface that loses its rail - the agent exited and left a shell - sends
 `null`, which withdraws the state. Without it the host would go on saying the
 agent was working for as long as the shell lived.
