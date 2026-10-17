@@ -6,6 +6,38 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-10-17
+
+### Added
+
+- **Running** (`⌥⌘P`, `Ctrl+Alt+P` on Linux and Windows, also **Window >
+  Running…** on macOS and in the palette) lists everything at work: the agent
+  sessions, every command running in a shell - a dev server, a build, an
+  editor - with how long it has run, and the sessions the session host keeps
+  with no pane, marked `no pane`. Rows are grouped by project in the rail's
+  order and typing filters them. `Space` marks rows and `⌘⌫`
+  (`Ctrl+Backspace`) closes them after one question: a command is stopped and
+  its pane keeps the output, an agent session is closed as the rail's Delete
+  closes it, and a session with no pane is ended. When commands are running,
+  the last line of the Activity list says how many and opens the sheet.
+- `splitlane ps --all` adds the commands running in shells, with their pane,
+  project and running time, and the number of shells at their prompt.
+
+### Changed
+
+- Quitting counts a command running in a shell as work, like an agent
+  session. When Splitlane asks, the card names the commands by program and
+  subcommand - `3 agents and 2 commands are running: cargo build, npm run
+  dev.` - with **Keep running**, **Stop and quit** and **Review…**, which
+  opens the Running sheet and asks again with the new counts when you leave
+  it. Quitting from the Dock or logging out decides the same way.
+- A keep nobody was asked about is said once on the next launch - `Kept
+  running while Splitlane was closed: 3 agent sessions and 2 commands.` -
+  with **Review…**.
+- `Active only` keeps a shell while a command runs in it. Its row shows a
+  neutral dot and how long the command has run in place of `shell`; a shell
+  at its prompt, or with only a job stopped by Ctrl+Z, is still hidden.
+
 ## [0.2.9] - 2026-10-14
 
 ### Added
@@ -545,7 +577,8 @@ Silicon, and signed `.deb`/`.rpm` packages, an AppImage and a tarball for
 Linux on x86_64 and aarch64. Windows is built from source for now. See
 [Install](README.md#install).
 
-[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/ivkan/splitlane/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/ivkan/splitlane/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/ivkan/splitlane/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/ivkan/splitlane/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/ivkan/splitlane/compare/v0.2.6...v0.2.7

@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.10" date="2026-10-17">
+      <description>
+        <p>A Running sheet lists every agent session and every command running
+        in a shell, with a way to go to each or stop it. Quitting counts
+        commands running in shells as work, names them, and offers to review
+        them first; sessions kept running are mentioned on the next launch.
+        Active only keeps a shell while a command runs in it.</p>
+      </description>
+    </release>
     <release version="0.2.9" date="2026-10-14">
       <description>
         <p>The Activity chip shows how many agent sessions are failed, waiting
