@@ -77,12 +77,19 @@ surface has been quiet in between.
 ### With the window closed
 
 On macOS, and on Linux builds with libghostty, the session host keeps agent
-sessions running after the window closes. `ps`, `status`, `answer`, `read` and
-`send` still work then, for the agent sessions the window last showed. Each one prints a
+sessions running after the window closes. `ps`, `status`, `answer`, `read`,
+`send` and `wait --until turn-end` (or `--state`) still work then, for the agent
+sessions the window last showed. Each one prints a
 line on stderr saying the window is closed and how long ago it last saw them.
 
-- `ps` and `status` answer from what the window last saw. Nothing keeps that
-  current while the window is closed, so an agent listed as `running` may have
+- `ps` and `status` answer from what the window last saw, brought forward by
+  what the agent has reported about itself since. Claude Code reports when it
+  is working, blocked on a question and done (the program status protocol, OSC
+  7501), and the session host keeps the newest report and counts the turns
+  that ended. Such a state has `source` set to `program_report`. Splitlane does
+  not check what an agent reports, and the report can miss a question the agent
+  asks in plain text at the end of a turn. For an agent that does not report,
+  the state is the window's last one, and an agent listed as `running` may have
   finished since.
 - `answer` reads the agent's own transcript, so its text is current. It still
   refuses while the last state it was told is a turn in progress.
@@ -92,10 +99,14 @@ line on stderr saying the window is closed and how long ago it last saw them.
   that started the host was launched with `SPLITLANE_IPC_SCRIPTING=1` (see
   [Write access](#write-access)). `--key` does not open it: telling which
   session opened which needs the window. The text is pasted when submitting
-  into a program that takes pastes, and Enter follows it. Nothing can tell
-  whether a turn started, so `send` does not wait for one. Until the window
-  sees the session again, `status` reports the session as `running` and
-  `answer` refuses: the last state it has was decided before the text went in.
+  into a program that takes pastes, and Enter follows it. `send` does not wait
+  for the turn to start. Until the agent reports on itself again, `status`
+  reports the session as `running` and `answer` refuses: the last state there
+  is was decided before the text went in.
+- `wait --until turn-end` follows the agent's reports. Pass the `runs_ended`
+  that `send` printed as `--after`. For an agent that does not report, it exits
+  `7` as it does on the lowest tier with the window open. When it decided on a
+  report, it says so on stderr and in each target's `source`.
 
 Every other command needs the window and fails as before. With `--json`, those
 answers carry `"window": "closed"`; `ps` and `status` add `seen_secs_ago`, and
