@@ -735,6 +735,21 @@ impl Connection {
                 self.session(session)?.set_facts(&facts);
                 Ok(Value::Null)
             }
+            protocol::OP_READ_TEXT => {
+                let SessionArgs { session } = args(raw)?;
+                let found = self.session(session)?;
+                match found.read_text() {
+                    Ok(text) => result(&text),
+                    Err(crate::transcript::Unavailable::NoEmulator) => Err(WireError::new(
+                        protocol::ERR_UNSUPPORTED,
+                        "this session host cannot read a session's text",
+                    )),
+                    Err(crate::transcript::Unavailable::Failed) => Err(WireError::new(
+                        protocol::ERR_UNSUPPORTED,
+                        "the terminal emulator failed while reading the session's text",
+                    )),
+                }
+            }
             protocol::OP_PUBLISH_STATE => {
                 let PublishStateArgs { session, state } = args(raw)?;
                 // Measured as sent rather than as received, which is close

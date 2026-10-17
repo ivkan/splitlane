@@ -28,8 +28,9 @@ use serde_json::Value;
 use crate::lock;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, ExitStatus, Facts, FrameError, Hello, ListResult,
-    PublishStateArgs, ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId,
-    SessionInfo, SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, SpawnSpec, WireError,
+    PublishStateArgs, ReadTextResult, ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs,
+    SessionId, SessionInfo, SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, SpawnSpec,
+    WireError,
 };
 use crate::HostError;
 
@@ -518,6 +519,13 @@ impl Client {
             },
         )
         .map(drop)
+    }
+
+    /// The session's history and screen as text, rebuilt from its log. A
+    /// host older than contract 3 answers with [`protocol::ERR_UNKNOWN_OP`],
+    /// one without an emulator with [`protocol::ERR_UNSUPPORTED`].
+    pub fn read_text(&self, session: SessionId) -> Result<ReadTextResult, HostError> {
+        self.request(protocol::OP_READ_TEXT, &SessionArgs { session })
     }
 
     /// Terminate every process of the session. It stays listed, as exited,

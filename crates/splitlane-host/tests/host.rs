@@ -1043,6 +1043,32 @@ fn a_published_state_outlives_its_publisher_and_says_so() {
     reader.kill(session).unwrap();
 }
 
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", feature = "libghostty-linux")
+))]
+#[test]
+fn the_text_of_a_session_has_its_history_above_the_screen() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client
+        .spawn(SpawnSpec {
+            rows: 10,
+            ..sh("i=1; while [ $i -le 50 ]; do echo \"row $i\"; i=$((i+1)); done; read hold")
+        })
+        .unwrap();
+    let text = wait_for("all fifty rows", || {
+        let text = client.read_text(session).unwrap().text?;
+        text.contains("row 50").then_some(text)
+    });
+    // Forty rows scrolled off a ten-row screen; a reader still gets them.
+    assert!(text.starts_with("row 1\nrow 2\n"), "{text}");
+    assert!(text.trim_end().ends_with("row 50"), "{text}");
+    let error = client.read_text(SessionId::new_random()).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_NO_SESSION));
+    client.kill(session).unwrap();
+}
+
 #[test]
 fn a_published_state_is_bounded_and_needs_a_session() {
     let host = TestHost::start(|_| {});

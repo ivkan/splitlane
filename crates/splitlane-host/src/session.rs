@@ -809,6 +809,33 @@ impl Session {
         }
     }
 
+    /// The session's history and screen as text; see
+    /// [`crate::transcript`]. The log is copied under the lock and replayed
+    /// after it is let go, so a read holds up the session's output for no
+    /// longer than a copy.
+    pub(crate) fn read_text(
+        &self,
+    ) -> Result<crate::protocol::ReadTextResult, crate::transcript::Unavailable> {
+        let (cols, rows, preamble, items, gap) = {
+            let shared = lock(&self.shared);
+            let head = shared.log.head_seq();
+            let (cols, rows) = shared.log.size_at(head);
+            let mut items = Vec::new();
+            let mut seq = head;
+            loop {
+                let batch = shared.log.read_from(seq, usize::MAX);
+                if batch.items.is_empty() {
+                    break;
+                }
+                seq = batch.next_seq;
+                items.extend(batch.items);
+            }
+            (cols, rows, shared.log.head_preamble(), items, head > 0)
+        };
+        let text = crate::transcript::transcribe(cols, rows, &preamble, &items)?;
+        Ok(crate::protocol::ReadTextResult { text, gap })
+    }
+
     /// Keep `state` as what connection `publisher` says about the session.
     /// `null` takes back whatever was said.
     pub(crate) fn publish_state(&self, state: serde_json::Value, publisher: u64) {
