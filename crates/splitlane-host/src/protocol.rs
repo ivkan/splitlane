@@ -109,7 +109,8 @@ use serde_json::Value;
 /// The contract this build speaks.
 ///
 /// 2: `publish_state` and [`SessionInfo::agent_state`].
-pub const CONTRACT: u32 = 2;
+/// 3: `read_text`.
+pub const CONTRACT: u32 = 3;
 /// The oldest contract this build still accepts from a peer.
 pub const MIN_CONTRACT: u32 = 1;
 
@@ -143,6 +144,7 @@ pub const OP_SHUTDOWN: &str = "shutdown";
 pub const OP_REDRAW: &str = "redraw";
 pub const OP_SET_FACTS: &str = "set_facts";
 pub const OP_PUBLISH_STATE: &str = "publish_state";
+pub const OP_READ_TEXT: &str = "read_text";
 
 pub const EVENT_RESIZED: &str = "resized";
 pub const EVENT_EXITED: &str = "exited";
@@ -160,6 +162,8 @@ pub const ERR_SESSION_EXITED: &str = "session_exited";
 pub const ERR_LIVE_SESSIONS: &str = "live_sessions";
 pub const ERR_SPAWN: &str = "spawn_failed";
 pub const ERR_ALREADY_ATTACHED: &str = "already_attached";
+/// `read_text` on a host that has no emulator to rebuild the text with.
+pub const ERR_UNSUPPORTED: &str = "unsupported";
 
 const HEADER_LEN: usize = 5;
 const SESSION_ID_LEN: usize = 16;
@@ -687,6 +691,19 @@ pub struct PublishStateArgs {
     /// gone and the session is a shell again.
     #[serde(default)]
     pub state: Value,
+}
+
+/// Answer to `read_text`: the session's history and screen as plain text,
+/// rebuilt from its log the way a pane would show it. What scrolled out of
+/// the log is not in it. Most recent line last; `None` for a blank
+/// terminal.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadTextResult {
+    #[serde(default)]
+    pub text: Option<String>,
+    /// True when the log had already dropped the session's oldest output.
+    #[serde(default)]
+    pub gap: bool,
 }
 
 /// The newest state a client published for a session.

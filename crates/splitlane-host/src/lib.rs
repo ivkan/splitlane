@@ -36,6 +36,7 @@ pub mod log;
 pub mod program_status;
 pub mod protocol;
 pub mod scan;
+pub mod transcript;
 
 #[cfg(unix)]
 mod descriptors;
