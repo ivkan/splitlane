@@ -107,7 +107,8 @@ shell - a dev server, a build, an editor - with how long it has run, and the
 sessions the session host keeps with no pane, marked `no pane`. Rows are
 grouped by project in the rail's order; typing filters them. Idle shells are
 counted at the bottom and shown on request. `⏎` or a click goes to a row
-(a session with no pane opens in the pane you are in). `Space` marks rows and
+(a session with no pane opens in the pane you are in, or as a pane of its
+own project when no pane is open). `Space` marks rows and
 `⌘⌫` (`Ctrl+Backspace`) closes the marked ones, or the one under the cursor,
 after one question: a command is stopped and its pane keeps the output, an
 agent session is closed as the rail's Delete closes it, and a session with no
