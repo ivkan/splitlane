@@ -97,6 +97,53 @@ fn census_now(roots: CensusRoots) -> Census {
     }
 }
 
+/// A command running in a plain shell, as the rail shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ShellCommand {
+    /// How long the longest-running one has run, when its start is known.
+    pub(crate) secs: Option<u64>,
+}
+
+/// Whether a shell is running a command now, read from its last census.
+/// Pure - unit-tested.
+///
+/// A job stopped with Ctrl+Z is not running, and an agent started in the
+/// shell is the agent row's business. A census older than the open-session
+/// window says nothing: the shell may have finished since.
+pub(crate) fn shell_command(
+    commands: &[RunningCommand],
+    read_secs: Option<i64>,
+    now: i64,
+) -> Option<ShellCommand> {
+    let fresh = read_secs
+        .is_some_and(|read| now - read <= crate::app::exit_guard::OPEN_SESSION_WINDOW_SECS);
+    if !fresh {
+        return None;
+    }
+    let mut live = commands
+        .iter()
+        .filter(|command| !command.stopped && command.agent.is_none())
+        .peekable();
+    live.peek()?;
+    Some(ShellCommand {
+        secs: live
+            .filter_map(|command| command.started_unix)
+            .min()
+            .and_then(|started| u64::try_from(now - started).ok()),
+    })
+}
+
+/// [`shell_command`] for a surface row: only a plain shell has one.
+pub(crate) fn thread_shell_command(
+    thread: &crate::project::Thread,
+    now: i64,
+) -> Option<ShellCommand> {
+    if !crate::app::agents_sidebar::is_shell_surface(thread) || thread.shell_runs_agent {
+        return None;
+    }
+    shell_command(&thread.running_commands, thread.commands_read_secs, now)
+}
+
 impl SplitlaneApp {
     /// The shell surfaces with a live terminal and no agent, and the held
     /// sessions no pane shows.
@@ -136,6 +183,23 @@ impl SplitlaneApp {
     /// ones it did not: a surface that now runs an agent, or lost its
     /// terminal, has no commands of its own to report.
     pub(crate) fn apply_census(&mut self, census: Census, cx: &mut gpui::Context<Self>) {
+        // The rail writes a running command's time where the shell's word
+        // was, and nothing else repaints it while the command runs.
+        let rail_times = |app: &Self| -> Vec<Option<String>> {
+            app.workspaces
+                .iter()
+                .flat_map(|container| container.threads.iter())
+                .map(|thread| {
+                    thread_shell_command(thread, census.read_secs).map(|command| {
+                        command
+                            .secs
+                            .map(crate::app::attention_queue::wait_label)
+                            .unwrap_or_default()
+                    })
+                })
+                .collect()
+        };
+        let times_before = rail_times(self);
         let mut changed = false;
         for thread in self
             .workspaces
@@ -157,7 +221,7 @@ impl SplitlaneApp {
             changed = true;
         }
         self.held_commands_read_secs = Some(census.read_secs);
-        if changed {
+        if changed || rail_times(self) != times_before {
             cx.notify();
         }
     }
@@ -241,5 +305,53 @@ impl SplitlaneApp {
             })
         })
         .is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(started_unix: Option<i64>) -> RunningCommand {
+        RunningCommand {
+            pid: 42,
+            command: "cargo build".to_string(),
+            started_unix,
+            stopped: false,
+            agent: None,
+        }
+    }
+
+    #[test]
+    fn a_shell_runs_a_command_while_its_last_census_is_fresh() {
+        let now = 1_000;
+        let running = [command(Some(now - 300)), command(Some(now - 30))];
+        assert_eq!(
+            shell_command(&running, Some(now - 2), now),
+            Some(ShellCommand { secs: Some(300) }),
+            "the time is the longest-running one's"
+        );
+        assert_eq!(shell_command(&running, Some(now - 60), now), None, "stale");
+        assert_eq!(shell_command(&running, None, now), None, "never read");
+        assert_eq!(shell_command(&[], Some(now), now), None, "at its prompt");
+        assert_eq!(
+            shell_command(&[command(None)], Some(now), now),
+            Some(ShellCommand { secs: None }),
+            "running, with no start to count from"
+        );
+    }
+
+    #[test]
+    fn a_stopped_job_or_an_agent_is_not_a_running_command() {
+        let now = 1_000;
+        let stopped = RunningCommand {
+            stopped: true,
+            ..command(Some(now - 10))
+        };
+        let agent = RunningCommand {
+            agent: Some("claude"),
+            ..command(Some(now - 10))
+        };
+        assert_eq!(shell_command(&[stopped, agent], Some(now), now), None);
     }
 }

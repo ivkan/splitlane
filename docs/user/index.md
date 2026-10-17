@@ -89,7 +89,9 @@ that session and closes the list.
 
 **Active only**, in the rail's `PROJECTS` row, hides the sessions nothing is happening in. It keeps the sessions
 that are running, waiting, failed, finished and unread, or idle with a shell
-still running, the projects that hold them, and the project you are in. A
+still running, any shell with a command running in it (its row shows how
+long the command has run), the projects that hold them, and the project you
+are in. A
 session that has just gone idle stays until you move away from it. The line
 at the foot of the rail - `14 hidden in 6 projects · Show all` - says what
 is hidden and turns the filter off. Splitlane remembers the filter between

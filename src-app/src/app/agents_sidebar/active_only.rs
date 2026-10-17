@@ -28,17 +28,21 @@ pub(crate) struct RowFacts {
     pub(crate) shells_beside_idle: u32,
     /// A shell in which somebody started an agent by hand.
     pub(crate) shell_runs_agent: bool,
+    /// A plain shell with a command running in it: a build, a server.
+    pub(crate) shell_runs_command: bool,
     /// The session holds the keyboard.
     pub(crate) focused: bool,
 }
 
 impl RowFacts {
-    pub(crate) fn of(thread: &Thread, focused: bool) -> Self {
+    pub(crate) fn of(thread: &Thread, focused: bool, now: i64) -> Self {
         Self {
             status: thread.status,
             unread: thread.finished_unseen.is_some(),
             shells_beside_idle: thread.rail.shells_beside_idle(thread.status),
             shell_runs_agent: thread.shell_runs_agent,
+            shell_runs_command: crate::app::running_census::thread_shell_command(thread, now)
+                .is_some(),
             focused,
         }
     }
@@ -46,9 +50,10 @@ impl RowFacts {
 
 /// Whether the filter keeps a session row. Pure - unit-tested.
 ///
-/// Kept: running (and starting), waiting, failed, finished and unread, and an
+/// Kept: running (and starting), waiting, failed, finished and unread, an
 /// idle session still holding a shell - a background command it left alive,
-/// or an agent somebody started in a shell by hand.
+/// or an agent somebody started in a shell by hand - and a shell with a
+/// command running in it. A shell at its prompt is hidden.
 ///
 /// **And the session in focus, whatever it is doing.** A session that has
 /// just gone idle leaves the rail only once focus has left it: otherwise its
@@ -64,7 +69,12 @@ pub(crate) fn keeps(row: RowFacts) -> bool {
         | ThreadStatus::Failed => true,
         ThreadStatus::Idle => false,
     };
-    at_work || row.unread || row.shells_beside_idle > 0 || row.shell_runs_agent || row.focused
+    at_work
+        || row.unread
+        || row.shells_beside_idle > 0
+        || row.shell_runs_agent
+        || row.shell_runs_command
+        || row.focused
 }
 
 /// What the rail draws with the filter on.
@@ -167,6 +177,7 @@ impl SplitlaneApp {
             }
             _ => None,
         };
+        let now = crate::project::now_unix_secs();
         let projects: Vec<(usize, Vec<(u64, RowFacts)>)> = self
             .workspaces
             .iter()
@@ -178,7 +189,7 @@ impl SplitlaneApp {
                     .map(|thread| {
                         (
                             thread.id,
-                            RowFacts::of(thread, focused_thread == Some(thread.id)),
+                            RowFacts::of(thread, focused_thread == Some(thread.id), now),
                         )
                     })
                     .collect();
@@ -313,6 +324,7 @@ mod tests {
             unread: false,
             shells_beside_idle: 0,
             shell_runs_agent: false,
+            shell_runs_command: false,
             focused: false,
         }
     }
@@ -340,6 +352,13 @@ mod tests {
             shell_runs_agent: true,
             ..facts(ThreadStatus::Idle)
         }));
+        assert!(
+            keeps(RowFacts {
+                shell_runs_command: true,
+                ..facts(ThreadStatus::Idle)
+            }),
+            "a shell running a build is at work"
+        );
     }
 
     /// The row a person is reading does not vanish when its agent goes idle;
