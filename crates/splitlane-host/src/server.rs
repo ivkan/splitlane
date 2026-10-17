@@ -47,8 +47,8 @@ use crate::client::Client;
 use crate::log::Item;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, Frame, FrameError, Hello, Incompatible, ListResult,
-    PublishStateArgs, ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId,
-    SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, WireError,
+    PublishStateArgs, ReplyEnvelope, RequestEnvelope, ResizeArgs, SendTextArgs, SendTextResult,
+    SessionArgs, SessionId, SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, WireError,
 };
 use crate::session::{LogBudget, Session, SessionSettings};
 use crate::{lock, HostConfig, HostError, MAX_SOCKET_PATH_BYTES};
@@ -89,6 +89,8 @@ struct Host {
     shutdown_requested: AtomicBool,
     /// Numbers connections, so a published state knows which one said it.
     next_connection: AtomicU64,
+    /// See [`HostConfig::writes_allowed`].
+    writes_allowed: bool,
 }
 
 impl Host {
@@ -152,6 +154,7 @@ pub(crate) fn run(config: HostConfig) -> Result<(), HostError> {
         stopping: AtomicBool::new(false),
         shutdown_requested: AtomicBool::new(false),
         next_connection: AtomicU64::new(0),
+        writes_allowed: config.writes_allowed,
     });
     log::info!(
         "host {} (pid {}) listening on {}",
@@ -581,6 +584,93 @@ struct Connection {
 
 type Reply = Result<Value, WireError>;
 
+/// Write `args.text` into `session` the way the window writes a script's
+/// text when no rule but the write setting applies: pasted when that is
+/// asked for or when submitting into a program that takes pastes, typed
+/// as it is otherwise, and Enter after it. A text with a line break in it
+/// is only taken as a paste the program understands: typed, each break
+/// would be an Enter and submit the text in pieces.
+///
+/// The whole write, the wait before Enter included, runs on the calling
+/// connection under the session's send lock: a second write waits for the
+/// first, so its paste can never land between the first one's paste and
+/// its Enter, and a session that ends during the wait is reported.
+fn send_text(session: &Arc<Session>, args: SendTextArgs) -> Result<SendTextResult, WireError> {
+    let refuse = |message: &str| Err(WireError::new(protocol::ERR_BAD_REQUEST, message));
+    let ended = || {
+        WireError::new(
+            protocol::ERR_SESSION_EXITED,
+            format!("session {} has ended", session.id),
+        )
+    };
+    if args.text.is_empty() && !args.submit {
+        return refuse("there is no text to send");
+    }
+    if args.text.len() > protocol::MAX_SEND_TEXT_LEN {
+        return refuse("the text exceeds 64 KiB");
+    }
+    // Either marker inside the text would end the paste early or open a
+    // second one, and what followed would be read as typed: its line
+    // breaks as Enter.
+    if args.text.contains("\x1b[200~") || args.text.contains("\x1b[201~") {
+        return refuse("the text contains a bracketed-paste marker");
+    }
+    let _sending = session.sending();
+    if session.exit_status().is_some() {
+        return Err(ended());
+    }
+    let bracketed = session.bracketed_paste();
+    let mut paste = args.paste.unwrap_or(args.submit && bracketed);
+    if args.text.contains(['\r', '\n']) {
+        if args.paste.is_none() && bracketed {
+            paste = true;
+        }
+        if !(paste && bracketed) {
+            return refuse(
+                "the text has a line break, and the program in the session does not take \
+                 pastes: each break would be an Enter",
+            );
+        }
+    }
+    let pasted = paste && bracketed && !args.text.is_empty();
+    if pasted {
+        let mut bytes = Vec::with_capacity(args.text.len() + 12);
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(args.text.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        session.input(&bytes);
+    } else if !args.text.is_empty() {
+        session.input(args.text.as_bytes());
+    }
+    let submit_mode = if !args.submit {
+        None
+    } else if pasted {
+        // An Enter that arrives with the paste is taken as part of it by
+        // some programs, and the text then sits unsent.
+        std::thread::sleep(Duration::from_millis(
+            args.submit_delay_ms
+                .unwrap_or(protocol::DEFAULT_SUBMIT_DELAY_MS)
+                .min(protocol::MAX_SUBMIT_DELAY_MS),
+        ));
+        if session.exit_status().is_some() {
+            return Err(ended());
+        }
+        session.input(b"\r");
+        Some("deferred_cr".to_string())
+    } else {
+        session.input(b"\r");
+        Some("inline_cr".to_string())
+    };
+    // After the write: a state published from here on was decided with
+    // the text already in.
+    session.note_sent();
+    Ok(SendTextResult {
+        paste: pasted,
+        bracketed_paste: bracketed,
+        submit_mode,
+    })
+}
+
 fn args<T: DeserializeOwned>(value: Value) -> Result<T, WireError> {
     // Absent arguments are an empty object, so a request whose arguments
     // are all optional may leave them out.
@@ -734,6 +824,18 @@ impl Connection {
                 let SetFactsArgs { session, facts } = args(raw)?;
                 self.session(session)?.set_facts(&facts);
                 Ok(Value::Null)
+            }
+            protocol::OP_SEND_TEXT => {
+                let args: SendTextArgs = args(raw)?;
+                if !self.host.writes_allowed {
+                    return Err(WireError::new(
+                        protocol::ERR_FORBIDDEN,
+                        "writing into sessions is off: the Splitlane that started this \
+                         session host was not launched with SPLITLANE_IPC_SCRIPTING=1",
+                    ));
+                }
+                let session = self.session(args.session)?;
+                result(&send_text(&session, args)?)
             }
             protocol::OP_READ_TEXT => {
                 let SessionArgs { session } = args(raw)?;

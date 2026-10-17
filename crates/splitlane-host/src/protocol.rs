@@ -110,7 +110,8 @@ use serde_json::Value;
 ///
 /// 2: `publish_state` and [`SessionInfo::agent_state`].
 /// 3: `read_text`.
-pub const CONTRACT: u32 = 3;
+/// 4: `send_text`.
+pub const CONTRACT: u32 = 4;
 /// The oldest contract this build still accepts from a peer.
 pub const MIN_CONTRACT: u32 = 1;
 
@@ -145,6 +146,7 @@ pub const OP_REDRAW: &str = "redraw";
 pub const OP_SET_FACTS: &str = "set_facts";
 pub const OP_PUBLISH_STATE: &str = "publish_state";
 pub const OP_READ_TEXT: &str = "read_text";
+pub const OP_SEND_TEXT: &str = "send_text";
 
 pub const EVENT_RESIZED: &str = "resized";
 pub const EVENT_EXITED: &str = "exited";
@@ -706,6 +708,52 @@ pub struct ReadTextResult {
     pub gap: bool,
 }
 
+/// Most bytes of text one `send_text` writes; the window's bound for the
+/// same request.
+pub const MAX_SEND_TEXT_LEN: usize = 64 * 1024;
+
+/// Type text into a session as a script does, for a caller with no window
+/// to go through. Refused with [`ERR_FORBIDDEN`] unless the host was
+/// started with writes allowed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendTextArgs {
+    pub session: SessionId,
+    #[serde(default)]
+    pub text: String,
+    /// Press Enter after the text.
+    #[serde(default)]
+    pub submit: bool,
+    /// Force the text to be pasted (`true`) or typed as it is (`false`).
+    /// Absent: pasted when submitting into a program that switched
+    /// bracketed paste on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paste: Option<bool>,
+    /// After a paste, how long to wait before Enter, so the program has
+    /// taken the paste in first. Absent: [`DEFAULT_SUBMIT_DELAY_MS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_delay_ms: Option<u64>,
+}
+
+/// The wait before Enter after a paste when the caller names none.
+pub const DEFAULT_SUBMIT_DELAY_MS: u64 = 300;
+/// The longest wait before Enter a caller may ask for; longer is cut to
+/// this. The request is answered only after Enter.
+pub const MAX_SUBMIT_DELAY_MS: u64 = 5_000;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendTextResult {
+    /// Whether the text went in as a bracketed paste.
+    #[serde(default)]
+    pub paste: bool,
+    /// Whether the program had bracketed paste switched on.
+    #[serde(default)]
+    pub bracketed_paste: bool,
+    /// `"deferred_cr"` when Enter follows a paste after the delay,
+    /// `"inline_cr"` when it was written with the text, absent without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_mode: Option<String>,
+}
+
 /// The newest state a client published for a session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentState {
@@ -775,6 +823,12 @@ pub struct SessionInfo {
     /// because the program was not reading its input.
     #[serde(default)]
     pub dropped_replies: u64,
+    /// When `send_text` last wrote into the session, in milliseconds since
+    /// the Unix epoch. A published state older than this was decided before
+    /// the write and says nothing about what the program made of it.
+    /// Absent before the first write, and from a host older than contract 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at_ms: Option<u64>,
     /// What a window last published about the session, if any did. Absent
     /// from a host older than contract 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]

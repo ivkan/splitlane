@@ -148,6 +148,10 @@ pub struct HostConfig {
     pub handle_signals: bool,
     /// Release version reported in the handshake. For display only.
     pub version: String,
+    /// Whether `send_text` may write into a session: the setting the window
+    /// gates its own writes with, `SPLITLANE_IPC_SCRIPTING`, as it stood in
+    /// the Splitlane that started this host. Kept for the host's life.
+    pub writes_allowed: bool,
 }
 
 /// How long a process group gets between the hangup and the kill unless a
@@ -168,6 +172,7 @@ impl HostConfig {
             max_connections: 1024,
             handle_signals: false,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            writes_allowed: false,
         }
     }
 }

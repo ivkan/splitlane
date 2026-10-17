@@ -51,6 +51,10 @@ pub fn run() -> i32 {
     config.guard_exe = std::env::current_exe().ok();
     config.handle_signals = true;
     config.version = env!("CARGO_PKG_VERSION").to_string();
+    // The host inherits the environment of the Splitlane that started it,
+    // which is where the window reads the same setting from. A Splitlane
+    // started later with another value finds this host keeping its own.
+    config.writes_allowed = crate::app::ipc_handler::ipc_scripting_enabled();
     match splitlane_host::run(config) {
         Ok(()) => 0,
         // Two launchers raced and the other one's host has the socket. That

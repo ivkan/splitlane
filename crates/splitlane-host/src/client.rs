@@ -28,9 +28,9 @@ use serde_json::Value;
 use crate::lock;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, ExitStatus, Facts, FrameError, Hello, ListResult,
-    PublishStateArgs, ReadTextResult, ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs,
-    SessionId, SessionInfo, SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, SpawnSpec,
-    WireError,
+    PublishStateArgs, ReadTextResult, ReplyEnvelope, RequestEnvelope, ResizeArgs, SendTextArgs,
+    SendTextResult, SessionArgs, SessionId, SessionInfo, SetFactsArgs, ShutdownArgs, SpawnArgs,
+    SpawnResult, SpawnSpec, WireError,
 };
 use crate::HostError;
 
@@ -519,6 +519,11 @@ impl Client {
             },
         )
         .map(drop)
+    }
+
+    /// Type text into the session; see [`protocol::SendTextArgs`].
+    pub fn send_text(&self, args: &SendTextArgs) -> Result<SendTextResult, HostError> {
+        self.request(protocol::OP_SEND_TEXT, args)
     }
 
     /// The session's history and screen as text, rebuilt from its log. A
