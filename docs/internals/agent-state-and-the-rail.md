@@ -1239,6 +1239,25 @@ question. While the rail says a turn is running or waiting, no answer is
 offered at all, for the same reason.
 
 
+**The window hands the rail to the session host, and the host only keeps
+it.** A session in the host outlives the window, and so does the question
+`splitlane ps` asks about it. Deciding the word needs everything above - the
+status files, the hooks, the transcripts, the binding of a session to its pane -
+and all of that is in the window. Moving it into the host is a project of its
+own. What the host can do cheaply is remember. So every time `publish_rail_changes`
+runs, a surface whose session is in the host and whose `rail` object changed
+sends that object over its own connection (`publish_state`), with the surface id,
+its name and the project's title. The host stores it and returns it from
+`list`, with the one fact only the host has: whether the connection that sent it
+is still open. The window quitting or dying closes it, and the state is then
+marked as nobody's. With the window gone, the CLI answers `ps`, `status` and
+`answer` from that store and says how old it is. It does not try to bring the
+state up to date: a word nobody decided is worse than an old word with its age.
+
+A surface that loses its rail - the agent exited and left a shell - sends
+`null`, which withdraws the state. Without it the host would go on saying the
+agent was working for as long as the shell lived.
+
 ## `Thread::finished_unseen`, the Activity chip, and the popover
 
 **`Thread::finished_unseen` is the read/unread axis, and it is not a sixth

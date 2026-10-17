@@ -74,6 +74,19 @@ Windows, so prefer names or `cwd:` in portable scripts.
 whenever the surface prints something. Two reads with the same value mean the
 surface has been quiet in between.
 
+### With the window closed
+
+On macOS, and on Linux builds with libghostty, the session host keeps agent
+sessions running after the window closes. `ps`, `status` and `answer` still work
+then: they answer from what the window last saw before it closed, and they say
+how long ago that was on stderr. Nothing keeps that state current while the
+window is closed, so an agent listed as `running` may have finished since.
+`answer` reads the agent's own transcript, so the text it returns is current; it
+still refuses while the last state it was told is a turn in progress. Every
+other command needs the window and fails as before. With `--json`, those answers
+carry `"window": "closed"` and `seen_secs_ago`, and `ps` has the project's name
+in `project` and no `workspace` index.
+
 ### Following events
 
 `watch` holds a subscription open and prints one JSON object per line:
