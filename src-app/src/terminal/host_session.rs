@@ -52,7 +52,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow};
 use splitlane_host::protocol::ERR_LIVE_SESSIONS;
-use splitlane_host::protocol::{ERR_NO_SESSION, ERR_SESSION_EXITED, ERR_SESSION_LIVE};
+use splitlane_host::protocol::{
+    ERR_NO_SESSION, ERR_SESSION_EXITED, ERR_SESSION_LIVE, ERR_UNKNOWN_OP,
+};
 use splitlane_host::{
     AttachFrom, Attachment, Client, Facts, HOST_SUBCOMMAND, HostError, SessionId, SessionInfo,
     SpawnSpec, StreamEvent,
@@ -99,6 +101,9 @@ pub(super) enum RemoteMsg {
     },
     /// What the window knows about itself and the program may ask for.
     Facts(Box<Facts>),
+    /// What the window concluded about the agent in the session, kept by
+    /// the host for readers that come after the window is gone.
+    State(Box<serde_json::Value>),
     /// Ask the program to repaint, after output was lost on the way here.
     Redraw,
     /// The pane is gone. Nothing queued behind this is sent.
@@ -1068,6 +1073,9 @@ fn write_requests(
     // The connection broke. The queue is still emptied, so that input does
     // not count against the limit for ever; nothing is sent.
     let mut broken = false;
+    // A host of an older release does not keep states. Asking it again on
+    // every change would only fill the log with its refusals.
+    let mut keeps_states = true;
     loop {
         let Some(msg) = held.take().or_else(|| queue.recv()) else {
             return;
@@ -1113,6 +1121,18 @@ fn write_requests(
                 resized
             }
             RemoteMsg::Facts(facts) => pane.set_facts(session, &facts),
+            RemoteMsg::State(_) if !keeps_states => Ok(()),
+            RemoteMsg::State(state) => match pane.publish_state(session, &state) {
+                Err(e) if e.remote_code() == Some(ERR_UNKNOWN_OP) => {
+                    log::info!(
+                        target: "splitlane::terminal::host",
+                        "session {session}: this session host keeps no agent states; not sending them"
+                    );
+                    keeps_states = false;
+                    Ok(())
+                }
+                other => other,
+            },
             RemoteMsg::Redraw => {
                 // One repaint answers any number of requests for one.
                 while let Some(next) = queue.try_recv() {

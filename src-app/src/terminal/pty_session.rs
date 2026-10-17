@@ -3491,6 +3491,23 @@ impl TerminalState {
         }
     }
 
+    /// Hand the host what the window concluded about the agent in this
+    /// session; see `splitlane_host::protocol::AgentState`. Nothing happens
+    /// for a terminal that is not in the host.
+    #[cfg(host_panes)]
+    pub(crate) fn publish_to_host(&self, state: serde_json::Value) {
+        #[cfg(target_os = "macos")]
+        let sender = match &self.notifier.0.0 {
+            TerminalType::Remote(sender) => Some(sender),
+            _ => None,
+        };
+        #[cfg(not(target_os = "macos"))]
+        let sender = self.ghostty_host.as_ref();
+        if let Some(sender) = sender {
+            sender.send(RemoteMsg::State(Box::new(state)));
+        }
+    }
+
     /// Send the window's size again because the PTY does not hold it. For
     /// a PTY the window owns that is sending it; a Ghostty pane in the
     /// host has sent it and would not send the same size twice, so its

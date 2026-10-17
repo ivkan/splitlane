@@ -1770,6 +1770,9 @@ impl SplitlaneApp {
     pub(crate) fn publish_rail_changes(&mut self, cx: &mut Context<Self>) {
         let mut seen: HashSet<u64> = HashSet::new();
         let mut current = Vec::new();
+        // Every surface, with the title of the project it is in; those whose
+        // session is in the session host are picked out later.
+        let mut hosted: Vec<(u64, Entity<TerminalView>, Option<String>)> = Vec::new();
         for ws in &self.workspaces {
             for pane in ws.collect_panes() {
                 for terminal in pane.read(cx).terminals() {
@@ -1777,6 +1780,7 @@ impl SplitlaneApp {
                     if !seen.insert(sid) {
                         continue;
                     }
+                    hosted.push((sid, terminal.clone(), Some(ws.title.clone())));
                     if let Some(snapshot) = self.rail_snapshot_for(terminal, None, cx) {
                         current.push((sid, terminal.read(cx).agent_thread_id, snapshot));
                     }
@@ -1788,6 +1792,12 @@ impl SplitlaneApp {
             if !seen.insert(sid) {
                 continue;
             }
+            let title = self
+                .workspaces
+                .iter()
+                .find(|ws| ws.threads.iter().any(|thread| thread.id == *thread_id))
+                .map(|ws| ws.title.clone());
+            hosted.push((sid, terminal.clone(), title));
             if let Some(snapshot) = self.rail_snapshot_for(terminal, Some(*thread_id), cx) {
                 current.push((sid, Some(*thread_id), snapshot));
             }
@@ -1802,6 +1812,80 @@ impl SplitlaneApp {
         for (sid, event) in events {
             self.event_bus
                 .broadcast(crate::rail_state::RAIL_EVENT_TYPE, Some(sid), &event);
+        }
+        #[cfg(host_panes)]
+        self.publish_states_to_host(&current, hosted, cx);
+        #[cfg(not(host_panes))]
+        drop(hosted);
+    }
+
+    /// Hand the session host the rail of every surface whose session it
+    /// holds and whose rail changed since it was last handed over, so a
+    /// reader that comes after the window - `splitlane ps` with the window
+    /// closed - still finds where each agent stood.
+    ///
+    /// The state is the `rail` object `surface.status` returns, plus where
+    /// the surface was: its id, its name and its project's title. The name
+    /// is only worked out when something is owed, and a rename alone is
+    /// not something owed; it goes with the next change of the rail.
+    ///
+    /// A surface that had a rail and lost it - its agent exited and left the
+    /// shell - is handed `null`, or the host would go on saying the agent
+    /// was working.
+    #[cfg(host_panes)]
+    fn publish_states_to_host(
+        &mut self,
+        current: &[(u64, Option<u64>, crate::rail_state::RailSnapshot)],
+        hosted: Vec<(u64, Entity<TerminalView>, Option<String>)>,
+        cx: &App,
+    ) {
+        let mut owed = Vec::new();
+        let mut alive = HashSet::new();
+        for (sid, terminal, workspace) in hosted {
+            alive.insert(sid);
+            let Some(session) = terminal.read(cx).terminal.host_session_id() else {
+                continue;
+            };
+            let Some((_, _, snapshot)) = current.iter().find(|(s, ..)| *s == sid) else {
+                if self.host_states_sent.remove(&sid).is_some() {
+                    terminal
+                        .read(cx)
+                        .terminal
+                        .publish_to_host(serde_json::Value::Null);
+                }
+                continue;
+            };
+            let mut state = snapshot.to_json();
+            if let Some(fields) = state.as_object_mut() {
+                fields.insert("surface_id".into(), sid.into());
+                fields.insert("workspace".into(), workspace.into());
+            }
+            // Keyed by the session too: a surface attached to another
+            // session owes that session its state even if the rail is the
+            // same.
+            let entry = (session, state);
+            if self.host_states_sent.get(&sid) != Some(&entry) {
+                owed.push((sid, terminal, entry));
+            }
+        }
+        // A closed surface takes its entry with it; its connection to the
+        // host closes too, which the host reads as nobody keeping it current.
+        self.host_states_sent.retain(|sid, _| alive.contains(sid));
+        if owed.is_empty() {
+            return;
+        }
+        let names: HashMap<u64, String> = self
+            .collect_surface_meta(cx)
+            .into_iter()
+            .map(|meta| (meta.surface_id, meta.name))
+            .collect();
+        for (sid, terminal, entry) in owed {
+            let mut sent = entry.1.clone();
+            if let Some(fields) = sent.as_object_mut() {
+                fields.insert("surface_name".into(), names.get(&sid).cloned().into());
+            }
+            terminal.read(cx).terminal.publish_to_host(sent);
+            self.host_states_sent.insert(sid, entry);
         }
     }
 
