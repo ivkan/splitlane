@@ -1147,7 +1147,7 @@ pub(crate) fn paginate_scrollback(
 /// Assemble the `surface.read` response.
 /// `output_generation` is purely additive, so legacy clients
 /// that ignore it keep working. Pure, so the wire contract is unit-tested.
-fn surface_read_value(
+pub(crate) fn surface_read_value(
     text: String,
     returned: usize,
     total: usize,
@@ -1165,7 +1165,7 @@ fn surface_read_value(
     })
 }
 
-fn truncate_ipc_text(text: String) -> (String, bool) {
+pub(crate) fn truncate_ipc_text(text: String) -> (String, bool) {
     if text.len() <= crate::limits::MAX_IPC_TEXT_BYTES {
         return (text, false);
     }

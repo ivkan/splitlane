@@ -726,7 +726,10 @@ pub fn run() -> i32 {
 fn reads_agent_state(command: &Commands) -> bool {
     matches!(
         command,
-        Commands::Ps { .. } | Commands::Status { .. } | Commands::Answer { .. }
+        Commands::Ps { .. }
+            | Commands::Status { .. }
+            | Commands::Answer { .. }
+            | Commands::Read { .. }
     )
 }
 
@@ -739,6 +742,13 @@ fn dispatch_closed(
     match command {
         Commands::Ps { json, all } => read_cmds::ps(closed, json, all),
         Commands::Status { target, json } => read_cmds::status(closed, &target, json),
+        Commands::Read {
+            target,
+            lines,
+            offset,
+            json,
+            raw,
+        } => read_cmds::read(closed, &target, lines, offset, json, raw),
         Commands::Answer {
             target,
             after,

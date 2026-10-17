@@ -4,8 +4,10 @@
 //! session the host holds (`splitlane_host::protocol::AgentState`). When the
 //! window is gone those sessions go on, and so does the question of where
 //! each agent stands. [`ClosedWindow`] answers the read-only methods `ps`,
-//! `status` and `answer` use from what the host kept, in the shapes the
-//! window would have used, so those commands run unchanged against it.
+//! `status`, `answer` and `read` use from what the host kept, in the shapes
+//! the window would have used, so those commands run unchanged against it.
+//! `read` is the one answer that is current: the host rebuilds the text
+//! from the session's own output.
 //!
 //! Nothing here is current. The window decided every word, and nobody has
 //! decided anything since it closed: an agent that was working may have
@@ -21,11 +23,13 @@ use splitlane_ipc_client::IpcTransport;
 pub struct ClosedWindow {
     sessions: Vec<SessionInfo>,
     now_ms: u64,
+    /// For `read`, which asks the host for each session's text.
+    client: Option<Client>,
 }
 
 /// What is said for a request the closed window cannot answer.
-pub(super) const ONLY_READS: &str = "Splitlane is not running. With its window closed, only `ps`, `status` \
-     and `answer` work, from what the window last saw; start Splitlane for the rest.";
+pub(super) const ONLY_READS: &str = "Splitlane is not running. With its window closed, only `ps`, \
+     `status`, `answer` and `read` work; start Splitlane for the rest.";
 
 impl ClosedWindow {
     /// The host's sessions, or `None` when no host runs: then there is
@@ -43,7 +47,9 @@ impl ClosedWindow {
             }
         };
         let sessions = client.list().ok()?;
-        Some(Self::from_sessions(sessions, now_ms()))
+        let mut closed = Self::from_sessions(sessions, now_ms());
+        closed.client = Some(client);
+        Some(closed)
     }
 
     fn from_sessions(sessions: Vec<SessionInfo>, now_ms: u64) -> Self {
@@ -53,6 +59,7 @@ impl ClosedWindow {
                 .filter(|session| session.exited.is_none())
                 .collect(),
             now_ms,
+            client: None,
         }
     }
 
@@ -142,6 +149,76 @@ impl ClosedWindow {
         }))
     }
 
+    /// `surface.read`, as the window answers it, from the text the host
+    /// rebuilds from the session's log.
+    fn surface_text(&self, params: &Value) -> Result<Value, String> {
+        use crate::app::ipc_handler::{
+            paginate_scrollback, surface_read_value, truncate_ipc_text, wrap_untrusted,
+        };
+        // The window's defaults and bounds for the same request.
+        const DEFAULT_LINES: usize = 200;
+        let surface_id = params
+            .get("surface_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "surface.read needs a surface_id".to_string())?;
+        let (session, _, _) = self
+            .published()
+            .find(|(_, state, _)| Self::surface_id(state) == Some(surface_id))
+            .ok_or_else(|| format!("no pane {surface_id} in what the window last saw"))?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "the session host is not reachable".to_string())?;
+        let read = client
+            .read_text(session.id)
+            .map_err(|e| match e.remote_code() {
+                Some(splitlane_host::protocol::ERR_UNKNOWN_OP) => {
+                    "the session host was started by an older Splitlane and cannot read a \
+                     session's text; start Splitlane to read it"
+                        .to_string()
+                }
+                _ => format!("session host: {e}"),
+            })?;
+        let lines = params
+            .get("lines")
+            .and_then(Value::as_u64)
+            .map(|n| (n as usize).clamp(1, splitlane_host::transcript::MAX_LINES))
+            .unwrap_or(DEFAULT_LINES);
+        let offset = params
+            .get("offset")
+            .and_then(Value::as_u64)
+            .map_or(0, |n| n as usize);
+        let full = read.text.unwrap_or_default();
+        let (text, returned, total, eof) = paginate_scrollback(&full, lines, offset);
+        if offset > total {
+            return Err(format!(
+                "offset {offset} out of range (total_lines={total})"
+            ));
+        }
+        let fenced = params
+            .get("fenced")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| {
+                splitlane_config::loader::load_config().ai_injection_fence_enabled()
+            });
+        let (text, truncated) = truncate_ipc_text(text);
+        let text = if fenced {
+            wrap_untrusted(
+                &format!("source=\"surface:{surface_id}\" total_lines=\"{total}\" eof=\"{eof}\""),
+                &text,
+            )
+        } else {
+            text
+        };
+        // The log's end advances with every byte the session prints, which
+        // is what the window's counter says too.
+        let mut value =
+            surface_read_value(text, returned, total, eof, session.log_tail_seq, truncated);
+        value["window"] = json!("closed");
+        value["gap"] = json!(read.gap);
+        Ok(value)
+    }
+
     /// How long ago the window last said anything, over every session.
     pub fn last_seen_secs_ago(&self) -> Option<u64> {
         self.published()
@@ -165,6 +242,7 @@ impl IpcTransport for ClosedWindow {
                     .ok_or_else(|| "surface.status needs a surface_id".to_string())?;
                 self.status(surface_id)
             }
+            "surface.read" => self.surface_text(&params),
             _ => Err(ONLY_READS.to_string()),
         }
     }
@@ -301,6 +379,20 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("not running"), "{error}");
+    }
+
+    #[test]
+    fn a_read_names_the_pane_and_needs_the_host() {
+        let closed =
+            ClosedWindow::from_sessions(vec![session(Some(rail(ThreadStatus::Idle)), 0)], 0);
+        let unknown = closed
+            .call("surface.read", json!({ "surface_id": 8 }))
+            .unwrap_err();
+        assert!(unknown.contains("no pane 8"), "{unknown}");
+        let no_host = closed
+            .call("surface.read", json!({ "surface_id": 7 }))
+            .unwrap_err();
+        assert!(no_host.contains("not reachable"), "{no_host}");
     }
 
     #[test]
