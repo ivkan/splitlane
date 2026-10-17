@@ -730,6 +730,7 @@ fn reads_agent_state(command: &Commands) -> bool {
             | Commands::Status { .. }
             | Commands::Answer { .. }
             | Commands::Read { .. }
+            | Commands::Send { .. }
     )
 }
 
@@ -749,6 +750,22 @@ fn dispatch_closed(
             json,
             raw,
         } => read_cmds::read(closed, &target, lines, offset, json, raw),
+        Commands::Send {
+            target,
+            text,
+            broadcast,
+            submit,
+            paste,
+            report_file,
+        } => send_cmd::send(
+            closed,
+            &target,
+            &text,
+            broadcast,
+            submit,
+            paste,
+            report_file.as_deref(),
+        ),
         Commands::Answer {
             target,
             after,
