@@ -1244,6 +1244,8 @@ impl SplitlaneApp {
             drive_status_before: std::collections::HashMap::new(),
             turn_ends: std::collections::HashMap::new(),
             rail_published: std::collections::HashMap::new(),
+            #[cfg(host_panes)]
+            host_states_sent: std::collections::HashMap::new(),
             hook_rail: std::collections::HashMap::new(),
             activity_counts_cache: crate::app::waiting::ActivityCounts::default(),
             activity_chip_room: f32::MAX,

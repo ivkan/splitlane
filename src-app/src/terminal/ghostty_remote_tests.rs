@@ -205,6 +205,7 @@ impl Pane {
                     pixel_height,
                 } => Said::Resize(cols, rows, pixel_width, pixel_height),
                 RemoteMsg::Facts(_) => Said::Other("facts"),
+                RemoteMsg::State(_) => Said::Other("state"),
                 RemoteMsg::Redraw => Said::Other("redraw"),
                 RemoteMsg::Shutdown => Said::Other("shutdown"),
             });

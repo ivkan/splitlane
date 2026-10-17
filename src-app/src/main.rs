@@ -1511,6 +1511,11 @@ struct SplitlaneApp {
     /// The `(status, runs_ended)` last published for each surface id, which is
     /// what `publish_rail_changes` compares against.
     rail_published: std::collections::HashMap<u64, (project::ThreadStatus, u64, u32)>,
+    /// The session and the state last handed to the session host for each
+    /// surface whose session it holds, without the surface's name; see
+    /// `publish_states_to_host`.
+    #[cfg(host_panes)]
+    host_states_sent: std::collections::HashMap<u64, (String, serde_json::Value)>,
     /// Ended runs for a terminal that has no agent record of its own - an
     /// agent typed into a shell pane, or started by `workspace.up` - keyed by
     /// surface id. The hook is the only source there, and its session entry is
