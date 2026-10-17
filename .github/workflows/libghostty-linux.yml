@@ -237,6 +237,11 @@ jobs:
           github.event_name == 'schedule' ||
           github.event_name == 'workflow_dispatch')
         run: |
+          # The parser ratio below splits into two clusters across runs of
+          # the same commit (about 0.93-1.02 and 1.34-1.66). Hosted runners
+          # differ in CPU, so the model is logged next to the numbers to
+          # tell a slower machine from a slower parser.
+          lscpu | grep -E '^(Model name|Vendor ID|CPU\(s\)|Thread\(s\) per core|L2 cache|L3 cache|CPU max MHz):' || true
           cargo test --release --locked \
             -p splitlane-app \
             --features libghostty-linux \
