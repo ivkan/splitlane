@@ -1348,10 +1348,19 @@ fn ghostty_parser_and_snapshot_performance_gate() {
         "Ghostty median parser ratio {parser_median_ratio:.4} is below 0.90"
     );
     #[cfg(target_os = "linux")]
-    assert!(
-        parser_ratio >= 0.95,
-        "Ghostty parser ratio {parser_ratio:.4} is below 0.95"
-    );
+    {
+        let cpu = linux_cpu();
+        let floor = linux_parser_floor(&cpu.vendor);
+        println!(
+            "{{\"cpu_vendor\":{:?},\"cpu_model\":{:?},\"parser_floor\":{floor:.2}}}",
+            cpu.vendor, cpu.model
+        );
+        assert!(
+            parser_ratio >= floor,
+            "Ghostty parser ratio {parser_ratio:.4} is below {floor:.2} on {}",
+            cpu.model
+        );
+    }
     #[cfg(target_os = "linux")]
     assert!(
         latency_regression <= 0.05,
@@ -1361,6 +1370,55 @@ fn ghostty_parser_and_snapshot_performance_gate() {
     assert!(
         ghostty_snapshot_p95 < Duration::from_millis(2),
         "Ghostty native snapshot p95 {ghostty_snapshot_p95_us:.3} us exceeds 2 ms"
+    );
+}
+
+/// The CPU the performance gate ran on, from `/proc/cpuinfo`.
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+struct LinuxCpu {
+    vendor: String,
+    model: String,
+}
+
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+fn linux_cpu() -> LinuxCpu {
+    let info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let field = |name: &str| {
+        info.lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                (key.trim() == name).then(|| value.trim().to_string())
+            })
+            .unwrap_or_else(|| "unknown".to_string())
+    };
+    LinuxCpu {
+        vendor: field("vendor_id"),
+        model: field("model name"),
+    }
+}
+
+/// The lowest alacritty-to-Ghostty parser ratio the gate accepts on Linux.
+///
+/// Hosted runners come with one of two CPU families, and the same commit
+/// measures differently on each: on AMD EPYC Ghostty's parser lands at
+/// 0.93-1.02 of alacritty's speed, on Intel Xeon at 1.34-1.66. One floor
+/// for both sat inside the AMD spread and failed about half the runs that
+/// drew an AMD machine, whatever the change was. Each family keeps a margin
+/// under its own spread, so a real slowdown still fails on either.
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+fn linux_parser_floor(vendor: &str) -> f64 {
+    if vendor == "AuthenticAMD" { 0.90 } else { 0.95 }
+}
+
+#[cfg(all(target_os = "linux", feature = "libghostty-linux"))]
+#[test]
+fn the_parser_floor_follows_the_cpu_family() {
+    assert_eq!(linux_parser_floor("AuthenticAMD"), 0.90);
+    assert_eq!(linux_parser_floor("GenuineIntel"), 0.95);
+    assert_eq!(
+        linux_parser_floor("unknown"),
+        0.95,
+        "unknown keeps the strict floor"
     );
 }
 
