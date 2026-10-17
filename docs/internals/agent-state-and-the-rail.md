@@ -1583,7 +1583,12 @@ section says where to go; the filter is how to work in the rail all day. With
 it on, the rail keeps the sessions that are running (or starting), waiting,
 failed, finished and unread, or idle while still holding a shell - a background
 command the agent left alive, or an agent somebody started in a shell by hand
-(`active_only::keeps`). Projects stay when anything in them stays, and groups
+(`active_only::keeps`). A plain shell stays while a command runs in it: the
+filter answers "what is alive now", and a build that is running is alive;
+hiding it says nothing is working while something is. Its row has no colour -
+a neutral dot one step above idle, and the command's running time where the
+word `shell` was - because it is not an agent asking for anything. A job
+stopped with Ctrl+Z does not count, and a shell at its prompt is still hidden. Projects stay when anything in them stays, and groups
 when any of their projects do, because the projects are filtered before the
 rail is cut into sections. The project in focus always stays, even with
 nothing happening in it, and in that project the views, the slot tree's own

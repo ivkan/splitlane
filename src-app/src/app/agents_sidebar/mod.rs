@@ -494,6 +494,10 @@ impl SplitlaneApp {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let is_shell = is_shell_surface(thread);
+        let shell_command = crate::app::running_census::thread_shell_command(
+            thread,
+            crate::project::now_unix_secs(),
+        );
         let crate::project::AgentsTarget::Thread { ws_idx, .. } = target else {
             unreachable!("a surface row is always built from a Thread target")
         };
@@ -526,6 +530,7 @@ impl SplitlaneApp {
                 ui: shared.ui,
                 status: thread.status,
                 is_shell,
+                runs_command: shell_command.is_some(),
                 unseen: thread.finished_unseen.is_some(),
                 // Bound to the transition, never to this row being drawn: the
                 // rail remounts its rows on every reorder, and an animation
@@ -541,7 +546,12 @@ impl SplitlaneApp {
                 // The design spends the row's right side on what the session
                 // *is* rather than on how old it is: the agent's name, or the
                 // word "shell".
-                meta: if is_shell {
+                meta: if let Some(secs) = shell_command.and_then(|command| command.secs) {
+                    // A shell running a build says how long it has been at
+                    // it, without a word or a colour: it is alive, and it is
+                    // not an agent asking for anything.
+                    SharedString::from(crate::app::attention_queue::wait_label(secs))
+                } else if is_shell {
                     SharedString::from("shell")
                 } else if let shells @ 1.. = thread.rail.shells_beside_idle(thread.status) {
                     // An idle session with a background command of its own
@@ -1362,6 +1372,7 @@ impl SplitlaneApp {
             ui,
             status,
             is_shell,
+            runs_command,
             unseen,
             announcing,
             meta,
@@ -1467,13 +1478,11 @@ impl SplitlaneApp {
             } else {
                 surface_row_meta(meta, ui)
             })
-            .child(status_dot(
-                "rail-surface-row",
-                Some(status),
-                unseen,
-                announcing,
-                ui,
-            ))
+            .child(if runs_command && !unseen {
+                command_dot(ui)
+            } else {
+                status_dot("rail-surface-row", Some(status), unseen, announcing, ui)
+            })
             .into_any_element();
 
         let mut row = surface_row_frame(
@@ -1852,6 +1861,9 @@ struct ThreadRowArgs {
     status: crate::project::ThreadStatus,
     /// A bare shell rather than a launched agent.
     is_shell: bool,
+    /// A shell with a command running in it. Its dot is the neutral one, and
+    /// `meta` carries how long the command has run.
+    runs_command: bool,
     /// What the surface is, in one word: the agent's name, or "shell".
     meta: SharedString,
     /// Background commands alive beside an idle turn. Above zero the meta
@@ -2350,6 +2362,19 @@ fn status_dot(
         fill,
         ui.attention,
         announcing,
+    )
+}
+
+/// The dot of a shell with a command running in it: a full step above the
+/// idle dot and with no hue of its own. The command is alive, so it is not
+/// idle; it is not an agent's turn, so it takes none of the turn colours.
+fn command_dot(ui: crate::theme::UiColors) -> gpui::AnyElement {
+    crate::app::announce::announceable_dot(
+        SharedString::from("rail-command-dot"),
+        RAIL_STATUS_DOT,
+        crate::app::announce::DotFill::Solid(ui.faint),
+        ui.attention,
+        None,
     )
 }
 
