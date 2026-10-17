@@ -11,9 +11,10 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
-use splitlane_ipc_client::IpcClient;
+use splitlane_ipc_client::{IpcClient, IpcTransport};
 
 mod answer_cmd;
+mod closed_window;
 mod control_cmds;
 mod flow_cmd;
 mod flow_spec;
@@ -689,12 +690,74 @@ pub fn run() -> i32 {
         }
     };
 
+    if reads_agent_state(&command)
+        && client.call("system.ping", serde_json::json!({})).is_err()
+        && let Some(closed) = closed_window::ClosedWindow::read()
+    {
+        let ago = closed
+            .last_seen_secs_ago()
+            .map_or_else(String::new, |secs| {
+                format!(", {} ago", read_cmds::running_for(secs))
+            });
+        eprintln!(
+            "splitlane: Splitlane is not running; this is what its window last saw{ago}. \
+             Nothing is tracked until it starts again."
+        );
+        return match dispatch_closed(command, &closed) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("splitlane: {}", e.message);
+                e.code
+            }
+        };
+    }
+
     match dispatch(command, &client) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("splitlane: {}", e.message);
             e.code
         }
+    }
+}
+
+/// The verbs that can still answer with the window closed, from what it
+/// handed the session host; see [`closed_window`].
+fn reads_agent_state(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Ps { .. } | Commands::Status { .. } | Commands::Answer { .. }
+    )
+}
+
+/// [`dispatch`] for the verbs [`reads_agent_state`] lets through while the
+/// window is closed.
+fn dispatch_closed(
+    command: Commands,
+    closed: &closed_window::ClosedWindow,
+) -> Result<i32, CliError> {
+    match command {
+        Commands::Ps { json, all } => read_cmds::ps(closed, json, all),
+        Commands::Status { target, json } => read_cmds::status(closed, &target, json),
+        Commands::Answer {
+            target,
+            after,
+            max_bytes,
+            out,
+            raw,
+            json,
+        } => answer_cmd::answer(
+            closed,
+            &target,
+            answer_cmd::AnswerOptions {
+                after,
+                max_bytes: max_bytes.unwrap_or(answer_cmd::DEFAULT_MAX_BYTES),
+                out,
+                raw,
+                json,
+            },
+        ),
+        _ => Err(CliError::runtime(closed_window::ONLY_READS)),
     }
 }
 

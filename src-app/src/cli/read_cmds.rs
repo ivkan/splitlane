@@ -149,7 +149,7 @@ pub fn ps(client: &impl IpcTransport, json_out: bool, all: bool) -> Result<i32, 
 
 /// `41s`, `4m`, `1h 12m`: how long a command has run, in the words the
 /// Activity list uses.
-fn running_for(secs: u64) -> String {
+pub(super) fn running_for(secs: u64) -> String {
     match secs {
         0..60 => format!("{secs}s"),
         60..3600 => format!("{}m", secs / 60),
@@ -258,7 +258,11 @@ fn print_agents_table(result: &Value) {
             .map_or_else(|| "-".to_string(), |p| p.to_string());
         let tool = a.get("tool").and_then(Value::as_str).unwrap_or("");
         let state = a.get("state").and_then(Value::as_str).unwrap_or("");
-        let ws = a.get("workspace").and_then(Value::as_u64).unwrap_or(0);
+        // No index with the window closed: the rail order is the window's.
+        let ws = a
+            .get("workspace")
+            .and_then(Value::as_u64)
+            .map_or_else(|| "-".to_string(), |ws| ws.to_string());
         let pane = a.get("surface_name").and_then(Value::as_str).unwrap_or("-");
         println!("{pid:>7}  {tool:<10}  {state:<18}  {ws:>2}  {pane}");
     }
