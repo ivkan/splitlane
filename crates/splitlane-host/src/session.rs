@@ -41,7 +41,7 @@ use crate::engine::{self, Engine};
 use crate::lock;
 use crate::log::SessionLog;
 use crate::program_status;
-use crate::protocol::{ExitStatus, Facts, SessionId, SessionInfo, SpawnSpec};
+use crate::protocol::{AgentState, ExitStatus, Facts, SessionId, SessionInfo, SpawnSpec};
 
 /// Argv[1] of the watcher process that kills a child's process group when
 /// the process that started the watcher dies. The app binary implements it;
@@ -256,6 +256,15 @@ pub(crate) struct Session {
     /// Set by the waiter the moment the child is reaped, before the rest of
     /// its output is collected.
     reaped: AtomicBool,
+    /// The newest `publish_state`; see [`AgentState`].
+    agent_state: Mutex<Option<Published>>,
+}
+
+struct Published {
+    state: serde_json::Value,
+    at_ms: u64,
+    /// The connection that published it, while that connection is open.
+    publisher: Option<u64>,
 }
 
 impl Session {
@@ -327,10 +336,7 @@ impl Session {
             program,
             label: spec.label,
             exported: spec.exported,
-            created_at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|since| since.as_millis() as u64)
-                .unwrap_or(0),
+            created_at_ms: now_ms(),
             shared: Mutex::new(Shared {
                 log: SessionLog::new(settings.log_capacity, spec.cols, spec.rows),
                 cols: spec.cols,
@@ -354,6 +360,7 @@ impl Session {
             input: Mutex::new(Some(input_tx)),
             guard: Mutex::new(guard),
             reaped: AtomicBool::new(false),
+            agent_state: Mutex::new(None),
         });
         settings.budget.enroll(&session);
 
@@ -792,6 +799,34 @@ impl Session {
             attached: shared.attached,
             exported: self.exported.clone(),
             dropped_replies: self.dropped_replies.load(Ordering::Relaxed),
+            agent_state: lock(&self.agent_state)
+                .as_ref()
+                .map(|published| AgentState {
+                    state: published.state.clone(),
+                    published_at_ms: published.at_ms,
+                    live: published.publisher.is_some(),
+                }),
+        }
+    }
+
+    /// Keep `state` as what connection `publisher` says about the session.
+    /// `null` takes back whatever was said.
+    pub(crate) fn publish_state(&self, state: serde_json::Value, publisher: u64) {
+        *lock(&self.agent_state) = (!state.is_null()).then(|| Published {
+            state,
+            at_ms: now_ms(),
+            publisher: Some(publisher),
+        });
+    }
+
+    /// Connection `publisher` closed. A state it published stays, marked as
+    /// no longer kept current; one published since by another connection
+    /// is not touched.
+    pub(crate) fn publisher_gone(&self, publisher: u64) {
+        if let Some(published) = lock(&self.agent_state).as_mut() {
+            if published.publisher == Some(publisher) {
+                published.publisher = None;
+            }
         }
     }
 
@@ -818,6 +853,13 @@ struct Opened {
     wake_tx: OwnedFd,
     pid: u32,
     guard: Option<OwnedFd>,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn open_session(

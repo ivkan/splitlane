@@ -28,8 +28,8 @@ use serde_json::Value;
 use crate::lock;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, ExitStatus, Facts, FrameError, Hello, ListResult,
-    ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId, SessionInfo, SetFactsArgs,
-    ShutdownArgs, SpawnArgs, SpawnResult, SpawnSpec, WireError,
+    PublishStateArgs, ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId,
+    SessionInfo, SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, SpawnSpec, WireError,
 };
 use crate::HostError;
 
@@ -501,6 +501,20 @@ impl Client {
             &SetFactsArgs {
                 session,
                 facts: facts.clone(),
+            },
+        )
+        .map(drop)
+    }
+
+    /// Tell the host what is known about the program in the session; see
+    /// [`protocol::AgentState`]. A host older than contract 2 answers with
+    /// [`protocol::ERR_UNKNOWN_OP`].
+    pub fn publish_state(&self, session: SessionId, state: &Value) -> Result<(), HostError> {
+        self.request::<_, Value>(
+            protocol::OP_PUBLISH_STATE,
+            &PublishStateArgs {
+                session,
+                state: state.clone(),
             },
         )
         .map(drop)
