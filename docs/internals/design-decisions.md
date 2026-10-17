@@ -863,7 +863,13 @@ the host that the saved layout does not mention - its window was killed
 before the layout was written - would otherwise run on unseen, and for an
 agent that is spending unseen. A window that finds any when it starts lists
 them on a card, each with `Open` (a new tab in the pane the person is in) and
-`End`. `Not now` ends nothing and the next window lists them again. There is
+`End`. With no pane open - a window with no project, or a project with no
+panes - `Open` makes the session a pane of its own: in the project its shell
+was told it belongs to when that one is open, else in the project on screen,
+else in a new project at its directory. It used to say "open a project first"
+and do nothing, which in an empty window left the card with no answer that
+worked. `Not now` ends nothing; the Running sheet lists the sessions until the
+next window lists them again, and the card says so. There is
 deliberately no timeout that ends such a session: it may be the one turn that
 mattered. The card does not take the keyboard, so it is not a focus holder
 and the panes keep their keys while it is up.

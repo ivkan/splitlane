@@ -106,7 +106,7 @@ impl SplitlaneApp {
             .map(|container| container.id)
             .zip(self.focused_pane_as_shown(window, cx))
         else {
-            self.show_toast("Open a project first: the session needs a pane.", cx);
+            self.open_held_session_as_pane(at, window, cx);
             return;
         };
         let held = self.held_unshown.remove(at);
@@ -121,6 +121,65 @@ impl SplitlaneApp {
         // without asking.
         self.save_session(cx);
         cx.notify();
+    }
+
+    /// Show a held session when there is no pane to put it in: a window
+    /// with no project, or a project with no panes.
+    ///
+    /// It used to say "Open a project first" and do nothing, and in a window
+    /// with no project that left the card's `Open` with no way to work: the
+    /// card covers the window, and putting it away hid the sessions until the
+    /// next launch. So the session becomes a pane of its own, in the project
+    /// its shell was told it belongs to when that one is open, else in the
+    /// project on screen, else in a new project at the session's directory.
+    fn open_held_session_as_pane(
+        &mut self,
+        at: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(held) = self.held_unshown.get(at) else {
+            return;
+        };
+        let cwd = std::path::PathBuf::from(&held.cwd);
+        let own = held
+            .exported_workspace
+            .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id));
+        let on_screen = (!self.workspaces.is_empty()).then_some(self.active_idx);
+        let ws_idx = match own.or(on_screen) {
+            Some(idx) => idx,
+            None => {
+                let title = cwd
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| held.cwd.clone());
+                if self.create_container(title, cwd.clone(), cx).is_none() {
+                    self.show_toast("Too many projects are open to add one for it.", cx);
+                    return;
+                }
+                self.workspaces.len() - 1
+            }
+        };
+        let held = self.held_unshown.remove(at);
+        let container = self.workspaces[ws_idx].id;
+        let terminal = cx.new(|cx| TerminalView::with_cwd(container, Some(cwd), None, cx));
+        terminal.read(cx).attach_to_held_session(held.id, None);
+        cx.subscribe(&terminal, Self::handle_terminal_event)
+            .detach();
+        let pane = self.create_pane(terminal, cx);
+        let ws = &mut self.workspaces[ws_idx];
+        match ws.root.as_mut() {
+            Some(root) => {
+                root.split_first_leaf(crate::layout::SplitDirection::Horizontal, pane.clone());
+            }
+            None => ws.root = Some(crate::layout::LayoutTree::Leaf(pane.clone())),
+        }
+        self.activate_workspace_at(
+            ws_idx,
+            crate::app::workspace_ops::WorkspaceFocusTarget::PaneTab { pane, tab_idx: 0 },
+            window,
+            cx,
+        );
     }
 
     /// End a held session without ever showing it.
@@ -199,14 +258,20 @@ impl SplitlaneApp {
                 )
         });
         let count = self.held_unshown.len();
+        // `Not now` puts the card away until the next launch; the sheet is
+        // where the sessions can be found before then.
+        let chord = crate::app::running_sheet::OPEN_CHORD_LABEL;
         let body = if count == 1 {
-            "A session kept running after its window was gone, and no pane shows it. \
-             Open it in the pane you are in, or end it."
-                .to_string()
+            format!(
+                "A session kept running after its window was gone, and no pane shows it. \
+                 Open it in the pane you are in, or end it. Running ({chord}) lists it \
+                 until you do."
+            )
         } else {
             format!(
                 "{count} sessions kept running after their window was gone, and no pane \
-                 shows them. Open each in the pane you are in, or end it."
+                 shows them. Open each in the pane you are in, or end it. Running \
+                 ({chord}) lists them until you do."
             )
         };
         let card = div()
