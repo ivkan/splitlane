@@ -77,15 +77,21 @@ surface has been quiet in between.
 ### With the window closed
 
 On macOS, and on Linux builds with libghostty, the session host keeps agent
-sessions running after the window closes. `ps`, `status` and `answer` still work
-then: they answer from what the window last saw before it closed, and they say
-how long ago that was on stderr. Nothing keeps that state current while the
-window is closed, so an agent listed as `running` may have finished since.
-`answer` reads the agent's own transcript, so the text it returns is current; it
-still refuses while the last state it was told is a turn in progress. Every
-other command needs the window and fails as before. With `--json`, those answers
-carry `"window": "closed"` and `seen_secs_ago`, and `ps` has the project's name
-in `project` and no `workspace` index.
+sessions running after the window closes. `ps`, `status`, `answer` and `read`
+still work then, for the agent sessions the window last showed. Each one prints a
+line on stderr saying the window is closed and how long ago it last saw them.
+
+- `ps` and `status` answer from what the window last saw. Nothing keeps that
+  current while the window is closed, so an agent listed as `running` may have
+  finished since.
+- `answer` reads the agent's own transcript, so its text is current. It still
+  refuses while the last state it was told is a turn in progress.
+- `read` is current: the session host rebuilds the text from the session's own
+  output, history included, as far back as the host's log of that output goes.
+
+Every other command needs the window and fails as before. With `--json`, those
+answers carry `"window": "closed"`; `ps` and `status` add `seen_secs_ago`, and
+`ps` has the project's name in `project` and no `workspace` index.
 
 ### Following events
 

@@ -10,8 +10,9 @@ Notable changes to Splitlane are recorded here. The format follows
 
 - With the window closed, `splitlane ps`, `status` and `answer` answer for the
   agent sessions the session host keeps, from what the window last saw, and say
-  how long ago that was. Before, every command failed until Splitlane was
-  started again.
+  how long ago that was. `splitlane read` works too, and its text is current:
+  the session host rebuilds it from the session's output. Before, every command
+  failed until Splitlane was started again.
 
 ### Fixed
 
