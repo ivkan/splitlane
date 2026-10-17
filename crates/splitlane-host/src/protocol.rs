@@ -111,7 +111,8 @@ use serde_json::Value;
 /// 2: `publish_state` and [`SessionInfo::agent_state`].
 /// 3: `read_text`.
 /// 4: `send_text`.
-pub const CONTRACT: u32 = 4;
+/// 5: [`SessionInfo::program_report`] and [`AgentState::turns_ended_at_publish`].
+pub const CONTRACT: u32 = 5;
 /// The oldest contract this build still accepts from a peer.
 pub const MIN_CONTRACT: u32 = 1;
 
@@ -766,6 +767,39 @@ pub struct AgentState {
     /// closed: nobody is keeping this state current any more.
     #[serde(default)]
     pub live: bool,
+    /// [`ProgramReport::turns_ended`] when the state was published, so a
+    /// reader can count the turns that ended after it.
+    #[serde(default)]
+    pub turns_ended_at_publish: u64,
+}
+
+/// What the program in a session last said about itself with OSC 7501, and
+/// how many of its turns the host saw end that way. Nothing in it is
+/// checked: any output can print a report. The window does not decide a
+/// state on it; it is for a reader that has nothing better, with the window
+/// closed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramReport {
+    /// `idle`, `working`, `done`, `blocked` or `error`; absent once the
+    /// program cleared its record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// For `blocked`: `permission`, `question` or `auth`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg: Option<String>,
+    /// When the last report arrived, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub at_ms: u64,
+    /// Turns that ended: a report of `done`, `idle` or `error` after one of
+    /// `working` or `blocked`.
+    #[serde(default)]
+    pub turns_ended: u64,
+    /// How the last of them ended: `finished` for `done`, `interrupted`
+    /// for `idle` with no `done` before it, `failed` for `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -829,6 +863,10 @@ pub struct SessionInfo {
     /// Absent before the first write, and from a host older than contract 4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_at_ms: Option<u64>,
+    /// What the program last reported about itself; absent until it first
+    /// does, and from a host older than contract 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_report: Option<ProgramReport>,
     /// What a window last published about the session, if any did. Absent
     /// from a host older than contract 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]

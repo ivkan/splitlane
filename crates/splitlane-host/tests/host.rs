@@ -1154,6 +1154,38 @@ fn a_line_break_is_refused_where_it_would_submit_the_text_in_pieces() {
 }
 
 #[test]
+fn the_programs_own_reports_are_kept_and_its_turns_counted() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    // A turn that finishes, one that is stopped, and a report for a record
+    // beneath the root, which is the program's own detail.
+    let (session, _) = client
+        .spawn(sh(concat!(
+            r"printf '\033]7501;state=working\007\033]7501;state=done\007';",
+            r"printf '\033]7501;state=blocked:kind=permission:msg=Allow?\007';",
+            r"printf '\033]7501;state=idle\007\033]7501;state=working:id=sub\007';",
+            "read hold"
+        )))
+        .unwrap();
+    let report = wait_for("both turns", || {
+        info(&client, session)
+            .program_report
+            .filter(|report| report.turns_ended == 2)
+    });
+    assert_eq!(report.state.as_deref(), Some("idle"));
+    assert_eq!(report.last_outcome.as_deref(), Some("interrupted"));
+    assert!(report.at_ms > 0);
+
+    // A state published now counts from here.
+    client
+        .publish_state(session, &serde_json::json!({"status": "idle"}))
+        .unwrap();
+    let published = info(&client, session).agent_state.unwrap();
+    assert_eq!(published.turns_ended_at_publish, 2);
+    client.kill(session).unwrap();
+}
+
+#[test]
 fn a_published_state_is_bounded_and_needs_a_session() {
     let host = TestHost::start(|_| {});
     let client = host.client();
