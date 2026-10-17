@@ -6,6 +6,18 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- With the window closed, `splitlane ps`, `status` and `answer` answer for the
+  agent sessions the session host keeps, from what the window last saw, and say
+  how long ago that was. Before, every command failed until Splitlane was
+  started again.
+
+### Fixed
+
+- A session the session host kept with no pane opens as a pane of its own
+  project when no pane is open, instead of asking for one.
+
 ## [0.2.10] - 2026-10-17
 
 ### Added
