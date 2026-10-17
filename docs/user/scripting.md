@@ -77,8 +77,8 @@ surface has been quiet in between.
 ### With the window closed
 
 On macOS, and on Linux builds with libghostty, the session host keeps agent
-sessions running after the window closes. `ps`, `status`, `answer` and `read`
-still work then, for the agent sessions the window last showed. Each one prints a
+sessions running after the window closes. `ps`, `status`, `answer`, `read` and
+`send` still work then, for the agent sessions the window last showed. Each one prints a
 line on stderr saying the window is closed and how long ago it last saw them.
 
 - `ps` and `status` answer from what the window last saw. Nothing keeps that
@@ -88,6 +88,14 @@ line on stderr saying the window is closed and how long ago it last saw them.
   refuses while the last state it was told is a turn in progress.
 - `read` is current: the session host rebuilds the text from the session's own
   output, history included, as far back as the host's log of that output goes.
+- `send` goes through the session host, which takes it only when the Splitlane
+  that started the host was launched with `SPLITLANE_IPC_SCRIPTING=1` (see
+  [Write access](#write-access)). `--key` does not open it: telling which
+  session opened which needs the window. The text is pasted when submitting
+  into a program that takes pastes, and Enter follows it. Nothing can tell
+  whether a turn started, so `send` does not wait for one. Until the window
+  sees the session again, `status` reports the session as `running` and
+  `answer` refuses: the last state it has was decided before the text went in.
 
 Every other command needs the window and fails as before. With `--json`, those
 answers carry `"window": "closed"`; `ps` and `status` add `seen_secs_ago`, and
@@ -178,7 +186,16 @@ Splitlane's socket accepts connections only from your own user account, but any
 process running as you can reach it. So the operations that type into a terminal
 or start a command are off until you turn them on. The environment variables
 are read from the **Splitlane process**, not from the shell running the CLI:
-start Splitlane from a shell that has them set.
+start Splitlane from a shell that has them set. With the window closed, `send`
+is decided by the session host, by the value the Splitlane that started it had.
+The host keeps that value for as long as it runs, which is as long as it holds
+sessions: a Splitlane launched later with another value does not change it.
+
+These controls govern Splitlane's interfaces: the CLI, the IPC methods and the
+MCP bridge. They are not a boundary against a program running as you that sets
+out to get around them. Such a program can speak the session host's own protocol,
+which the window uses to type into its panes, and that protocol cannot tell the
+window from any other process of yours.
 
 | Control | Default | What it opens |
 | --- | --- | --- |

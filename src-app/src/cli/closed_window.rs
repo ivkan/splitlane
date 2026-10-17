@@ -9,6 +9,12 @@
 //! `read` is the one answer that is current: the host rebuilds the text
 //! from the session's own output.
 //!
+//! `send` writes through the host, which decides whether it may: only a
+//! host started by a Splitlane launched with `SPLITLANE_IPC_SCRIPTING=1`
+//! takes text. The other way the window lets a write through, a session
+//! writing into one it opened, needs the window's record of who opened what,
+//! and is refused here.
+//!
 //! Nothing here is current. The window decided every word, and nobody has
 //! decided anything since it closed: an agent that was working may have
 //! finished long ago. Every answer says so (`window: "closed"`, and how long
@@ -29,7 +35,13 @@ pub struct ClosedWindow {
 
 /// What is said for a request the closed window cannot answer.
 pub(super) const ONLY_READS: &str = "Splitlane is not running. With its window closed, only `ps`, \
-     `status`, `answer` and `read` work; start Splitlane for the rest.";
+     `status`, `answer`, `read` and `send` work; start Splitlane for the rest.";
+
+/// What `send` is told when the host does not take writes.
+const WRITES_OFF: &str = "send with the window closed goes through the session host, and the \
+     Splitlane that started it was not launched with SPLITLANE_IPC_SCRIPTING=1. The host keeps \
+     that setting while it holds sessions: start Splitlane and send through the window, or end \
+     the sessions (`splitlane host stop`) and launch Splitlane with the variable set.";
 
 impl ClosedWindow {
     /// The host's sessions, or `None` when no host runs: then there is
@@ -64,14 +76,30 @@ impl ClosedWindow {
     }
 
     /// Each session a window published a state for, with that state.
-    fn published(&self) -> impl Iterator<Item = (&SessionInfo, &Value, u64)> {
+    ///
+    /// A state published before `send` wrote into the session was decided
+    /// before the write, and the program may be answering it now. It is
+    /// shown as a turn in flight, which is all that is known: otherwise
+    /// `answer` straight after a `send` would hand back the answer before
+    /// it, and say nothing.
+    fn published(&self) -> impl Iterator<Item = (&SessionInfo, Value, u64)> {
         self.sessions.iter().filter_map(|session| {
             let published = session.agent_state.as_ref()?;
-            published.state.is_object().then_some((
-                session,
-                &published.state,
-                published.published_at_ms,
-            ))
+            if !published.state.is_object() {
+                return None;
+            }
+            let mut state = published.state.clone();
+            if session
+                .sent_at_ms
+                .is_some_and(|sent| sent >= published.published_at_ms)
+            {
+                state["status"] = json!("running");
+                state["source"] = json!("none");
+                state["tier"] = json!("T3");
+                state["message"] = Value::Null;
+                state["sent_with_window_closed"] = json!(true);
+            }
+            Some((session, state, published.published_at_ms))
         })
     }
 
@@ -88,7 +116,7 @@ impl ClosedWindow {
             .published()
             .filter_map(|(session, state, _)| {
                 Some(json!({
-                    "surface_id": Self::surface_id(state)?,
+                    "surface_id": Self::surface_id(&state)?,
                     "name": state.get("surface_name"),
                     "cwd": session.cwd,
                     "cmd": state.get("agent"),
@@ -109,10 +137,10 @@ impl ClosedWindow {
                 json!({
                     "pid": Value::Null,
                     "tool": state.get("agent"),
-                    "state": state_word(state),
+                    "state": state_word(&state),
                     "hooked": state.get("source").and_then(Value::as_str) == Some("hook"),
                     "reason": Value::Null,
-                    "surface_id": Self::surface_id(state),
+                    "surface_id": Self::surface_id(&state),
                     "surface_name": state.get("surface_name"),
                     "workspace": Value::Null,
                     "project": state.get("workspace"),
@@ -139,7 +167,7 @@ impl ClosedWindow {
             .ok_or_else(|| format!("no pane {surface_id} in what the window last saw"))?;
         Ok(json!({
             "surface_id": surface_id,
-            "state": state_word(state),
+            "state": state_word(&state),
             "hooked": state.get("source").and_then(Value::as_str) == Some("hook"),
             "tool": state.get("agent"),
             "message": state.get("message"),
@@ -219,6 +247,60 @@ impl ClosedWindow {
         Ok(value)
     }
 
+    /// `surface.send_text` for a caller the write setting lets through, as
+    /// the host writes it. The reply leaves out what only the window knows,
+    /// the agent behind the pane and whether a turn started, so the caller
+    /// does not wait for a start nobody can confirm.
+    fn send_text(&self, params: &Value) -> Result<Value, String> {
+        let surface_id = params
+            .get("surface_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "surface.send_text needs a surface_id".to_string())?;
+        let (session, _, _) = self
+            .published()
+            .find(|(_, state, _)| Self::surface_id(state) == Some(surface_id))
+            .ok_or_else(|| format!("no pane {surface_id} in what the window last saw"))?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "the session host is not reachable".to_string())?;
+        let text = params
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let submit = params.get("submit").and_then(Value::as_bool) == Some(true);
+        let args = splitlane_host::protocol::SendTextArgs {
+            session: session.id,
+            text: text.clone(),
+            submit,
+            paste: params.get("paste").and_then(Value::as_bool),
+            submit_delay_ms: Some(
+                splitlane_config::loader::load_config().resolved_submit_paste_delay_ms(),
+            ),
+        };
+        let sent = client.send_text(&args).map_err(|e| match e.remote_code() {
+            Some(splitlane_host::protocol::ERR_FORBIDDEN) => WRITES_OFF.to_string(),
+            Some(splitlane_host::protocol::ERR_UNKNOWN_OP) => {
+                "the session host was started by an older Splitlane and cannot write into a \
+                 session; start Splitlane to send"
+                    .to_string()
+            }
+            _ => format!("session host: {e}"),
+        })?;
+        Ok(json!({
+            "sent": true,
+            "length": text.len(),
+            "submitted": submit,
+            "paste": sent.paste,
+            "typed": false,
+            "submit_mode": sent.submit_mode,
+            "agent_target": false,
+            "terminal_bracketed_paste": sent.bracketed_paste,
+            "window": "closed",
+        }))
+    }
+
     /// How long ago the window last said anything, over every session.
     pub fn last_seen_secs_ago(&self) -> Option<u64> {
         self.published()
@@ -243,6 +325,7 @@ impl IpcTransport for ClosedWindow {
                 self.status(surface_id)
             }
             "surface.read" => self.surface_text(&params),
+            "surface.send_text" => self.send_text(&params),
             _ => Err(ONLY_READS.to_string()),
         }
     }
@@ -374,8 +457,8 @@ mod tests {
         let closed = ClosedWindow::from_sessions(Vec::new(), 0);
         let error = closed
             .call(
-                "surface.send_text",
-                json!({ "surface_id": 7, "text": "hi" }),
+                "surface.send_keystroke",
+                json!({ "surface_id": 7, "keystroke": "esc" }),
             )
             .unwrap_err();
         assert!(error.contains("not running"), "{error}");
@@ -393,6 +476,31 @@ mod tests {
             .call("surface.read", json!({ "surface_id": 7 }))
             .unwrap_err();
         assert!(no_host.contains("not reachable"), "{no_host}");
+    }
+
+    #[test]
+    fn a_state_from_before_a_send_reads_as_a_turn_in_flight() {
+        let mut written = session(Some(rail(ThreadStatus::Idle)), 1_000);
+        written.sent_at_ms = Some(2_000);
+        let closed = ClosedWindow::from_sessions(vec![written], 3_000);
+        let status = closed
+            .call("surface.status", json!({ "surface_id": 7 }))
+            .unwrap();
+        // `answer` refuses on this word rather than hand back the answer
+        // the text was sent after.
+        assert_eq!(status["rail"]["status"], "running");
+        assert_eq!(status["rail"]["tier"], "T3");
+        assert_eq!(status["rail"]["sent_with_window_closed"], true);
+        assert_eq!(status["state"], "thinking");
+
+        // A write the window saw and published after is not a turn in flight.
+        let mut seen = session(Some(rail(ThreadStatus::Idle)), 3_000);
+        seen.sent_at_ms = Some(2_000);
+        let closed = ClosedWindow::from_sessions(vec![seen], 4_000);
+        let status = closed
+            .call("surface.status", json!({ "surface_id": 7 }))
+            .unwrap();
+        assert_eq!(status["rail"]["status"], "idle");
     }
 
     #[test]
