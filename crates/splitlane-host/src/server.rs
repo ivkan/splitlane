@@ -31,7 +31,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,8 +47,8 @@ use crate::client::Client;
 use crate::log::Item;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, Frame, FrameError, Hello, Incompatible, ListResult,
-    ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId, SetFactsArgs, ShutdownArgs,
-    SpawnArgs, SpawnResult, WireError,
+    PublishStateArgs, ReplyEnvelope, RequestEnvelope, ResizeArgs, SessionArgs, SessionId,
+    SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, WireError,
 };
 use crate::session::{LogBudget, Session, SessionSettings};
 use crate::{lock, HostConfig, HostError, MAX_SOCKET_PATH_BYTES};
@@ -87,6 +87,8 @@ struct Host {
     stopping: AtomicBool,
     /// Set by a `shutdown` request that was accepted.
     shutdown_requested: AtomicBool,
+    /// Numbers connections, so a published state knows which one said it.
+    next_connection: AtomicU64,
 }
 
 impl Host {
@@ -149,6 +151,7 @@ pub(crate) fn run(config: HostConfig) -> Result<(), HostError> {
         max_connections: config.max_connections,
         stopping: AtomicBool::new(false),
         shutdown_requested: AtomicBool::new(false),
+        next_connection: AtomicU64::new(0),
     });
     log::info!(
         "host {} (pid {}) listening on {}",
@@ -521,6 +524,7 @@ fn serve(host: &Arc<Host>, stream: Stream) {
     }
 
     let mut connection = Connection {
+        id: host.next_connection.fetch_add(1, Ordering::Relaxed),
         host: host.clone(),
         wire: wire.clone(),
         followers: HashMap::new(),
@@ -545,6 +549,9 @@ fn serve(host: &Arc<Host>, stream: Stream) {
     for follower in connection.followers.values() {
         follower.stop();
     }
+    for session in lock(&host.sessions).iter() {
+        session.publisher_gone(connection.id);
+    }
     if !connection.followers.is_empty() {
         log::info!(
             "a client disconnected; {} stream(s) detached",
@@ -566,6 +573,7 @@ fn refuse_frame(wire: &Wire, error: &FrameError) {
 }
 
 struct Connection {
+    id: u64,
     host: Arc<Host>,
     wire: Arc<Wire>,
     followers: HashMap<SessionId, Follower>,
@@ -725,6 +733,25 @@ impl Connection {
             protocol::OP_SET_FACTS => {
                 let SetFactsArgs { session, facts } = args(raw)?;
                 self.session(session)?.set_facts(&facts);
+                Ok(Value::Null)
+            }
+            protocol::OP_PUBLISH_STATE => {
+                let PublishStateArgs { session, state } = args(raw)?;
+                // Measured as sent rather than as received, which is close
+                // enough for a bound that is far above any real state.
+                let len = serde_json::to_vec(&state)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0);
+                if len > protocol::MAX_AGENT_STATE_LEN {
+                    return Err(WireError::new(
+                        protocol::ERR_BAD_REQUEST,
+                        format!(
+                            "a state of {len} bytes exceeds the {}-byte limit",
+                            protocol::MAX_AGENT_STATE_LEN
+                        ),
+                    ));
+                }
+                self.session(session)?.publish_state(state, self.id);
                 Ok(Value::Null)
             }
             protocol::OP_KILL => {

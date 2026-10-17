@@ -1001,6 +1001,64 @@ fn questions_about_the_window_are_answered_once_a_client_has_told_the_host() {
     assert_eq!(error.remote_code(), Some(protocol::ERR_NO_SESSION));
 }
 
+#[test]
+fn a_published_state_outlives_its_publisher_and_says_so() {
+    let host = TestHost::start(|_| {});
+    let reader = host.client();
+    let (session, _) = reader.spawn(sh("sleep 30")).unwrap();
+    assert_eq!(info(&reader, session).agent_state, None);
+
+    let window = host.client();
+    let state = serde_json::json!({"status": "waiting", "agent": "claude"});
+    window.publish_state(session, &state).unwrap();
+    let published = info(&reader, session).agent_state.unwrap();
+    assert_eq!(published.state, state);
+    assert!(published.live);
+    assert!(published.published_at_ms > 0);
+
+    // The window quits: the state stays, and is no longer kept current.
+    drop(window);
+    let stale = wait_for("the publisher to be noticed gone", || {
+        info(&reader, session)
+            .agent_state
+            .filter(|state| !state.live)
+    });
+    assert_eq!(stale.state, state);
+    assert_eq!(stale.published_at_ms, published.published_at_ms);
+
+    // A window that starts later takes over, and the reader's own
+    // connection closing says nothing about what another one published.
+    let next = host.client();
+    next.publish_state(session, &serde_json::json!({"status": "working"}))
+        .unwrap();
+    let other = host.client();
+    drop(other);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(info(&reader, session).agent_state.unwrap().live);
+
+    // The agent exited and the pane is a shell again.
+    next.publish_state(session, &serde_json::Value::Null)
+        .unwrap();
+    assert_eq!(info(&reader, session).agent_state, None);
+    reader.kill(session).unwrap();
+}
+
+#[test]
+fn a_published_state_is_bounded_and_needs_a_session() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client.spawn(sh("sleep 30")).unwrap();
+    let huge = serde_json::json!({ "message": "x".repeat(protocol::MAX_AGENT_STATE_LEN) });
+    let error = client.publish_state(session, &huge).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_BAD_REQUEST));
+    assert_eq!(info(&client, session).agent_state, None);
+    let error = client
+        .publish_state(SessionId::new_random(), &serde_json::json!({}))
+        .unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_NO_SESSION));
+    client.kill(session).unwrap();
+}
+
 #[cfg(any(
     target_os = "macos",
     all(target_os = "linux", feature = "libghostty-linux")

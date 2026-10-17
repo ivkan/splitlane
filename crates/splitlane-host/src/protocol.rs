@@ -54,6 +54,17 @@
 //! [`Facts`]; until it has, questions about those go unanswered, as they do
 //! in a terminal that does not support them.
 //!
+//! # What the window concluded about the program
+//!
+//! Whether an agent is working or waiting is decided in the window, which
+//! reads hooks, status files and transcripts the host knows nothing about.
+//! The window hands its conclusion to the host with `publish_state`, and
+//! `list` returns the newest one as [`AgentState`], so a reader can still
+//! see it after the window is gone. The host keeps it and never reads it.
+//! What it adds is the one thing only it can know: whether the connection
+//! that published it is still open (`live`). A closed one means the window
+//! quit or died, and the state is the last it saw, not what is true now.
+//!
 //! # Handshake
 //!
 //! The client sends a [`Hello`], the host answers with its own. Each side
@@ -96,7 +107,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 /// The contract this build speaks.
-pub const CONTRACT: u32 = 1;
+///
+/// 2: `publish_state` and [`SessionInfo::agent_state`].
+pub const CONTRACT: u32 = 2;
 /// The oldest contract this build still accepts from a peer.
 pub const MIN_CONTRACT: u32 = 1;
 
@@ -105,6 +118,10 @@ pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 /// Most bytes one data frame carries. Far below [`MAX_FRAME_LEN`], so a
 /// stream of output never holds the connection's writer for long.
 pub const MAX_DATA_CHUNK: usize = 64 * 1024;
+/// Most bytes of JSON one `publish_state` may carry. A state is a few
+/// hundred bytes; the bound only keeps a confused client from parking
+/// megabytes in every session.
+pub const MAX_AGENT_STATE_LEN: usize = 16 * 1024;
 
 pub const KIND_HELLO: u8 = 1;
 pub const KIND_REQUEST: u8 = 2;
@@ -125,6 +142,7 @@ pub const OP_FORGET: &str = "forget";
 pub const OP_SHUTDOWN: &str = "shutdown";
 pub const OP_REDRAW: &str = "redraw";
 pub const OP_SET_FACTS: &str = "set_facts";
+pub const OP_PUBLISH_STATE: &str = "publish_state";
 
 pub const EVENT_RESIZED: &str = "resized";
 pub const EVENT_EXITED: &str = "exited";
@@ -660,6 +678,31 @@ pub struct SetFactsArgs {
     pub facts: Facts,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishStateArgs {
+    pub session: SessionId,
+    /// Any JSON object. The host stores it as given and returns it in
+    /// [`AgentState::state`]; its shape is between the window and whoever
+    /// reads it. `null` withdraws the state: the program it described is
+    /// gone and the session is a shell again.
+    #[serde(default)]
+    pub state: Value,
+}
+
+/// The newest state a client published for a session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentState {
+    #[serde(default)]
+    pub state: Value,
+    /// Milliseconds since the Unix epoch, by the host's clock.
+    #[serde(default)]
+    pub published_at_ms: u64,
+    /// True while the connection that published it is open. False once it
+    /// closed: nobody is keeping this state current any more.
+    #[serde(default)]
+    pub live: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShutdownArgs {
     #[serde(default)]
@@ -715,6 +758,10 @@ pub struct SessionInfo {
     /// because the program was not reading its input.
     #[serde(default)]
     pub dropped_replies: u64,
+    /// What a window last published about the session, if any did. Absent
+    /// from a host older than contract 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_state: Option<AgentState>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
