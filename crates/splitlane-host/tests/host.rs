@@ -1069,6 +1069,90 @@ fn the_text_of_a_session_has_its_history_above_the_screen() {
     client.kill(session).unwrap();
 }
 
+fn send(session: SessionId, text: &str, submit: bool) -> protocol::SendTextArgs {
+    protocol::SendTextArgs {
+        session,
+        text: text.into(),
+        submit,
+        paste: None,
+        submit_delay_ms: Some(50),
+    }
+}
+
+#[test]
+fn text_is_sent_only_by_a_host_that_allows_writes() {
+    let host = TestHost::start(|_| {});
+    let client = host.client();
+    let (session, _) = client.spawn(sh("read line; echo \"got:$line\"")).unwrap();
+    let error = client.send_text(&send(session, "hi", true)).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_FORBIDDEN));
+    client.kill(session).unwrap();
+}
+
+#[test]
+fn sent_text_is_typed_and_submitted() {
+    let host = TestHost::start(|config| config.writes_allowed = true);
+    let client = host.client();
+    let (session, _) = client
+        .spawn(sh(r#"printf 'ready\n'; read line; echo "got:$line""#))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the prompt", |t| t.text().contains("ready"));
+    let sent = client.send_text(&send(session, "hello", true)).unwrap();
+    assert!(!sent.paste);
+    assert_eq!(sent.submit_mode.as_deref(), Some("inline_cr"));
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    assert!(trace.text().contains("got:hello"), "{:?}", trace.text());
+}
+
+#[test]
+fn sent_text_is_pasted_into_a_program_that_takes_pastes() {
+    let host = TestHost::start(|config| config.writes_allowed = true);
+    let client = host.client();
+    // The program switches bracketed paste on and shows what it reads,
+    // escapes included.
+    let (session, _) = client
+        .spawn(sh(
+            r#"printf '\033[?2004hready\n'; stty -echo; read line; read rest; printf 'got:%s\n' "$line" | od -c | head -3"#,
+        ))
+        .unwrap();
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the prompt", |t| t.text().contains("ready"));
+    let sent = client
+        .send_text(&send(session, "two\nlines", true))
+        .unwrap();
+    assert!(sent.paste && sent.bracketed_paste);
+    assert_eq!(sent.submit_mode.as_deref(), Some("deferred_cr"));
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    // The paste opener reached the program ahead of the text.
+    assert!(
+        trace.text().contains("[   2   0   0   ~   t   w   o"),
+        "{:?}",
+        trace.text()
+    );
+}
+
+#[test]
+fn a_line_break_is_refused_where_it_would_submit_the_text_in_pieces() {
+    let host = TestHost::start(|config| config.writes_allowed = true);
+    let client = host.client();
+    let (session, _) = client.spawn(sh("read line; read line")).unwrap();
+    let error = client
+        .send_text(&send(session, "rm -rf x\necho", false))
+        .unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_BAD_REQUEST));
+    let error = client.send_text(&send(session, "", false)).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_BAD_REQUEST));
+    // A marker inside the text would end the paste early.
+    let error = client
+        .send_text(&send(session, "a\x1b[201~b", true))
+        .unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_BAD_REQUEST));
+    client.kill(session).unwrap();
+}
+
 #[test]
 fn a_published_state_is_bounded_and_needs_a_session() {
     let host = TestHost::start(|_| {});

@@ -258,6 +258,11 @@ pub(crate) struct Session {
     reaped: AtomicBool,
     /// The newest `publish_state`; see [`AgentState`].
     agent_state: Mutex<Option<Published>>,
+    /// See [`SessionInfo::sent_at_ms`]; zero before the first write.
+    sent_at_ms: AtomicU64,
+    /// Held for the whole of one `send_text`, its Enter included, so two
+    /// writes into the session cannot interleave.
+    sending: Mutex<()>,
 }
 
 struct Published {
@@ -361,6 +366,8 @@ impl Session {
             guard: Mutex::new(guard),
             reaped: AtomicBool::new(false),
             agent_state: Mutex::new(None),
+            sent_at_ms: AtomicU64::new(0),
+            sending: Mutex::new(()),
         });
         settings.budget.enroll(&session);
 
@@ -616,6 +623,22 @@ impl Session {
         }
     }
 
+    /// One `send_text` at a time; see the field.
+    pub(crate) fn sending(&self) -> std::sync::MutexGuard<'_, ()> {
+        lock(&self.sending)
+    }
+
+    /// Note that `send_text` wrote into the session just now.
+    pub(crate) fn note_sent(&self) {
+        self.sent_at_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// Whether the program has bracketed paste switched on, as far as the
+    /// log's mode scanner has seen.
+    pub(crate) fn bracketed_paste(&self) -> bool {
+        lock(&self.shared).log.modes().switch(2004) == Some(true)
+    }
+
     /// Resize the terminal to what a client asked for. `pixels` is the size
     /// of the text area in pixels, when the client knows it.
     pub(crate) fn resize(
@@ -799,6 +822,7 @@ impl Session {
             attached: shared.attached,
             exported: self.exported.clone(),
             dropped_replies: self.dropped_replies.load(Ordering::Relaxed),
+            sent_at_ms: Some(self.sent_at_ms.load(Ordering::Relaxed)).filter(|&at| at > 0),
             agent_state: lock(&self.agent_state)
                 .as_ref()
                 .map(|published| AgentState {
