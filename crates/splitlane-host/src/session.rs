@@ -41,7 +41,9 @@ use crate::engine::{self, Engine};
 use crate::lock;
 use crate::log::SessionLog;
 use crate::program_status;
-use crate::protocol::{AgentState, ExitStatus, Facts, SessionId, SessionInfo, SpawnSpec};
+use crate::protocol::{
+    AgentState, ExitStatus, Facts, ProgramReport, SessionId, SessionInfo, SpawnSpec,
+};
 
 /// Argv[1] of the watcher process that kills a child's process group when
 /// the process that started the watcher dies. The app binary implements it;
@@ -260,6 +262,8 @@ pub(crate) struct Session {
     agent_state: Mutex<Option<Published>>,
     /// See [`SessionInfo::sent_at_ms`]; zero before the first write.
     sent_at_ms: AtomicU64,
+    /// See [`SessionInfo::program_report`].
+    reports: Mutex<ProgramWatch>,
     /// Held for the whole of one `send_text`, its Enter included, so two
     /// writes into the session cannot interleave.
     sending: Mutex<()>,
@@ -270,6 +274,72 @@ struct Published {
     at_ms: u64,
     /// The connection that published it, while that connection is open.
     publisher: Option<u64>,
+    turns_ended_at_publish: u64,
+}
+
+/// The program's own reports, as [`ProgramReport`] gives them out.
+#[derive(Default)]
+struct ProgramWatch {
+    report: Option<ProgramReport>,
+    /// A `working` or `blocked` report came after the last end of a turn.
+    in_turn: bool,
+    turns_ended: u64,
+    last_outcome: Option<&'static str>,
+}
+
+impl ProgramWatch {
+    fn apply(&mut self, report: program_status::Report) {
+        use program_status::{Change, State};
+        // Records beneath the root are a program's own detail; the root is
+        // the program.
+        if report.id.is_some() {
+            return;
+        }
+        let at_ms = now_ms();
+        let record = match report.change {
+            Change::Set(record) => record,
+            Change::Clear => {
+                self.report = Some(ProgramReport {
+                    at_ms,
+                    ..self.snapshot()
+                });
+                if let Some(report) = self.report.as_mut() {
+                    report.state = None;
+                    report.kind = None;
+                    report.msg = None;
+                }
+                return;
+            }
+        };
+        match record.state {
+            State::Working | State::Blocked => self.in_turn = true,
+            State::Done | State::Idle | State::Error if self.in_turn => {
+                self.in_turn = false;
+                self.turns_ended += 1;
+                self.last_outcome = Some(match record.state {
+                    State::Done => "finished",
+                    State::Error => "failed",
+                    _ => "interrupted",
+                });
+            }
+            _ => {}
+        }
+        self.report = Some(ProgramReport {
+            state: Some(record.state.as_str().to_string()),
+            kind: record.kind.map(|kind| kind.as_str().to_string()),
+            msg: record.msg,
+            at_ms,
+            ..self.snapshot()
+        });
+    }
+
+    fn snapshot(&self) -> ProgramReport {
+        ProgramReport {
+            turns_ended: self.turns_ended,
+            last_outcome: self.last_outcome.map(str::to_string),
+            ..self.report.clone().unwrap_or_default()
+        }
+    }
 }
 
 impl Session {
@@ -367,6 +437,7 @@ impl Session {
             reaped: AtomicBool::new(false),
             agent_state: Mutex::new(None),
             sent_at_ms: AtomicU64::new(0),
+            reports: Mutex::new(ProgramWatch::default()),
             sending: Mutex::new(()),
         });
         settings.budget.enroll(&session);
@@ -508,9 +579,14 @@ impl Session {
         // its status is read asks what the terminal is right after, because
         // every terminal answers that: whichever answer it reads first
         // settles it.
-        lock(&self.status).feed(bytes, &mut |event| {
-            if let program_status::Event::Query { bel } = event {
+        lock(&self.status).feed(bytes, &mut |event| match event {
+            program_status::Event::Query { bel } => {
                 replies.extend_from_slice(program_status::reply(bel));
+            }
+            program_status::Event::Report(body) => {
+                if let Some(report) = program_status::parse(body) {
+                    lock(&self.reports).apply(report);
+                }
             }
         });
         self.run_engine(&mut engine, |engine| engine.advance(bytes, replies));
@@ -823,12 +899,17 @@ impl Session {
             exported: self.exported.clone(),
             dropped_replies: self.dropped_replies.load(Ordering::Relaxed),
             sent_at_ms: Some(self.sent_at_ms.load(Ordering::Relaxed)).filter(|&at| at > 0),
+            program_report: {
+                let program = lock(&self.reports);
+                program.report.is_some().then(|| program.snapshot())
+            },
             agent_state: lock(&self.agent_state)
                 .as_ref()
                 .map(|published| AgentState {
                     state: published.state.clone(),
                     published_at_ms: published.at_ms,
                     live: published.publisher.is_some(),
+                    turns_ended_at_publish: published.turns_ended_at_publish,
                 }),
         }
     }
@@ -863,11 +944,19 @@ impl Session {
     /// Keep `state` as what connection `publisher` says about the session.
     /// `null` takes back whatever was said.
     pub(crate) fn publish_state(&self, state: serde_json::Value, publisher: u64) {
+        // The count and the time are read under the reports' lock, which a
+        // report is applied and stamped under: a report counted here is
+        // older than the state, and one stamped later is not counted.
+        let reports = lock(&self.reports);
+        let turns_ended_at_publish = reports.turns_ended;
+        let at_ms = now_ms();
         *lock(&self.agent_state) = (!state.is_null()).then(|| Published {
             state,
-            at_ms: now_ms(),
+            at_ms,
             publisher: Some(publisher),
+            turns_ended_at_publish,
         });
+        drop(reports);
     }
 
     /// Connection `publisher` closed. A state it published stays, marked as
