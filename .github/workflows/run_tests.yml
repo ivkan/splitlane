@@ -88,6 +88,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       rendering: ${{ steps.filter.outputs.rendering }}
       ci: ${{ steps.filter.outputs.ci }}
+      relay: ${{ steps.filter.outputs.relay }}
       security: ${{ steps.filter.outputs.security }}
       release_packaging: ${{ steps.filter.outputs.release_packaging }}
       changed_packages: ${{ steps.detect_packages.outputs.changed_packages }}
@@ -120,6 +121,8 @@ jobs:
             ci:
               - '.github/workflows/**'
               - 'scripts/**'
+            relay:
+              - 'relay/**'
             security:
               - '**/Cargo.toml'
               - 'Cargo.lock'
@@ -315,6 +318,27 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  relay_tests:
+    name: Relay (Worker, local)
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.relay == 'true' ||
+      needs.orchestrate.outputs.ci == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # Runs the Worker in `wrangler dev` and checks its rules over real
+      # sockets; nothing reaches Cloudflare.
+      - name: Test
+        working-directory: relay
+        run: node --test test/relay.test.mjs
 
   run_tests_linux:
     name: Tests (Linux x86_64)
@@ -1456,6 +1480,7 @@ jobs:
       - orchestrate
       - check_style
       - run_tests_linux
+      - relay_tests
       - release_build_linux
       - security_audit
       - macos_check
@@ -1474,6 +1499,7 @@ jobs:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
           RESULT_CHECK_STYLE: ${{ needs.check_style.result }}
           RESULT_RUN_TESTS_LINUX: ${{ needs.run_tests_linux.result }}
+          RESULT_RELAY_TESTS: ${{ needs.relay_tests.result }}
           RESULT_RELEASE_BUILD_LINUX: ${{ needs.release_build_linux.result }}
           RESULT_SECURITY_AUDIT: ${{ needs.security_audit.result }}
           RESULT_MACOS_CHECK: ${{ needs.macos_check.result }}
@@ -1497,6 +1523,7 @@ jobs:
           check_result "orchestrate"          "$RESULT_ORCHESTRATE"
           check_result "check_style"          "$RESULT_CHECK_STYLE"
           check_result "run_tests_linux"      "$RESULT_RUN_TESTS_LINUX"
+          check_result "relay_tests"          "$RESULT_RELAY_TESTS"
           check_result "release_build_linux"  "$RESULT_RELEASE_BUILD_LINUX"
           check_result "security_audit"       "$RESULT_SECURITY_AUDIT"
           check_result "macos_check"          "$RESULT_MACOS_CHECK"

@@ -178,7 +178,7 @@ fn serve_forever(
     let name = device.name.as_str();
     let mut retry = RETRY_FIRST;
     loop {
-        match RelaySocket::connect(relay, room) {
+        match RelaySocket::connect(relay, room, key) {
             Ok(mut socket) => {
                 retry = RETRY_FIRST;
                 let mut answer = |method: &str, params: &Value| {

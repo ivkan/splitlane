@@ -24,6 +24,7 @@ It targets Linux (Wayland and X11), macOS and Windows.
 | `crates/splitlane-mcp/`, `crates/splitlane-mcp-install/` | The read-only MCP bridge and its installer |
 | `crates/splitlane-host/` | The session host: PTYs, their output logs and the answers to their terminal queries, in a process without a window. On macOS and on Linux built with libghostty the window opens its panes in it, so their sessions outlive the window (`"session_host": false` turns that off) |
 | `crates/splitlane-ipc-client/`, `crates/splitlane-process/`, `crates/splitlane-telemetry/`, `crates/splitlane-acp/` | Small shared libraries |
+| `relay/` | The Cloudflare Worker that carries sealed frames between the app and a paired phone; JavaScript, tested with `node --test` |
 | `native/libghostty/` | Vendored libghostty sources and checksum-pinned prebuilts - do not edit by hand |
 | `docs/` | User documentation; `docs/internals/` holds the reasoning behind UI and agent-state behaviour |
 | `packaging/`, `assets/`, `debian/` | Installers, icons, desktop metadata |

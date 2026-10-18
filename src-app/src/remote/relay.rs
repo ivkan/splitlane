@@ -1,18 +1,23 @@
 //! The machine's connection to its room on the relay.
 //!
 //! One WebSocket to `<relay>/room/<room>?role=machine`, binary frames each
-//! way. The relay forwards them to the phone in the same room and reads
+//! way, joined with the room's token in a header (a URL ends up in logs). The relay forwards them to the phone in the same room and reads
 //! nothing in them; see `splitlane_remote::wire`.
 
 use std::io;
 use std::net::TcpStream;
 use std::time::Duration;
 
-use splitlane_remote::RoomId;
 use splitlane_remote::wire::{Frame, MAX_FRAME_LEN};
+use splitlane_remote::{DeviceKey, RoomId};
+use tungstenite::client::IntoClientRequest as _;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
+
+/// The header the machine's join token travels in; the relay's
+/// `JOIN_HEADER` reads the same name.
+const JOIN_HEADER: &str = "x-splitlane-join";
 
 /// The relay unless `SPLITLANE_RELAY_URL` names another, as a test does.
 pub(crate) const DEFAULT_RELAY: &str = "wss://relay.splitlane.dev";
@@ -38,17 +43,25 @@ pub(crate) enum Received {
 }
 
 impl RelaySocket {
-    /// Join `room` as the machine.
-    pub(crate) fn connect(relay: &str, room: RoomId) -> io::Result<Self> {
+    /// Join `room` as the machine whose key is `machine`.
+    pub(crate) fn connect(relay: &str, room: RoomId, machine: &DeviceKey) -> io::Result<Self> {
         let url = format!(
             "{}/room/{}?role=machine",
             relay.trim_end_matches('/'),
             room.to_text()
         );
+        let mut request = url.into_client_request().map_err(io::Error::other)?;
+        let token = room.join_token(machine);
+        request.headers_mut().insert(
+            JOIN_HEADER,
+            token
+                .parse()
+                .map_err(|_| io::Error::other("a join token that is not a header value"))?,
+        );
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_FRAME_LEN + 1))
             .max_frame_size(Some(MAX_FRAME_LEN + 1));
-        let (socket, _) = tungstenite::client::connect_with_config(url.as_str(), Some(config), 3)
+        let (socket, _) = tungstenite::client::connect_with_config(request, Some(config), 3)
             .map_err(io::Error::other)?;
         Ok(Self { socket })
     }
