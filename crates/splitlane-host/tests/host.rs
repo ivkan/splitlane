@@ -1076,6 +1076,7 @@ fn send(session: SessionId, text: &str, submit: bool) -> protocol::SendTextArgs 
         submit,
         paste: None,
         submit_delay_ms: Some(50),
+        bridge_token: None,
     }
 }
 
@@ -1183,6 +1184,62 @@ fn the_programs_own_reports_are_kept_and_its_turns_counted() {
     let published = info(&client, session).agent_state.unwrap();
     assert_eq!(published.turns_ended_at_publish, 2);
     client.kill(session).unwrap();
+}
+
+#[test]
+fn the_phone_bridge_writes_into_agent_sessions_only() {
+    let host = TestHost::start(|config| config.bridge_token = Some("t".repeat(64)));
+    let client = host.client();
+    let (session, _) = client
+        .spawn(sh(r#"printf 'ready\n'; read line; echo "got:$line""#))
+        .unwrap();
+    let phone = |token: &str| protocol::SendTextArgs {
+        bridge_token: Some(token.to_string()),
+        ..send(session, "hi", true)
+    };
+    // Not yet an agent's session: a shell would run the text.
+    let error = client.send_text(&phone(&"t".repeat(64))).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_FORBIDDEN));
+    client
+        .publish_state(session, &serde_json::json!({ "agent": "claude" }))
+        .unwrap();
+    // Another token is not this host's bridge.
+    let error = client.send_text(&phone(&"u".repeat(64))).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_FORBIDDEN));
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    trace.follow(&attachment, "the prompt", |t| t.text().contains("ready"));
+    client.send_text(&phone(&"t".repeat(64))).unwrap();
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    assert!(trace.text().contains("got:hi"), "{:?}", trace.text());
+}
+
+#[test]
+fn the_phone_bridge_presses_only_listed_keys() {
+    let host = TestHost::start(|config| config.bridge_token = Some("t".repeat(64)));
+    let client = host.client();
+    let (session, _) = client.spawn(sh("read line; echo \"got:$line\"")).unwrap();
+    client
+        .publish_state(session, &serde_json::json!({ "agent": "claude" }))
+        .unwrap();
+    let keys = |keys: &[&str], token: Option<String>| protocol::SendKeysArgs {
+        session,
+        keys: keys.iter().map(|key| key.to_string()).collect(),
+        bridge_token: token,
+    };
+    let error = client.send_keys(&keys(&["enter"], None)).unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_FORBIDDEN));
+    let error = client
+        .send_keys(&keys(&["ctrl-d"], Some("t".repeat(64))))
+        .unwrap_err();
+    assert_eq!(error.remote_code(), Some(protocol::ERR_BAD_REQUEST));
+    let attachment = client.attach(session, AttachFrom::Start).unwrap();
+    let mut trace = Trace::starting_at(&attachment);
+    client
+        .send_keys(&keys(&["y", "enter"], Some("t".repeat(64))))
+        .unwrap();
+    assert_eq!(trace.follow_to_exit(&attachment).code, Some(0));
+    assert!(trace.text().contains("got:y"), "{:?}", trace.text());
 }
 
 #[test]

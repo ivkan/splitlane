@@ -152,6 +152,10 @@ pub struct HostConfig {
     /// gates its own writes with, `SPLITLANE_IPC_SCRIPTING`, as it stood in
     /// the Splitlane that started this host. Kept for the host's life.
     pub writes_allowed: bool,
+    /// The token of the phone bridge this host started, if it started one.
+    /// A write that presents it is let through without `writes_allowed`,
+    /// into an agent's session only: a paired phone writes by pairing.
+    pub bridge_token: Option<String>,
 }
 
 /// How long a process group gets between the hangup and the kill unless a
@@ -173,6 +177,7 @@ impl HostConfig {
             handle_signals: false,
             version: env!("CARGO_PKG_VERSION").to_string(),
             writes_allowed: false,
+            bridge_token: None,
         }
     }
 }

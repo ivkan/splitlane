@@ -47,8 +47,9 @@ use crate::client::Client;
 use crate::log::Item;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, Frame, FrameError, Hello, Incompatible, ListResult,
-    PublishStateArgs, ReplyEnvelope, RequestEnvelope, ResizeArgs, SendTextArgs, SendTextResult,
-    SessionArgs, SessionId, SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult, WireError,
+    PublishStateArgs, ReplyEnvelope, RequestEnvelope, ResizeArgs, SendKeysArgs, SendTextArgs,
+    SendTextResult, SessionArgs, SessionId, SetFactsArgs, ShutdownArgs, SpawnArgs, SpawnResult,
+    WireError,
 };
 use crate::session::{LogBudget, Session, SessionSettings};
 use crate::{lock, HostConfig, HostError, MAX_SOCKET_PATH_BYTES};
@@ -89,11 +90,41 @@ struct Host {
     shutdown_requested: AtomicBool,
     /// Numbers connections, so a published state knows which one said it.
     next_connection: AtomicU64,
+    /// See [`HostConfig::bridge_token`].
+    bridge_token: Option<String>,
     /// See [`HostConfig::writes_allowed`].
     writes_allowed: bool,
 }
 
 impl Host {
+    /// Whether a write presenting `token` comes from the phone bridge this
+    /// host started. `Ok(false)` when no token was presented; an error when
+    /// one was and the write may not go in: a wrong token, or a session
+    /// that is not an agent's, where text would run as commands.
+    fn phone_may_write(&self, session: &Session, token: Option<&str>) -> Result<bool, WireError> {
+        let Some(token) = token else {
+            return Ok(false);
+        };
+        let held = self.bridge_token.as_deref().unwrap_or_default();
+        if held.is_empty() || !subtle_eq(token.as_bytes(), held.as_bytes()) {
+            return Err(WireError::new(
+                protocol::ERR_FORBIDDEN,
+                "not this host's phone bridge",
+            ));
+        }
+        let agent = session.info().agent_state.is_some_and(|state| {
+            state.state.get("agent").is_some_and(Value::is_string)
+                && state.state.get("exited").and_then(Value::as_bool) != Some(true)
+        });
+        if !agent {
+            return Err(WireError::new(
+                protocol::ERR_FORBIDDEN,
+                "a phone writes into agent sessions only",
+            ));
+        }
+        Ok(true)
+    }
+
     fn find(&self, id: SessionId) -> Option<Arc<Session>> {
         lock(&self.sessions)
             .iter()
@@ -155,6 +186,7 @@ pub(crate) fn run(config: HostConfig) -> Result<(), HostError> {
         shutdown_requested: AtomicBool::new(false),
         next_connection: AtomicU64::new(0),
         writes_allowed: config.writes_allowed,
+        bridge_token: config.bridge_token.clone(),
     });
     log::info!(
         "host {} (pid {}) listening on {}",
@@ -671,6 +703,42 @@ fn send_text(session: &Arc<Session>, args: SendTextArgs) -> Result<SendTextResul
     })
 }
 
+/// Equal in constant time; unequal at once when the lengths differ, which
+/// gives away only the length.
+fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |differ, (x, y)| differ | (x ^ y)) == 0
+}
+
+/// The bytes of a key a phone may press. Arrows follow the program's
+/// cursor-key mode, as a terminal's do.
+fn key_bytes(key: &str, application: bool) -> Option<&'static [u8]> {
+    Some(match (key, application) {
+        ("enter", _) => b"\r",
+        ("escape", _) => b"\x1b",
+        ("up", false) => b"\x1b[A",
+        ("down", false) => b"\x1b[B",
+        ("right", false) => b"\x1b[C",
+        ("left", false) => b"\x1b[D",
+        ("up", true) => b"\x1bOA",
+        ("down", true) => b"\x1bOB",
+        ("right", true) => b"\x1bOC",
+        ("left", true) => b"\x1bOD",
+        ("0", _) => b"0",
+        ("y", _) => b"y",
+        ("n", _) => b"n",
+        ("1", _) => b"1",
+        ("2", _) => b"2",
+        ("3", _) => b"3",
+        ("4", _) => b"4",
+        ("5", _) => b"5",
+        ("6", _) => b"6",
+        ("7", _) => b"7",
+        ("8", _) => b"8",
+        ("9", _) => b"9",
+        _ => return None,
+    })
+}
+
 fn args<T: DeserializeOwned>(value: Value) -> Result<T, WireError> {
     // Absent arguments are an empty object, so a request whose arguments
     // are all optional may leave them out.
@@ -827,15 +895,58 @@ impl Connection {
             }
             protocol::OP_SEND_TEXT => {
                 let args: SendTextArgs = args(raw)?;
-                if !self.host.writes_allowed {
+                let session = self.session(args.session)?;
+                let phone = self
+                    .host
+                    .phone_may_write(&session, args.bridge_token.as_deref())?;
+                if !phone && !self.host.writes_allowed {
                     return Err(WireError::new(
                         protocol::ERR_FORBIDDEN,
                         "writing into sessions is off: the Splitlane that started this \
                          session host was not launched with SPLITLANE_IPC_SCRIPTING=1",
                     ));
                 }
-                let session = self.session(args.session)?;
                 result(&send_text(&session, args)?)
+            }
+            protocol::OP_SEND_KEYS => {
+                let args: SendKeysArgs = args(raw)?;
+                let session = self.session(args.session)?;
+                if !self
+                    .host
+                    .phone_may_write(&session, args.bridge_token.as_deref())?
+                {
+                    return Err(WireError::new(
+                        protocol::ERR_FORBIDDEN,
+                        "keys are pressed only for the phone bridge",
+                    ));
+                }
+                if args.keys.is_empty() || args.keys.len() > 16 {
+                    return Err(WireError::new(
+                        protocol::ERR_BAD_REQUEST,
+                        "between one and sixteen keys",
+                    ));
+                }
+                let _sending = session.sending();
+                if session.exit_status().is_some() {
+                    return Err(WireError::new(
+                        protocol::ERR_SESSION_EXITED,
+                        format!("session {} has ended", session.id),
+                    ));
+                }
+                let mut bytes = Vec::new();
+                for key in &args.keys {
+                    bytes.extend_from_slice(
+                        key_bytes(key, session.cursor_keys_application()).ok_or_else(|| {
+                            WireError::new(
+                                protocol::ERR_BAD_REQUEST,
+                                format!("a phone may not press `{key}`"),
+                            )
+                        })?,
+                    );
+                }
+                session.input(&bytes);
+                session.note_sent();
+                Ok(Value::Null)
             }
             protocol::OP_READ_TEXT => {
                 let SessionArgs { session } = args(raw)?;

@@ -28,9 +28,9 @@ use serde_json::Value;
 use crate::lock;
 use crate::protocol::{
     self, AttachArgs, AttachResult, EventBody, ExitStatus, Facts, FrameError, Hello, ListResult,
-    PublishStateArgs, ReadTextResult, ReplyEnvelope, RequestEnvelope, ResizeArgs, SendTextArgs,
-    SendTextResult, SessionArgs, SessionId, SessionInfo, SetFactsArgs, ShutdownArgs, SpawnArgs,
-    SpawnResult, SpawnSpec, WireError,
+    PublishStateArgs, ReadTextResult, ReplyEnvelope, RequestEnvelope, ResizeArgs, SendKeysArgs,
+    SendTextArgs, SendTextResult, SessionArgs, SessionId, SessionInfo, SetFactsArgs, ShutdownArgs,
+    SpawnArgs, SpawnResult, SpawnSpec, WireError,
 };
 use crate::HostError;
 
@@ -519,6 +519,12 @@ impl Client {
             },
         )
         .map(drop)
+    }
+
+    /// Press keys from the phone's list; see [`protocol::SendKeysArgs`].
+    pub fn send_keys(&self, args: &SendKeysArgs) -> Result<(), HostError> {
+        self.request::<_, Value>(protocol::OP_SEND_KEYS, args)
+            .map(drop)
     }
 
     /// Type text into the session; see [`protocol::SendTextArgs`].

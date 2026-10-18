@@ -65,18 +65,42 @@ pub(crate) fn verified_device(params: &Value) -> Option<&str> {
     params.get(VERIFIED_PARAM).and_then(Value::as_str)
 }
 
-/// Start the bridge when a phone is paired. The child is kept by the
-/// caller: dropping its standard input is what ends it.
+/// Start the bridge when a phone is paired, with the window's token. The
+/// child is kept by the caller: dropping its standard input ends it.
 pub(crate) fn start_bridge_if_paired() -> Option<Child> {
-    let dir = super::store::dir()?;
-    if super::store::devices(&dir).ok()?.is_empty() {
+    if !phone_paired() {
         return None;
     }
-    let token = TOKEN.get_or_init(|| {
-        let mut bytes = [0u8; 32];
-        rand_bytes(&mut bytes);
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    });
+    let token = TOKEN.get_or_init(new_token);
+    spawn_bridge(token, false)
+}
+
+/// Whether a window of this build answers on its IPC socket.
+fn window_answers() -> bool {
+    use splitlane_ipc_client::IpcTransport as _;
+    splitlane_ipc_client::resolve_socket_path().is_some_and(|socket| {
+        splitlane_ipc_client::IpcClient::new(socket)
+            .call("system.ping", serde_json::json!({}))
+            .is_ok()
+    })
+}
+
+fn phone_paired() -> bool {
+    super::store::dir()
+        .and_then(|dir| super::store::devices(&dir).ok())
+        .is_some_and(|devices| !devices.is_empty())
+}
+
+/// A random token, as hex.
+pub(crate) fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `for_host` marks a bridge the session host started: it leaves as soon as
+/// a window answers, because that window starts a bridge of its own.
+fn spawn_bridge(token: &str, for_host: bool) -> Option<Child> {
     let exe = std::env::current_exe().ok()?;
     let mut child = Command::new(exe)
         .arg(BRIDGE_SUBCOMMAND)
@@ -87,7 +111,8 @@ pub(crate) fn start_bridge_if_paired() -> Option<Child> {
         .map_err(|e| log::warn!("cannot start the phone bridge: {e}"))
         .ok()?;
     let mut stdin = child.stdin.take()?;
-    if writeln!(stdin, "{token}")
+    let owner = if for_host { "host" } else { "window" };
+    if writeln!(stdin, "{token}\n{owner}")
         .and_then(|()| stdin.flush())
         .is_err()
     {
@@ -96,6 +121,43 @@ pub(crate) fn start_bridge_if_paired() -> Option<Child> {
     }
     child.stdin = Some(stdin);
     Some(child)
+}
+
+/// In the session host: keep the phone bridge running while no window is,
+/// so a paired phone can still reply. A window starts a bridge of its own,
+/// and two in one relay room keep starting each other's channel over, so
+/// this one is stopped as soon as a window is attached to a session again.
+/// `token` is the one the host takes writes with.
+pub(crate) fn keep_host_bridge(socket: std::path::PathBuf, token: String) {
+    let mut bridge: Option<Child> = None;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        // A window that answers counts even when it shows no session of
+        // this host: it has started a bridge of its own.
+        let window_attached = window_answers()
+            || match splitlane_host::Client::connect(&socket).and_then(|client| client.list()) {
+                Ok(sessions) => sessions.iter().any(|session| session.attached > 0),
+                Err(e) => {
+                    log::debug!("phone bridge keeper: cannot list sessions ({e})");
+                    continue;
+                }
+            };
+        if let Some(child) = bridge.as_mut() {
+            let gone = matches!(child.try_wait(), Ok(Some(_)) | Err(_));
+            if gone || window_attached {
+                // Closing its input is what ends it; see the module docs.
+                drop(child.stdin.take());
+                let _ = child.wait();
+                log::info!("phone bridge of the session host stopped");
+                bridge = None;
+            }
+        } else if !window_attached && phone_paired() {
+            bridge = spawn_bridge(&token, true);
+            if bridge.is_some() {
+                log::info!("phone bridge of the session host started: no window is attached");
+            }
+        }
+    }
 }
 
 fn rand_bytes(out: &mut [u8]) {
@@ -112,6 +174,19 @@ pub(crate) fn run_spawned_bridge() -> i32 {
         return 2;
     }
     let token = token.trim().to_string();
+    let mut owner = String::new();
+    let _ = stdin.lock().read_line(&mut owner);
+    // A host's bridge gives way to a window's, which the window starts.
+    if owner.trim() == "host" {
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if window_answers() {
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
     // The window holds the other end. When it closes - the window quit or
     // died - nobody can write through this bridge any more, so it goes.
     std::thread::spawn(move || {
