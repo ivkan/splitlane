@@ -1760,6 +1760,30 @@ impl SplitlaneApp {
         hooked_rail_snapshot(session, self.hook_rail.get(&sid), pane_exited)
     }
 
+    /// Whether `phone`, writing through the bridge this window started, may
+    /// write into `terminal`: only an agent's session, never a plain shell,
+    /// where text would run as commands. When it may, the person is told
+    /// at once, so a write they did not make does not go unseen.
+    pub(crate) fn phone_may_write(
+        &mut self,
+        phone: &str,
+        terminal: &Entity<TerminalView>,
+        thread_id: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), serde_json::Value> {
+        let agent_session = self
+            .rail_snapshot_for(terminal, thread_id, cx)
+            .is_some_and(|rail| rail.agent.is_some() && !rail.exited);
+        if !agent_session {
+            return Err(
+                JsonRpcError::invalid_params("a phone writes into agent sessions only")
+                    .into_value(),
+            );
+        }
+        self.show_toast(format!("From {phone} (phone)"), cx);
+        Ok(())
+    }
+
     /// Publish a `surface.rail` event for every surface whose status word or
     /// count of ended runs differs from what was last published.
     ///
@@ -3709,7 +3733,11 @@ impl SplitlaneApp {
             "surface.send_text" => {
                 // Same-UID RCE primitive gate. See ipc.rs module doc for the
                 // blast-radius rationale. Default off.
-                let gate_open = ipc_scripting_enabled();
+                // A paired phone, through the bridge this window started: it
+                // writes by pairing, into agent sessions only. See
+                // `remote::spawn`.
+                let phone = crate::remote::verified_device(params).map(str::to_string);
+                let gate_open = ipc_scripting_enabled() || phone.is_some();
                 // A second way through, and the one that needs nothing
                 // switched on: a session writing into a session it opened.
                 // Whether this is that is known once the target is; a caller
@@ -3767,6 +3795,11 @@ impl SplitlaneApp {
                 let Some(terminal) = target else {
                     return JsonRpcError::invalid_params("No active terminal").into_value();
                 };
+                if let Some(phone) = &phone
+                    && let Err(refusal) = self.phone_may_write(phone, &terminal, None, cx)
+                {
+                    return refusal;
+                }
                 let write_target = self.write_target_for(&who, &terminal, cx);
                 let leave =
                     match crate::app::orchestration::may_write(&who, write_target, gate_open) {
@@ -4020,7 +4053,8 @@ impl SplitlaneApp {
                 // Same gate as `surface.send_text`. Even when enabled, CRLF
                 // bytes are rejected so a multi-keystroke payload
                 // cannot smuggle a newline-terminated PTY command.
-                let gate_open = ipc_scripting_enabled();
+                let phone = crate::remote::verified_device(params).map(str::to_string);
+                let gate_open = ipc_scripting_enabled() || phone.is_some();
                 let who = self.caller_with_key(caller, params, cx);
                 if !gate_open && who == crate::app::orchestration::Caller::Outside {
                     return write_gate_refusal("surface.send_keystroke");
@@ -4056,6 +4090,11 @@ impl SplitlaneApp {
                 };
                 match terminal {
                     Some(t) => {
+                        if let Some(phone) = &phone
+                            && let Err(refusal) = self.phone_may_write(phone, &t, None, cx)
+                        {
+                            return refusal;
+                        }
                         // A key is typing like any other: Esc on a question
                         // is an answer to it, so the same rules decide.
                         let write_target = self.write_target_for(&who, &t, cx);

@@ -41,14 +41,101 @@ impl IpcTransport for Surface {
     }
 }
 
-/// Answer one request from a phone. Only reading, so far: what the phone
-/// may write, and how the window tells that write from any other, comes
-/// with the write itself.
+/// Keys a phone may press: answering a question or a permission prompt, and
+/// moving through its choices. Nothing that edits a line or signals a
+/// process beyond what `interrupt` does.
+const PHONE_KEYS: &[&str] = &[
+    "enter", "escape", "up", "down", "left", "right", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "y", "n",
+];
+
+/// Answer one request from a phone.
+///
+/// A write is let through only from a bridge the window started (`token`),
+/// for a phone paired with the right to reply, and only while the window
+/// runs: the window is what checks that the session is an agent's and
+/// tells the person. Each write goes into the journal, without its text.
 pub(crate) fn answer(
     surface: &impl IpcTransport,
     method: &str,
     params: &Value,
+    device: &super::store::Device,
+    token: Option<&str>,
+    window_open: bool,
 ) -> Result<Value, String> {
+    if matches!(method, "send" | "key" | "interrupt") {
+        return write(surface, method, params, device, token, window_open);
+    }
+    read(surface, method, params)
+}
+
+fn write(
+    surface: &impl IpcTransport,
+    method: &str,
+    params: &Value,
+    device: &super::store::Device,
+    token: Option<&str>,
+    window_open: bool,
+) -> Result<Value, String> {
+    let Some(token) = token else {
+        return Err(
+            "this bridge was started by hand and only reads; replies go through \
+             the bridge Splitlane starts"
+                .into(),
+        );
+    };
+    if !device.reply {
+        return Err(format!("{} may read but not reply", device.name));
+    }
+    if !window_open {
+        return Err(
+            "start Splitlane to reply: with its window closed a phone can read but \
+             not write yet"
+                .into(),
+        );
+    }
+    let surface_id = params
+        .get("surface_id")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{method} needs a surface_id"))?;
+    let mut call = json!({
+        "surface_id": surface_id,
+        crate::remote::spawn::TOKEN_PARAM: token,
+        crate::remote::spawn::DEVICE_PARAM: device.name,
+    });
+    let (ipc_method, bytes) = match method {
+        "send" => {
+            let text = params
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            call["text"] = json!(text);
+            call["submit"] = json!(params.get("submit").and_then(Value::as_bool) == Some(true));
+            ("surface.send_text", text.len())
+        }
+        "key" => {
+            let key = params
+                .get("keystroke")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !PHONE_KEYS.contains(&key) {
+                return Err(format!("a phone may not press `{key}`"));
+            }
+            call["keystroke"] = json!(key);
+            ("surface.send_keystroke", key.len())
+        }
+        _ => ("surface.interrupt", 0),
+    };
+    // Written ahead: a write that cannot be journalled is not made.
+    super::journal::record(device, method, surface_id, bytes, "asked")
+        .map_err(|e| format!("the phone journal cannot be written ({e}); nothing was sent"))?;
+    let result = surface.call(ipc_method, call);
+    let outcome = if result.is_ok() { "done" } else { "refused" };
+    let _ = super::journal::record(device, method, surface_id, bytes, outcome);
+    result
+}
+
+fn read(surface: &impl IpcTransport, method: &str, params: &Value) -> Result<Value, String> {
     let surface_id = || {
         params
             .get("surface_id")
@@ -79,6 +166,7 @@ pub(crate) fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::store::Device;
     use std::cell::RefCell;
 
     /// Records what it was asked and answers with the method's name.
@@ -92,12 +180,35 @@ mod tests {
         }
     }
 
+    fn phone(reply: bool) -> Device {
+        let key = splitlane_remote::DeviceKey::generate().public();
+        Device {
+            reply,
+            ..Device::new(splitlane_remote::RoomId::random(), "Pixel", &key, 0)
+        }
+    }
+
+    fn ask(
+        surface: &Recording,
+        method: &str,
+        params: Value,
+        token: Option<&str>,
+    ) -> Result<Value, String> {
+        answer(surface, method, &params, &phone(true), token, true)
+    }
+
     #[test]
     fn requests_become_the_clis_calls() {
         let surface = Recording::default();
-        answer(&surface, "list", &Value::Null).unwrap();
-        answer(&surface, "status", &json!({ "surface_id": 7 })).unwrap();
-        answer(&surface, "read", &json!({ "surface_id": 7, "lines": 9999 })).unwrap();
+        ask(&surface, "list", Value::Null, None).unwrap();
+        ask(&surface, "status", json!({ "surface_id": 7 }), None).unwrap();
+        ask(
+            &surface,
+            "read",
+            json!({ "surface_id": 7, "lines": 9999 }),
+            None,
+        )
+        .unwrap();
         let calls = surface.0.into_inner();
         assert_eq!(calls[0].0, "fleet.list");
         assert_eq!(
@@ -110,10 +221,64 @@ mod tests {
     }
 
     #[test]
+    fn a_write_carries_the_token_and_the_phone() {
+        let surface = Recording::default();
+        ask(
+            &surface,
+            "send",
+            json!({ "surface_id": 7, "text": "yes", "submit": true }),
+            Some("t"),
+        )
+        .unwrap();
+        ask(
+            &surface,
+            "key",
+            json!({ "surface_id": 7, "keystroke": "escape" }),
+            Some("t"),
+        )
+        .unwrap();
+        ask(&surface, "interrupt", json!({ "surface_id": 7 }), Some("t")).unwrap();
+        let calls = surface.0.into_inner();
+        assert_eq!(calls[0].0, "surface.send_text");
+        assert_eq!(calls[0].1["text"], "yes");
+        assert_eq!(calls[0].1["submit"], true);
+        assert_eq!(calls[0].1[crate::remote::spawn::TOKEN_PARAM], "t");
+        assert_eq!(calls[0].1[crate::remote::spawn::DEVICE_PARAM], "Pixel");
+        assert_eq!(calls[1].0, "surface.send_keystroke");
+        assert_eq!(calls[2].0, "surface.interrupt");
+    }
+
+    #[test]
+    fn a_write_without_the_windows_bridge_or_the_right_is_refused() {
+        let surface = Recording::default();
+        let send = json!({ "surface_id": 7, "text": "rm -rf ~", "submit": true });
+        // A bridge started by hand has no token.
+        assert!(ask(&surface, "send", send.clone(), None).is_err());
+        // A phone paired to read only.
+        assert!(answer(&surface, "send", &send, &phone(false), Some("t"), true).is_err());
+        // The window is closed.
+        assert!(answer(&surface, "send", &send, &phone(true), Some("t"), false).is_err());
+        // A key off the list.
+        assert!(
+            ask(
+                &surface,
+                "key",
+                json!({ "surface_id": 7, "keystroke": "ctrl-d" }),
+                Some("t")
+            )
+            .is_err()
+        );
+        assert!(
+            surface.0.into_inner().is_empty(),
+            "nothing reached the window"
+        );
+    }
+
+    #[test]
     fn a_request_it_does_not_know_or_without_its_pane_is_refused() {
         let surface = Recording::default();
-        assert!(answer(&surface, "send", &json!({ "surface_id": 7 })).is_err());
-        assert!(answer(&surface, "status", &Value::Null).is_err());
+        assert!(ask(&surface, "close", json!({ "surface_id": 7 }), Some("t")).is_err());
+        assert!(ask(&surface, "status", Value::Null, None).is_err());
         assert!(surface.0.into_inner().is_empty());
     }
 }

@@ -6,8 +6,10 @@
 //! the window when it is running, through the session host when it is not.
 
 mod bridge;
+mod journal;
 mod pair;
 mod relay;
+mod spawn;
 mod store;
 mod surface;
 
@@ -18,6 +20,10 @@ use splitlane_remote::wire::Frame;
 
 pub(crate) use bridge::serve;
 pub(crate) use pair::pair;
+pub(crate) use spawn::{
+    BRIDGE_SUBCOMMAND, mark_bridge_request, run_spawned_bridge, start_bridge_if_paired,
+    verified_device,
+};
 
 /// Something frames go in and out of: the relay, or a pair of queues in a
 /// test.
