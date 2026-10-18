@@ -169,6 +169,16 @@ pub fn verify_pairing(
     }
 }
 
+/// Whether what a person typed is `code`, ignoring anything but digits,
+/// compared in constant time.
+pub fn code_matches(typed: &str, code: &str) -> bool {
+    let typed: String = typed.chars().filter(char::is_ascii_digit).collect();
+    bool::from(subtle::ConstantTimeEq::ct_eq(
+        typed.as_bytes(),
+        code.as_bytes(),
+    ))
+}
+
 /// The six digits both sides show once the phone's key has arrived. Only
 /// the holders of the two private keys can work them out.
 ///

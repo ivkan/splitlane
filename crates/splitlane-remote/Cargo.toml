@@ -18,6 +18,8 @@ hkdf = "0.12"
 hmac = "0.12"
 p256 = { version = "0.13", features = ["ecdh"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+serde.workspace = true
+serde_json.workspace = true
 sha2 = "0.10"
 subtle = "2.6"
 thiserror.workspace = true

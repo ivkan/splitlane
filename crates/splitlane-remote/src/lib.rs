@@ -52,12 +52,13 @@
 mod channel;
 mod keys;
 mod pairing;
+pub mod wire;
 
 pub use channel::{Channel, Handshake, Role, Salt, SALT_LEN};
 pub use keys::{DeviceKey, PublicKey, PUBLIC_KEY_LEN};
 pub use pairing::{
-    confirmation_code, pairing_mac, verify_pairing, Offer, RoomId, MAX_NAME_LEN, ROOM_LEN,
-    SECRET_LEN,
+    code_matches, confirmation_code, pairing_mac, verify_pairing, Offer, RoomId, MAX_NAME_LEN,
+    ROOM_LEN, SECRET_LEN,
 };
 
 /// The version of everything in this crate, carried in an offer's link.
@@ -83,6 +84,8 @@ pub enum Error {
     Exhausted,
     #[error("the cipher refused to seal a frame")]
     Cipher,
+    #[error("not a frame or message this version understands")]
+    BadFrame,
 }
 
 /// Append `field` to `out` with its length in front, so that no two
