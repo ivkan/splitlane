@@ -55,6 +55,14 @@ pub fn run() -> i32 {
     // which is where the window reads the same setting from. A Splitlane
     // started later with another value finds this host keeping its own.
     config.writes_allowed = crate::app::ipc_handler::ipc_scripting_enabled();
+    // The phone bridge this host starts while no window runs, and the token
+    // its writes carry; see `remote::keep_host_bridge`.
+    let token = crate::remote::new_token();
+    config.bridge_token = Some(token.clone());
+    let keeper_socket = socket.path().to_path_buf();
+    let _ = std::thread::Builder::new()
+        .name("phone-bridge-keeper".into())
+        .spawn(move || crate::remote::keep_host_bridge(keeper_socket, token));
     match splitlane_host::run(config) {
         Ok(()) => 0,
         // Two launchers raced and the other one's host has the socket. That

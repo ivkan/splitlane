@@ -21,8 +21,8 @@ use splitlane_remote::wire::Frame;
 pub(crate) use bridge::serve;
 pub(crate) use pair::pair;
 pub(crate) use spawn::{
-    BRIDGE_SUBCOMMAND, mark_bridge_request, run_spawned_bridge, start_bridge_if_paired,
-    verified_device,
+    BRIDGE_SUBCOMMAND, TOKEN_PARAM, keep_host_bridge, mark_bridge_request, new_token,
+    run_spawned_bridge, start_bridge_if_paired, verified_device,
 };
 
 /// Something frames go in and out of: the relay, or a pair of queues in a

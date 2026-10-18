@@ -112,7 +112,8 @@ use serde_json::Value;
 /// 3: `read_text`.
 /// 4: `send_text`.
 /// 5: [`SessionInfo::program_report`] and [`AgentState::turns_ended_at_publish`].
-pub const CONTRACT: u32 = 5;
+/// 6: `send_keys`, and the phone bridge's token on `send_text`.
+pub const CONTRACT: u32 = 6;
 /// The oldest contract this build still accepts from a peer.
 pub const MIN_CONTRACT: u32 = 1;
 
@@ -148,6 +149,7 @@ pub const OP_SET_FACTS: &str = "set_facts";
 pub const OP_PUBLISH_STATE: &str = "publish_state";
 pub const OP_READ_TEXT: &str = "read_text";
 pub const OP_SEND_TEXT: &str = "send_text";
+pub const OP_SEND_KEYS: &str = "send_keys";
 
 pub const EVENT_RESIZED: &str = "resized";
 pub const EVENT_EXITED: &str = "exited";
@@ -733,6 +735,21 @@ pub struct SendTextArgs {
     /// taken the paste in first. Absent: [`DEFAULT_SUBMIT_DELAY_MS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submit_delay_ms: Option<u64>,
+    /// The phone bridge's token; see [`crate::HostConfig::bridge_token`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_token: Option<String>,
+}
+
+/// Press keys in a session, from a short list a phone may press: `enter`,
+/// `escape`, `up`, `down`, `left`, `right`, digits, `y`, `n`. Only for the
+/// phone bridge's token, into an agent's session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendKeysArgs {
+    pub session: SessionId,
+    #[serde(default)]
+    pub keys: Vec<String>,
+    #[serde(default)]
+    pub bridge_token: Option<String>,
 }
 
 /// The wait before Enter after a paste when the caller names none.

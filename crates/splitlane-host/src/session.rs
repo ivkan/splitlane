@@ -709,6 +709,11 @@ impl Session {
         self.sent_at_ms.store(now_ms(), Ordering::Relaxed);
     }
 
+    /// Whether the program asked for application cursor keys (mode 1).
+    pub(crate) fn cursor_keys_application(&self) -> bool {
+        lock(&self.shared).log.modes().switch(1) == Some(true)
+    }
+
     /// Whether the program has bracketed paste switched on, as far as the
     /// log's mode scanner has seen.
     pub(crate) fn bracketed_paste(&self) -> bool {

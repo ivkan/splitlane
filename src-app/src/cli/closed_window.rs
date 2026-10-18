@@ -322,6 +322,7 @@ impl ClosedWindow {
             submit_delay_ms: Some(
                 splitlane_config::loader::load_config().resolved_submit_paste_delay_ms(),
             ),
+            bridge_token: bridge_token(params),
         };
         let sent = client.send_text(&args).map_err(|e| match e.remote_code() {
             Some(splitlane_host::protocol::ERR_FORBIDDEN) => WRITES_OFF.to_string(),
@@ -343,6 +344,35 @@ impl ClosedWindow {
             "terminal_bracketed_paste": sent.bracketed_paste,
             "window": "closed",
         }))
+    }
+
+    /// `surface.send_keystroke` from the phone bridge, as the host presses
+    /// it: only for the bridge the host started, which the host checks.
+    fn send_keys(&self, params: &Value) -> Result<Value, String> {
+        let surface_id = params
+            .get("surface_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "surface.send_keystroke needs a surface_id".to_string())?;
+        let (session, _, _) = self
+            .published()
+            .find(|(_, state, _)| Self::surface_id(state) == Some(surface_id))
+            .ok_or_else(|| format!("no pane {surface_id} in what the window last saw"))?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "the session host is not reachable".to_string())?;
+        let key = params
+            .get("keystroke")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        client
+            .send_keys(&splitlane_host::protocol::SendKeysArgs {
+                session: session.id,
+                keys: vec![key.to_string()],
+                bridge_token: bridge_token(params),
+            })
+            .map_err(|e| format!("session host: {e}"))?;
+        Ok(json!({ "sent": true, "window": "closed" }))
     }
 
     /// How long ago the window last said anything, over every session.
@@ -371,6 +401,7 @@ impl IpcTransport for ClosedWindow {
             }
             "surface.read" => self.surface_text(&params),
             "surface.send_text" => self.send_text(&params),
+            "surface.send_keystroke" => self.send_keys(&params),
             _ => Err(ONLY_READS.to_string()),
         }
     }
@@ -411,6 +442,14 @@ fn state_word(state: &Value) -> &'static str {
         Some("failed") => "errored",
         _ => "idle",
     }
+}
+
+/// The phone bridge's token, when the request comes from it.
+fn bridge_token(params: &Value) -> Option<String> {
+    params
+        .get(crate::remote::TOKEN_PARAM)
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn now_ms() -> u64 {
@@ -528,10 +567,7 @@ mod tests {
     fn anything_that_needs_the_window_says_it_is_closed() {
         let closed = ClosedWindow::from_sessions(Vec::new(), 0);
         let error = closed
-            .call(
-                "surface.send_keystroke",
-                json!({ "surface_id": 7, "keystroke": "esc" }),
-            )
+            .call("surface.close", json!({ "surface_id": 7 }))
             .unwrap_err();
         assert!(error.contains("not running"), "{error}");
     }

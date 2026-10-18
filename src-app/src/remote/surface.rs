@@ -45,8 +45,8 @@ impl IpcTransport for Surface {
 /// moving through its choices. Nothing that edits a line or signals a
 /// process beyond what `interrupt` does.
 const PHONE_KEYS: &[&str] = &[
-    "enter", "escape", "up", "down", "left", "right", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "y", "n",
+    "enter", "escape", "up", "down", "left", "right", "0", "1", "2", "3", "4", "5", "6", "7", "8",
+    "9", "y", "n",
 ];
 
 /// Answer one request from a phone.
@@ -87,12 +87,10 @@ fn write(
     if !device.reply {
         return Err(format!("{} may read but not reply", device.name));
     }
-    if !window_open {
-        return Err(
-            "start Splitlane to reply: with its window closed a phone can read but \
-             not write yet"
-                .into(),
-        );
+    // Interrupting needs the agent's own stop key, which only the window
+    // knows; text and keys go through the session host while it is closed.
+    if !window_open && method == "interrupt" {
+        return Err("start Splitlane to interrupt from the phone".into());
     }
     let surface_id = params
         .get("surface_id")
@@ -256,8 +254,18 @@ mod tests {
         assert!(ask(&surface, "send", send.clone(), None).is_err());
         // A phone paired to read only.
         assert!(answer(&surface, "send", &send, &phone(false), Some("t"), true).is_err());
-        // The window is closed.
-        assert!(answer(&surface, "send", &send, &phone(true), Some("t"), false).is_err());
+        // Interrupting with the window closed.
+        assert!(
+            answer(
+                &surface,
+                "interrupt",
+                &json!({ "surface_id": 7 }),
+                &phone(true),
+                Some("t"),
+                false
+            )
+            .is_err()
+        );
         // A key off the list.
         assert!(
             ask(
