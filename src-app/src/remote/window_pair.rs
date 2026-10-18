@@ -139,7 +139,10 @@ fn run(
             store::Device::new(offer.room, &asked.name, &asked.phone, now_unix()),
         )
     };
-    match pair_on(&mut link, &key, &offer, &now_unix, &mut ask_code, &mut keep) {
+    let outcome = pair_on(&mut link, &key, &offer, &now_unix, &mut ask_code, &mut keep);
+    // The phone's answer is the last frame sent; see `RelaySocket::close`.
+    link.inner.close();
+    match outcome {
         Ok(Ok(asked)) => {
             super::spawn::wake_bridge_starter();
             PairStep::Paired { phone: asked.name }

@@ -21,7 +21,10 @@ async function run(mode, work) {
   const handle = await db();
   try {
     return await new Promise((resolve, reject) => {
-      const tx = handle.transaction(STORE, mode);
+      // Strict: a pairing is reported kept only once it is on disk. A
+      // phone ends a page in the background without warning, and with the
+      // default a record it had already shown as kept could be gone.
+      const tx = handle.transaction(STORE, mode, { durability: mode === "readwrite" ? "strict" : "default" });
       const result = work(tx.objectStore(STORE));
       tx.oncomplete = () => resolve(result?.result);
       tx.onerror = () => reject(tx.error);

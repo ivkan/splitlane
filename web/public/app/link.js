@@ -218,17 +218,41 @@ export async function pair(relay, offer, name, onCode) {
       throw error;
     }
     onCode(await confirmationCode(channel.shared, offer.room, offer.machine, key.pub));
+    const kept = { room: b64u(offer.room), machine: offer.machine, phone: key.pub, key: key.privateKey };
     // Until the offer lapses, and a little after: the computer says so then.
     const wait = Math.max(0, offer.expires * 1000 - Date.now()) + 15000;
-    const verdict = await nextMessage(room, channel, wait);
-    if (verdict.type === "paired") {
-      return { room: b64u(offer.room), machine: offer.machine, phone: key.pub, key: key.privateKey };
+    let verdict;
+    try {
+      verdict = await nextMessage(room, channel, wait);
+    } catch (error) {
+      // The connection ended with no answer. The computer may have kept
+      // the phone and its answer been lost on the way; only a computer
+      // that kept this key can confirm a channel with it.
+      if (await answersAsPaired(relay, kept)) return kept;
+      throw error;
     }
+    if (verdict.type === "paired") return kept;
     if (verdict.type === "refused") throw new Error(sentence(verdict.reason));
     throw new Error("The computer answered something this page does not understand.");
   } finally {
     room.close();
   }
+}
+
+/// Whether the computer now confirms a channel with the key just paired.
+/// Its bridge takes up a new phone within seconds, so this asks for a while.
+async function answersAsPaired(relay, kept) {
+  const until = Date.now() + 30000;
+  while (Date.now() < until) {
+    try {
+      const conn = await connect(relay, kept);
+      conn.close();
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  return false;
 }
 
 function sentence(text) {
