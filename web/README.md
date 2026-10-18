@@ -49,5 +49,6 @@ Policy allows.
 npx wrangler@4.145.0 deploy
 ```
 
-A Worker with static assets alone, on the route `splitlane.dev/app*`. The route
-needs a proxied DNS record for `splitlane.dev`.
+A Worker with static assets alone, on `splitlane.dev` as a custom domain:
+Cloudflare keeps its DNS record and certificate. The page is under `app/`;
+anything else the domain serves goes beside it in `public/`.
