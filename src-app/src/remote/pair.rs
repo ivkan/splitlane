@@ -138,7 +138,7 @@ pub(crate) fn pair() -> Result<(), String> {
     let dir = store::dir().ok_or("cannot work out where Splitlane keeps its files")?;
     let key = store::machine_key(&dir).map_err(|e| format!("machine key: {e}"))?;
     let offer = Offer::new(&key.public(), now_unix(), OFFER_TTL_SECS);
-    let mut socket = RelaySocket::connect(&relay::relay_url(), offer.room)
+    let mut socket = RelaySocket::connect(&relay::relay_url(), offer.room, &key)
         .map_err(|e| format!("cannot reach the relay: {e}"))?;
     println!(
         "Open this link on the phone within five minutes:\n\n  {}\n",

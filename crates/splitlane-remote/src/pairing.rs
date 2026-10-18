@@ -34,6 +34,26 @@ impl RoomId {
     pub fn to_text(self) -> String {
         URL_SAFE_NO_PAD.encode(self.0)
     }
+
+    /// What the machine shows the relay to join this room as the machine,
+    /// in unpadded base64url.
+    ///
+    /// The relay keeps a hash of the first one it sees for a room and
+    /// refuses the machine role to anyone without it. The room's address is
+    /// in every QR code shown for it, so without this, whoever photographed
+    /// one could take the machine's place and keep the phone from reaching
+    /// it. The token is derived, not stored: one per room, nothing to lose,
+    /// and a phone that knows the room cannot work it out.
+    pub fn join_token(self, machine: &DeviceKey) -> String {
+        let mut info = Vec::new();
+        put(&mut info, b"splitlane-relay-join-v1");
+        put(&mut info, &self.0);
+        let mut out = [0u8; 32];
+        // Thirty-two bytes are far below HKDF's limit, so expanding cannot
+        // fail.
+        let _ = Hkdf::<Sha256>::new(None, &*machine.to_bytes()).expand(&info, &mut out);
+        URL_SAFE_NO_PAD.encode(out)
+    }
 }
 
 /// What the machine shows as a QR code to start pairing.
@@ -298,5 +318,21 @@ mod tests {
             confirmation_code(&stranger, &offer.machine, &offer),
             at_phone
         );
+    }
+
+    #[test]
+    fn a_join_token_is_one_per_room_and_per_machine() {
+        let machine = DeviceKey::generate();
+        let room = RoomId::random();
+        assert_eq!(room.join_token(&machine), room.join_token(&machine));
+        assert_ne!(
+            room.join_token(&machine),
+            RoomId::random().join_token(&machine)
+        );
+        assert_ne!(
+            room.join_token(&machine),
+            room.join_token(&DeviceKey::generate())
+        );
+        assert_eq!(room.join_token(&machine).len(), 43);
     }
 }

@@ -45,3 +45,7 @@ LOG_*.text
 # Windows debug symbols emitted next to release builds (multi-MB .pdb tree).
 # Build artifact, not source.
 /pf-symbols/
+
+# Wrangler's local state (relay/)
+.wrangler/
+relay/node_modules/

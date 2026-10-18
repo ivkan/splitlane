@@ -1,0 +1,29 @@
+name = "splitlane-relay"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+routes = [{ pattern = "relay.splitlane.dev", custom_domain = true }]
+
+[observability]
+enabled = true
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# Connections from one address, machine and phone alike. A bridge joins one
+# room per paired phone and joins again after every drop, backing off.
+[[ratelimits]]
+name = "JOINS"
+namespace_id = "7301"
+simple = { limit = 60, period = 60 }
+
+# New rooms from one address: one per pairing attempt.
+[[ratelimits]]
+name = "CLAIMS"
+namespace_id = "7302"
+simple = { limit = 10, period = 60 }
