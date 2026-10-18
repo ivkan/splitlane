@@ -1202,7 +1202,11 @@ fn handle_connection(
                 match req.get("method").and_then(|m| m.as_str()) {
                     Some(method) => {
                         let method = method.to_string();
-                        let params = req.get("params").cloned().unwrap_or(json!({}));
+                        let mut params = req.get("params").cloned().unwrap_or(json!({}));
+                        // Here and not in the window: whether a request is
+                        // the phone bridge's is decided before anything in
+                        // it is trusted, and off the thread that draws.
+                        crate::remote::mark_bridge_request(&mut params);
 
                         if method == "events.subscribe" {
                             let Some(_subscription_guard) = ActiveCountGuard::try_acquire(

@@ -1443,7 +1443,17 @@ impl SplitlaneApp {
             drive: self.drive_between(&caller, target),
             ..target
         };
-        if let Err(denied) = may_interrupt(&caller, target, LaunchGates::read().scripting) {
+        let phone = crate::remote::verified_device(params).map(str::to_string);
+        if let Some(phone) = &phone
+            && let Err(refusal) = self.phone_may_write(phone, &terminal, target.thread_id, cx)
+        {
+            return refusal;
+        }
+        if let Err(denied) = may_interrupt(
+            &caller,
+            target,
+            LaunchGates::read().scripting || phone.is_some(),
+        ) {
             return self.deny_write(denied, &caller, target, METHOD, cx);
         }
         let rail = self.rail_snapshot_for(&terminal, target.thread_id, cx);

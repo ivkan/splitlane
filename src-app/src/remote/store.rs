@@ -124,6 +124,20 @@ pub(crate) fn save_devices(dir: &Path, devices: &[Device]) -> io::Result<()> {
     write_private(dir, &dir.join(DEVICES_FILE), &bytes)
 }
 
+/// Append `bytes` to `name` in `dir`, creating it readable by the user
+/// alone.
+pub(crate) fn append_private(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    create_private_dir(dir)?;
+    let mut options = fs::OpenOptions::new();
+    options.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    io::Write::write_all(&mut options.open(dir.join(name))?, bytes)
+}
+
 /// Write `bytes` to `path` through a file beside it, readable by the user
 /// alone from its first byte, and renamed into place so that a reader
 /// never sees half of it.

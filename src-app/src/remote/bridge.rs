@@ -126,6 +126,12 @@ const RESCAN: Duration = Duration::from_secs(10);
 /// `splitlane remote serve`: answer every paired phone until stopped,
 /// taking up phones paired while it runs.
 pub(crate) fn serve() -> Result<(), String> {
+    serve_with(None)
+}
+
+/// [`serve`], with the token of a bridge the window started: only such a
+/// bridge may write. See `spawn`.
+pub(crate) fn serve_with(token: Option<String>) -> Result<(), String> {
     let dir = store::dir().ok_or("cannot work out where Splitlane keeps its files")?;
     let key =
         std::sync::Arc::new(store::machine_key(&dir).map_err(|e| format!("machine key: {e}"))?);
@@ -145,9 +151,11 @@ pub(crate) fn serve() -> Result<(), String> {
                 continue;
             };
             served.insert(device.room.clone());
-            let (key, relay, name) = (key.clone(), relay.clone(), device.name.clone());
-            eprintln!("serving {name}");
-            std::thread::spawn(move || serve_forever(&relay, &key, &phone, room, &name));
+            let (key, relay, token) = (key.clone(), relay.clone(), token.clone());
+            eprintln!("serving {}", device.name);
+            std::thread::spawn(move || {
+                serve_forever(&relay, &key, &phone, room, &device, token.as_deref())
+            });
         }
         if served.is_empty() {
             return Err("no phone is paired; pair one with `splitlane remote pair`".into());
@@ -159,15 +167,25 @@ pub(crate) fn serve() -> Result<(), String> {
 /// Keep one phone's room joined, joining again after every drop. A panic
 /// while answering is logged and the room joined again: one bad request
 /// must not leave the phone unanswered until a restart.
-fn serve_forever(relay: &str, key: &DeviceKey, phone: &PublicKey, room: RoomId, name: &str) {
+fn serve_forever(
+    relay: &str,
+    key: &DeviceKey,
+    phone: &PublicKey,
+    room: RoomId,
+    device: &store::Device,
+    token: Option<&str>,
+) {
+    let name = device.name.as_str();
     let mut retry = RETRY_FIRST;
     loop {
         match RelaySocket::connect(relay, room) {
             Ok(mut socket) => {
                 retry = RETRY_FIRST;
                 let mut answer = |method: &str, params: &Value| {
-                    surface::Surface::current()
-                        .and_then(|current| surface::answer(&current, method, params))
+                    surface::Surface::current().and_then(|current| {
+                        let window_open = matches!(current, surface::Surface::Window(_));
+                        surface::answer(&current, method, params, device, token, window_open)
+                    })
                 };
                 let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     serve_connection(&mut socket, key, phone, room, &mut answer)

@@ -187,6 +187,34 @@ impl SplitlaneApp {
         // telemetry client is constructed below - load_session itself
         // runs too early in bootstrap to call `self.telemetry`.
         let (saved_session, session_corruption) = Self::load_session();
+        // The bridge to a paired phone. Its thread keeps the child, and with
+        // it the pipe that is the bridge's lifeline: when this process ends,
+        // the pipe closes and the bridge leaves. Off this thread, because
+        // finding out whether a phone is paired reads a file.
+        let _ = std::thread::Builder::new()
+            .name("phone-bridge".into())
+            .spawn(|| {
+                loop {
+                    // Looked for again while none is paired, so a phone paired
+                    // while the window runs is answered without a restart.
+                    let Some(mut bridge) = crate::remote::start_bridge_if_paired() else {
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        continue;
+                    };
+                    {
+                        log::info!("phone bridge started (pid {})", bridge.id());
+                        // Taken out first: `wait` closes a child's standard
+                        // input, and that pipe is what keeps the bridge going.
+                        let _lifeline = bridge.stdin.take();
+                        match bridge.wait() {
+                            Ok(status) => log::warn!("phone bridge exited: {status}"),
+                            Err(e) => log::warn!("phone bridge: {e}"),
+                        }
+                    }
+                    // A bridge that died is started again, after a pause.
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
+            });
         // What the session host holds that the layout does not mention.
         // The wait is for the answer asked for above; the layout itself
         // needs none, because each pane finds out about its own session

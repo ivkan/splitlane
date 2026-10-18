@@ -3446,6 +3446,10 @@ fn main() {
     if args.get(1).map(String::as_str) == Some(splitlane_host::HOST_SUBCOMMAND) {
         std::process::exit(host_process::run());
     }
+    // The phone bridge the window starts; it has no window either.
+    if args.get(1).map(String::as_str) == Some(remote::BRIDGE_SUBCOMMAND) {
+        std::process::exit(remote::run_spawned_bridge());
+    }
     #[cfg(target_os = "windows")]
     if external_open::is_open_url_helper_invocation(&args) {
         std::process::exit(external_open::run_open_url_helper_from_args(&args));

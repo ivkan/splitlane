@@ -88,6 +88,16 @@ pub enum Error {
     BadFrame,
 }
 
+/// Whether two secrets are equal, compared in constant time.
+pub fn code_matches_bytes(a: &[u8], b: &[u8]) -> bool {
+    bool::from(subtle::ConstantTimeEq::ct_eq(a, b))
+}
+
+/// Fill `out` from the operating system's random source.
+pub fn fill_random(out: &mut [u8]) {
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, out);
+}
+
 /// Append `field` to `out` with its length in front, so that no two
 /// different lists of fields hash or MAC the same.
 fn put(out: &mut Vec<u8>, field: &[u8]) {
