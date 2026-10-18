@@ -309,6 +309,38 @@ fn write_overflow(stem: &str, contents: &str) -> Result<PathBuf, CliError> {
     Ok(path)
 }
 
+/// The answer of `surface_id`'s agent as data, for a caller that is not a
+/// terminal: a paired phone. `{outcome, text?, hint?, runs_ended}`, with
+/// the text cut to `max_bytes` on a line boundary.
+pub(crate) fn answer_value(
+    client: &impl IpcTransport,
+    surface_id: u64,
+    max_bytes: usize,
+) -> Result<Value, String> {
+    let status = client.call(
+        "surface.status",
+        json!({ "surface_id": surface_id, "for": "answer" }),
+    )?;
+    let outcome = match locate(&status, None) {
+        Ok(locator) => read_answer(&locator),
+        Err(outcome) => outcome,
+    };
+    let text = match &outcome {
+        Outcome::Found(text) | Outcome::TurnFailed(text) => Some(head(text, max_bytes)),
+        _ => None,
+    };
+    Ok(json!({
+        "outcome": outcome.wire_str(),
+        "text": text,
+        "truncated": text.is_some_and(|cut| match &outcome {
+            Outcome::Found(full) | Outcome::TurnFailed(full) => cut.len() < full.len(),
+            _ => false,
+        }),
+        "hint": Some(outcome.hint()).filter(|hint| !hint.is_empty()),
+        "runs_ended": status.get("rail").and_then(|rail| rail.get("runs_ended")),
+    }))
+}
+
 /// `splitlane answer <target> [--after N] [--max-bytes B] [--out FILE] [--raw] [--json]`.
 pub fn answer(
     client: &impl IpcTransport,

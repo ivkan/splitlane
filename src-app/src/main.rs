@@ -68,6 +68,7 @@ mod pricing;
 mod process_tree;
 mod project;
 mod rail_state;
+mod remote;
 mod running_commands;
 mod runtime_paths;
 mod search;

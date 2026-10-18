@@ -160,6 +160,9 @@ pulldown-cmark = { version = "0.10", default-features = false }
 # judged acceptable).
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 ureq.workspace = true
+splitlane-remote = { path = "../crates/splitlane-remote" }
+# The bridge's connection to the relay, over the same rustls as `ureq`.
+tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 # Multi-worktree diff engine.
 # Histogram line-diff lifted from Zed's `buffer_diff::compute_hunks`; pinned to
 # the same 0.1.8 Zed uses so the ported algorithm matches the reference API.

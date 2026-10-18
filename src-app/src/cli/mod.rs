@@ -13,8 +13,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
 use splitlane_ipc_client::{IpcClient, IpcTransport};
 
-mod answer_cmd;
-mod closed_window;
+pub(crate) mod answer_cmd;
+pub(crate) mod closed_window;
 mod control_cmds;
 mod flow_cmd;
 mod flow_spec;
@@ -73,6 +73,12 @@ pub const EXIT_INTERRUPTED: i32 = 10;
 /// canonical subcommand via `#[command(alias = ...)]`) so a lead agent that types
 /// the tool name reaches the matching verb instead of tripping the GUI
 /// single-instance guard. This list only gates the `main.rs` intercept.
+/// Verbs that work and are left out of `--help` until what they need on the
+/// other side exists: `remote` pairs with a page and a relay that are not
+/// published yet.
+#[cfg(test)]
+const HIDDEN_VERBS: &[&str] = &["remote"];
+
 const VERBS: &[&str] = &[
     "ls",
     "read",
@@ -96,6 +102,7 @@ const VERBS: &[&str] = &[
     "key",
     "flow",
     "host",
+    "remote",
     "list_panes",
     "read_pane",
     "search_pane",
@@ -542,6 +549,10 @@ enum Commands {
     /// sessions running without a window.
     #[command(subcommand)]
     Host(HostCommand),
+    /// Pair a phone, and answer it through the relay. Hidden until the
+    /// relay and the page on the phone it pairs with are published.
+    #[command(subcommand, hide = true)]
+    Remote(RemoteCommand),
     /// Stream lifecycle events from the running instance as JSONL.
     Watch {
         /// Only stream events for this pane (selector). Omit for all panes.
@@ -554,6 +565,15 @@ enum Commands {
         #[arg(long)]
         events_only: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum RemoteCommand {
+    /// Pair a phone: print a link to open on it, then ask for the code it
+    /// shows.
+    Pair,
+    /// Answer every paired phone until stopped.
+    Serve,
 }
 
 #[derive(Subcommand, Debug)]
@@ -678,6 +698,19 @@ pub fn run() -> i32 {
                 eprintln!("splitlane: {}", e.message);
                 e.code
             });
+        }
+        Commands::Remote(remote) => {
+            let outcome = match remote {
+                RemoteCommand::Pair => crate::remote::pair(),
+                RemoteCommand::Serve => crate::remote::serve(),
+            };
+            return match outcome {
+                Ok(()) => EXIT_OK,
+                Err(message) => {
+                    eprintln!("splitlane: {message}");
+                    EXIT_RUNTIME
+                }
+            };
         }
         other => other,
     };
@@ -1064,7 +1097,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             events_only,
         } => watch_cmd::watch(client, surface.as_deref(), &types, events_only),
         // Answered in `run`, before a client to the instance exists.
-        Commands::Host(_) => Ok(EXIT_OK),
+        Commands::Host(_) | Commands::Remote(_) => Ok(EXIT_OK),
     }
 }
 
@@ -1114,7 +1147,7 @@ mod tests {
             .collect();
         for verb in super::VERBS {
             // The MCP tool names are aliases, kept out of the help on purpose.
-            if verb.contains('_') {
+            if verb.contains('_') || HIDDEN_VERBS.contains(verb) {
                 continue;
             }
             assert!(listed.contains(verb), "`{verb}` is missing from --help");
