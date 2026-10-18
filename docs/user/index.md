@@ -262,5 +262,6 @@ in CI but have had less hands-on use.
 - [Settings](settings.md) and [Themes](themes.md)
 - [Configuration schema](configuration/schema.md) - every `splitlane.json` key
 - [Hooks](hooks.md) - agent lifecycle hooks
+- [Your phone](phone.md) - following and answering agent sessions from a phone
 - [Troubleshooting](troubleshooting.md)
 - Source and issues: [github.com/ivkan/splitlane](https://github.com/ivkan/splitlane)

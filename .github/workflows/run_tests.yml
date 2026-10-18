@@ -89,6 +89,7 @@ jobs:
       rendering: ${{ steps.filter.outputs.rendering }}
       ci: ${{ steps.filter.outputs.ci }}
       relay: ${{ steps.filter.outputs.relay }}
+      web: ${{ steps.filter.outputs.web }}
       security: ${{ steps.filter.outputs.security }}
       release_packaging: ${{ steps.filter.outputs.release_packaging }}
       changed_packages: ${{ steps.detect_packages.outputs.changed_packages }}
@@ -123,6 +124,11 @@ jobs:
               - 'scripts/**'
             relay:
               - 'relay/**'
+            # The page checks itself against the Rust crate's vectors, so a
+            # change to either runs it.
+            web:
+              - 'web/**'
+              - 'crates/splitlane-remote/**'
             security:
               - '**/Cargo.toml'
               - 'Cargo.lock'
@@ -339,6 +345,25 @@ jobs:
       - name: Test
         working-directory: relay
         run: node --test test/relay.test.mjs
+
+  web_tests:
+    name: Phone page (protocol)
+    needs: orchestrate
+    if: >-
+      needs.orchestrate.outputs.web == 'true' ||
+      needs.orchestrate.outputs.ci == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Test
+        working-directory: web
+        run: node --test
 
   run_tests_linux:
     name: Tests (Linux x86_64)
@@ -1481,6 +1506,7 @@ jobs:
       - check_style
       - run_tests_linux
       - relay_tests
+      - web_tests
       - release_build_linux
       - security_audit
       - macos_check
@@ -1500,6 +1526,7 @@ jobs:
           RESULT_CHECK_STYLE: ${{ needs.check_style.result }}
           RESULT_RUN_TESTS_LINUX: ${{ needs.run_tests_linux.result }}
           RESULT_RELAY_TESTS: ${{ needs.relay_tests.result }}
+          RESULT_WEB_TESTS: ${{ needs.web_tests.result }}
           RESULT_RELEASE_BUILD_LINUX: ${{ needs.release_build_linux.result }}
           RESULT_SECURITY_AUDIT: ${{ needs.security_audit.result }}
           RESULT_MACOS_CHECK: ${{ needs.macos_check.result }}
@@ -1524,6 +1551,7 @@ jobs:
           check_result "check_style"          "$RESULT_CHECK_STYLE"
           check_result "run_tests_linux"      "$RESULT_RUN_TESTS_LINUX"
           check_result "relay_tests"          "$RESULT_RELAY_TESTS"
+          check_result "web_tests"            "$RESULT_WEB_TESTS"
           check_result "release_build_linux"  "$RESULT_RELEASE_BUILD_LINUX"
           check_result "security_audit"       "$RESULT_SECURITY_AUDIT"
           check_result "macos_check"          "$RESULT_MACOS_CHECK"
