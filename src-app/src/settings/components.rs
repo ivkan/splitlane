@@ -125,15 +125,15 @@ pub fn hairline(ui: crate::theme::UiColors) -> impl IntoElement {
 /// no border, whisper-soft text wash on hover. Used for "Reset to defaults"
 /// and similar inline actions inside section headers.
 pub fn secondary_button(
-    id: &'static str,
-    label: &'static str,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
     ui: crate::theme::UiColors,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     let hover_bg = lerp_color(ui.subtle, ui.text, 0.06);
 
     div()
-        .id(id)
+        .id(id.into())
         .px(tok::space::MD)
         .py(tok::space::XS)
         .rounded(SETTINGS_CONTROL_CORNER_RADIUS)
@@ -142,7 +142,7 @@ pub fn secondary_button(
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(ui.text)
         .animated_hover_bg(ui.subtle, hover_bg)
-        .child(label)
+        .child(label.into())
         .cursor_pointer()
         .on_click(on_click)
 }

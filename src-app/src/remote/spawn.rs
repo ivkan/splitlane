@@ -18,7 +18,8 @@
 
 use std::io::{BufRead, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -73,6 +74,27 @@ pub(crate) fn start_bridge_if_paired() -> Option<Child> {
     }
     let token = TOKEN.get_or_init(new_token);
     spawn_bridge(token, false)
+}
+
+/// Set when a phone was just paired from the window, so the window's bridge
+/// starts now rather than at its next look.
+static PAIRED_JUST_NOW: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+/// A phone was paired: the window's bridge, if none is running, should start.
+pub(crate) fn wake_bridge_starter() {
+    let (paired, wake) = &PAIRED_JUST_NOW;
+    *paired.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    wake.notify_all();
+}
+
+/// Wait `pause`, or less if a phone is paired from the window meanwhile.
+pub(crate) fn wait_to_start_bridge(pause: Duration) {
+    let (paired, wake) = &PAIRED_JUST_NOW;
+    let guard = paired.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut guard, _) = wake
+        .wait_timeout_while(guard, pause, |paired| !*paired)
+        .unwrap_or_else(PoisonError::into_inner);
+    *guard = false;
 }
 
 /// Whether a window of this build answers on its IPC socket.

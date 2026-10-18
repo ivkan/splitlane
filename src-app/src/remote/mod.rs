@@ -12,6 +12,7 @@ mod relay;
 mod spawn;
 mod store;
 mod surface;
+mod window_pair;
 
 use std::io;
 use std::time::Duration;
@@ -19,11 +20,37 @@ use std::time::Duration;
 use splitlane_remote::wire::Frame;
 
 pub(crate) use bridge::serve;
+pub(crate) use pair::CODE_ATTEMPTS;
 pub(crate) use pair::pair;
 pub(crate) use spawn::{
     BRIDGE_SUBCOMMAND, TOKEN_PARAM, keep_host_bridge, mark_bridge_request, new_token,
-    run_spawned_bridge, start_bridge_if_paired, verified_device,
+    run_spawned_bridge, start_bridge_if_paired, verified_device, wait_to_start_bridge,
 };
+pub(crate) use window_pair::{PairStep, WindowPairing};
+
+/// A paired phone, as the Phone page lists it.
+pub(crate) use store::Device as PairedPhone;
+
+fn store_dir() -> Result<std::path::PathBuf, String> {
+    store::dir().ok_or_else(|| "cannot work out where Splitlane keeps its files".to_string())
+}
+
+/// The phones paired with this computer. Reads a file: not on the main
+/// thread.
+pub(crate) fn paired_phones() -> Result<Vec<PairedPhone>, String> {
+    store::devices(&store_dir()?).map_err(|e| e.to_string())
+}
+
+/// Forget the phone paired in `room`. The bridge leaves its room, and the
+/// phone, which can no longer be answered, has to be paired again.
+pub(crate) fn remove_phone(room: &str) -> Result<(), String> {
+    store::remove_device(&store_dir()?, room).map_err(|e| e.to_string())
+}
+
+/// Let the phone paired in `room` reply, or only read.
+pub(crate) fn set_phone_reply(room: &str, reply: bool) -> Result<(), String> {
+    store::set_reply(&store_dir()?, room, reply).map_err(|e| e.to_string())
+}
 
 /// Something frames go in and out of: the relay, or a pair of queues in a
 /// test.

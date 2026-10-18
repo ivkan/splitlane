@@ -12,12 +12,12 @@ use super::relay::{self, Received, RelaySocket};
 use super::{Link, now_unix, store};
 
 /// How long an offer lasts.
-const OFFER_TTL_SECS: u64 = 300;
+pub(crate) const OFFER_TTL_SECS: u64 = 300;
 /// Codes a person may type before the offer is dropped. A million codes is
 /// few enough to try them all; three is enough for typos.
-const CODE_ATTEMPTS: usize = 3;
+pub(crate) const CODE_ATTEMPTS: usize = 3;
 /// Where a phone opens the link.
-const PAGE: &str = "https://splitlane.dev/app";
+pub(crate) const PAGE: &str = "https://splitlane.dev/app";
 
 /// How a pairing ended without a phone.
 #[derive(Debug, PartialEq, Eq)]

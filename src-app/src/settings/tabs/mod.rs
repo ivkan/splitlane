@@ -10,6 +10,7 @@ pub mod general;
 pub mod limits;
 pub mod mcp;
 pub mod notifications;
+pub mod phone;
 pub mod presets;
 pub mod shortcuts;
 pub mod terminal;

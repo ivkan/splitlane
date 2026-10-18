@@ -197,8 +197,9 @@ impl SplitlaneApp {
                 loop {
                     // Looked for again while none is paired, so a phone paired
                     // while the window runs is answered without a restart.
+                    // Pairing from the Phone page cuts the wait short.
                     let Some(mut bridge) = crate::remote::start_bridge_if_paired() else {
-                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        crate::remote::wait_to_start_bridge(std::time::Duration::from_secs(30));
                         continue;
                     };
                     {
@@ -1091,6 +1092,7 @@ impl SplitlaneApp {
             cx.new(|cx| crate::widgets::text_input::TextInput::new("", "Filter shortcuts…", cx));
         cx.observe(&shortcuts_filter_input, |_, _, cx| cx.notify())
             .detach();
+        let phone_page = cx.new(crate::settings::tabs::phone::PhonePage::new);
         // The command palette query. Observed so each keystroke re-runs
         // the selection; the palette resets it to the top on every edit.
         let command_palette_query = cx.new(|cx| {
@@ -1130,6 +1132,7 @@ impl SplitlaneApp {
             settings_drag: None,
             settings_search_input,
             shortcuts_filter_input,
+            phone_page,
             terminal_dropdown: None,
             general_dropdown: None,
             appearance_theme_menu_open: false,

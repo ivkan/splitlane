@@ -31,18 +31,25 @@ enum State {
 /// What the bridge answers a request with.
 pub(crate) type Answerer<'a> = dyn FnMut(&str, &Value) -> Result<Value, String> + 'a;
 
-/// Serve one phone on `link` until the link fails.
+/// Serve one phone on `link` until the link fails, or until `paired` says
+/// the phone was removed: a removed phone is answered nothing more, not even
+/// a refusal, from the moment the window forgets it.
 pub(crate) fn serve_connection(
     link: &mut impl Link,
     key: &DeviceKey,
     phone: &PublicKey,
     room: RoomId,
+    paired: &mut dyn FnMut() -> bool,
     answer: &mut Answerer<'_>,
 ) -> io::Result<()> {
     let mut state = State::Idle;
     let mut last_sent = Instant::now();
     loop {
-        let frame = match link.receive(TICK)? {
+        let received = link.receive(TICK)?;
+        if !paired() {
+            return Ok(());
+        }
+        let frame = match received {
             Received::Frame(frame) => frame,
             Received::Junk => continue,
             Received::Quiet => {
@@ -139,6 +146,14 @@ pub(crate) fn serve_with(token: Option<String>) -> Result<(), String> {
     let mut served: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
         let devices = store::devices(&dir).map_err(|e| format!("paired phones: {e}"))?;
+        if devices.is_empty() {
+            // The last phone removed: nothing to answer, and nothing wrong.
+            // The window starts the bridge again when one is paired.
+            if !served.is_empty() {
+                return Ok(());
+            }
+            return Err("no phone is paired; pair one with `splitlane remote pair`".into());
+        }
         for device in devices {
             if served.contains(&device.room) {
                 continue;
@@ -151,44 +166,68 @@ pub(crate) fn serve_with(token: Option<String>) -> Result<(), String> {
                 continue;
             };
             served.insert(device.room.clone());
-            let (key, relay, token) = (key.clone(), relay.clone(), token.clone());
+            let (key, relay, token, dir) = (key.clone(), relay.clone(), token.clone(), dir.clone());
             eprintln!("serving {}", device.name);
             std::thread::spawn(move || {
-                serve_forever(&relay, &key, &phone, room, &device, token.as_deref())
+                serve_forever(&dir, &relay, &key, &phone, room, &device, token.as_deref())
             });
-        }
-        if served.is_empty() {
-            return Err("no phone is paired; pair one with `splitlane remote pair`".into());
         }
         std::thread::sleep(RESCAN);
     }
 }
 
-/// Keep one phone's room joined, joining again after every drop. A panic
-/// while answering is logged and the room joined again: one bad request
-/// must not leave the phone unanswered until a restart.
+/// Keep one phone's room joined, joining again after every drop, until the
+/// phone is removed. A panic while answering is logged and the room joined
+/// again: one bad request must not leave the phone unanswered until a
+/// restart.
+///
+/// The phone's record is read again for every request, so taking away its
+/// right to reply, or removing it, holds from the next request on.
 fn serve_forever(
+    dir: &std::path::Path,
     relay: &str,
     key: &DeviceKey,
     phone: &PublicKey,
     room: RoomId,
-    device: &store::Device,
+    paired_as: &store::Device,
     token: Option<&str>,
 ) {
-    let name = device.name.as_str();
+    let name = paired_as.name.as_str();
+    // A read that fails is not a removal: one bad moment (a virus scanner
+    // holding the file on Windows) must not leave the phone unanswered
+    // until a restart. The record last read stands in for it.
+    let last = std::cell::RefCell::new(paired_as.clone());
+    let current = || match store::device_paired_as(dir, paired_as) {
+        Ok(found) => {
+            if let Some(device) = &found {
+                *last.borrow_mut() = device.clone();
+            }
+            found
+        }
+        Err(e) => {
+            log::warn!("{name}: cannot read the paired phones ({e}); going by the last read");
+            Some(last.borrow().clone())
+        }
+    };
     let mut retry = RETRY_FIRST;
     loop {
+        if current().is_none() {
+            log::info!("{name}: removed; the bridge leaves its room");
+            return;
+        }
         match RelaySocket::connect(relay, room, key) {
             Ok(mut socket) => {
                 retry = RETRY_FIRST;
+                let mut paired = || current().is_some();
                 let mut answer = |method: &str, params: &Value| {
-                    surface::Surface::current().and_then(|current| {
-                        let window_open = matches!(current, surface::Surface::Window(_));
-                        surface::answer(&current, method, params, device, token, window_open)
+                    let device = current().ok_or("this phone is no longer paired")?;
+                    surface::Surface::current().and_then(|surface| {
+                        let window_open = matches!(surface, surface::Surface::Window(_));
+                        surface::answer(&surface, method, params, &device, token, window_open)
                     })
                 };
                 let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    serve_connection(&mut socket, key, phone, room, &mut answer)
+                    serve_connection(&mut socket, key, phone, room, &mut paired, &mut answer)
                 }));
                 match served {
                     Ok(Err(e)) => log::info!("{name}: the relay connection ended ({e})"),
@@ -273,7 +312,14 @@ mod tests {
                 "list" => Ok(json!({ "agents": [{ "tool": "claude" }] })),
                 _ => Err(format!("no {method} here {params}")),
             };
-            serve_connection(&mut bridge_end, &machine, &phone, room, &mut answer)
+            serve_connection(
+                &mut bridge_end,
+                &machine,
+                &phone,
+                room,
+                &mut || true,
+                &mut answer,
+            )
         });
         (phone_end, thread)
     }
@@ -353,6 +399,53 @@ mod tests {
                 result: Some(_),
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn a_removed_phone_is_answered_nothing_more() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (machine, phone_key) = (DeviceKey::generate(), DeviceKey::generate());
+        let machine_public = machine.public();
+        let phone_public = phone_key.public();
+        let room = RoomId::random();
+        let (mut bridge_end, phone_end) = testing::pair();
+        let paired = Arc::new(AtomicBool::new(true));
+        let still = paired.clone();
+        let bridge = std::thread::spawn(move || {
+            serve_connection(
+                &mut bridge_end,
+                &machine,
+                &phone_public,
+                room,
+                &mut || still.load(Ordering::Relaxed),
+                &mut |_, _| Ok(json!({})),
+            )
+        });
+        let mut phone = Phone::connect(phone_end, &phone_key, &machine_public, room);
+        assert!(matches!(
+            phone.ask(1, "list", Value::Null),
+            Message::Response { error: None, .. }
+        ));
+        paired.store(false, Ordering::Relaxed);
+        let sealed = phone
+            .channel
+            .seal(
+                &Message::Request {
+                    id: 2,
+                    method: "list".into(),
+                    params: Value::Null,
+                }
+                .to_bytes(),
+            )
+            .unwrap();
+        phone.link.send(&Frame::Sealed(sealed)).unwrap();
+        // The bridge leaves without answering.
+        assert!(bridge.join().unwrap().is_ok());
+        assert!(matches!(
+            phone.link.receive(Duration::from_millis(50)),
+            Ok(Received::Quiet) | Err(_)
         ));
     }
 }
