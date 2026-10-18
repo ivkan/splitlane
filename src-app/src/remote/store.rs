@@ -103,10 +103,53 @@ pub(crate) fn machine_key(dir: &Path) -> io::Result<DeviceKey> {
 /// records of one phone would mean two connections to its room that keep
 /// starting each other's channel over.
 pub(crate) fn add_device(dir: &Path, device: Device) -> io::Result<()> {
+    edit_devices(dir, |all| {
+        all.retain(|kept| kept.public != device.public);
+        all.push(device);
+    })
+}
+
+/// Read the paired phones, change them and write them back, one change at a
+/// time within this process. Two changes at once would each write what they
+/// read, and the later would undo the earlier: a phone paired while another
+/// lost its right to reply could hand that right back.
+///
+/// A `splitlane remote pair` in another process is not covered; the window
+/// and the terminal pairing at the same moment is not a case worth a file
+/// lock.
+fn edit_devices(dir: &Path, change: impl FnOnce(&mut Vec<Device>)) -> io::Result<()> {
+    static EDITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = EDITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut all = devices(dir)?;
-    all.retain(|kept| kept.public != device.public);
-    all.push(device);
+    change(&mut all);
     save_devices(dir, &all)
+}
+
+/// The record of the phone `paired_as` names, as it stands now: `Ok(None)`
+/// once it was removed. Matched on room and key both, so a phone paired
+/// again (a new room) is a different phone to a bridge that served the old
+/// one. A file that cannot be read is an error, not a removal.
+pub(crate) fn device_paired_as(dir: &Path, paired_as: &Device) -> io::Result<Option<Device>> {
+    Ok(devices(dir)?
+        .into_iter()
+        .find(|device| device.room == paired_as.room && device.public == paired_as.public))
+}
+
+/// Remove the phone paired in `room`. Its bridge connection leaves the room
+/// at its next frame; see `bridge::serve_forever`.
+pub(crate) fn remove_device(dir: &Path, room: &str) -> io::Result<()> {
+    edit_devices(dir, |all| all.retain(|device| device.room != room))
+}
+
+/// Let the phone paired in `room` reply, or only read.
+pub(crate) fn set_reply(dir: &Path, room: &str, reply: bool) -> io::Result<()> {
+    edit_devices(dir, |all| {
+        for device in all.iter_mut().filter(|device| device.room == room) {
+            device.reply = reply;
+        }
+    })
 }
 
 /// The paired phones; none when the file is missing.
@@ -225,6 +268,44 @@ mod tests {
         fs::remove_file(dir.path().join(KEY_FILE)).unwrap();
         assert!(machine_key(dir.path()).is_err());
         drop(first);
+    }
+
+    #[test]
+    fn changes_made_at_once_all_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let first = Device::new(
+            RoomId::random(),
+            "Pixel",
+            &DeviceKey::generate().public(),
+            0,
+        );
+        add_device(&path, first.clone()).unwrap();
+        let mut threads: Vec<_> = (0..8)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let phone = DeviceKey::generate().public();
+                    add_device(
+                        &path,
+                        Device::new(RoomId::random(), &format!("p{n}"), &phone, 0),
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        let room = first.room.clone();
+        let toggler = path.clone();
+        threads.push(std::thread::spawn(move || {
+            set_reply(&toggler, &room, false).unwrap();
+        }));
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let all = devices(&path).unwrap();
+        assert_eq!(all.len(), 9);
+        // The right taken away stays taken away, whatever was paired meanwhile.
+        assert!(!all.iter().find(|d| d.room == first.room).unwrap().reply);
     }
 
     #[test]

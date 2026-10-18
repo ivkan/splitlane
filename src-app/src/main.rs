@@ -155,6 +155,10 @@ pub(crate) enum SettingsSection {
     /// from. In the application layer for the same reason as Skills - none of
     /// it is per-project or per-pane.
     Limits,
+    /// A phone paired through the relay: pairing it and the list of paired
+    /// phones. The application layer again: a phone is paired with the
+    /// computer, not with a project or a pane.
+    Phone,
 }
 
 /// Light / dark / system selector shown at the top of the Themes settings page.
@@ -1145,6 +1149,8 @@ struct SplitlaneApp {
     /// recipe as the nav search above; read at render and handed to
     /// `keybindings::group_shortcuts`.
     shortcuts_filter_input: gpui::Entity<crate::widgets::text_input::TextInput>,
+    /// Settings -> Phone; see `settings::tabs::phone`.
+    phone_page: gpui::Entity<crate::settings::tabs::phone::PhonePage>,
     /// Codex settings: which Terminal-page dropdown is open (`None` = closed).
     terminal_dropdown: Option<TerminalDropdown>,
     /// Codex settings: which General-page select is open (`None` = closed).

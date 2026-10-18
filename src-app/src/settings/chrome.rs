@@ -54,7 +54,7 @@ struct NavItem {
     keywords: &'static [&'static str],
 }
 
-/// The design's left nav: ten sections, flat, in its order.
+/// The design's left nav, flat, in its order, with Phone added after it.
 ///
 /// It used to be three Codex-style groups (Personal / Terminal /
 /// Integrations) under four different names. The design gives a flat list and
@@ -179,7 +179,24 @@ const NAV_ITEMS: &[NavItem] = &[
             "limit", "limits", "usage", "quota", "weekly", "5-hour", "session", "warn",
         ],
     },
+    NavItem {
+        section: SettingsSection::Phone,
+        label: "Phone",
+        icon: "icons/device-mobile.svg",
+        keywords: &[
+            "phone", "mobile", "pair", "pairing", "remote", "qr", "relay", "device",
+        ],
+    },
 ];
+
+/// Whether the Phone section is listed. Its QR code opens the page the phone
+/// pairs on, and until that page is published a release build would offer a
+/// pairing no phone can finish - the same reason `remote` is left out of
+/// `--help`. Debug builds list it, and `SPLITLANE_PHONE=1` lists it in a
+/// release build for whoever is testing the page.
+static PHONE_SECTION_SHOWN: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    cfg!(debug_assertions) || std::env::var_os("SPLITLANE_PHONE").is_some_and(|v| v == "1")
+});
 
 /// Human page title shown as the content H1.
 pub(crate) fn section_title(section: SettingsSection) -> &'static str {
@@ -194,6 +211,7 @@ pub(crate) fn section_title(section: SettingsSection) -> &'static str {
         SettingsSection::Presets => "Presets",
         SettingsSection::Skills => "Skills",
         SettingsSection::Limits => "Limits",
+        SettingsSection::Phone => "Phone",
     }
 }
 
@@ -228,6 +246,7 @@ impl SplitlaneApp {
 
         let items: Vec<&NavItem> = NAV_ITEMS
             .iter()
+            .filter(|it| it.section != SettingsSection::Phone || *PHONE_SECTION_SHOWN)
             .filter(|it| {
                 query.is_empty()
                     || it.label.to_lowercase().contains(&query)
@@ -399,6 +418,7 @@ impl SplitlaneApp {
             SettingsSection::McpServers => self.render_mcp_servers_content(cx).into_any_element(),
             SettingsSection::Presets => self.render_presets_content(cx).into_any_element(),
             SettingsSection::Limits => self.render_limits_content(cx).into_any_element(),
+            SettingsSection::Phone => self.phone_page.clone().into_any_element(),
             SettingsSection::Skills => crate::agents_view::render_skills_page(
                 self.agents_view.agents_skills_tab,
                 self.agents_view.agents_skills_copied.clone(),
@@ -558,6 +578,10 @@ impl SplitlaneApp {
         }
         if section == SettingsSection::McpServers {
             self.refresh_mcp_status(cx);
+        }
+        if section == SettingsSection::Phone {
+            // A phone paired from the terminal meanwhile shows up.
+            self.phone_page.update(cx, |page, cx| page.reload(cx));
         }
         if section == SettingsSection::Presets {
             // The list is read-only, so opening the section is a good moment
