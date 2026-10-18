@@ -36,7 +36,7 @@ bytes. It holds one machine socket and at most two phone sockets.
 ```bash
 cd relay
 node --test test/relay.test.mjs   # runs the Worker in `wrangler dev`
-npx wrangler@4.33.1 deploy
+npx wrangler@4.145.0 deploy
 ```
 
 The app reads `SPLITLANE_RELAY_URL` instead of the default, so a debug build

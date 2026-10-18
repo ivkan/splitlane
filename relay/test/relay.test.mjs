@@ -10,11 +10,12 @@ const BASE = `ws://127.0.0.1:${PORT}`;
 let dev;
 
 before(async () => {
-  dev = spawn("npx", ["--yes", "wrangler@4.33.1", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
+  dev = spawn("npx", ["--yes", "wrangler@4.145.0", "dev", "--port", String(PORT), "--ip", "127.0.0.1"], {
     cwd: new URL("..", import.meta.url),
     stdio: "ignore",
   });
-  for (let i = 0; i < 120; i++) {
+  // Two minutes: a first run waits for npx to fetch wrangler.
+  for (let i = 0; i < 240; i++) {
     try {
       if ((await fetch(`http://127.0.0.1:${PORT}/health`)).ok) return;
     } catch {
