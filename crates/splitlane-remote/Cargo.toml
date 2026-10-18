@@ -1,0 +1,34 @@
+[package]
+name = "splitlane-remote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pairing and the encrypted channel between Splitlane and a paired phone, through a relay that only forwards"
+
+# Every primitive here is one WebCrypto has in every browser - P-256 ECDH,
+# HKDF-SHA256, HMAC-SHA256, AES-256-GCM - so the page on the phone needs no
+# cryptographic library of its own.
+[dependencies]
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+base64 = "0.22"
+hkdf = "0.12"
+hmac = "0.12"
+p256 = { version = "0.13", features = ["ecdh"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+subtle = "2.6"
+thiserror.workspace = true
+zeroize = "1.8"
+
+[features]
+# Lets the crate's own tests fix a handshake's salt, for the test vectors.
+test-vectors = []
+
+[dev-dependencies]
+splitlane-remote = { path = ".", features = ["test-vectors"] }
+
+[lints]
+workspace = true

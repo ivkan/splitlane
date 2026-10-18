@@ -11,6 +11,7 @@ members = [
     "crates/splitlane-mcp",
     "crates/splitlane-mcp-install",
     "crates/splitlane-process",
+    "crates/splitlane-remote",
     "crates/splitlane-shim",
     "crates/splitlane-telemetry",
     "crates/splitlane-terminal-ghostty",
