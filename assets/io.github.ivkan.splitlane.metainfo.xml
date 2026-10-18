@@ -63,6 +63,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.11" date="2026-10-18">
+      <description>
+        <p>With the window closed, the command-line tool still answers for the
+        agent sessions the session host keeps: it lists them with what the
+        window last saw, reads their output, returns an agent's last answer,
+        sends text when writing was allowed at launch, and waits for a turn to
+        end from the agent's own reports. A session kept with no pane opens in
+        a pane of its own project when no pane is open.</p>
+      </description>
+    </release>
     <release version="0.2.10" date="2026-10-17">
       <description>
         <p>A Running sheet lists every agent session and every command running

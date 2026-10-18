@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-10-18
+
 ### Added
 
 - With the window closed, `splitlane ps`, `status` and `answer` answer for the
