@@ -667,6 +667,9 @@ impl SplitlaneApp {
         // the loop holds a borrow of `self.workspaces`, and the notification
         // wants to ask `self` whether the pane is on screen.
         let mut finished_runs: Vec<FinishedRun> = Vec::new();
+        // Every end counted this pass, announced or not, for who began the
+        // turn (`note_turn_end`).
+        let mut turns_ended: Vec<u64> = Vec::new();
         // Sessions whose input line holds a prompt our own key put back.
         // Cleared after the loop for the same reason.
         let mut returned_prompts: Vec<u64> = Vec::new();
@@ -957,6 +960,7 @@ impl SplitlaneApp {
                         if left_run && let Some(outcome) = outcome {
                             watch.settle(read_at);
                             thread.rail.record_run_end(outcome);
+                            turns_ended.push(reading.thread_id);
                         } else if watch.unseen_turn_ended(thread.status, read_at, RUN_END_CONFIRM)
                             && let Some(outcome) = outcome
                         {
@@ -971,6 +975,7 @@ impl SplitlaneApp {
                                 reading.thread_id,
                             );
                             thread.rail.record_run_end(outcome);
+                            turns_ended.push(reading.thread_id);
                         }
                     }
                     thread.rail.turn_marker = watch.current.as_ref().map(|end| end.marker.clone());
@@ -1125,6 +1130,9 @@ impl SplitlaneApp {
         for thread_id in returned_prompts {
             self.clear_returned_prompt(thread_id, cx);
         }
+        for thread_id in turns_ended {
+            self.note_turn_end(thread_id, cx);
+        }
         for run in finished_runs {
             self.announce_finished_run(run, cx);
         }
@@ -1218,31 +1226,38 @@ impl SplitlaneApp {
     /// ([`crate::app::orchestration::run_is_news`]); the case for each of its
     /// three conditions is in `docs/internals/agent-state-and-the-rail.md`.
     fn announce_finished_run(&mut self, run: FinishedRun, cx: &mut gpui::Context<Self>) {
-        let last_message_from_opener = self.last_message_was_openers(run.thread_id, cx);
+        let claim = self.opener_claim(run.thread_id, cx);
         let Some(thread) = self.thread_by_id(run.thread_id) else {
             return;
         };
         let facts = crate::app::orchestration::RunFacts {
             detector_speaks: thread.detector_read_at.is_some(),
             interrupted: run.interrupted,
-            last_message_from_opener,
+            last_message_from_opener: claim.last_message_from_opener,
         };
         let news = crate::app::orchestration::run_is_news(facts);
         // A run that is silently not announced looks exactly like a run that
         // never ended, so the decision is traced with what it was made from.
         log::debug!(
             target: TRACE,
-            "#{} run ended after {:?}: news={news} ({facts:?})",
+            "#{} run ended after {:?}: news={news} ({facts:?}, {claim:?})",
             run.thread_id,
             run.ran_for,
         );
+        // What a person is not told, the opener is; and a turn the agent
+        // took up by itself is the opener's as well as the person's.
+        if facts.detector_speaks
+            && !facts.interrupted
+            && crate::app::orchestration::opener_is_owed(claim)
+        {
+            self.tell_opener_of(run.thread_id, cx);
+        }
         if !news {
-            // What a person is not told, the opener is.
-            if facts.detector_speaks && !facts.interrupted && facts.last_message_from_opener {
-                self.tell_opener_of(run.thread_id, cx);
-            }
             return;
         }
+        let Some(thread) = self.thread_by_id(run.thread_id) else {
+            return;
+        };
         let Some(agent) = thread.terminal_agent else {
             return;
         };

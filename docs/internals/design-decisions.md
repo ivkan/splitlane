@@ -1461,6 +1461,14 @@ gave it the next task knows.
 
 **It can be turned off** (`tell_opener`), and is on without being asked for.
 
+**A turn the session took up by itself is the opener's too**, even when a
+person spoke to it last. A session waiting on its own long command ends its
+turn and starts another when the command finishes. A person's question in
+between used to make every later end the person's, and a lead missed two
+stops that way, ten hours and half an hour each. Which end counts and why is
+in `agent-state-and-the-rail.md`, "News of a finished run belongs to whoever
+sent the last message".
+
 What it does not cover: a session that ends its turn by asking a person
 something is `waiting`, not ended, and the opener is not told; the person is.
 An opener that is itself a Codex session takes the line like any other, but

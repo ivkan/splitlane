@@ -4781,12 +4781,16 @@ impl SplitlaneApp {
                     {
                         t.rail
                             .record_run_end(crate::rail_state::RunOutcome::Finished);
+                        self.note_turn_end(thread_id, cx);
                     }
                     // The opener is told instead, unless it is waiting on
-                    // this session already.
+                    // this session already; and as well, for a turn the
+                    // agent took up by itself.
                     if !interrupt_stop
                         && !detector_will_announce
-                        && self.last_message_was_openers(thread_id, cx)
+                        && crate::app::orchestration::opener_is_owed(
+                            self.opener_claim(thread_id, cx),
+                        )
                     {
                         self.tell_opener_of(thread_id, cx);
                         self.flush_opener_tells(cx);

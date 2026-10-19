@@ -734,6 +734,38 @@ and the notification are for a person, the count is for whoever is waiting.
   decide what the key does, so it can be one too high, which errs towards
   telling the person.
 
+  **A turn the agent took up by itself is the opener's as well**
+  (`orchestration::opener_is_owed`). An agent that ends its turn with a
+  command of its own still running starts the next one by itself when the
+  command finishes, and that turn carries on the work it was handed. The rule
+  above gave it to whoever spoke last. A person asked a lead's session how
+  long its benchmarks would take, got the answer and went to bed; the session
+  finished them at night and stopped with a decision for the lead, which was
+  told nothing for ten hours. It happened twice in one piece of work. So the
+  count is also noted at every end the rail counts, announced or not
+  (`Thread::submits_at_turn_end`). A turn that ends with the count where the
+  last end left it began with no Enter in the pane, and its opener is told
+  if it opened the session or wrote into it during this run of the app. The
+  person keeps their mark and notification when they spoke last: their
+  question is the last thing they asked of that session. A turn a person
+  began with Enter stays theirs alone.
+
+  What it does not cover: an Enter pressed in the middle of a turn, to queue
+  a message or to answer a permission ask, is counted against that turn, so
+  its end stays the person's under the rule above. The next turn the agent
+  takes up by itself goes to the opener again. Ends the rail does not count
+  leave the count where it was, which errs the same way. So does an Enter
+  pressed in the few seconds the pass holds an end before it counts it: it
+  is read as having begun the turn that just ended.
+
+  The count is not kept across a restart of the app. A terminal made at
+  launch counts from zero, and so does a session with no end seen yet, so a
+  turn a person began before the restart and that ends after it is read as
+  taken up by itself, and the opener gets one line about it. The other
+  choice, reading the first end after a restart as prompted, would leave the
+  opener untold of a turn the agent took up by itself - the failure this
+  rule exists to stop.
+
 **A run ends on a span, not on a sample** (`agent_state_pass::confirm_run_end`).
 A working Claude Code session says `idle` for about a second in the middle of
 its work every time a background task ends. This was measured on CLI 2.1.270 by
