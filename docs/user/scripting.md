@@ -449,6 +449,17 @@ already in does not count as starting one. It is never written
 into a pane whose agent has exited. Turn it off with `"tell_opener": false` in `splitlane.json`, or under
 Settings > Agents.
 
+The lead is also told of a turn the session took up by itself, woken when a
+command of its own finished, even if you typed into the session since the
+lead last did. You keep your own mark and notification for that turn. Two
+notes can follow the surface id: `taken up by itself` when the lead did not
+start the turn, and `a command of its own still running` when the answer may
+not be the session's last word:
+
+```
+[Splitlane] "bench" (surface 4294967303, taken up by itself, a command of its own still running), a session this one opened, has ended its turn. Read its answer with: splitlane answer 4294967303. Sent by the app, not typed by a person.
+```
+
 A session opened this way is told that its task came from another agent
 session and not from a person, and may ask before it commits, pushes or
 deletes anything. It then ends its turn with the question as ordinary text,

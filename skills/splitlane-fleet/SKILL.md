@@ -11,10 +11,11 @@ the running Splitlane instance over its local IPC socket. You never scrape the
 screen and you never poll in a busy loop - Splitlane knows when a turn ends and
 `splitlane wait` tells you.
 
-**Nothing tells you by itself that a session you opened has finished.** You
-hear of it only through a `splitlane wait` that is running at that moment.
-End your turn without one and the session finishes in silence: the person has
-to come and tell you. Section 1 says how to keep a wait running.
+**Keep a `splitlane wait` running on every session you opened that is
+working.** That is how you hear its turn end. Without one, Splitlane writes
+a line into your pane when the turn ends, but that line waits while you or
+the person are busy and can be turned off. Section 1 says how to keep a wait
+running.
 
 This skill is harness-agnostic: every instruction below is a shell command, so it
 works unchanged whether *you* are Claude Code, Codex, OpenCode, or anything else
@@ -94,6 +95,11 @@ running.
   way reaches Splitlane exactly as a foreground one does. If it comes back
   with exit `4`, the time ran out and the session is still working: start the
   same wait again, with the same number after `--after`.
+
+  Use the harness's own way of running a command in the background. A wait
+  sent to the background inside an ordinary command - with `&`, `nohup`, or
+  a subshell - is invisible to the harness: when it ends, nobody calls you
+  back.
 - **It does not**: run the `wait` in the foreground with `--timeout 540` - a
   foreground shell call from an agent is usually cut off at ten minutes - and
   on exit `4` run the same `wait` again. Stay in your turn until it returns.
@@ -105,6 +111,13 @@ surface id. It was sent by the app, not typed by a person: read the answer
 with `splitlane answer <surface>` and carry on with the task you were given.
 The line waits while you are busy or while the person is typing to you, and a
 person can turn it off, so the wait above stays the way to be sure.
+
+The line also comes for a turn you did not start. A session that ended its
+turn while its own command was still running starts another turn by itself
+when that command finishes, and you are told when that turn ends too. Two
+notes can follow the surface id. `taken up by itself` means you did not start
+this turn. `a command of its own still running` means the answer you are
+about to read may not be its last word.
 
 ### What the wait tells you
 
@@ -265,8 +278,13 @@ can be relied on:
 | `T3` | nothing - output stopping proves nothing | exits `7`; use section 4 |
 
 `hooked` says only whether a hook decided the status. `hooked: false` beside
-a `rail` on `T1` is a tracked session, not a broken one: go by `rail`. A row
+a `rail` on `T1` is a tracked session, not a broken one: go by `rail`. That
+holds for every session at once too, and there is nothing to restore. A row
 of `ps --json` carries the same `rail` object.
+
+`state: "idle"` with `rail.background_shells` above `0` is a session that
+ended its turn and is waiting on a command of its own. It will start another
+turn by itself when the command finishes: it has not finished its task.
 
 `answer` reads the whole answer however long it is; `--after N` takes the
 `runs_ended` you kept and refuses to print an answer older than the task you

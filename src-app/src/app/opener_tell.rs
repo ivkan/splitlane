@@ -171,15 +171,36 @@ pub(crate) fn tell_step(facts: OpenerFacts) -> TellStep {
     }
 }
 
-/// The line itself, for sessions given as title and surface id. One line
-/// whatever the count: every line break typed into an agent is a chance for
-/// it to submit half a message.
-pub(crate) fn tell_text(sessions: &[(String, u64)]) -> String {
-    let named = |(title, surface_id): &(String, u64)| {
-        let short: String = title.chars().take(TITLE_MAX).collect();
+/// One session named in the line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Told {
+    pub title: String,
+    pub surface_id: u64,
+    /// The session took the turn up by itself, woken by a command of its
+    /// own: the opener did not start it and may not be expecting it.
+    pub by_itself: bool,
+    /// A command the session started is still running, so this answer may
+    /// not be its last word: it can take another turn up by itself.
+    pub command_running: bool,
+}
+
+/// The line itself. One line whatever the count: every line break typed into
+/// an agent is a chance for it to submit half a message.
+pub(crate) fn tell_text(sessions: &[Told]) -> String {
+    let named = |told: &Told| {
+        let short: String = told.title.chars().take(TITLE_MAX).collect();
+        let notes: String = [
+            (told.by_itself, ", taken up by itself"),
+            (told.command_running, ", a command of its own still running"),
+        ]
+        .iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, note)| *note)
+        .collect();
         format!(
-            "{} (surface {surface_id})",
-            crate::app::send_answer::quoted_title(&short)
+            "{} (surface {}{notes})",
+            crate::app::send_answer::quoted_title(&short),
+            told.surface_id
         )
     };
     match sessions {
@@ -188,7 +209,7 @@ pub(crate) fn tell_text(sessions: &[(String, u64)]) -> String {
              Read its answer with: splitlane answer {}. \
              Sent by the app, not typed by a person.",
             named(one),
-            one.1
+            one.surface_id
         ),
         many => format!(
             "[Splitlane] Sessions this one opened have ended their turns: {}. \
@@ -367,7 +388,7 @@ impl SplitlaneApp {
             // again was given its next task by somebody who knows. The
             // surface is looked up now and not when the turn ended: a line
             // can be held for a long time, and it has to name what is there.
-            let sessions: Vec<(Tell, String, u64)> = tells
+            let sessions: Vec<(Tell, Told)> = tells
                 .into_iter()
                 .filter_map(|tell| {
                     let thread = self.thread_by_id(tell.thread_id)?;
@@ -377,14 +398,20 @@ impl SplitlaneApp {
                     let title = crate::project::clean_sidebar_title(&thread.title)
                         .unwrap_or_else(|| thread.title.clone());
                     let surface_id = self.terminal_of(tell.thread_id, cx)?.entity_id().as_u64();
-                    Some((tell, title, surface_id))
+                    let told = Told {
+                        title,
+                        surface_id,
+                        by_itself: thread.turn_began_unprompted,
+                        command_running: thread.rail.background_shells > 0,
+                    };
+                    Some((tell, told))
                 })
                 .collect();
             if sessions.is_empty() {
                 keep_waiting(self, waiting);
                 continue;
             }
-            let hold = |app: &mut Self, sessions: Vec<(Tell, String, u64)>, waiting: Vec<Tell>| {
+            let hold = |app: &mut Self, sessions: Vec<(Tell, Told)>, waiting: Vec<Tell>| {
                 app.opener_tells.insert(
                     opener,
                     sessions
@@ -438,10 +465,7 @@ impl SplitlaneApp {
                 }
                 TellStep::Write => {}
             }
-            let named: Vec<(String, u64)> = sessions
-                .iter()
-                .map(|(_, title, surface_id)| (title.clone(), *surface_id))
-                .collect();
+            let named: Vec<Told> = sessions.iter().map(|(_, told)| told.clone()).collect();
             let text = tell_text(&named);
             let refused_before = terminal.read(cx).terminal.refused_input_count();
             // Typed where the agent takes that, as one session's text into
@@ -702,21 +726,53 @@ mod tests {
         );
     }
 
+    fn told(title: &str, surface_id: u64) -> Told {
+        Told {
+            title: title.to_string(),
+            surface_id,
+            by_itself: false,
+            command_running: false,
+        }
+    }
+
     #[test]
     fn the_line_names_each_session_and_stays_one_line() {
-        let one = tell_text(&[("api".to_string(), 101)]);
+        let one = tell_text(&[told("api", 101)]);
         assert!(one.contains("\"api\" (surface 101)"), "{one}");
         assert!(one.contains("splitlane answer 101"), "{one}");
-        let two = tell_text(&[("api".to_string(), 101), ("web".to_string(), 102)]);
+        let two = tell_text(&[told("api", 101), told("web", 102)]);
         assert!(
             two.contains("surface 101") && two.contains("surface 102"),
             "{two}"
         );
-        let long = tell_text(&[("x".repeat(500) + "\nrm -rf", 7)]);
-        assert!(long.len() < 300, "{long}");
+        let long = tell_text(&[Told {
+            by_itself: true,
+            command_running: true,
+            ..told(&("x".repeat(500) + "\nrm -rf"), 7)
+        }]);
+        assert!(long.len() < 360, "{long}");
         for text in [one, two, long] {
             assert!(!text.contains('\n'));
             assert!(text.ends_with("not typed by a person."));
         }
+    }
+
+    /// A lead that missed a stop asked what it would have needed to know:
+    /// that it did not start this turn, and whether more may follow.
+    #[test]
+    fn the_line_says_who_began_the_turn_and_whether_more_may_follow() {
+        let line = tell_text(&[Told {
+            by_itself: true,
+            command_running: true,
+            ..told("run", 7)
+        }]);
+        assert!(
+            line.contains(
+                "\"run\" (surface 7, taken up by itself, a command of its own still running)"
+            ),
+            "{line}"
+        );
+        let plain = tell_text(&[told("run", 7)]);
+        assert!(plain.contains("\"run\" (surface 7)"), "{plain}");
     }
 }
