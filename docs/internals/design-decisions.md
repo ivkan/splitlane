@@ -1469,6 +1469,14 @@ stops that way, ten hours and half an hour each. Which end counts and why is
 in `agent-state-and-the-rail.md`, "News of a finished run belongs to whoever
 sent the last message".
 
+**The line says what the lead could not otherwise tell.** After a turn
+nobody gave it, a lead reads the answer without knowing that it did not start
+the turn, or that the session still has a command of its own running and
+will take up another. Both are stated beside the surface id: `taken up by
+itself` and `a command of its own still running`. The lead that missed those
+stops asked for exactly these two facts. They are short notes, not a field:
+the line is read by an agent, and one sentence carries them.
+
 What it does not cover: a session that ends its turn by asking a person
 something is `waiting`, not ended, and the opener is not told; the person is.
 An opener that is itself a Codex session takes the line like any other, but
