@@ -692,6 +692,31 @@ pub(crate) fn run_is_news(facts: RunFacts) -> bool {
     facts.detector_speaks && !facts.interrupted && !facts.last_message_from_opener
 }
 
+/// What decides whether the end of a turn is written into the session's
+/// opener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpenerClaim {
+    /// The last message the session was given came from its opener, and the
+    /// opener is still open.
+    pub last_message_from_opener: bool,
+    /// No Enter was pressed in the session's pane since its turn before this
+    /// one ended: the agent took this turn up by itself.
+    pub began_unprompted: bool,
+    /// The session has an opener that is still open and has handed it work:
+    /// it opened the session, or wrote into it during this app run.
+    pub opener_gave_work: bool,
+}
+
+/// Whether the end of a turn is the opener's to hear.
+///
+/// A turn the agent took up by itself carries on the work it was given,
+/// whoever spoke to it last. A person's question in between was answered in
+/// its own turn and does not make the rest of the work theirs. That turn
+/// stays the person's news as well: they asked last.
+pub(crate) fn opener_is_owed(claim: OpenerClaim) -> bool {
+    claim.last_message_from_opener || (claim.began_unprompted && claim.opener_gave_work)
+}
+
 /// The session a close is aimed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CloseTarget {
@@ -1742,17 +1767,7 @@ impl SplitlaneApp {
         let Some(thread) = self.thread_by_id(thread_id) else {
             return false;
         };
-        // The session that hands this one its tasks: the one that opened
-        // it, or the one a person let drive it.
-        let Some(opener) = thread
-            .opened_by
-            .as_ref()
-            .map(|by| by.id)
-            .or_else(|| self.drive.driver_of(thread_id))
-        else {
-            return false;
-        };
-        if self.thread_by_id(opener).is_none() {
+        if self.live_opener_of(thread_id).is_none() {
             return false;
         }
         let Some(wrote_at) = thread.opener_wrote_at else {
@@ -1760,6 +1775,55 @@ impl SplitlaneApp {
         };
         self.terminal_of(thread_id, cx)
             .is_some_and(|terminal| terminal.read(cx).keyboard_submits == wrote_at)
+    }
+
+    /// The session that hands `thread_id` its tasks, if it is still open:
+    /// the one that opened it, or the one a person let drive it.
+    fn live_opener_of(&self, thread_id: u64) -> Option<u64> {
+        let thread = self.thread_by_id(thread_id)?;
+        let opener = thread
+            .opened_by
+            .as_ref()
+            .map(|by| by.id)
+            .or_else(|| self.drive.driver_of(thread_id))?;
+        self.thread_by_id(opener).map(|_| opener)
+    }
+
+    /// Note that a turn of `thread_id` has just ended: whether it began with
+    /// no Enter pressed in its pane since the turn before it ended, and the
+    /// count for the next one.
+    ///
+    /// Asked at every end that is counted, announced or not. A turn that
+    /// ends with a command of its own still running and is taken up again
+    /// when the command finishes is one run to the rail, but two ends here,
+    /// and the second is the one the agent took up by itself.
+    pub(crate) fn note_turn_end(&mut self, thread_id: u64, cx: &App) {
+        let submits = self
+            .terminal_of(thread_id, cx)
+            .map(|terminal| terminal.read(cx).keyboard_submits);
+        if let Some(thread) = self.thread_by_id_mut(thread_id) {
+            // No terminal, no count: taken as prompted, which leaves the
+            // turn to whoever spoke last.
+            thread.turn_began_unprompted =
+                submits.is_some_and(|now| now == thread.submits_at_turn_end.unwrap_or(0));
+            if submits.is_some() {
+                thread.submits_at_turn_end = submits;
+            }
+        }
+    }
+
+    /// What decides whether the end of the turn `thread_id` just ended is
+    /// written into its opener ([`opener_is_owed`]).
+    pub(crate) fn opener_claim(&self, thread_id: u64, cx: &App) -> OpenerClaim {
+        let thread = self.thread_by_id(thread_id);
+        OpenerClaim {
+            last_message_from_opener: self.last_message_was_openers(thread_id, cx),
+            began_unprompted: thread.is_some_and(|thread| thread.turn_began_unprompted),
+            opener_gave_work: self.live_opener_of(thread_id).is_some()
+                && thread.is_some_and(|thread| {
+                    thread.opened_by.is_some() || thread.opener_wrote_at.is_some()
+                }),
+        }
     }
 
     /// How many of the sessions `opener` opened still have a process.
@@ -3311,6 +3375,48 @@ mod tests {
         assert!(!run_is_news(RunFacts {
             last_message_from_opener: true,
             ..NEWS
+        }));
+    }
+
+    const PERSON_ASKED_LAST: OpenerClaim = OpenerClaim {
+        last_message_from_opener: false,
+        began_unprompted: false,
+        opener_gave_work: true,
+    };
+
+    #[test]
+    fn a_run_started_by_the_opener_is_the_openers() {
+        assert!(opener_is_owed(OpenerClaim {
+            last_message_from_opener: true,
+            ..PERSON_ASKED_LAST
+        }));
+    }
+
+    /// The case that forced it: a person asked a session a lead had opened
+    /// how long its benchmarks would take, and went to bed. The session
+    /// finished them by itself at night and stopped with a decision for the
+    /// lead, which heard nothing for ten hours: the person had spoken last.
+    #[test]
+    fn a_turn_the_agent_took_up_by_itself_is_the_openers_after_a_persons_question() {
+        assert!(opener_is_owed(OpenerClaim {
+            began_unprompted: true,
+            ..PERSON_ASKED_LAST
+        }));
+    }
+
+    #[test]
+    fn a_turn_a_person_began_is_theirs_alone() {
+        assert!(!opener_is_owed(PERSON_ASKED_LAST));
+    }
+
+    /// A session nobody handed work to, or whose opener is closed, has no
+    /// opener to tell.
+    #[test]
+    fn a_turn_taken_up_by_itself_is_nobody_elses_without_an_opener_that_gave_work() {
+        assert!(!opener_is_owed(OpenerClaim {
+            began_unprompted: true,
+            opener_gave_work: false,
+            ..PERSON_ASKED_LAST
         }));
     }
 

@@ -566,6 +566,14 @@ pub struct Thread {
     /// the opener's to read - not a mark on the row and not a notification.
     /// Runtime only: after a restart nobody has sent anything yet.
     pub opener_wrote_at: Option<u64>,
+    /// The terminal's count of keyboard submits when this session's last
+    /// turn ended, or `None` before the first end this app run has seen. A
+    /// terminal made at launch counts from zero, so `None` reads as zero.
+    pub submits_at_turn_end: Option<u64>,
+    /// No Enter was pressed in the pane between the end of the turn before
+    /// the last one and the end of the last one: the agent took that turn up
+    /// by itself, woken by a command of its own. Runtime only.
+    pub turn_began_unprompted: bool,
 }
 
 impl Thread {
@@ -613,6 +621,8 @@ impl Thread {
             opened_by_script: None,
             host_session: None,
             opener_wrote_at: None,
+            submits_at_turn_end: None,
+            turn_began_unprompted: false,
         }
     }
 
@@ -702,6 +712,8 @@ impl Thread {
             opened_by_script: None,
             host_session: None,
             opener_wrote_at: None,
+            submits_at_turn_end: None,
+            turn_began_unprompted: false,
         }
     }
 }
@@ -905,6 +917,8 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         opened_by_script: payload.opened_by_script.clone(),
         host_session: payload.host_session.clone(),
         opener_wrote_at: None,
+        submits_at_turn_end: None,
+        turn_began_unprompted: false,
     })
 }
 
