@@ -63,6 +63,17 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.12" date="2026-10-21">
+      <description>
+        <p>A phone follows the agent sessions on the computer and answers them,
+        from a page at splitlane.dev/app added to its home screen. Pair it in
+        Settings, Phone, by scanning a code and typing the six digits the phone
+        shows. Everything between the phone and the computer is encrypted end
+        to end through a relay that forwards it unread, and it works while the
+        window is closed. A session that takes up its next turn by itself now
+        tells the session that opened it about each end.</p>
+      </description>
+    </release>
     <release version="0.2.11" date="2026-10-18">
       <description>
         <p>With the window closed, the command-line tool still answers for the

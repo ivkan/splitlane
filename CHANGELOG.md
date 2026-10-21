@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-10-21
+
 ### Added
 
 - **Your phone.** A phone follows the agent sessions on the computer and
