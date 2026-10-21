@@ -6,6 +6,38 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Your phone.** A phone follows the agent sessions on the computer and
+  answers them, from a page at <https://splitlane.dev/app> added to its home
+  screen: nothing to install from a store. It lists the agent sessions by
+  project with their state and the question a waiting agent asks, and opens
+  one with its last answer, its screen, a reply field, the keys a prompt asks
+  for and interrupt. Pair it in **Settings → Phone → Pair a phone**: tap
+  **Scan code** on the phone, point it at the computer, and type the six
+  digits the phone then shows. The phone reaches the computer through a relay
+  at `relay.splitlane.dev` with neither side opening a port, and everything
+  between them is encrypted end to end; the relay forwards it unread. It
+  works while the window is closed and sessions run in the session host,
+  except interrupting. Each reply goes into a journal on the computer, without
+  its text. A phone may only write into agent sessions, and **Can reply**
+  turns writing off for one phone. `splitlane remote pair` pairs from a
+  terminal. See [Your phone](docs/user/phone.md).
+
+### Fixed
+
+- A session that ends its turn and starts the next one by itself, when a long
+  command of its own finishes, tells the session that opened it about each
+  end. Before, after a person asked it something in between, every later end
+  went to the person and the opener heard nothing. The opener's line now says
+  when a turn was taken up by itself, and when a command of its own is still
+  running.
+
+### Security
+
+- Certificate checks no longer accept paths through the distrusted emSign
+  intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
 ## [0.2.11] - 2026-10-18
 
 ### Added
