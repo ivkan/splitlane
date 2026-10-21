@@ -398,3 +398,35 @@ summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+.warn {
+  padding: 10px 12px;
+  background: var(--waiting-bg);
+  color: var(--waiting);
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.qr {
+  display: block;
+  width: 200px;
+  height: 200px;
+  margin: 12px auto;
+  /* The code is black on white whatever the theme, so a camera reads it. */
+  background: #ffffff;
+  border-radius: 8px;
+}
+
+.camera {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #000000;
+  border-radius: 10px;
+}
+
+main > button {
+  width: 100%;
+  margin-top: 16px;
+}

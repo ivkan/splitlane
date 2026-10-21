@@ -2,8 +2,8 @@
 // so, instead of the browser's error page. The network is asked first, so
 // a new version is taken as soon as it is reachable.
 
-const CACHE = "splitlane-app-v2";
-const SHELL = ["./", "app.js", "link.js", "protocol.js", "store.js", "style.css", "manifest.webmanifest", "icon-192.png"];
+const CACHE = "splitlane-app-v3";
+const SHELL = ["./", "app.js", "link.js", "protocol.js", "scan.js", "store.js", "style.css", "manifest.webmanifest", "icon-192.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));

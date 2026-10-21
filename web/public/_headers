@@ -1,11 +1,12 @@
 # The page holds the key that lets a phone write into agent sessions, so no
 # script but its own may run on it: no inline code, nothing from elsewhere,
-# and the only connection out is the relay.
+# and the only connection out is the relay. The camera is the page's own,
+# for reading the pairing code.
 /app/*
   Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'self' wss://relay.splitlane.dev; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
-  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Permissions-Policy: camera=(self), microphone=(), geolocation=()
   Cross-Origin-Opener-Policy: same-origin
   Strict-Transport-Security: max-age=31536000
 

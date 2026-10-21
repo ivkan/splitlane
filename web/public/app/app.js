@@ -7,6 +7,7 @@
 
 import { cleanName, expired, fingerprint, parseLink } from "./protocol.js";
 import { RELAY, connect, pair } from "./link.js";
+import { startScan } from "./scan.js";
 import * as store from "./store.js";
 
 const app = document.getElementById("app");
@@ -47,7 +48,33 @@ const state = {
   armedInterrupt: null,
   refreshing: false,
   drafts: new Map(),
+  scanning: false,
+  stopScan: null,
+  scanNumber: 0,
+  inBrowser: false,
+  installPrompt: null,
 };
+
+// ---- Where the page runs ----------------------------------------------
+
+const ua = navigator.userAgent;
+// iPadOS reports itself as a Mac; touch tells them apart.
+const IOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+const ANDROID = /Android/.test(ua);
+const PHONE = IOS || ANDROID || matchMedia("(pointer: coarse)").matches;
+
+/// Opened from the home screen, not in a browser tab.
+function installed() {
+  return matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+
+// Chrome on Android offers its own install button; it is kept for the
+// moment the person taps ours.
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  state.installPrompt = event;
+  if (!state.computers.length && route().view === "home") render();
+});
 
 // ---- Elements ---------------------------------------------------------
 
@@ -102,6 +129,7 @@ function route() {
 }
 
 function render() {
+  if (state.scanning) return renderScan();
   if (state.offer || state.pairing || state.badLink) return renderPairing();
   const at = route();
   if (at.view === "settings") return renderSettings();
@@ -177,6 +205,13 @@ function renderPairing() {
         "section",
         { class: "panel" },
         h("p", {}, "Pair this phone with Splitlane on your computer to follow its agent sessions and answer them."),
+        IOS && !installed()
+          ? h(
+              "p",
+              { class: "warn" },
+              "On iPhone, a pairing made in Safari stays in Safari: Splitlane on the home screen keeps its own data and will not see it. To use it from the home screen, add it there first and scan the code from it.",
+            )
+          : null,
         h("label", { for: "phone-name" }, "This phone's name, as the computer will show it"),
         input,
         error,
@@ -386,6 +421,11 @@ document.addEventListener("visibilitychange", () => {
   // and the computer is asked again as soon as the page is back.
   if (document.visibilityState === "hidden") {
     dropConnection();
+    // The camera too: a phone shows that it is on.
+    if (state.scanning) {
+      state.stopScan?.();
+      state.stopScan = null;
+    }
   } else {
     state.retryMs = RETRY_FIRST_MS;
     render();
@@ -480,29 +520,155 @@ function noticeLine() {
 }
 
 function renderHome() {
-  show(
-    header("Splitlane"),
-    noticeLine(),
-    state.computers.length
-      ? h(
-          "section",
-          { class: "list" },
-          state.computers.map((c) => h("a", { class: "row", href: `#/c/${c.id}` }, h("span", { class: "title" }, c.label))),
-        )
-      : h(
-          "section",
-          { class: "panel" },
-          h("p", {}, "Follow the agent sessions on your computer from this phone, and answer them."),
-          h(
-            "ol",
-            {},
-            h("li", {}, "Open Splitlane on your computer."),
-            h("li", {}, "Settings → Phone → Pair a phone."),
-            h("li", {}, "Scan the code with this phone's camera."),
-          ),
-        ),
-    pasteBox(),
+  if (state.computers.length) {
+    return show(
+      header("Splitlane"),
+      noticeLine(),
+      h(
+        "section",
+        { class: "list" },
+        state.computers.map((c) => h("a", { class: "row", href: `#/c/${c.id}` }, h("span", { class: "title" }, c.label))),
+      ),
+    );
+  }
+  if (!PHONE) return show(header("Splitlane"), noticeLine(), openOnPhone());
+  if (!installed() && !state.inBrowser) return show(header("Splitlane"), noticeLine(), installSteps());
+  show(header("Splitlane"), noticeLine(), pairSteps(), pasteBox());
+}
+
+/// On a computer: this page is for a phone.
+function openOnPhone() {
+  return h(
+    "section",
+    { class: "panel center" },
+    h("h2", {}, "Splitlane on your phone"),
+    h("p", {}, "This page is for your phone. Follow the agent sessions on your computer from it, and answer them."),
+    h("p", { class: "muted" }, "Scan this with the phone's camera to open it there:"),
+    h("img", { class: "qr", src: "open-on-phone.svg", alt: "QR code of splitlane.dev/app", width: "200", height: "200" }),
+    h("p", { class: "muted" }, "splitlane.dev/app"),
   );
+}
+
+/// On a phone, in the browser: add the page to the home screen first. On an
+/// iPhone it has to be: the home-screen app keeps its own data, and only it
+/// will be able to show notifications.
+function installSteps() {
+  const steps = IOS
+    ? [
+        "Tap the Share button (the square with an arrow) in Safari's toolbar.",
+        "Choose Add to Home Screen, then Add.",
+        "Open Splitlane from the home screen and pair it there.",
+      ]
+    : [
+        state.installPrompt ? "Tap Install below." : "Open the browser's menu (⋮) and choose Install app or Add to Home screen.",
+        "Open Splitlane from the home screen and pair it there.",
+      ];
+  const install = state.installPrompt
+    ? h(
+        "button",
+        {
+          class: "primary",
+          onclick: async () => {
+            const prompt = state.installPrompt;
+            state.installPrompt = null;
+            await prompt.prompt();
+            render();
+          },
+        },
+        "Install",
+      )
+    : null;
+  return h(
+    "section",
+    { class: "panel" },
+    h("h2", {}, "First, add Splitlane to the home screen"),
+    h("p", {}, "It runs from there like an app, with nothing to download from a store."),
+    h("ol", {}, steps.map((step) => h("li", {}, step))),
+    install,
+    IOS
+      ? null
+      : h(
+          "button",
+          {
+            class: "quiet",
+            onclick: () => {
+              state.inBrowser = true;
+              render();
+            },
+          },
+          "Use it in the browser instead",
+        ),
+  );
+}
+
+/// Installed, or on a phone that stays in the browser: pair by scanning.
+function pairSteps() {
+  return h(
+    "section",
+    { class: "panel" },
+    h("h2", {}, "Pair with your computer"),
+    h(
+      "ol",
+      {},
+      h("li", {}, "On the computer, open Splitlane: Settings → Phone → Pair a phone."),
+      h("li", {}, "Tap Scan code and point the camera at the code on the computer's screen."),
+      h("li", {}, "Type the six digits this phone then shows on the computer."),
+    ),
+    h("button", { class: "primary", onclick: () => openScanner() }, "Scan code"),
+  );
+}
+
+// ---- Scanning ---------------------------------------------------------
+
+function openScanner() {
+  state.scanning = true;
+  render();
+}
+
+function closeScanner() {
+  state.stopScan?.();
+  state.stopScan = null;
+  state.scanning = false;
+  render();
+}
+
+function renderScan() {
+  const video = h("video", { class: "camera", autoplay: true, muted: true, playsinline: true, "aria-label": "Camera" });
+  const hint = h("p", { class: "muted center", role: "status" }, "Point the camera at the code on the computer's screen.");
+  show(
+    header("Scan code"),
+    h("section", { class: "panel scan" }, video, hint, h("button", { onclick: () => closeScanner() }, "Cancel")),
+  );
+  // Drawn again (back from another app, say): the camera starts over in
+  // the new video element. A scan started earlier and still opening is
+  // told apart by its number and stopped when it opens.
+  state.stopScan?.();
+  state.stopScan = null;
+  const scan = ++state.scanNumber;
+  const current = () => state.scanning && scan === state.scanNumber;
+  startScan(video, (text) => {
+    if (!current()) return;
+    const offer = parseLink(text);
+    if (!offer) {
+      hint.textContent = "That is not a Splitlane pairing code. Show one on the computer: Settings → Phone → Pair a phone.";
+      return;
+    }
+    state.stopScan?.();
+    state.stopScan = null;
+    state.scanning = false;
+    state.offer = offer;
+    render();
+  })
+    .then((stop) => {
+      // Cancelled, or started again, while the camera was opening.
+      if (!current()) return stop();
+      state.stopScan = stop;
+    })
+    .catch((error) => {
+      if (!current()) return;
+      hint.textContent = error.message;
+      hint.className = "error center";
+    });
 }
 
 /// For a page added to the home screen, which a camera's link does not open:
@@ -736,6 +902,7 @@ function renderSettings() {
         ? state.computers.map((c) => computerRow(c))
         : h("p", { class: "muted" }, "None yet."),
     ),
+    h("button", { onclick: () => openScanner() }, "Pair another computer"),
     pasteBox(),
     h(
       "section",

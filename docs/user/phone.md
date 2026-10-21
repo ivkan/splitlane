@@ -8,20 +8,28 @@ interrupt a turn. The phone needs no app. It is a page at
 
 ## Pairing
 
-1. On the computer, open **Settings → Phone** and choose **Pair a phone**. A
-   QR code appears; it lasts five minutes.
-2. Scan it with the phone's camera and open the link. Give the phone a name and
-   tap **Pair**.
-3. The phone shows six digits. Type them on the computer. Only then does the
-   computer keep the phone: whoever photographed the QR code would see a code
-   on their own screen, not on yours.
+1. **Add the page to the phone's home screen.** Open
+   <https://splitlane.dev/app> on the phone; the page walks you through it.
+   On an iPhone: Share, then Add to Home Screen. On Android: Install, or the
+   browser's menu, then Install app. On an iPhone this comes first: the
+   home-screen app keeps its own data, apart from Safari's, and it is the
+   one that will be able to show notifications.
+2. **Show a code on the computer:** Settings → Phone → **Pair a phone**. A QR
+   code appears; it lasts five minutes and pairs one phone.
+3. **Scan it from the phone:** open Splitlane from the home screen, tap
+   **Scan code** and point the camera at the computer's screen. Give the
+   phone a name and tap **Pair**.
+4. **Type the six digits** the phone shows on the computer. Only then does
+   the computer keep the phone: whoever photographed the QR code would see a
+   code on their own screen, not on yours.
 
-From a terminal, `splitlane remote pair` does the same and prints the code as
-text.
+If the camera cannot read the code, **Copy link** under it on the computer
+and paste the link under **Paste a pairing link** on the phone (on Apple
+devices the clipboard carries over by itself). From a terminal,
+`splitlane remote pair` prints the link and asks for the code.
 
-A page added to the home screen on an iPhone keeps its own storage, apart from
-Safari's. To pair it, copy the link (under the QR code, or from `splitlane
-remote pair`) and paste it under **Paste a pairing link** on the page.
+On Android the page also works in the browser without being installed, and
+the phone's own camera app can open the code's link directly.
 
 ## What the phone may do
 
