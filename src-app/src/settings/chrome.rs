@@ -189,15 +189,6 @@ const NAV_ITEMS: &[NavItem] = &[
     },
 ];
 
-/// Whether the Phone section is listed. Its QR code opens the page the phone
-/// pairs on, and until that page is published a release build would offer a
-/// pairing no phone can finish - the same reason `remote` is left out of
-/// `--help`. Debug builds list it, and `SPLITLANE_PHONE=1` lists it in a
-/// release build for whoever is testing the page.
-static PHONE_SECTION_SHOWN: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    cfg!(debug_assertions) || std::env::var_os("SPLITLANE_PHONE").is_some_and(|v| v == "1")
-});
-
 /// Human page title shown as the content H1.
 pub(crate) fn section_title(section: SettingsSection) -> &'static str {
     match section {
@@ -246,7 +237,6 @@ impl SplitlaneApp {
 
         let items: Vec<&NavItem> = NAV_ITEMS
             .iter()
-            .filter(|it| it.section != SettingsSection::Phone || *PHONE_SECTION_SHOWN)
             .filter(|it| {
                 query.is_empty()
                     || it.label.to_lowercase().contains(&query)

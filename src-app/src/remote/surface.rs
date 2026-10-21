@@ -141,7 +141,25 @@ fn read(surface: &impl IpcTransport, method: &str, params: &Value) -> Result<Val
             .ok_or_else(|| format!("{method} needs a surface_id"))
     };
     match method {
-        "list" => surface.call("fleet.list", json!({})),
+        "list" => {
+            let mut fleet = surface.call("fleet.list", json!({}))?;
+            // Project names, for the phone to group sessions under. Only
+            // the window has them; without, the phone falls back on each
+            // session's directory.
+            if let Ok(listed) = surface.call("workspace.list", json!({})) {
+                let projects: Vec<Value> = listed
+                    .get("workspaces")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|w| json!({ "index": w.get("index"), "title": w.get("title") }))
+                    .collect();
+                if let Some(fleet) = fleet.as_object_mut() {
+                    fleet.insert("projects".into(), json!(projects));
+                }
+            }
+            Ok(fleet)
+        }
         "status" => surface.call("surface.status", json!({ "surface_id": surface_id()? })),
         "read" => {
             let lines = params
@@ -209,13 +227,45 @@ mod tests {
         .unwrap();
         let calls = surface.0.into_inner();
         assert_eq!(calls[0].0, "fleet.list");
+        assert_eq!(calls[1].0, "workspace.list");
         assert_eq!(
-            calls[1],
+            calls[2],
             ("surface.status".into(), json!({ "surface_id": 7 }))
         );
-        assert_eq!(calls[2].0, "surface.read");
-        assert_eq!(calls[2].1["lines"], READ_MAX_LINES);
-        assert_eq!(calls[2].1["fenced"], false);
+        assert_eq!(calls[3].0, "surface.read");
+        assert_eq!(calls[3].1["lines"], READ_MAX_LINES);
+        assert_eq!(calls[3].1["fenced"], false);
+    }
+
+    #[test]
+    fn a_list_names_the_projects() {
+        struct Window;
+        impl IpcTransport for Window {
+            fn call(&self, method: &str, _: Value) -> Result<Value, String> {
+                match method {
+                    "fleet.list" => Ok(json!({ "agents": [] })),
+                    "workspace.list" => Ok(json!({ "workspaces": [
+                        { "index": 0, "title": "splitlane", "cwd": "/home/me/splitlane", "panes": 3, "active": true }
+                    ] })),
+                    _ => Err("no".into()),
+                }
+            }
+        }
+        let list = answer(&Window, "list", &Value::Null, &phone(true), None, true).unwrap();
+        assert_eq!(
+            list["projects"],
+            json!([{ "index": 0, "title": "splitlane" }])
+        );
+        // The session host names none, and the list is still the list.
+        let closed = answer(
+            &Recording::default(),
+            "list",
+            &Value::Null,
+            &phone(true),
+            None,
+            false,
+        );
+        assert!(closed.is_ok());
     }
 
     #[test]

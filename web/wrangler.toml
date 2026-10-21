@@ -1,0 +1,13 @@
+# The phone's page, served as static files at splitlane.dev/app. No code
+# runs on Cloudflare's side: the Worker is its assets alone. It holds the
+# whole domain, which had nothing else on it; anything else for
+# splitlane.dev goes into public/ beside app/.
+name = "splitlane-app"
+compatibility_date = "2026-09-01"
+workers_dev = false
+routes = [{ pattern = "splitlane.dev", custom_domain = true }]
+
+[assets]
+directory = "public"
+html_handling = "auto-trailing-slash"
+not_found_handling = "none"

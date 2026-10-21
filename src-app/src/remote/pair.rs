@@ -160,16 +160,17 @@ pub(crate) fn pair() -> Result<(), String> {
             store::Device::new(offer.room, &asked.name, &asked.phone, now_unix()),
         )
     };
-    let asked = match pair_on(
+    let outcome = pair_on(
         &mut socket,
         &key,
         &offer,
         &now_unix,
         &mut ask_code,
         &mut keep,
-    )
-    .map_err(|e| format!("pairing ended: {e}"))?
-    {
+    );
+    // Before the process exits: the phone's answer is the last frame sent.
+    socket.close();
+    let asked = match outcome.map_err(|e| format!("pairing ended: {e}"))? {
         Ok(asked) => asked,
         Err(Unpaired::Expired) => return Err("the link expired before a phone answered it".into()),
         Err(Unpaired::WrongCode) => return Err("the code did not match; nothing was paired".into()),

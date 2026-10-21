@@ -73,12 +73,6 @@ pub const EXIT_INTERRUPTED: i32 = 10;
 /// canonical subcommand via `#[command(alias = ...)]`) so a lead agent that types
 /// the tool name reaches the matching verb instead of tripping the GUI
 /// single-instance guard. This list only gates the `main.rs` intercept.
-/// Verbs that work and are left out of `--help` until what they need on the
-/// other side exists: `remote` pairs with a page and a relay that are not
-/// published yet.
-#[cfg(test)]
-const HIDDEN_VERBS: &[&str] = &["remote"];
-
 const VERBS: &[&str] = &[
     "ls",
     "read",
@@ -134,7 +128,8 @@ Scripting commands (each takes --help):
   split            Split the active pane
   up               Open panes from a TOML file
   flow             Run a pipeline of agents from a flow.toml
-  host             Inspect or stop the session host";
+  host             Inspect or stop the session host
+  remote           Pair a phone, and answer it through the relay";
 
 /// True when `argv[1]` names one of our subcommands (including the MCP-tool
 /// aliases above).
@@ -549,9 +544,8 @@ enum Commands {
     /// sessions running without a window.
     #[command(subcommand)]
     Host(HostCommand),
-    /// Pair a phone, and answer it through the relay. Hidden until the
-    /// relay and the page on the phone it pairs with are published.
-    #[command(subcommand, hide = true)]
+    /// Pair a phone, and answer it through the relay.
+    #[command(subcommand)]
     Remote(RemoteCommand),
     /// Stream lifecycle events from the running instance as JSONL.
     Watch {
@@ -1147,7 +1141,7 @@ mod tests {
             .collect();
         for verb in super::VERBS {
             // The MCP tool names are aliases, kept out of the help on purpose.
-            if verb.contains('_') || HIDDEN_VERBS.contains(verb) {
+            if verb.contains('_') {
                 continue;
             }
             assert!(listed.contains(verb), "`{verb}` is missing from --help");

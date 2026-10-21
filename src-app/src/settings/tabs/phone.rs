@@ -42,6 +42,9 @@ pub(crate) struct PhonePage {
     step: Option<PairStep>,
     /// The code drawn from the link the current step shows.
     qr: Option<QrModules>,
+    /// The link shown now was copied: the button says so until the next
+    /// step.
+    link_copied: bool,
     code_input: Entity<TextInput>,
     /// The last thing that went wrong outside pairing: a phone that could not
     /// be removed, a switch that could not be saved.
@@ -58,6 +61,7 @@ impl PhonePage {
             pairing_number: 0,
             step: None,
             qr: None,
+            link_copied: false,
             code_input,
             problem: None,
         };
@@ -119,6 +123,7 @@ impl PhonePage {
                         this.reload(cx);
                     }
                     this.step = Some(step);
+                    this.link_copied = false;
                     cx.notify();
                 });
                 if kept.is_err() || ended {
@@ -209,8 +214,8 @@ impl PhonePage {
                 .flex_col()
                 .gap(tok::space::LG)
                 .child(caption(
-                    "Scan this with the phone's camera. The code works for five minutes, \
-                     once."
+                    "On the phone, open Splitlane from the home screen, tap Scan code and \
+                     point it at this code. It works for five minutes, once."
                         .into(),
                 ))
                 .children(self.qr.clone().map(QrModules::render))
@@ -221,7 +226,26 @@ impl PhonePage {
                         .text_size(tok::mono::HINT)
                         .text_color(ui.text_tertiary)
                         .child(SharedString::from(link.clone())),
-                ),
+                )
+                .child(div().flex().flex_row().child(secondary_button(
+                    "phone-pair-copy",
+                    if self.link_copied {
+                        "Copied"
+                    } else {
+                        "Copy link"
+                    },
+                    ui,
+                    // For a phone whose camera cannot read the code:
+                    // pasted into the page, the link pairs the same way.
+                    cx.listener({
+                        let link = link.clone();
+                        move |this, _: &ClickEvent, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(link.clone()));
+                            this.link_copied = true;
+                            cx.notify();
+                        }
+                    }),
+                ))),
             Some(PairStep::Asking { phone, wrong }) => {
                 let left = crate::remote::CODE_ATTEMPTS.saturating_sub(*wrong);
                 let prompt = if *wrong == 0 {
@@ -382,9 +406,10 @@ impl Render for PhonePage {
         let ui = crate::theme::ui_colors();
         let mut page = div().flex().flex_col().child(setting_note(
             ui,
-            "A paired phone sees your agent sessions and can answer them, through \
-             relay.splitlane.dev. Everything is encrypted between this computer and the \
-             phone; the relay forwards it unread.",
+            "A paired phone sees your agent sessions and can answer them. First open \
+             splitlane.dev/app on the phone and add it to the home screen; then pair it \
+             here. It reaches this computer through relay.splitlane.dev, encrypted between \
+             the two: the relay forwards it unread.",
         ));
         match &self.phones {
             None => {}
