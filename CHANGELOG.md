@@ -6,6 +6,13 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Until you choose a theme, Splitlane follows the OS appearance: Harbor Light
+  on a light desktop, Harbor Dark on a dark one. Before, it always started
+  dark. A theme you already chose is kept, and Reset to default now returns
+  to following the OS.
+
 ## [0.2.11] - 2026-10-18
 
 ### Added

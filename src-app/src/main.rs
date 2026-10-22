@@ -175,7 +175,14 @@ impl ThemeMode {
             Some("light") => Self::Light,
             Some("dark") => Self::Dark,
             Some("system") => Self::System,
-            _ => Self::from_theme_name(theme_name.unwrap_or(crate::theme::DEFAULT_THEME_NAME)),
+            // Nothing chosen yet follows the OS: a dark window on a light
+            // desktop reads as the app ignoring the user's setting, and
+            // Linux app catalogues flag it. A theme named without a mode is
+            // a choice someone made (One Dark is saved that way), so it stays.
+            _ => match theme_name {
+                Some(name) => Self::from_theme_name(name),
+                None => Self::System,
+            },
         }
     }
 
@@ -3415,6 +3422,24 @@ fn no_display_server(
 ) -> bool {
     let set = |value: Option<std::ffi::OsString>| value.is_some_and(|v| !v.is_empty());
     !set(wayland_display) && !set(x11_display)
+}
+
+#[cfg(test)]
+mod theme_mode_tests {
+    use super::ThemeMode;
+
+    #[test]
+    fn nothing_configured_follows_the_system() {
+        assert!(ThemeMode::from_config(None, None) == ThemeMode::System);
+    }
+
+    #[test]
+    fn an_explicit_choice_is_kept() {
+        assert!(ThemeMode::from_config(Some("dark"), None) == ThemeMode::Dark);
+        assert!(ThemeMode::from_config(Some("light"), None) == ThemeMode::Light);
+        assert!(ThemeMode::from_config(None, Some("One Dark")) == ThemeMode::Dark);
+        assert!(ThemeMode::from_config(None, Some("Harbor Light")) == ThemeMode::Light);
+    }
 }
 
 #[cfg(test)]

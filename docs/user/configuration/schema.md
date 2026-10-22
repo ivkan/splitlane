@@ -56,8 +56,8 @@ something in Settings.
 | `$schema` | string | none | Editor-only pointer to the JSON Schema. Ignored by the app. |
 | `$schemaVersion` | string | `1.0.0` | Version of the file format. A different value does not stop the file from loading. |
 | `default_shell` | string or null | platform default | Shell for new terminals. Unix: configured -> `$SHELL` -> `/bin/sh`. Windows: configured -> `pwsh.exe` -> `powershell.exe` -> `%ComSpec%` -> `C:\Windows\System32\cmd.exe` -> `cmd.exe`. Running terminals keep their shell. |
-| `theme` | string or null | `Harbor Dark` | `Harbor Dark`, `Harbor Light` or `One Dark`, matched case-insensitively. An unknown name draws `Harbor Dark` and logs a warning. See [Themes](../themes.md). |
-| `theme_mode` | string or null | none | `light`, `dark` or `system`. With `system`, Splitlane switches `theme` between `Harbor Light` and `Harbor Dark` to follow the OS appearance, including when it changes while the app is running. Settings writes this key together with `theme`. |
+| `theme` | string or null | follows the OS | `Harbor Dark`, `Harbor Light` or `One Dark`, matched case-insensitively. An unknown name draws `Harbor Dark` and logs a warning. See [Themes](../themes.md). |
+| `theme_mode` | string or null | `system` when `theme` is also unset | `light`, `dark` or `system`. With `system`, Splitlane switches `theme` between `Harbor Light` and `Harbor Dark` to follow the OS appearance, including when it changes while the app is running. Settings writes this key together with `theme`. |
 | `font_family` | string or null | `JetBrainsMono Nerd Font Mono` (bundled) | Terminal font. Accepts the aliases `.SplitlaneMono` and `JetBrainsMono NFM` for the bundled default, `.SplitlaneSans` for the bundled Geist, the other bundled families (`Geist Mono`, `Geist`, `Lilex`, `IBM Plex Mono`, `IBM Plex Sans`), or an installed family. |
 | `font_fallbacks` | array of strings or null | none | Families tried, in order, for glyphs `font_family` lacks - for example a Nerd Font for prompt icons. |
 | `font_size` | number or null | `10.0` | Terminal font size in points, `8.0` to `32.0`. |
