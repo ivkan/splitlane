@@ -686,6 +686,7 @@ fn read_session_meta_inner(
         cwd,
         git_branch,
         first_prompt: summary.clone(),
+        transcript: Some(path.to_path_buf()),
         summary,
         model,
         usage,
@@ -921,6 +922,57 @@ fn user_text_from_record(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// What a person wrote in one rollout record, for searching: the same three
+/// shapes [`user_text_from_record`] reads, but the whole text rather than a
+/// label cut to length, and every block that is not one of the envelopes Codex
+/// injects. One turn is written in two of the shapes a few lines apart, so a
+/// caller sees the same text twice in a row and keeps one.
+pub(crate) fn prompt_text(value: &serde_json::Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    let blocks_of = |blocks: &[serde_json::Value], kind: &str| {
+        let text = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|v| v.as_str()) == Some(kind))
+            .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+            .filter(|text| !is_synthetic_user_text(text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!text.trim().is_empty()).then_some(text)
+    };
+    match value.get("type").and_then(|v| v.as_str())? {
+        "event_msg" => match payload.get("type").and_then(|v| v.as_str())? {
+            "item_completed" => {
+                let item = payload.get("item")?;
+                if item.get("type").and_then(|v| v.as_str()) != Some("UserMessage") {
+                    return None;
+                }
+                blocks_of(item.get("content")?.as_array()?, "text")
+            }
+            "user_message" => {
+                let text = payload.get("message")?.as_str()?;
+                (!text.trim().is_empty() && !is_synthetic_user_text(text)).then(|| text.to_string())
+            }
+            _ => None,
+        },
+        "response_item" => {
+            if payload.get("type").and_then(|v| v.as_str()) != Some("message")
+                || payload.get("role").and_then(|v| v.as_str()) != Some("user")
+            {
+                return None;
+            }
+            blocks_of(payload.get("content")?.as_array()?, "input_text")
+        }
+        _ => None,
+    }
+}
+
+fn is_synthetic_user_text(raw: &str) -> bool {
+    let trimmed = raw.trim_start();
+    SYNTHETIC_USER_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
 /// First content block of type `kind` that survives [`clean_user_message`].
 /// Codex packs several blocks into one record and the envelopes come first,
 /// so this walks past them rather than judging the record on its first block.
@@ -935,11 +987,7 @@ fn first_labelable_block(blocks: &[serde_json::Value], kind: &str) -> Option<Str
 /// Clean one candidate label, rejecting the synthetic envelopes Codex injects
 /// as `role:"user"` records around the real prompt.
 fn clean_user_message(raw: &str) -> Option<String> {
-    let trimmed = raw.trim_start();
-    if SYNTHETIC_USER_PREFIXES
-        .iter()
-        .any(|prefix| trimmed.starts_with(prefix))
-    {
+    if is_synthetic_user_text(raw) {
         return None;
     }
     clean_session_label(raw, LABEL_MAX_CHARS)

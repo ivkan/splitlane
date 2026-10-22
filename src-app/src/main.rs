@@ -67,6 +67,7 @@ mod preset;
 mod pricing;
 mod process_tree;
 mod project;
+mod prompt_index;
 mod rail_state;
 mod remote;
 mod running_commands;

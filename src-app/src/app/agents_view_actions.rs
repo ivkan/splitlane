@@ -1473,6 +1473,7 @@ mod tests {
             git_branch: "main".to_string(),
             summary: Some(summary.to_string()),
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }

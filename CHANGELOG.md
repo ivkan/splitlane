@@ -6,6 +6,14 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Search what you wrote in old sessions.** The palette's History tab now
+  also matches a query against everything you wrote in each Claude Code and
+  Codex session, not only its name and first prompt, and shows the line it
+  was found in. Searching also reaches past the 200 most recent sessions the
+  list shows. See [Starting work](docs/user/index.md#starting-work).
+
 ## [0.2.12] - 2026-10-21
 
 ### Added

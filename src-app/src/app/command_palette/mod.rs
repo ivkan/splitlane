@@ -98,8 +98,12 @@ pub(crate) enum PaletteItem {
         /// The project's title.
         detail: String,
     },
-    /// A session on disk, activated by resuming it into its project.
-    History { index: usize },
+    /// A session on disk, activated by resuming it into its project. `hit` is
+    /// where the query matched in what the person wrote there, when it did.
+    History {
+        index: usize,
+        hit: Option<crate::prompt_index::PromptHit>,
+    },
     /// A session whose live output matches the query, activated by focusing it
     /// and arming its find bar with the same query.
     Output { index: usize },
@@ -121,6 +125,9 @@ pub(crate) struct CommandPaletteState {
     /// directory, which is why it never happens on this thread.
     pub(crate) history: Option<Vec<HistoryRow>>,
     pub(crate) history_generation: u64,
+    /// Whether every row's prompts have been read. Until then a query matches
+    /// on names alone, and the empty state says the rest is still coming.
+    pub(crate) history_prompts_read: bool,
     /// Output rows, and the query the fan-out that produced them ran with -
     /// so a stale result set is never shown against a newer query.
     pub(crate) output: Vec<OutputRow>,
@@ -154,6 +161,7 @@ impl SplitlaneApp {
             restore_focus: window.focused(cx),
             history: None,
             history_generation: 0,
+            history_prompts_read: false,
             output: Vec::new(),
             output_query: String::new(),
             output_running: false,
@@ -406,7 +414,7 @@ impl SplitlaneApp {
             }
             Some(PaletteItem::Surface { surface_id, .. }) => Target::Surface(*surface_id),
             Some(PaletteItem::StopDriving { target, .. }) => Target::StopDriving(*target),
-            Some(PaletteItem::History { index }) => Target::History(*index),
+            Some(PaletteItem::History { index, .. }) => Target::History(*index),
             Some(PaletteItem::Output { index }) => Target::Output(*index),
             None => return,
         };

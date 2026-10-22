@@ -207,6 +207,7 @@ fn record_to_session(record: &Value, cwd: &str) -> Option<SessionMeta> {
         // own picker shows.
         git_branch: String::new(),
         first_prompt: summary.clone(),
+        transcript: None,
         summary,
         // OpenCode's `session list` CLI contract carries no
         // model or token usage, so attribution degrades to agent + recency.

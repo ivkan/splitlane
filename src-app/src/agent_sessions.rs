@@ -530,6 +530,7 @@ pub mod cache {
                 git_branch: "main".into(),
                 summary: Some("old".into()),
                 first_prompt: None,
+                transcript: None,
                 model: None,
                 usage: None,
             }];
@@ -799,6 +800,10 @@ pub struct SessionMeta {
     /// worst gap zero; the other 390 have no title and already fall back to
     /// this very text.
     pub first_prompt: Option<String>,
+    /// The file the session is stored in, for readers that search what the
+    /// person wrote in it. Only Claude Code and Codex fill it: theirs are the
+    /// stores whose prompt records this app can tell from the CLI's own.
+    pub transcript: Option<std::path::PathBuf>,
     /// Model name from the session transcript (e.g.
     /// `claude-opus-4-...`, `gpt-5`). `None` on the title-only popover scan or
     /// when the agent doesn't record one. Drives the attribution badge label +
@@ -1185,6 +1190,7 @@ mod tests {
             git_branch: String::new(),
             summary: None,
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }
@@ -1482,6 +1488,7 @@ mod tests {
             git_branch: branch.into(),
             summary: None,
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }

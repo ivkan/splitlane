@@ -364,6 +364,8 @@ impl SplitlaneApp {
                                 project: project.clone(),
                                 branch: meta.git_branch,
                                 last_activity_secs: meta.last_activity_secs,
+                                transcript: meta.transcript,
+                                prompts: None,
                             });
                         }
                     }
