@@ -125,6 +125,11 @@ impl SplitlaneApp {
                 // arrive first. The first open reads every transcript of every
                 // open project - seconds, on a machine with many - and after
                 // that only what was appended.
+                let keep: std::collections::HashSet<_> = sources
+                    .iter()
+                    .filter_map(|(_, path)| path.clone())
+                    .collect();
+                smol::unblock(move || crate::prompt_index::forget_all_but(&keep)).await;
                 let mut sources = sources.into_iter().enumerate().peekable();
                 while sources.peek().is_some() {
                     let piece: Vec<_> = sources.by_ref().take(PROMPTS_PIECE).collect();
@@ -187,12 +192,28 @@ impl SplitlaneApp {
         last: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self
+            .command_palette
+            .as_ref()
+            .is_none_or(|state| state.history_generation != generation)
+        {
+            return false;
+        }
+        // Rows found by what was just read can land above the one the arrows
+        // are on. The selection follows the session, not the position, or
+        // Enter would open a session the person never moved to.
+        let needle = self.command_palette_query_text(cx);
+        let selected_row = |app: &Self| {
+            let state = app.command_palette.as_ref()?;
+            match app.palette_history_items(&needle).get(state.selected) {
+                Some(PaletteItem::History { index, .. }) => Some(*index),
+                _ => None,
+            }
+        };
+        let was_on = selected_row(self);
         let Some(state) = &mut self.command_palette else {
             return false;
         };
-        if state.history_generation != generation {
-            return false;
-        }
         let Some(rows) = &mut state.history else {
             return false;
         };
@@ -202,6 +223,14 @@ impl SplitlaneApp {
             }
         }
         state.history_prompts_read = last;
+        if let Some(was_on) = was_on {
+            let now_at = self.palette_history_items(&needle).iter().position(
+                |item| matches!(item, PaletteItem::History { index, .. } if *index == was_on),
+            );
+            if let (Some(now_at), Some(state)) = (now_at, &mut self.command_palette) {
+                state.selected = now_at;
+            }
+        }
         cx.notify();
         true
     }

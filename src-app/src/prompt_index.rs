@@ -37,8 +37,21 @@ const MAX_RECORD_BYTES: u64 = 4 * 1024 * 1024;
 /// what the sentence was about.
 const SNIPPET_LEAD_CHARS: usize = 32;
 
+/// How much of what follows a match a snippet keeps. A row is one line wide,
+/// and the rest of a pasted call transcript is a few hundred KB the render
+/// pass would otherwise lay out for every matching row.
+const SNIPPET_TAIL_CHARS: usize = 160;
+
+/// The longest prompt kept, in bytes. A pasted call transcript is the longest
+/// thing a person sends and stays under it; a larger paste is a log, kept up
+/// to here, so a few pastes cannot grow the cache past what was measured.
+const MAX_PROMPT_BYTES: usize = 512 * 1024;
+
 /// One session's prompts, whitespace folded so a match can span a line break,
-/// each beside its lowercase form.
+/// each beside its lowercase form. The lowercase form has exactly one
+/// character for each of the text's, so a match found in it is at the same
+/// character position in the text - a byte offset is not, since lowercasing
+/// changes some characters' lengths.
 #[derive(Debug, Default)]
 pub(crate) struct SessionPrompts {
     prompts: Vec<Prompt>,
@@ -64,15 +77,22 @@ pub(crate) struct PromptHit {
 
 impl SessionPrompts {
     fn push(&mut self, raw: &str) {
-        let text = fold_whitespace(raw);
+        let mut text = fold_whitespace(raw);
         if text.is_empty() {
             return;
+        }
+        if text.len() > MAX_PROMPT_BYTES {
+            let mut cut = MAX_PROMPT_BYTES;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
         }
         // Codex writes one turn in two record shapes a few lines apart.
         if self.prompts.last().is_some_and(|last| last.text == text) {
             return;
         }
-        let lower = text.to_lowercase();
+        let lower = lowercase_by_char(&text);
         self.prompts.push(Prompt { text, lower });
     }
 
@@ -95,28 +115,25 @@ impl SessionPrompts {
 }
 
 fn snippet(prompt: &Prompt, needle: &str, prompts: usize) -> PromptHit {
-    // Lowercasing keeps byte lengths for ASCII and Cyrillic, which is nearly
-    // every prompt; where it did not, the snippet is cut from the lowercase
-    // form rather than at an offset that means something else in the original.
-    let source = if prompt.lower.len() == prompt.text.len() {
-        &prompt.text
-    } else {
-        &prompt.lower
-    };
     let start = prompt.lower.find(needle).unwrap_or(0);
-    let end = start + needle.len();
-    let (Some(head), Some(matched), Some(after)) = (
-        source.get(..start),
-        source.get(start..end),
-        source.get(end..),
-    ) else {
-        return PromptHit {
-            before: String::new(),
-            matched: prompt.lower.get(start..end).unwrap_or_default().to_string(),
-            after: String::new(),
-            prompts,
-        };
+    let first = prompt.lower[..start].chars().count();
+    let count = needle.chars().count();
+    // Character positions carry over from the lowercase form; byte offsets do
+    // not.
+    let byte_at = |chars: usize| {
+        prompt
+            .text
+            .char_indices()
+            .nth(chars)
+            .map_or(prompt.text.len(), |(at, _)| at)
     };
+    let (start, end) = (byte_at(first), byte_at(first + count));
+    let head = &prompt.text[..start];
+    let matched = &prompt.text[start..end];
+    let after: String = prompt.text[end..]
+        .chars()
+        .take(SNIPPET_TAIL_CHARS)
+        .collect();
     let lead: Vec<char> = head.chars().collect();
     let before = if lead.len() > SNIPPET_LEAD_CHARS {
         let kept: String = lead[lead.len() - SNIPPET_LEAD_CHARS..].iter().collect();
@@ -127,14 +144,23 @@ fn snippet(prompt: &Prompt, needle: &str, prompts: usize) -> PromptHit {
     PromptHit {
         before,
         matched: matched.to_string(),
-        after: after.to_string(),
+        after,
         prompts,
     }
 }
 
 /// A query in the form prompts are held in.
 pub(crate) fn normalize_query(query: &str) -> String {
-    fold_whitespace(query).to_lowercase()
+    lowercase_by_char(&fold_whitespace(query))
+}
+
+/// Lowercase, one character for one: a character whose lowercase is longer
+/// than one character (`İ` is two) keeps the first of them. A search loses
+/// nothing by it, and positions stay comparable with the text.
+fn lowercase_by_char(text: &str) -> String {
+    text.chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect()
 }
 
 fn fold_whitespace(raw: &str) -> String {
@@ -144,12 +170,28 @@ fn fold_whitespace(raw: &str) -> String {
 struct Entry {
     /// Where the next read starts: just past the last whole line read.
     read_to: u64,
+    /// The file's modification time at that read. Same length and a different
+    /// time is a file written over rather than appended to.
+    modified: Option<std::time::SystemTime>,
     prompts: Arc<SessionPrompts>,
 }
 
-fn cache() -> &'static Mutex<HashMap<PathBuf, Entry>> {
+fn cache() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Entry>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, Entry>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    // A panic while it was held leaves nothing half-written that matters: an
+    // entry is replaced whole. Losing the cache to it would mean reading every
+    // transcript from its start on every open.
+    CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Drop what was read from files that are not in `keep` - sessions of a
+/// project that was closed, or files that are gone - so the cache holds the
+/// sessions the palette can list and no more.
+pub(crate) fn forget_all_but(keep: &std::collections::HashSet<PathBuf>) {
+    cache().retain(|path, _| keep.contains(path));
 }
 
 /// The prompts in `path`, read from where the last call stopped.
@@ -161,17 +203,16 @@ pub(crate) fn prompts_of(agent: SessionAgent, path: &Path) -> Arc<SessionPrompts
         SessionAgent::Codex => crate::codex_sessions::prompt_text,
         _ => return Arc::default(),
     };
-    let Ok(len) = std::fs::metadata(path).map(|meta| meta.len()) else {
+    let Ok(meta) = std::fs::metadata(path) else {
         return Arc::default();
     };
-    let previous = cache().lock().ok().and_then(|cache| {
-        cache
-            .get(path)
-            .map(|entry| (entry.read_to, entry.prompts.clone()))
-    });
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    let previous = cache()
+        .get(path)
+        .map(|entry| (entry.read_to, entry.modified, entry.prompts.clone()));
     let (start, mut session) = match previous {
-        Some((read_to, prompts)) if read_to == len => return prompts,
-        Some((read_to, prompts)) if read_to < len => (
+        Some((read_to, at, prompts)) if read_to == len && at == modified => return prompts,
+        Some((read_to, _, prompts)) if read_to < len => (
             read_to,
             SessionPrompts {
                 prompts: prompts.prompts.clone(),
@@ -181,15 +222,14 @@ pub(crate) fn prompts_of(agent: SessionAgent, path: &Path) -> Arc<SessionPrompts
     };
     let read_to = read_prompts(path, start, extract, &mut session).unwrap_or(start);
     let session = Arc::new(session);
-    if let Ok(mut cache) = cache().lock() {
-        cache.insert(
-            path.to_path_buf(),
-            Entry {
-                read_to,
-                prompts: session.clone(),
-            },
-        );
-    }
+    cache().insert(
+        path.to_path_buf(),
+        Entry {
+            read_to,
+            modified,
+            prompts: session.clone(),
+        },
+    );
     session
 }
 
@@ -209,10 +249,14 @@ fn read_prompts(
     let mut line = Vec::new();
     loop {
         line.clear();
-        let read = (&mut reader)
+        // An error from here on returns how far was read: the prompts before
+        // it are already in `session`, and starting over would add them twice.
+        let Ok(read) = (&mut reader)
             .take(MAX_RECORD_BYTES + 1)
             .read_until(b'\n', &mut line)
-            .ok()?;
+        else {
+            return Some(offset);
+        };
         if read == 0 {
             return Some(offset);
         }
@@ -224,7 +268,9 @@ fn read_prompts(
             // Longer than any prompt: skip to the end of it without holding it.
             let mut skipped = read as u64;
             loop {
-                let chunk = reader.fill_buf().ok()?;
+                let Ok(chunk) = reader.fill_buf() else {
+                    return Some(offset);
+                };
                 if chunk.is_empty() {
                     return Some(offset);
                 }
@@ -421,6 +467,61 @@ mod tests {
                 .find("big one")
                 .is_some()
         );
+    }
+
+    /// What the CLI writes as a `user` record on its own account - a slash
+    /// command, its output, its bookkeeping - is not something the person
+    /// wrote, though it sits in the same record type.
+    #[test]
+    fn the_clis_own_user_records_are_not_searched() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = serde_json::json!({
+            "type": "user",
+            "isMeta": true,
+            "message": {"role": "user", "content": "Caveat: generated while running local commands"}
+        })
+        .to_string();
+        let path = write(
+            &dir,
+            "i.jsonl",
+            &[
+                meta,
+                claude_prompt("<command-name>/compact</command-name>"),
+                claude_prompt("<local-command-stdout>Compacted</local-command-stdout>"),
+            ],
+        );
+        let prompts = prompts_of(SessionAgent::Claude, &path);
+        assert!(prompts.find("caveat").is_none());
+        assert!(prompts.find("compact").is_none());
+    }
+
+    /// Lowercasing changes the byte length of some characters - the Kelvin sign
+    /// is three bytes and `k` one - so a match found in the lowercase form has
+    /// to be placed in the text by character, not by byte.
+    #[test]
+    fn a_match_after_a_character_whose_lowercase_is_shorter_is_placed_right() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "j.jsonl",
+            &[claude_prompt("300 \u{212A} then Deploy notes")],
+        );
+        let hit = prompts_of(SessionAgent::Claude, &path)
+            .find("deploy")
+            .unwrap();
+        assert_eq!(hit.matched, "Deploy");
+        assert_eq!(hit.before, "300 \u{212A} then ");
+    }
+
+    #[test]
+    fn a_snippet_keeps_only_the_start_of_a_long_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let tail = "x".repeat(10_000);
+        let path = write(&dir, "k.jsonl", &[claude_prompt(&format!("needle {tail}"))]);
+        let hit = prompts_of(SessionAgent::Claude, &path)
+            .find("needle")
+            .unwrap();
+        assert_eq!(hit.after.chars().count(), SNIPPET_TAIL_CHARS);
     }
 
     #[test]
