@@ -6,6 +6,11 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A pinned session keeps a star beside its status dot in the rail, so the
+  pinned ones stand out from the rest of the project without hovering.
+
 ## [0.2.12] - 2026-10-21
 
 ### Added
