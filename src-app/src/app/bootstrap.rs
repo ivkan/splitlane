@@ -1269,6 +1269,7 @@ impl SplitlaneApp {
             opener_tells: std::collections::HashMap::new(),
             opener_told_at: std::collections::HashMap::new(),
             codex_drive_confirm: false,
+            drop_snapshot_asked: None,
             codex_drive_note: None,
             folded_openers: std::collections::HashSet::new(),
             openers_explained: std::collections::HashSet::new(),

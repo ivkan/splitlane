@@ -260,10 +260,9 @@ impl SplitlaneApp {
         let menu_open = self.tab_menu_open.is_some()
             || self.workspace_menu_open.is_some()
             || self.files_menu_open.is_some();
-        // One container, one checkout: the branch is the same fact for every
-        // surface in these panes. It rides in the per-surface facts all the
-        // same, so a surface that one day sits in a worktree of its own needs
-        // no second channel to say so.
+        // The project's checkout, for every surface that works in it. A
+        // session in a worktree of its own says its own branch instead, below:
+        // the project's is not where its edits land.
         let branch = self.workspaces.get(ws_idx).and_then(|container| {
             (!container.git_branch.is_empty()).then(|| {
                 (
@@ -356,7 +355,18 @@ impl SplitlaneApp {
                             .and_then(|id| self.thread_by_id(id))
                             .filter(|_| is_agent)
                             .and_then(|thread| thread.quiet_minutes),
-                        branch: branch.clone(),
+                        branch: thread_id
+                            .and_then(|id| {
+                                let thread = self
+                                    .workspaces
+                                    .get(ws_idx)?
+                                    .threads
+                                    .iter()
+                                    .find(|t| t.id == id)?;
+                                let wt = self.session_worktree_of(ws_idx, thread)?;
+                                Some((gpui::SharedString::from(wt.branch.clone()), true))
+                            })
+                            .or_else(|| branch.clone()),
                         context: context.filter(|_| is_agent),
                         drive_questions: thread_id
                             .map(|asker| self.drive_questions_of(asker))

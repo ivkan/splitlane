@@ -496,22 +496,24 @@ pub fn what_is_left(item: &LeftBehind) -> String {
             }
         }
     };
+    work_summary(&work).unwrap_or_else(|| "nothing new".to_string())
+}
+
+/// What a branch holds, in a few words - `3 changed files · 2 commits` -
+/// or `None` when it holds nothing.
+pub fn work_summary(work: &BranchWork) -> Option<String> {
     let mut parts = Vec::new();
-    match work.commits {
-        0 => {}
-        1 => parts.push("1 commit".to_string()),
-        n => parts.push(format!("{n} commits")),
-    }
     match work.changed_files {
         0 => {}
         1 => parts.push("1 changed file".to_string()),
         n => parts.push(format!("{n} changed files")),
     }
-    if parts.is_empty() {
-        "nothing new".to_string()
-    } else {
-        parts.join(" \u{b7} ")
+    match work.commits {
+        0 => {}
+        1 => parts.push("1 commit".to_string()),
+        n => parts.push(format!("{n} commits")),
     }
+    (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
 }
 
 /// A worktree for a kept branch, so a new session can work on it again. The
@@ -736,5 +738,20 @@ mod tests {
         );
         assert_eq!(parse_shortstat(" 1 file changed, 1 deletion(-)"), (0, 1));
         assert_eq!(parse_shortstat(""), (0, 0));
+    }
+
+    #[test]
+    fn what_a_branch_holds_is_said_in_a_few_words() {
+        let work = |changed_files, commits| BranchWork {
+            changed_files,
+            commits,
+            ..BranchWork::default()
+        };
+        assert_eq!(work_summary(&work(0, 0)), None);
+        assert_eq!(work_summary(&work(1, 0)).as_deref(), Some("1 changed file"));
+        assert_eq!(
+            work_summary(&work(3, 2)).as_deref(),
+            Some("3 changed files \u{b7} 2 commits")
+        );
     }
 }

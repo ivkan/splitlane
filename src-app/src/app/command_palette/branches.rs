@@ -10,7 +10,8 @@
 //! Enter opens a new session on the branch, in its worktree, made again if
 //! it was removed; on a snapshot it brings the snapshot back into a new
 //! branch first. `⌘⌫` on a branch deletes it the way the delete card's
-//! `Delete everything` does, snapshot and all.
+//! `Delete everything` does, snapshot and all. On a snapshot it asks first,
+//! on a red card: nothing of the work is left after that one.
 
 use gpui::Context;
 
@@ -18,6 +19,15 @@ use crate::SplitlaneApp;
 use crate::workspace::session_branch::{self, LeftBehind, LeftKind};
 
 use super::{PaletteItem, PaletteTab};
+
+/// A snapshot the person asked to delete, waiting on the card.
+pub(crate) struct DropSnapshot {
+    repo_root: std::path::PathBuf,
+    reference: String,
+    branch: String,
+    title: String,
+    holds: String,
+}
 
 /// One row of the Branches tab.
 pub(crate) struct BranchRow {
@@ -219,15 +229,22 @@ impl SplitlaneApp {
         else {
             return;
         };
-        let LeftKind::Branch { branch } = &row.item.kind else {
-            self.show_toast(
-                format!(
-                    "Snapshots go by themselves after {} days",
-                    session_branch::SNAPSHOT_DAYS
-                ),
-                cx,
-            );
-            return;
+        let branch = match &row.item.kind {
+            LeftKind::Branch { branch } => branch,
+            LeftKind::Snapshot { reference, branch } => {
+                self.drop_snapshot_asked = Some(DropSnapshot {
+                    repo_root: row.item.repo_root.clone(),
+                    reference: reference.clone(),
+                    branch: branch.clone(),
+                    title: row.item.title.clone(),
+                    holds: row.holds.clone(),
+                });
+                // The card is answered with the pointer; the palette would
+                // keep the keyboard under it.
+                self.command_palette = None;
+                cx.notify();
+                return;
+            }
         };
         // The list was read when the palette opened; a session may have
         // opened on the branch since.
@@ -277,6 +294,61 @@ impl SplitlaneApp {
         .detach();
     }
 
+    pub(crate) fn render_drop_snapshot_confirm(
+        &self,
+        asked: &DropSnapshot,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use crate::app::confirm_dialog::{ConfirmDialog, ConfirmTone, render_confirm_dialog};
+        let (title, rest) = drop_snapshot_copy(asked);
+        render_confirm_dialog(
+            ConfirmDialog {
+                id: "drop-snapshot-confirm",
+                title,
+                body: "The snapshot of".to_string(),
+                body_code: Some((asked.branch.clone(), rest)),
+                note: None,
+                confirm_label: "Delete snapshot".to_string(),
+                safe: None,
+                focus: None,
+                on_cancel: std::rc::Rc::new(|this, window, cx| {
+                    this.drop_snapshot_asked = None;
+                    this.handle_open_branches(&crate::OpenBranches, window, cx);
+                }),
+                on_confirm: std::rc::Rc::new(|this, _window, cx| this.drop_asked_snapshot(cx)),
+                aside: None,
+                tone: ConfirmTone::Danger,
+            },
+            ui,
+            cx,
+        )
+    }
+
+    fn drop_asked_snapshot(&mut self, cx: &mut Context<Self>) {
+        let Some(asked) = self.drop_snapshot_asked.take() else {
+            return;
+        };
+        cx.notify();
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let DropSnapshot {
+                    repo_root,
+                    reference,
+                    title,
+                    ..
+                } = asked;
+                smol::unblock(move || session_branch::drop_snapshot(&repo_root, &reference)).await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.show_toast(format!("Snapshot of \"{title}\" deleted"), cx);
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
     /// The `Show` on a kept-branch toast: the palette, on this tab.
     pub(crate) fn handle_open_branches(
         &mut self,
@@ -293,6 +365,16 @@ impl SplitlaneApp {
         }
         cx.notify();
     }
+}
+
+/// The card's title, and what follows the branch's name in its body. Red,
+/// unlike `Delete everything`: that one leaves a snapshot behind, and this
+/// is the snapshot.
+fn drop_snapshot_copy(asked: &DropSnapshot) -> (String, String) {
+    (
+        format!("Delete the snapshot of \"{}\"?", asked.title),
+        format!(" holds {}. Nothing of it is left after this.", asked.holds),
+    )
 }
 
 /// The branch a row is about, or the one a snapshot was taken of.
