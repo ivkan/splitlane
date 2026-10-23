@@ -198,7 +198,14 @@ kept sessions live in the app's own process and survive none of these.
   the project's current branch and creates the checkout in
   `<repo>.worktrees/<branch>`. It can run a setup command (remembered for the
   project), start an agent session in the new worktree, and remove the worktree
-  when the project closes.
+  when the project closes. Files git does not track are not in a new
+  worktree, so Splitlane copies them from the project: the top-level `.env*`
+  files, `CLAUDE.local.md` and `AGENTS.override.md`, and whatever a
+  `.worktreeinclude` file in the project's root lists, one path or
+  gitignore-style pattern per line (the file Claude Code reads for its own
+  worktrees). Only what git ignores is copied, since an untracked copy would
+  keep git from removing the worktree later. A link is copied as a link that
+  points at the same place, and nothing already in the worktree is replaced.
 - **Presets.** A preset is a saved set of panes, each with its own directory
   and agent, stored as one TOML file per preset in
   `<config dir>/splitlane/presets/`. The Launch pad (`⌘⇧L`, `Ctrl+Shift+L`)

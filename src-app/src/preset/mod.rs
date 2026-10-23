@@ -120,7 +120,8 @@ pub struct PanePreset {
     /// [`Self::cwd`] (inside a git repo); the pane spawns in
     /// `<repo>.worktrees/<branch-slug>` instead.
     pub worktree: Option<String>,
-    /// Copy the repo's top-level gitignored `.env*` files into the worktree.
+    /// Copy the repo's local files into the worktree
+    /// ([`crate::workspace::worktree::copy_local_files`]).
     /// Default true; only meaningful with [`Self::worktree`].
     pub copy_env: Option<bool>,
     /// Command run inside a freshly created worktree before the agent spawns.

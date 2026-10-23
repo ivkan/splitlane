@@ -425,8 +425,12 @@ fn is_splitlanes_own(record: &[u8], worktree_path: &Path, repo_root: &Path) -> b
         b"?? " | b"!! " if path == OWNER_MARKER_FILE => true,
         // Only an ignored copy: git refuses to remove a worktree that holds
         // an untracked file, so excusing one here would promise a removal
-        // that then does not happen.
-        b"!! " if path.starts_with(".env") && !path.contains('/') => {
+        // that then does not happen. Any ignored file or link that is still
+        // what the checkout holds at the same path loses nothing with the
+        // worktree - which covers everything `copy_local_files` put there
+        // and nobody changed. A directory is reported whole and is not
+        // compared, so one holds the worktree back.
+        b"!! " if !path.ends_with('/') => {
             is_unchanged_copy(&repo_root.join(path), &worktree_path.join(path))
         }
         _ => false,
@@ -440,7 +444,18 @@ fn is_unchanged_copy(source: &Path, copy: &Path) -> bool {
     ) else {
         return false;
     };
-    if !source_meta.is_file() || !copy_meta.is_file() || source_meta.len() != copy_meta.len() {
+    if source_meta.file_type().is_symlink() && copy_meta.file_type().is_symlink() {
+        return matches!(
+            (link_destination(source), link_destination(copy)),
+            (Some(a), Some(b)) if a == b
+        );
+    }
+    // A changed mode is a change too: `chmod +x` on a copy is somebody's work.
+    if !source_meta.is_file()
+        || !copy_meta.is_file()
+        || source_meta.len() != copy_meta.len()
+        || source_meta.permissions() != copy_meta.permissions()
+    {
         return false;
     }
     match (std::fs::read(source), std::fs::read(copy)) {
@@ -590,6 +605,248 @@ fn last_meaningful_line(raw: &[u8]) -> Option<String> {
         out.push('\u{2026}');
     }
     Some(out)
+}
+
+/// The file in a checkout's root that lists what else a new worktree of it
+/// needs from the checkout: one gitignore-syntax entry per line, relative to
+/// the root, `#` for a comment. The name and the syntax are Claude Code's, so
+/// one file serves both.
+pub const WORKTREE_INCLUDE_FILE: &str = ".worktreeinclude";
+
+/// Files copied into every new worktree when the checkout has them, with or
+/// without a [`WORKTREE_INCLUDE_FILE`]: the agents' own local instructions.
+/// They are kept out of git by design, so a worktree would otherwise start
+/// without the notes its agent is told to read.
+const LOCAL_INSTRUCTION_FILES: &[&str] = &["CLAUDE.local.md", "AGENTS.override.md"];
+
+/// How deep a listed directory is copied. A list entry names a few things a
+/// person keeps beside the code, not a tree to mirror.
+const MAX_COPY_DEPTH: u32 = 16;
+
+/// Copy what a new worktree needs from the checkout but git does not bring:
+/// the top-level `.env*` files, [`LOCAL_INSTRUCTION_FILES`], and every path
+/// the checkout's [`WORKTREE_INCLUDE_FILE`] lists. A symbolic link is copied as
+/// a link. Nothing that already exists in the worktree is replaced - a tracked
+/// file arrived with the checkout and is the branch's own. Best-effort: what
+/// cannot be read or written is skipped. Returns the relative paths copied,
+/// sorted.
+///
+/// A plain path in the list is looked up directly. A pattern is matched
+/// against what git reports as ignored and untracked in the checkout, with
+/// ignored directories reported whole, so a build directory is not walked.
+pub fn copy_local_files(src_root: &Path, dst_root: &Path) -> Vec<String> {
+    let mut copied = copy_env_files(src_root, dst_root);
+    let ignored = ignored_untracked(src_root);
+    let mut wanted: Vec<String> = LOCAL_INSTRUCTION_FILES
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    if let Ok(list) = std::fs::read_to_string(src_root.join(WORKTREE_INCLUDE_FILE)) {
+        wanted.extend(included_paths(src_root, &list, &ignored));
+    }
+    wanted.sort();
+    wanted.dedup();
+    for relative in wanted {
+        // Only what git ignores. A tracked path arrived with the checkout,
+        // and an untracked copy would make git refuse to remove the worktree
+        // for good, so the project's close could never clean it up.
+        if !is_ignored(&relative, &ignored) {
+            continue;
+        }
+        let source = src_root.join(&relative);
+        if copy_entry(dst_root, &source, &dst_root.join(&relative), MAX_COPY_DEPTH) {
+            copied.push(relative);
+        }
+    }
+    copied.sort();
+    copied.dedup();
+    copied
+}
+
+/// The checkout-relative paths a [`WORKTREE_INCLUDE_FILE`] names. A line that
+/// names an existing path is that path, even if it holds a character a
+/// pattern would read; any other line with `*`, `?`, `[` or a leading `!` is
+/// a pattern, matched against `ignored`.
+fn included_paths(src_root: &Path, list: &str, ignored: &[(String, bool)]) -> Vec<String> {
+    let mut literal = Vec::new();
+    let mut patterns = ignore::gitignore::GitignoreBuilder::new(src_root);
+    let mut has_patterns = false;
+    for line in list.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let relative = line.trim_start_matches('/').trim_end_matches('/');
+        let names_a_path = is_safe_relative(relative)
+            && std::fs::symlink_metadata(src_root.join(relative)).is_ok();
+        if !names_a_path && (line.contains(['*', '?', '[']) || line.starts_with('!')) {
+            has_patterns |= patterns.add_line(None, line).is_ok();
+        } else if is_safe_relative(relative) {
+            literal.push(relative.to_string());
+        }
+    }
+    if has_patterns && let Ok(matcher) = patterns.build() {
+        literal.extend(
+            ignored
+                .iter()
+                .filter(|(path, is_dir)| matcher.matched(path, *is_dir).is_ignore())
+                .map(|(path, _)| path.clone()),
+        );
+    }
+    literal
+}
+
+/// Whether git ignores `relative`, itself or as part of an ignored directory.
+fn is_ignored(relative: &str, ignored: &[(String, bool)]) -> bool {
+    ignored.iter().any(|(path, is_dir)| {
+        relative == path || (*is_dir && Path::new(relative).starts_with(path))
+    })
+}
+
+/// A relative path that stays inside the root it is joined to.
+fn is_safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+/// What git reports as ignored and untracked in `root`, a directory reported
+/// once rather than walked, with whether each is a directory.
+fn ignored_untracked(root: &Path) -> Vec<(String, bool)> {
+    let Ok(out) = git_command::run(
+        GitProfile::Probe,
+        root,
+        &[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ],
+        GIT_DEADLINE,
+        STDOUT_CAP,
+    ) else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    out.stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let is_dir = entry.ends_with('/');
+            (entry.trim_end_matches('/').to_string(), is_dir)
+        })
+        .filter(|(path, _)| is_safe_relative(path))
+        .collect()
+}
+
+/// Whether writing `dst` stays inside `root`: no directory on the way down
+/// from `root` is a link. The branch's own tree can hold a tracked link where
+/// the checkout has an ignored directory, and writing through it would put
+/// the copy wherever the link points.
+fn lands_inside(root: &Path, dst: &Path) -> bool {
+    let Ok(rest) = dst.strip_prefix(root) else {
+        return false;
+    };
+    let parts: Vec<_> = rest.components().collect();
+    let mut at = root.to_path_buf();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => return false,
+            Ok(_) => {}
+            // The rest is made by this copy, as directories.
+            Err(_) => break,
+        }
+    }
+    true
+}
+
+/// Copy one file, link or directory to `dst` inside `root`. Nothing that
+/// already exists is replaced. Returns whether anything was copied.
+fn copy_entry(root: &Path, src: &Path, dst: &Path, depth_left: u32) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(src) else {
+        return false;
+    };
+    if std::fs::symlink_metadata(dst).is_ok() || !lands_inside(root, dst) {
+        return false;
+    }
+    if let Some(parent) = dst.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    if meta.file_type().is_symlink() {
+        return copy_symlink(src, dst);
+    }
+    if meta.is_file() {
+        return copy_new_file(src, dst, meta.permissions());
+    }
+    if !meta.is_dir() || depth_left == 0 || std::fs::create_dir(dst).is_err() {
+        return false;
+    }
+    if let Ok(entries) = std::fs::read_dir(src) {
+        for entry in entries.flatten() {
+            copy_entry(
+                root,
+                &entry.path(),
+                &dst.join(entry.file_name()),
+                depth_left - 1,
+            );
+        }
+    }
+    true
+}
+
+/// Copy a file to a path that must not exist, with the source's permissions.
+fn copy_new_file(src: &Path, dst: &Path, permissions: std::fs::Permissions) -> bool {
+    let (Ok(mut from), Ok(mut to)) = (
+        std::fs::File::open(src),
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst),
+    ) else {
+        return false;
+    };
+    std::io::copy(&mut from, &mut to).is_ok() && std::fs::set_permissions(dst, permissions).is_ok()
+}
+
+/// Where a link points, as a path that means the same from anywhere: a
+/// relative target is read from the link's own directory.
+fn link_destination(link: &Path) -> Option<PathBuf> {
+    let target = std::fs::read_link(link).ok()?;
+    Some(if target.is_relative() {
+        link.parent()?.join(target)
+    } else {
+        target
+    })
+}
+
+/// A link is recreated pointing at the same place, so a link to notes kept
+/// elsewhere reaches the same notes - a relative one too, though the worktree
+/// sits at another depth. Windows only lets a privileged or developer-mode
+/// process create a link; there it is skipped.
+fn copy_symlink(src: &Path, dst: &Path) -> bool {
+    let Some(target) = link_destination(src) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&target, dst).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        if target.is_dir() {
+            std::os::windows::fs::symlink_dir(&target, dst).is_ok()
+        } else {
+            std::os::windows::fs::symlink_file(&target, dst).is_ok()
+        }
+    }
 }
 
 /// Copy top-level `.env*` FILES from `src_root` into `dst_root`, skipping any
@@ -783,6 +1040,173 @@ mod tests {
             teardown: TeardownPolicy::Auto,
         };
         (tmp, managed)
+    }
+
+    /// A repository with local files beside the code, a `.worktreeinclude`
+    /// naming some of them, and a fresh worktree of it. Only the Unix tests
+    /// use it: they make symlinks, which Windows hands out by privilege.
+    #[cfg(unix)]
+    fn repo_with_local_files(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let tmp = std::env::temp_dir().join(format!(
+            "splitlane-local-files-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let repo = tmp.join("repo");
+        let elsewhere = tmp.join("notes-kept-elsewhere");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        std::fs::create_dir_all(&elsewhere).expect("notes dir");
+        test_git(&repo, &["init", "-q"]);
+        test_git(&repo, &["config", "user.email", "test@example.com"]);
+        test_git(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(
+            repo.join(".gitignore"),
+            ".env\nCLAUDE.local.md\nnotes\nsecrets/\n*.pem\nbuild/\n.worktreeinclude\n",
+        )
+        .expect("gitignore");
+        std::fs::write(repo.join("README.md"), "tracked\n").expect("file");
+        test_git(&repo, &["add", "."]);
+        test_git(&repo, &["commit", "-q", "-m", "init"]);
+        std::fs::write(repo.join(".env"), "KEY=source\n").expect("env");
+        std::fs::write(repo.join("CLAUDE.local.md"), "read the notes\n").expect("local");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&elsewhere, repo.join("notes")).expect("link");
+        std::fs::create_dir_all(repo.join("secrets")).expect("secrets");
+        std::fs::write(repo.join("secrets").join("api.json"), "{}").expect("secret");
+        std::fs::write(repo.join("key.pem"), "pem").expect("pem");
+        // Untracked and not ignored: copying it would keep git from ever
+        // removing the worktree.
+        std::fs::write(repo.join("AGENTS.override.md"), "local\n").expect("agents");
+        std::fs::create_dir_all(repo.join("build")).expect("build");
+        std::fs::write(repo.join("build").join("out.bin"), "big").expect("build");
+        std::fs::write(
+            repo.join(WORKTREE_INCLUDE_FILE),
+            "# what a worktree needs\nnotes\n/secrets/\n*.pem\n../outside\n",
+        )
+        .expect("include");
+        let path = worktree_dir(&repo, "feat");
+        add_worktree(&repo, &path, "feat", true).expect("worktree");
+        (tmp, repo, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_files_are_copied_and_nothing_else() {
+        let (tmp, repo, path) = repo_with_local_files("copy");
+        // Tracked, so already there: it must not be replaced.
+        std::fs::write(path.join("README.md"), "the branch's own\n").expect("edit");
+
+        let copied = copy_local_files(&repo, &path);
+
+        assert_eq!(
+            copied,
+            vec![".env", "CLAUDE.local.md", "key.pem", "notes", "secrets"]
+        );
+        assert_eq!(
+            std::fs::read_link(path.join("notes")).expect("a link"),
+            repo.parent().expect("tmp").join("notes-kept-elsewhere")
+        );
+        assert!(path.join("secrets").join("api.json").is_file());
+        assert!(
+            !path.join("build").exists(),
+            "an unlisted ignored directory stays"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("README.md")).expect("read"),
+            "the branch's own\n"
+        );
+        assert!(!tmp.join("outside").exists());
+        assert!(
+            !path.join("AGENTS.override.md").exists(),
+            "not ignored, not copied"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_never_writes_through_a_link_in_the_worktree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (src, dst, outside) = (
+            tmp.path().join("src"),
+            tmp.path().join("dst"),
+            tmp.path().join("outside"),
+        );
+        for dir in [&src.join("vault"), &dst, &outside] {
+            std::fs::create_dir_all(dir).expect("mkdir");
+        }
+        std::fs::write(src.join("vault").join("key.pem"), "secret").expect("write");
+        // The branch tracks `vault` as a link where the checkout has a folder.
+        std::os::unix::fs::symlink(&outside, dst.join("vault")).expect("link");
+
+        assert!(!copy_entry(
+            &dst,
+            &src.join("vault").join("key.pem"),
+            &dst.join("vault").join("key.pem"),
+            MAX_COPY_DEPTH
+        ));
+        assert!(!outside.join("key.pem").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_link_still_reaches_its_target_from_the_worktree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("repo");
+        let dst = tmp.path().join("repo.worktrees").join("feat");
+        std::fs::create_dir_all(tmp.path().join("shared")).expect("shared");
+        std::fs::create_dir_all(&src).expect("src");
+        std::fs::create_dir_all(&dst).expect("dst");
+        std::os::unix::fs::symlink("../shared", src.join("notes")).expect("link");
+
+        assert!(copy_entry(
+            &dst,
+            &src.join("notes"),
+            &dst.join("notes"),
+            MAX_COPY_DEPTH
+        ));
+
+        assert!(
+            dst.join("notes").join(".").is_dir(),
+            "the copy reaches the folder"
+        );
+        assert!(is_unchanged_copy(&src.join("notes"), &dst.join("notes")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_whose_mode_changed_is_not_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (src, dst) = (tmp.path().join("run.sh"), tmp.path().join("copy.sh"));
+        std::fs::write(&src, "echo hi\n").expect("write");
+        std::fs::write(&dst, "echo hi\n").expect("write");
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        assert!(is_unchanged_copy(&src, &dst));
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        assert!(!is_unchanged_copy(&src, &dst));
+    }
+
+    /// Copies nobody changed are not work: a worktree holding only those is
+    /// removed when the project closes, the link to the notes included.
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_holding_unchanged_copies_is_removed() {
+        let (tmp, repo, path) = repo_with_local_files("teardown");
+        std::fs::remove_dir_all(repo.join("secrets")).expect("no directory copy");
+        copy_local_files(&repo, &path);
+        let managed = ManagedWorktree {
+            path: path.clone(),
+            repo_root: repo.clone(),
+            branch: "feat".to_string(),
+            teardown: TeardownPolicy::Auto,
+        };
+
+        teardown_all(vec![managed], &[]);
+
+        assert!(!path.exists(), "unchanged copies do not hold the worktree");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// The marker and the copied `.env` are both in every managed worktree,
