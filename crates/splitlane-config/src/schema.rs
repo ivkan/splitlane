@@ -1965,8 +1965,8 @@ pub struct AgentSurface {
     /// shell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_agent: Option<String>,
-    /// Whether the user pinned this surface. Pinned rows are surfaced in the
-    /// rail's PINNED section across containers and free chats.
+    /// Whether the user pinned this surface. A pinned row rises to the top of
+    /// its project in the rail and keeps a star at rest.
     #[serde(default)]
     pub pinned: bool,
     /// Forced agent session UUID for a Claude surface, passed as

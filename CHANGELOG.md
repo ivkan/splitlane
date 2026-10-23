@@ -59,6 +59,11 @@ Notable changes to Splitlane are recorded here. The format follows
   whose worktree is removed moves to the project folder the next time it
   starts, and resumes its session there.
 
+### Changed
+
+- A pinned session keeps a star beside its status dot in the rail, so the
+  pinned ones stand out from the rest of the project without hovering.
+
 ## [0.2.12] - 2026-10-21
 
 ### Added

@@ -1509,6 +1509,7 @@ impl SplitlaneApp {
             } else {
                 surface_row_meta(meta, ui)
             })
+            .children(is_pinned.then(|| pinned_mark(ui)))
             .child(match branch_word {
                 Some(RowBranchWord::Making) => status_dot(
                     "rail-surface-row",
@@ -2429,6 +2430,18 @@ pub(crate) fn surface_status_dot(
 /// fallback is stated and is **size, not fill**: a filled 6px against a filled
 /// 4px. Worse, and legible everywhere. The 1.5px border is a floor either way -
 /// it is the first thing rounding eats.
+/// The mark a pinned row keeps at rest. Placed against the status dot because
+/// the meta text before it varies in width, and only a fixed x lines the stars
+/// up into a column.
+fn pinned_mark(ui: crate::theme::UiColors) -> gpui::AnyElement {
+    svg()
+        .size(tok::mono::LABEL)
+        .flex_none()
+        .path("icons/star-filled.svg")
+        .text_color(ui.dim)
+        .into_any_element()
+}
+
 fn status_dot(
     id: &'static str,
     status: Option<crate::project::ThreadStatus>,
@@ -3108,7 +3121,10 @@ fn hover_actions_cluster(
         "icons/star.svg"
     };
     let pin_tooltip = if pinned { "Unpin" } else { "Pin" };
-    let pin_resting_text = if pinned { ui.accent } else { ui.muted };
+    // Neutral either way: the filled shape says pinned, and the accent is the
+    // status dot's colour for "running" - a pinned row under the pointer
+    // would read as a second running mark beside the real one.
+    let pin_resting_text = ui.muted;
     let pin_btn = div()
         .id(SharedString::from(format!("agents-thread-{thread_id}-pin")))
         .role(Role::Button)

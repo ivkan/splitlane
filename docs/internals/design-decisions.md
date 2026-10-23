@@ -211,6 +211,27 @@ so raising the inactive ones would close the gap that says which is active.
 With the air the group carries five signals - 28 vs 25px, 12 vs 11.5px,
 `MEDIUM` vs regular, the sessions' indent, and the gap.
 
+**A pinned row says so at rest, with a shape in a neutral.** A pin raises the
+session to the top of its project, and that alone did not hold up: with three
+or four pinned among ten the raised rows read as part of the list, because the
+only star was in the hover cluster. The mark is `pinned_mark`, a filled star in
+`dim`, and three things about it are deliberate:
+
+- **Not a colour.** Every hue in the rail answers a status question, so the pin
+  is spent on presence and shape. The cluster's own pin star, which used to
+  paint `accent` when pinned, is neutral too: under the pointer it stood seven
+  pixels from a running dot in the same hue.
+- **Against the status dot, not at the start of the meta slot.** The meta text
+  is an agent's name, a quiet time or a news word, so its start moves from row
+  to row. A fixed x lines the stars up into a column, and the column is what
+  reads as a set from across the rail.
+- **Inside the meta slot.** It fades out on hover as the cluster's star fades
+  in, so a row never shows two stars.
+
+No air separates the pinned rows from the rest. The stars already mark each
+one, and a second gap size inside a project would be a rhythm this rail does
+not otherwise use: projects are the groups air marks.
+
 **Two row heights, on purpose.** The rail's `row::SESSION` is 25px and the pane
 launcher's row is 30px, and that pair is not a token leak. The rail is a
 **standing** list read peripherally fifteen rows deep, where density is what
