@@ -61,6 +61,29 @@ pub(crate) struct SessionPrompts {
 struct Prompt {
     text: String,
     lower: String,
+    /// When it was sent, in Unix seconds, from the record's own `timestamp`.
+    at: Option<i64>,
+}
+
+/// How many prompts a session's outline shows whole. A longer session shows
+/// its first and its last [`OUTLINE_TAIL`], with how many were left out
+/// between: the first says what it set out to do, the last where it got to.
+const OUTLINE_PROMPTS: usize = 6;
+const OUTLINE_TAIL: usize = 4;
+
+/// How much of each prompt an outline line keeps, in characters. A line says
+/// which prompt it was, not all of it.
+const OUTLINE_CHARS: usize = 80;
+
+/// One line of a session's outline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OutlineLine {
+    Prompt {
+        at: Option<i64>,
+        text: String,
+    },
+    /// This many prompts between the first and the last few.
+    Skipped(usize),
 }
 
 /// Where a query matched in one session.
@@ -76,7 +99,7 @@ pub(crate) struct PromptHit {
 }
 
 impl SessionPrompts {
-    fn push(&mut self, raw: &str) {
+    fn push(&mut self, raw: &str, at: Option<i64>) {
         let mut text = fold_whitespace(raw);
         if text.is_empty() {
             return;
@@ -93,7 +116,24 @@ impl SessionPrompts {
             return;
         }
         let lower = lowercase_by_char(&text);
-        self.prompts.push(Prompt { text, lower });
+        self.prompts.push(Prompt { text, lower, at });
+    }
+
+    /// What the person wrote, in order, cut to fit a tooltip: every prompt
+    /// of a short session, or the first and the last few of a long one.
+    pub(crate) fn outline(&self) -> Vec<OutlineLine> {
+        let line = |prompt: &Prompt| OutlineLine::Prompt {
+            at: prompt.at,
+            text: cut_to(&prompt.text, OUTLINE_CHARS),
+        };
+        if self.prompts.len() <= OUTLINE_PROMPTS {
+            return self.prompts.iter().map(line).collect();
+        }
+        let tail = self.prompts.len() - OUTLINE_TAIL;
+        std::iter::once(line(&self.prompts[0]))
+            .chain(std::iter::once(OutlineLine::Skipped(tail - 1)))
+            .chain(self.prompts[tail..].iter().map(line))
+            .collect()
     }
 
     /// The newest prompt that contains `needle`, which must already be
@@ -149,6 +189,13 @@ fn snippet(prompt: &Prompt, needle: &str, prompts: usize) -> PromptHit {
     }
 }
 
+fn cut_to(text: &str, chars: usize) -> String {
+    match text.char_indices().nth(chars) {
+        Some((at, _)) => format!("{}\u{2026}", text[..at].trim_end()),
+        None => text.to_string(),
+    }
+}
+
 /// A query in the form prompts are held in.
 pub(crate) fn normalize_query(query: &str) -> String {
     lowercase_by_char(&fold_whitespace(query))
@@ -192,6 +239,12 @@ fn cache() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Entry>> {
 /// sessions the palette can list and no more.
 pub(crate) fn forget_all_but(keep: &std::collections::HashSet<PathBuf>) {
     cache().retain(|path, _| keep.contains(path));
+}
+
+/// What was last read from `path`, without reading it. For a render pass,
+/// which may not touch the disk; [`prompts_of`] brings it up to date.
+pub(crate) fn cached(path: &Path) -> Option<Arc<SessionPrompts>> {
+    cache().get(path).map(|entry| entry.prompts.clone())
 }
 
 /// The prompts in `path`, read from where the last call stopped.
@@ -294,7 +347,13 @@ fn read_prompts(
             continue;
         };
         if let Some(text) = extract(&value) {
-            session.push(&text);
+            // Both stores date every record in RFC 3339.
+            let at = value
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+                .map(|when| when.timestamp());
+            session.push(&text, at);
         }
     }
 }
@@ -316,6 +375,15 @@ mod tests {
     fn claude_prompt(text: &str) -> String {
         serde_json::json!({
             "type": "user",
+            "message": {"role": "user", "content": text}
+        })
+        .to_string()
+    }
+
+    fn claude_prompt_at(text: &str, timestamp: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "timestamp": timestamp,
             "message": {"role": "user", "content": text}
         })
         .to_string()
@@ -547,5 +615,71 @@ mod tests {
         let hit = prompts.find("billing").unwrap();
         assert_eq!(hit.prompts, 1);
         assert!(prompts.find("environment_context").is_none());
+    }
+
+    #[test]
+    fn a_short_session_is_outlined_whole_with_its_times() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "l.jsonl",
+            &[
+                claude_prompt_at("set up\nthe deploy", "2026-10-23T09:15:00Z"),
+                claude_prompt("no time on this one"),
+            ],
+        );
+        assert_eq!(
+            prompts_of(SessionAgent::Claude, &path).outline(),
+            vec![
+                OutlineLine::Prompt {
+                    at: Some(1_792_746_900),
+                    text: "set up the deploy".into()
+                },
+                OutlineLine::Prompt {
+                    at: None,
+                    text: "no time on this one".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_long_session_keeps_its_first_prompt_and_its_last_few() {
+        let dir = tempfile::tempdir().unwrap();
+        let lines: Vec<String> = (1..=10).map(|n| claude_prompt(&format!("p{n}"))).collect();
+        let path = write(&dir, "m.jsonl", &lines);
+        let texts: Vec<String> = prompts_of(SessionAgent::Claude, &path)
+            .outline()
+            .into_iter()
+            .map(|line| match line {
+                OutlineLine::Prompt { text, .. } => text,
+                OutlineLine::Skipped(n) => format!("+{n}"),
+            })
+            .collect();
+        assert_eq!(texts, ["p1", "+5", "p7", "p8", "p9", "p10"]);
+    }
+
+    #[test]
+    fn an_outline_line_is_cut_on_a_character() {
+        let long = "й".repeat(OUTLINE_CHARS + 5);
+        let cut = cut_to(&long, OUTLINE_CHARS);
+        assert_eq!(cut.chars().count(), OUTLINE_CHARS + 1);
+        assert!(cut.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn the_summary_a_compaction_writes_is_not_the_persons() {
+        let dir = tempfile::tempdir().unwrap();
+        let summary = serde_json::json!({
+            "type": "user",
+            "isCompactSummary": true,
+            "isVisibleInTranscriptOnly": true,
+            "message": {"role": "user", "content": "This session is being continued from a previous conversation"}
+        })
+        .to_string();
+        let path = write(&dir, "n.jsonl", &[summary, claude_prompt("go on")]);
+        let prompts = prompts_of(SessionAgent::Claude, &path);
+        assert!(prompts.find("continued").is_none());
+        assert_eq!(prompts.outline().len(), 1);
     }
 }

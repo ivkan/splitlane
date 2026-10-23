@@ -28,6 +28,7 @@ pub(crate) mod limits_footer;
 // rows with the same matcher so both search fields behave identically.
 pub(crate) mod filter;
 mod header;
+mod session_tooltip;
 mod state;
 
 pub(crate) use context_menus::render_open_agents_menu;
@@ -525,7 +526,7 @@ impl SplitlaneApp {
         self.thread_row(
             ThreadRowArgs {
                 branch_word,
-                tooltip: self.session_branch_tooltip(ws_idx, thread),
+                tooltip: session_tooltip_for(self.session_branch_tooltip(ws_idx, thread), thread),
                 target,
                 thread_id: thread.id,
                 title: thread.title.clone(),
@@ -1533,7 +1534,7 @@ impl SplitlaneApp {
         .relative()
         .children(bracket.map(|part| bracket_mark(part, tok::row::SESSION, ui)))
         .when_some(tooltip.filter(|_| tooltips_ok), |row, tooltip| {
-            row.tooltip(crate::ui_primitives::text_tooltip(tooltip))
+            row.tooltip(session_tooltip::row_tooltip(tooltip))
         });
         let opened_count =
             opened.map(|opened| opened_counter(thread_id, opened, tooltips_ok, ui, cx));
@@ -1888,15 +1889,45 @@ enum RowBranchWord {
     Failed,
 }
 
+/// A session row's hover card: the branch lines when it has its own branch,
+/// and the prompts of an agent whose transcript can be read. A row with
+/// neither says nothing on hover, as before.
+fn session_tooltip_for(
+    branch: Option<String>,
+    thread: &crate::project::Thread,
+) -> Option<session_tooltip::RowTooltip> {
+    use crate::agent_launcher::TerminalAgent;
+    use session_tooltip::PromptSource;
+    let prompts = match thread.terminal_agent {
+        Some(TerminalAgent::ClaudeCode) => {
+            crate::claude_sessions::transcript_path(thread).map(PromptSource::Claude)
+        }
+        Some(TerminalAgent::Codex) => thread
+            .session_id
+            .clone()
+            .filter(|id| crate::agent_sessions::is_valid_session_id(id))
+            .map(PromptSource::Codex),
+        _ => None,
+    };
+    if branch.is_none() && prompts.is_none() {
+        return None;
+    }
+    let head = match branch {
+        Some(branch) => branch.lines().map(str::to_string).collect(),
+        None => vec![thread.title.clone()],
+    };
+    Some(session_tooltip::RowTooltip { head, prompts })
+}
+
 struct ThreadRowArgs {
     /// Loaded, but behind its pane's active tab (see `SurfaceRowArgs`).
     behind: bool,
     /// Where the session's own branch stands, when that is what the row has
     /// to say: still being made, or not made.
     branch_word: Option<RowBranchWord>,
-    /// The row's hover text: the session's branch and port, or why it has no
-    /// branch.
-    tooltip: Option<String>,
+    /// The row's hover card: the session's branch and port, or why it has no
+    /// branch, and what the person wrote in it.
+    tooltip: Option<session_tooltip::RowTooltip>,
     /// The unified selection target this row drives.
     target: crate::project::AgentsTarget,
     thread_id: u64,
