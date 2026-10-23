@@ -223,8 +223,9 @@ kept sessions live in the app's own process and survive none of these.
   are not. The palette's **Branches** tab (`⌘K`, then `Tab`) lists the kept
   branches and snapshots by session name; `Enter` opens a new session on one
   (a snapshot comes back as uncommitted changes on a new branch), and `⌘⌫`
-  deletes a kept branch, snapshot first. The tab appears only when there is
-  something in it.
+  deletes a kept branch, snapshot first. On a snapshot `⌘⌫` asks on a red
+  card, since nothing of that work is left after it. The tab appears only
+  when there is something in it.
 - **Ports per session.** Each session worktree gets ten ports of its own, the
   first in `SPLITLANE_PORT` (from 4000 up), so two sessions of one project
   can each run a dev server: start it with that port, or write the port into
