@@ -210,7 +210,8 @@ kept sessions live in the app's own process and survive none of these.
   Sessions that another session opens work in their opener's worktree. The
   project's setup command, if it has one, runs in the new worktree beside the
   agent. Hovering a session's row shows its branch, the branch it was made
-  from and its port.
+  from, what the branch holds (`3 changed files · 2 commits`) and its port;
+  the pane's header names the session's branch too.
 - **Closing a session with its own branch.** When nothing in the branch is
   new, the session's worktree and branch go with it. When something is, the
   delete card says what (changed files, lines, and commits that are on no
