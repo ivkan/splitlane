@@ -203,8 +203,9 @@ kept sessions live in the app's own process and survive none of these.
   files, `CLAUDE.local.md` and `AGENTS.override.md`, and whatever a
   `.worktreeinclude` file in the project's root lists, one path or
   gitignore-style pattern per line (the file Claude Code reads for its own
-  worktrees). A link is copied as a link, and nothing already in the worktree
-  is replaced.
+  worktrees). Only what git ignores is copied, since an untracked copy would
+  keep git from removing the worktree later. A link is copied as a link that
+  points at the same place, and nothing already in the worktree is replaced.
 - **Presets.** A preset is a saved set of panes, each with its own directory
   and agent, stored as one TOML file per preset in
   `<config dir>/splitlane/presets/`. The Launch pad (`⌘⇧L`, `Ctrl+Shift+L`)
