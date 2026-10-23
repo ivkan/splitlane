@@ -18,7 +18,8 @@ Notable changes to Splitlane are recorded here. The format follows
   session share their opener's worktree. Each worktree gets ten ports, the
   first in `SPLITLANE_PORT`, for a dev server per session. **New sessions get
   their own branch** in a project's menu turns it off, and brings back
-  `+ worktree` there. See [Starting work](docs/user/index.md#starting-work).
+  `+ worktree` there. The pane header names the session's own branch. See
+  [Starting work](docs/user/index.md#starting-work).
 - **Closing a session with work in its branch asks.** The delete card names
   the branch and what it holds, and offers to keep it or delete everything;
   deleting saves a snapshot first, kept for 30 days. The palette's new
@@ -28,7 +29,6 @@ Notable changes to Splitlane are recorded here. The format follows
   when it cannot be made; hovering the row names its branch, what it holds
   and its port. A snapshot can be deleted early from the Branches tab, on a
   red card.
-
 - **A session's row lists what you wrote in it.** Hovering a Claude Code or
   Codex session's row shows your messages in it, one line each with when you
   sent them: the first and the last four of a long session. See
@@ -38,7 +38,6 @@ Notable changes to Splitlane are recorded here. The format follows
   Codex session, not only its name and first prompt, and shows the line it
   was found in. Searching also reaches past the 200 most recent sessions the
   list shows. See [Starting work](docs/user/index.md#starting-work).
-
 - **A new worktree gets the project's local files.** Besides the top-level
   `.env*` files, Splitlane now copies `CLAUDE.local.md`, `AGENTS.override.md`
   and whatever a `.worktreeinclude` file in the project's root lists, one
@@ -46,6 +45,15 @@ Notable changes to Splitlane are recorded here. The format follows
   for its own worktrees. A link is copied as a link. When the project closes,
   a copy nobody changed no longer keeps the worktree from being removed. See
   [Starting work](docs/user/index.md#starting-work).
+
+### Changed
+
+- Until you choose a theme, Splitlane follows the OS appearance: Harbor Light
+  on a light desktop, Harbor Dark on a dark one. Before, it always started
+  dark. A theme you already chose is kept, and Reset to default now returns
+  to following the OS.
+- A pinned session keeps a star beside its status dot in the rail, so the
+  pinned ones stand out from the rest of the project without hovering.
 
 ### Fixed
 
@@ -59,13 +67,6 @@ Notable changes to Splitlane are recorded here. The format follows
   whose worktree is removed moves to the project folder the next time it
   starts, and resumes its session there.
 
-### Changed
-
-- A pinned session keeps a star beside its status dot in the rail, so the
-  pinned ones stand out from the rest of the project without hovering.
-
-### Fixed
-
 - **Opening a Codex or other non-Claude session from history resumes it.**
   The History tab and the launcher opened a session of any agent but Claude
   Code as a new, empty one: the picked id was dropped when the surface was
@@ -73,6 +74,11 @@ Notable changes to Splitlane are recorded here. The format follows
   conversation when it was launched again after a restart. Both now resume
   the session with the agent's own resume command (`codex resume <id>`,
   `opencode --session <id>`, and so on).
+
+### Security
+
+- tokio is updated to 1.54.1, past the `AsyncFd` I/O-safety advisory
+  (RUSTSEC-2026-0386). Splitlane does not construct an `AsyncFd` itself.
 
 ## [0.2.12] - 2026-10-21
 
@@ -107,13 +113,6 @@ Notable changes to Splitlane are recorded here. The format follows
 
 - Certificate checks no longer accept paths through the distrusted emSign
   intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
-
-### Changed
-
-- Until you choose a theme, Splitlane follows the OS appearance: Harbor Light
-  on a light desktop, Harbor Dark on a dark one. Before, it always started
-  dark. A theme you already chose is kept, and Reset to default now returns
-  to following the OS.
 
 ## [0.2.11] - 2026-10-18
 
