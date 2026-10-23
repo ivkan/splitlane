@@ -192,13 +192,28 @@ kept sessions live in the app's own process and survive none of these.
 
 ## Starting work
 
-- **From the rail.** Each project row has `+ agent`, `+ shell` and
-  `+ worktree` (the last needs a git repository).
+- **From the rail.** Each project row has `+ agent` and `+ shell`, and
+  `+ worktree` in a git repository whose sessions do not get their own branch.
+- **Each session in its own branch.** In a git repository, an agent session
+  you start gets its own worktree and branch, `splitlane/` and four
+  characters, made from the project's current branch in
+  `<repo>.worktrees/`. It takes about a third of a second, before the agent
+  starts. Sessions that another session opens work in their opener's
+  worktree. The project's setup command, if it has one, runs in the new
+  worktree beside the agent. When you close the session, its worktree is
+  removed if it holds nothing but committed files and copies nobody changed,
+  and its branch goes too if nothing was committed on it; otherwise Splitlane
+  keeps them and says so. Each worktree also gets ten ports of its own, the
+  first in `SPLITLANE_PORT` (from 4000 up), so two sessions of one project
+  can each run a dev server: start it with that port, or write the port into
+  `.env` from the setup command. Turn this off for a project whose work goes
+  straight to its main branch with **New sessions get their own branch** in
+  the project's menu (right-click its row).
 - **Worktrees.** `+ worktree` asks for a branch name, bases the new branch on
   the project's current branch and creates the checkout in
   `<repo>.worktrees/<branch>`. It can run a setup command (remembered for the
   project), start an agent session in the new worktree, and remove the worktree
-  when the project closes. Files git does not track are not in a new
+  when the project closes; a branch you named is never deleted. Files git does not track are not in a new
   worktree, so Splitlane copies them from the project: the top-level `.env*`
   files, `CLAUDE.local.md` and `AGENTS.override.md`, and whatever a
   `.worktreeinclude` file in the project's root lists, one path or

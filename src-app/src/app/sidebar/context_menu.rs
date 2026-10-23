@@ -537,6 +537,31 @@ impl SplitlaneApp {
             }),
         ));
 
+        // Whether a new session here gets its own worktree and branch. Only
+        // for a git repository: elsewhere there is nothing to branch from,
+        // and a row that does nothing is worse than none.
+        if self
+            .workspaces
+            .get(idx)
+            .is_some_and(|ws| ws.repo_root.is_some())
+        {
+            context_menu = context_menu.child(context_menu_divider(ui));
+            context_menu = context_menu.child(
+                self.render_select_menu_item(
+                    "workspace-context-session-worktrees".into(),
+                    "New sessions get their own branch",
+                    self.sessions_get_worktrees(idx)
+                        .then(|| SharedString::from("\u{2713}")),
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.workspace_menu_open = None;
+                        this.toggle_session_worktrees(idx, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+            );
+        }
+
         context_menu = context_menu.child(context_menu_divider(ui));
 
         // Close workspace (conditionally disabled)

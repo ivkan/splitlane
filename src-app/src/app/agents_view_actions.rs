@@ -636,6 +636,11 @@ impl SplitlaneApp {
         // warm-resume survives navigation between surfaces.
         let thread = self.thread_for_target(target)?;
         let thread_id = thread.id;
+        // Its worktree is still being made: the terminal starts when it is
+        // there, and the completion selects the surface then.
+        if thread.worktree_pending {
+            return None;
+        }
         // A surface showing in a slot is authoritative over the cache: the
         // cache can drop an exited terminal, and building a second view for a
         // surface that is on screen would put two PTYs behind one row - the
@@ -674,7 +679,16 @@ impl SplitlaneApp {
             self.save_session(cx);
         }
         let thread = self.thread_for_target(target)?;
-        let view = Self::build_agent_terminal_view(thread, &self.cached_config, cx);
+        let env = self.workspaces.get(target.ws_idx()).and_then(|container| {
+            crate::workspace::worktree::port_env(
+                std::path::Path::new(&thread.cwd),
+                container
+                    .managed_worktrees
+                    .iter()
+                    .map(|wt| (wt.path.as_path(), wt.port)),
+            )
+        });
+        let view = Self::build_agent_terminal_view(thread, &self.cached_config, env, cx);
         if launches {
             self.mark_surface_starting(thread_id, &view, cx);
         }
@@ -718,6 +732,7 @@ impl SplitlaneApp {
     pub(crate) fn build_agent_terminal_view(
         thread: &crate::project::Thread,
         config: &splitlane_config::schema::SplitlaneConfig,
+        env: Option<std::collections::HashMap<String, String>>,
         cx: &mut Context<Self>,
     ) -> gpui::Entity<crate::terminal::view::TerminalView> {
         // **The one place macOS gets asked about notifications**, and it is
@@ -767,10 +782,11 @@ impl SplitlaneApp {
             crate::project::ThreadKind::Terminal => None,
         });
         let view = cx.new(|cx| {
-            let mut view = crate::terminal::view::TerminalView::with_cwd_and_profile(
+            let mut view = crate::terminal::view::TerminalView::with_cwd_env_and_profile(
                 thread_id,
                 Some(cwd),
                 None,
+                env,
                 TerminalSurfaceProfile::Agent,
                 cx,
             );

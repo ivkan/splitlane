@@ -18,6 +18,7 @@
 //! repository is. It opens the worktree dialog; a project with no git repository
 //! says so instead of opening an empty form.
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
     Role, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px,
@@ -86,21 +87,25 @@ impl SplitlaneApp {
                     cx.stop_propagation();
                 }),
             ))
-            .child(dashed_button(
-                SharedString::from(format!("rail-new-worktree-{container_id}")),
-                "+ worktree",
-                "Create a git worktree for this project",
-                // An ordinary button. It was the amber the pane header gave a
-                // worktree's branch, which is now kept for a waiting agent.
-                ui.text_body,
-                ui,
-                cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.close_agents_menu(cx);
-                    this.commit_agents_rename(cx);
-                    this.open_worktree_dialog(ws_idx, window, cx);
-                    cx.stop_propagation();
-                }),
-            ))
+            // A project that gives every session its own worktree needs no
+            // button to make one; a project that does not keeps it.
+            .when(!self.sessions_get_worktrees(ws_idx), |row| {
+                row.child(dashed_button(
+                    SharedString::from(format!("rail-new-worktree-{container_id}")),
+                    "+ worktree",
+                    "Create a git worktree for this project",
+                    // An ordinary button. It was the amber the pane header gave a
+                    // worktree's branch, which is now kept for a waiting agent.
+                    ui.text_body,
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.close_agents_menu(cx);
+                        this.commit_agents_rename(cx);
+                        this.open_worktree_dialog(ws_idx, window, cx);
+                        cx.stop_propagation();
+                    }),
+                ))
+            })
             .into_any_element()
     }
 
