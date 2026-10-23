@@ -402,7 +402,7 @@ impl SplitlaneApp {
                     let (path, create_branch) = plan_new_worktree(&repo_root, &branch)?;
                     worktree::add_worktree(&repo_root, &path, &branch, create_branch)?;
                     // Best-effort by design: a partial copy is not a failure.
-                    let _ = worktree::copy_env_files(&repo_root, &path);
+                    let _ = worktree::copy_local_files(&repo_root, &path);
                     Ok::<std::path::PathBuf, String>(path)
                 })
                 .await;
