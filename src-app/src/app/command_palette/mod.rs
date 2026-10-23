@@ -35,6 +35,7 @@ use gpui::{Context, FocusHandle, KeyDownEvent, Window};
 
 use crate::SplitlaneApp;
 
+pub(crate) use branches::DropSnapshot;
 pub(crate) use history::HistoryRow;
 pub(crate) use output::OutputRow;
 

@@ -1507,6 +1507,9 @@ struct SplitlaneApp {
     /// Settings -> Agents: the card asking whether Codex may reach this app
     /// is up (`app::codex_drive`).
     codex_drive_confirm: bool,
+    /// The palette's Branches tab: the card asking to delete a snapshot
+    /// before its time is up (`command_palette::branches`).
+    drop_snapshot_asked: Option<app::command_palette::DropSnapshot>,
     /// What the last press of that switch came to, shown under it.
     codex_drive_note: Option<String>,
     /// Openers whose sessions the person folded away in the rail, by surface
@@ -3102,6 +3105,9 @@ impl Render for SplitlaneApp {
         }
         if self.codex_drive_confirm {
             app_content = app_content.child(self.render_codex_drive_confirm(ui, cx));
+        }
+        if let Some(asked) = &self.drop_snapshot_asked {
+            app_content = app_content.child(self.render_drop_snapshot_confirm(asked, ui, cx));
         }
         // The branch picker: a container's menu, not a panel's, so it renders
         // here with the other context menus and anchors where it was opened.
