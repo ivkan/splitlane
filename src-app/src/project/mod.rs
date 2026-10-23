@@ -662,14 +662,22 @@ impl Thread {
         terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
         bound_session: Option<String>,
     ) -> Self {
-        // Adopt the caller's session id when resuming from history, otherwise
-        // mint a fresh UUID for agents that accept `--session-id` (Claude only
-        // today). Either way the live thread maps 1:1 to a known on-disk
-        // session file, so the sidebar can adopt its `ai-title` (parity with
-        // `/resume`) even when several threads share a cwd.
-        let session_id = terminal_agent
-            .filter(|a| a.supports_forced_session_id())
-            .map(|_| bound_session.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
+        // Adopt the caller's session id when resuming from history, for every
+        // agent this build can reopen by id; otherwise mint a fresh UUID for
+        // agents that accept `--session-id` (Claude only today). Either way
+        // the live thread maps 1:1 to a known on-disk session file, so the
+        // sidebar can adopt its `ai-title` (parity with `/resume`) even when
+        // several threads share a cwd.
+        //
+        // The adopted id used to be kept for Claude alone, so a Codex session
+        // picked from history opened as a new, empty Codex.
+        let session_id = match (terminal_agent, bound_session) {
+            (Some(agent), Some(id)) if agent.session_agent().is_some() => Some(id),
+            (Some(agent), _) if agent.supports_forced_session_id() => {
+                Some(uuid::Uuid::new_v4().to_string())
+            }
+            _ => None,
+        };
         Self {
             id: next_thread_id(),
             title: title.into(),
@@ -1615,16 +1623,26 @@ mod tests {
     }
 
     #[test]
-    fn non_claude_thread_never_adopts_a_session_id() {
-        // Codex has no `--session-id`, so handing it one would put an id on
-        // the thread that no launch could ever honour.
+    fn a_codex_thread_from_history_keeps_the_picked_session() {
+        // Codex cannot be given a fresh id, but it reopens one of its own by
+        // id; dropping the picked id opened a new, empty Codex instead.
         let thread = Thread::new_terminal_for_session(
             "Codex",
             "/tmp/proj",
             Some(crate::agent_launcher::TerminalAgent::Codex),
             "6b030d25-d996-45cb-a270-f1d9c2a0610f",
         );
-        assert_eq!(thread.session_id, None);
+        assert_eq!(
+            thread.session_id.as_deref(),
+            Some("6b030d25-d996-45cb-a270-f1d9c2a0610f")
+        );
+        // And a fresh Codex thread still gets none: its id is reported.
+        let fresh = Thread::new_terminal(
+            "Codex",
+            "/tmp/proj",
+            Some(crate::agent_launcher::TerminalAgent::Codex),
+        );
+        assert_eq!(fresh.session_id, None);
 
         let bare = Thread::new_terminal_for_session(
             "Shell",
