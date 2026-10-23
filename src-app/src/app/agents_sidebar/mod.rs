@@ -526,7 +526,11 @@ impl SplitlaneApp {
         self.thread_row(
             ThreadRowArgs {
                 branch_word,
-                tooltip: session_tooltip_for(self.session_branch_tooltip(ws_idx, thread), thread),
+                tooltip: session_tooltip_for(
+                    self.session_branch_tooltip(ws_idx, thread),
+                    self.session_worktree_of(ws_idx, thread).cloned(),
+                    thread,
+                ),
                 target,
                 thread_id: thread.id,
                 title: thread.title.clone(),
@@ -1894,6 +1898,7 @@ enum RowBranchWord {
 /// neither says nothing on hover, as before.
 fn session_tooltip_for(
     branch: Option<String>,
+    worktree: Option<crate::workspace::worktree::ManagedWorktree>,
     thread: &crate::project::Thread,
 ) -> Option<session_tooltip::RowTooltip> {
     use crate::agent_launcher::TerminalAgent;
@@ -1916,7 +1921,12 @@ fn session_tooltip_for(
         Some(branch) => branch.lines().map(str::to_string).collect(),
         None => vec![thread.title.clone()],
     };
-    Some(session_tooltip::RowTooltip { head, prompts })
+    Some(session_tooltip::RowTooltip {
+        head,
+        // Counted only for a row that names its branch; a failed one has none.
+        worktree: worktree.filter(|_| thread.worktree_failed.is_none()),
+        prompts,
+    })
 }
 
 struct ThreadRowArgs {

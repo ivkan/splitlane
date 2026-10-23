@@ -39,6 +39,8 @@ pub(crate) enum PromptSource {
 pub(crate) struct RowTooltip {
     /// The title, then the branch and port when the session has its own.
     pub(crate) head: Vec<String>,
+    /// The session's own worktree, whose work is counted under the branch.
+    pub(crate) worktree: Option<crate::workspace::worktree::ManagedWorktree>,
     pub(crate) prompts: Option<PromptSource>,
 }
 
@@ -49,8 +51,12 @@ pub(crate) fn row_tooltip(tip: RowTooltip) -> impl Fn(&mut Window, &mut App) -> 
 struct SessionTooltip {
     head: Vec<gpui::SharedString>,
     outline: Vec<OutlineLine>,
+    /// What the branch holds - `3 changed files · 2 commits` - once counted,
+    /// and only when it holds something.
+    work: Option<gpui::SharedString>,
     /// Dropped with the card, which cancels a read nobody is waiting for.
     _read: Option<Task<()>>,
+    _count: Option<Task<()>>,
 }
 
 impl SessionTooltip {
@@ -82,10 +88,28 @@ impl SessionTooltip {
                 }
             })
         });
+        let count = tip.worktree.map(|wt| {
+            cx.spawn(async move |this, cx| {
+                let work =
+                    smol::unblock(move || crate::workspace::session_branch::branch_work(&wt)).await;
+                let Some(summary) = work
+                    .ok()
+                    .and_then(|work| crate::workspace::session_branch::work_summary(&work))
+                else {
+                    return;
+                };
+                let _ = this.update(cx, |tooltip, cx| {
+                    tooltip.work = Some(summary.into());
+                    cx.notify();
+                });
+            })
+        });
         Self {
             head: tip.head.into_iter().map(Into::into).collect(),
             outline,
+            work: None,
             _read: read,
+            _count: count,
         }
     }
 }
@@ -95,13 +119,18 @@ impl Render for SessionTooltip {
         let theme = crate::theme::active_theme();
         let ui = crate::theme::ui_colors();
         let now = chrono::Local::now();
-        let head = self.head.iter().enumerate().map(|(i, line)| {
+        // The title, the branch, what it holds, then the port.
+        let mut lines = self.head.clone();
+        if let Some(work) = &self.work {
+            lines.insert(lines.len().min(2), work.clone());
+        }
+        let head = lines.into_iter().enumerate().map(|(i, line)| {
             div()
                 .text_color(if i == 0 { ui.text } else { ui.text_tertiary })
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .child(line.clone())
+                .child(line)
         });
         let prompts = (!self.outline.is_empty()).then(|| {
             div()
