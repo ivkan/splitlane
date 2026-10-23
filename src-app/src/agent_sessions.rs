@@ -749,8 +749,16 @@ pub(crate) fn cwd_matches(recorded: &str, scanned: &str) -> bool {
 }
 
 /// Whether `recorded` is a directory strictly inside `dir`, with the same
-/// case and separator rules as [`cwd_matches`].
+/// case and separator rules as [`cwd_matches`]. A path that climbs with `..`
+/// is never inside: it is compared as text, and `dir/../elsewhere` would
+/// pass.
 pub(crate) fn cwd_within(recorded: &str, dir: &str) -> bool {
+    if Path::new(recorded)
+        .components()
+        .any(|part| part == std::path::Component::ParentDir)
+    {
+        return false;
+    }
     #[cfg(windows)]
     fn normalize(path: &str) -> String {
         trim_trailing_path_separators(path)
@@ -1719,6 +1727,10 @@ mod tests {
             "/work/app.worktrees"
         ));
         assert!(!cwd_within("/work/app", "/work/app.worktrees"));
+        assert!(!cwd_within(
+            "/work/app.worktrees/../../etc",
+            "/work/app.worktrees"
+        ));
     }
 
     #[cfg(windows)]

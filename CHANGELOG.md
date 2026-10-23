@@ -22,7 +22,9 @@ Notable changes to Splitlane are recorded here. The format follows
   launcher, and once the worktree was removed nothing listed it. Both now
   list it, from Splitlane's `<project>.worktrees` and from Claude Code's own
   `.claude/worktrees`. Opening it resumes it in the worktree while that
-  exists, and in the project folder after it was removed.
+  exists, and in the project folder after it was removed. An open surface
+  whose worktree is removed moves to the project folder the next time it
+  starts, and resumes its session there.
 
 ## [0.2.12] - 2026-10-21
 

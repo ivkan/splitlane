@@ -665,6 +665,15 @@ impl SplitlaneApp {
         // for a surface that launches something: a bare shell gets no command
         // and is not starting anything.
         let launches = thread.terminal_agent.is_some();
+        // A worktree removed while the app ran, under a surface not showing.
+        if let crate::project::AgentsTarget::Thread { ws_idx, thread_idx } = target
+            && let Some(container) = self.workspaces.get_mut(ws_idx)
+            && let Some(thread) = container.threads.get_mut(thread_idx)
+            && thread.leave_removed_worktree(&container.cwd)
+        {
+            self.save_session(cx);
+        }
+        let thread = self.thread_for_target(target)?;
         let view = Self::build_agent_terminal_view(thread, &self.cached_config, cx);
         if launches {
             self.mark_surface_starting(thread_id, &view, cx);

@@ -645,6 +645,25 @@ impl Thread {
         Self::new_terminal_inner(title, cwd, terminal_agent, None)
     }
 
+    /// Move a surface whose worktree is gone into the project folder, keeping
+    /// where its transcript is filed. Returns whether it moved.
+    ///
+    /// The session host refuses a directory that is not there, and the
+    /// window's own terminal starts somewhere else without saying so; either
+    /// way the agent would not resume. Only a worktree of `project_cwd` is
+    /// moved: any other missing directory is left to fail as before.
+    pub fn leave_removed_worktree(&mut self, project_cwd: &str) -> bool {
+        let in_worktree = crate::agent_sessions::worktree_roots(project_cwd)
+            .iter()
+            .any(|root| crate::agent_sessions::cwd_within(&self.cwd, root));
+        if !in_worktree || std::path::Path::new(&self.cwd).is_dir() {
+            return false;
+        }
+        let gone = std::mem::replace(&mut self.cwd, project_cwd.to_string());
+        self.transcript_cwd.get_or_insert(gone);
+        true
+    }
+
     /// [`Self::new_terminal`] bound to a session the CLI already owns, rather
     /// than a freshly minted one. Backs "open a session from history": the
     /// thread adopts the picked `session_id`, so its first PTY mount resolves
@@ -1529,6 +1548,35 @@ mod tests {
         let plain = Thread::new_terminal("T", "/home/me", None);
         let json = serde_json::to_value(thread_to_surface(&plain, None)).expect("serialises");
         assert!(json["agent"].get("transcript_cwd").is_none());
+    }
+
+    #[test]
+    fn a_surface_in_a_removed_worktree_moves_to_the_project_and_keeps_its_transcript() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("app").to_string_lossy().into_owned();
+        let live = tmp.path().join("app.worktrees").join("live");
+        std::fs::create_dir_all(&live).expect("mkdir");
+        let live = live.to_string_lossy().into_owned();
+        let gone = tmp
+            .path()
+            .join("app.worktrees")
+            .join("gone")
+            .to_string_lossy()
+            .into_owned();
+        let elsewhere = tmp.path().join("missing").to_string_lossy().into_owned();
+
+        let mut moved = Thread::new_terminal("T", gone.clone(), None);
+        assert!(moved.leave_removed_worktree(&project));
+        assert_eq!(moved.cwd, project);
+        assert_eq!(moved.transcript_cwd.as_deref(), Some(gone.as_str()));
+
+        let mut stays = Thread::new_terminal("T", live.clone(), None);
+        assert!(!stays.leave_removed_worktree(&project));
+        assert_eq!(stays.cwd, live);
+
+        let mut foreign = Thread::new_terminal("T", elsewhere.clone(), None);
+        assert!(!foreign.leave_removed_worktree(&project));
+        assert_eq!(foreign.cwd, elsewhere);
     }
 
     #[test]
