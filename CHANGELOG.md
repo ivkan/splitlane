@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-10-23
+
 ### Added
 
 - **Each agent session in its own branch.** In a git repository, an agent

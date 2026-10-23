@@ -63,6 +63,18 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.13" date="2026-10-23">
+      <description>
+        <p>Each agent session started in a git repository gets its own branch
+        and worktree, so two sessions never edit the same checkout. Closing a
+        session with work in its branch asks whether to keep it, and saves a
+        snapshot before deleting it. Hovering a session's row lists what you
+        wrote in it, and the History tab searches everything you wrote in old
+        sessions, including those that ran in a worktree. Codex and other
+        sessions opened from history resume instead of starting empty, and the
+        theme follows the OS appearance until you choose one.</p>
+      </description>
+    </release>
     <release version="0.2.12" date="2026-10-21">
       <description>
         <p>A phone follows the agent sessions on the computer and answers them,
