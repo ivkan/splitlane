@@ -27,6 +27,10 @@ Notable changes to Splitlane are recorded here. The format follows
   worktree is slow to make, and `no branch`, with **Open without branch**,
   when it cannot be made; hovering the row names its branch and port.
 
+- **A session's row lists what you wrote in it.** Hovering a Claude Code or
+  Codex session's row shows your messages in it, one line each with when you
+  sent them: the first and the last four of a long session. See
+  [Agents and their status](docs/user/index.md#agents-and-their-status).
 - **Search what you wrote in old sessions.** The palette's History tab now
   also matches a query against everything you wrote in each Claude Code and
   Codex session, not only its name and first prompt, and shows the line it

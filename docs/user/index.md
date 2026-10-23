@@ -74,6 +74,12 @@ depends on the agent:
   Splitlane can read, so it only knows the process is running and when it
   exits.
 
+Hovering a Claude Code or Codex session's row lists what you wrote in it,
+each message on one line with when you sent it: all of them for a short
+session, the first and the last four for a longer one. It is your own words
+read from the session's record, not a summary, so it shows where a session
+got to when its title only says where it started.
+
 A run that finished while you were not looking stays marked until its pane is
 on screen. `⌥⇥` (`Ctrl+Shift+J`) jumps to the next session waiting for you.
 

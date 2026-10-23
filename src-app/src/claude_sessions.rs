@@ -470,6 +470,13 @@ pub(crate) fn prompt_text(value: &serde_json::Value) -> Option<String> {
     if person_mark(value)? != PersonMark::Prompt {
         return None;
     }
+    // The summary the CLI writes when it compacts a session is filed as the
+    // person's record, and it is the longest one in the file. It restates the
+    // session in the CLI's words; a search would find every topic in it, and
+    // a list of what the person wrote would show it as theirs.
+    if value.get("isCompactSummary").and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
     let content = value.get("message")?.get("content")?;
     let text = match content {
         serde_json::Value::String(text) => text.clone(),
