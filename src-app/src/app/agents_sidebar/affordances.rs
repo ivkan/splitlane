@@ -78,11 +78,22 @@ impl SplitlaneApp {
         cx: &mut Context<Self>,
     ) {
         self.agents_view.agents_menu_open = None;
+        self.agents_view.delete_branch = None;
+        self.agents_view.delete_branch_asking = None;
+        // A session that is the last one in its own branch is asked about
+        // that branch, which takes a read of git first.
+        if let AgentsDeleteTarget::Thread { thread_id } = target
+            && self.ask_about_session_branch(thread_id, cx)
+        {
+            return;
+        }
         self.agents_view.agents_confirm_delete = Some(target);
         cx.notify();
     }
 
     pub(crate) fn cancel_agents_confirm_delete(&mut self, cx: &mut Context<Self>) {
+        self.agents_view.delete_branch = None;
+        self.agents_view.delete_branch_asking = None;
         if self.agents_view.agents_confirm_delete.take().is_some() {
             cx.notify();
         }
@@ -455,6 +466,12 @@ impl SplitlaneApp {
                     return;
                 }
             };
+        // Selected when its worktree is made, since its terminal cannot start
+        // before.
+        if self.give_session_own_worktree(ws_idx, new_thread_id, cx) {
+            self.save_session(cx);
+            return;
+        }
         if let Some(project) = self.workspaces.get(ws_idx)
             && let Some(thread_idx) = project.threads.iter().position(|t| t.id == new_thread_id)
         {
@@ -514,11 +531,15 @@ impl SplitlaneApp {
     /// open in this project the existing thread is selected instead of a
     /// second one being created: two PTYs sharing one transcript is precisely
     /// what the forced session id is there to prevent.
+    ///
+    /// `session_cwd` is where the session started, for one that ran in a
+    /// worktree of the project; see `add_terminal_thread_for_session`.
     pub(crate) fn open_session_as_thread_in(
         &mut self,
         ws_idx: usize,
         agent: crate::agent_launcher::TerminalAgent,
         session_id: &str,
+        session_cwd: Option<&str>,
         title: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
@@ -536,6 +557,7 @@ impl SplitlaneApp {
             title,
             Some(agent),
             session_id,
+            session_cwd,
             cx,
         ) {
             Ok(id) => id,
@@ -1027,6 +1049,7 @@ impl SplitlaneApp {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        self.agents_view.delete_branch = None;
         let Some(target) = self.agents_view.agents_confirm_delete.take() else {
             return;
         };

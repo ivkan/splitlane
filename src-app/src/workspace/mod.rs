@@ -11,6 +11,7 @@
 pub(crate) mod git;
 pub mod pid_resolve;
 mod ports;
+pub mod session_branch;
 pub mod surface_naming;
 pub mod worktree;
 
@@ -211,6 +212,13 @@ pub struct Workspace {
     /// other per-project choice, and for the same reason: a choice a person
     /// made once must not be re-asked on the next launch.
     pub worktree_setup: Option<String>,
+    /// Whether an agent session a person starts here gets a worktree and a
+    /// branch of its own. `None` is the default, which is yes for a git
+    /// repository: deciding before every session whether it will touch code
+    /// is the work this saves. A person turns it off for a project whose
+    /// work goes straight to its main branch. Persisted beside
+    /// [`Self::worktree_setup`].
+    pub session_worktrees: Option<bool>,
     /// Agent surfaces parked on this container - what the Agents rail used to
     /// call threads. They are not in [`Self::root`]: a thread is shown
     /// full-area, never inside the slot tree, so it has no leaf to live in.
@@ -290,6 +298,7 @@ impl Workspace {
             files_expanded: Vec::new(),
             managed_worktrees: Vec::new(),
             worktree_setup: None,
+            session_worktrees: None,
             threads: Vec::new(),
             diff_surface: None,
             is_expanded: true,

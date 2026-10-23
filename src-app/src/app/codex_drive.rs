@@ -156,6 +156,8 @@ impl SplitlaneApp {
         let (title, body, confirm_label) = confirm_copy();
         crate::app::confirm_dialog::render_confirm_dialog(
             crate::app::confirm_dialog::ConfirmDialog {
+                body_code: None,
+                note: None,
                 id: "codex-drive-confirm",
                 title,
                 body,

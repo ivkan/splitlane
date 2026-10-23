@@ -558,6 +558,22 @@ pub struct Thread {
     /// yet is attached to when it gets one. `None` for a surface whose
     /// terminal the window owns.
     pub host_session: Option<String>,
+    /// The directory this surface's agent session started in, when it is not
+    /// [`Self::cwd`]: the session ran in a worktree that is gone, and its CLI
+    /// keeps the transcript under the worktree's path. Cleared when the
+    /// surface moves to a session of its own. Persisted.
+    pub transcript_cwd: Option<String>,
+    /// The worktree this new session is to run in is still being made. Its
+    /// terminal is not started until it is, or the agent would start in the
+    /// project folder. Transient: a restart finds the worktree made or not
+    /// and the surface where it is.
+    pub worktree_pending: Option<std::time::Instant>,
+    /// Why its worktree could not be made. The session does not start in the
+    /// project folder on its own: a person who thinks their session is
+    /// isolated must not find it editing the main checkout. It waits, with a
+    /// red dot and `no branch`, until they choose to open it without one.
+    /// Transient, like [`Self::worktree_pending`].
+    pub worktree_failed: Option<String>,
     /// The terminal's count of keyboard submits when this session's opener
     /// last wrote text into it, or `None` if it never has.
     ///
@@ -620,6 +636,9 @@ impl Thread {
             opened_by: None,
             opened_by_script: None,
             host_session: None,
+            transcript_cwd: None,
+            worktree_pending: None,
+            worktree_failed: None,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -637,6 +656,25 @@ impl Thread {
         terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
     ) -> Self {
         Self::new_terminal_inner(title, cwd, terminal_agent, None)
+    }
+
+    /// Move a surface whose worktree is gone into the project folder, keeping
+    /// where its transcript is filed. Returns whether it moved.
+    ///
+    /// The session host refuses a directory that is not there, and the
+    /// window's own terminal starts somewhere else without saying so; either
+    /// way the agent would not resume. Only a worktree of `project_cwd` is
+    /// moved: any other missing directory is left to fail as before.
+    pub fn leave_removed_worktree(&mut self, project_cwd: &str) -> bool {
+        let in_worktree = crate::agent_sessions::worktree_roots(project_cwd)
+            .iter()
+            .any(|root| crate::agent_sessions::cwd_within(&self.cwd, root));
+        if !in_worktree || std::path::Path::new(&self.cwd).is_dir() {
+            return false;
+        }
+        let gone = std::mem::replace(&mut self.cwd, project_cwd.to_string());
+        self.transcript_cwd.get_or_insert(gone);
+        true
     }
 
     /// [`Self::new_terminal`] bound to a session the CLI already owns, rather
@@ -719,6 +757,9 @@ impl Thread {
             opened_by: None,
             opened_by_script: None,
             host_session: None,
+            transcript_cwd: None,
+            worktree_pending: None,
+            worktree_failed: None,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -776,6 +817,7 @@ pub fn thread_to_surface(t: &Thread, slot: Option<usize>) -> ProjectSurface {
             opened_by: t.opened_by.clone(),
             opened_by_script: t.opened_by_script.clone(),
             host_session: t.host_session.clone(),
+            transcript_cwd: t.transcript_cwd.clone(),
         }),
     }
 }
@@ -924,6 +966,9 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         opened_by: payload.opened_by.clone(),
         opened_by_script: payload.opened_by_script.clone(),
         host_session: payload.host_session.clone(),
+        transcript_cwd: payload.transcript_cwd.clone(),
+        worktree_pending: None,
+        worktree_failed: None,
         opener_wrote_at: None,
         submits_at_turn_end: None,
         turn_began_unprompted: false,
@@ -1282,6 +1327,7 @@ mod tests {
             managed_worktrees: Vec::new(),
             preferred_agent: None,
             worktree_setup: None,
+            session_worktrees: None,
             group: None,
         }
     }
@@ -1307,6 +1353,7 @@ mod tests {
                 opened_by: None,
                 opened_by_script: None,
                 host_session: None,
+                transcript_cwd: None,
             }),
         }
     }
@@ -1498,6 +1545,64 @@ mod tests {
         let plain = Thread::new_terminal("T", "/home/me", None);
         let json = serde_json::to_value(thread_to_surface(&plain, None)).expect("serialises");
         assert!(json["agent"].get("opened_by").is_none());
+    }
+
+    /// A session resumed after its worktree was removed reads its transcript
+    /// from the worktree's project directory, before and after a restart.
+    #[test]
+    fn a_transcript_filed_under_a_removed_worktree_is_found_after_restore() {
+        let mut thread = Thread::new_terminal_for_session(
+            "T",
+            "/work/app",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+            "11111111-1111-4111-8111-111111111111",
+        );
+        thread.transcript_cwd = Some("/work/app.worktrees/topic".to_string());
+        let restored = thread_from_surface(&thread_to_surface(&thread, None)).expect("restores");
+        assert_eq!(
+            restored.transcript_cwd.as_deref(),
+            Some("/work/app.worktrees/topic")
+        );
+        let path = crate::claude_sessions::transcript_path(&restored).expect("a path");
+        assert_eq!(
+            path.parent().and_then(|dir| dir.file_name()),
+            Some(std::ffi::OsStr::new(&crate::claude_sessions::slug_for_cwd(
+                "/work/app.worktrees/topic"
+            )))
+        );
+        // And a surface that never left its own folder writes no key at all.
+        let plain = Thread::new_terminal("T", "/home/me", None);
+        let json = serde_json::to_value(thread_to_surface(&plain, None)).expect("serialises");
+        assert!(json["agent"].get("transcript_cwd").is_none());
+    }
+
+    #[test]
+    fn a_surface_in_a_removed_worktree_moves_to_the_project_and_keeps_its_transcript() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("app").to_string_lossy().into_owned();
+        let live = tmp.path().join("app.worktrees").join("live");
+        std::fs::create_dir_all(&live).expect("mkdir");
+        let live = live.to_string_lossy().into_owned();
+        let gone = tmp
+            .path()
+            .join("app.worktrees")
+            .join("gone")
+            .to_string_lossy()
+            .into_owned();
+        let elsewhere = tmp.path().join("missing").to_string_lossy().into_owned();
+
+        let mut moved = Thread::new_terminal("T", gone.clone(), None);
+        assert!(moved.leave_removed_worktree(&project));
+        assert_eq!(moved.cwd, project);
+        assert_eq!(moved.transcript_cwd.as_deref(), Some(gone.as_str()));
+
+        let mut stays = Thread::new_terminal("T", live.clone(), None);
+        assert!(!stays.leave_removed_worktree(&project));
+        assert_eq!(stays.cwd, live);
+
+        let mut foreign = Thread::new_terminal("T", elsewhere.clone(), None);
+        assert!(!foreign.leave_removed_worktree(&project));
+        assert_eq!(foreign.cwd, elsewhere);
     }
 
     #[test]

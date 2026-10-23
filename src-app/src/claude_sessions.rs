@@ -462,6 +462,35 @@ fn person_mark(value: &serde_json::Value) -> Option<PersonMark> {
         .then_some(PersonMark::Prompt)
 }
 
+/// What a person wrote in one transcript record, for searching: the text of a
+/// prompt, every text block of it, and nothing for a record [`person_mark`]
+/// does not call a prompt. An image or a document sent alone has no text and
+/// gives nothing.
+pub(crate) fn prompt_text(value: &serde_json::Value) -> Option<String> {
+    if person_mark(value)? != PersonMark::Prompt {
+        return None;
+    }
+    // The summary the CLI writes when it compacts a session is filed as the
+    // person's record, and it is the longest one in the file. It restates the
+    // session in the CLI's words; a search would find every topic in it, and
+    // a list of what the person wrote would show it as theirs.
+    if value.get("isCompactSummary").and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    let content = value.get("message")?.get("content")?;
+    let text = match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// Read the last `window` bytes of a `len`-byte transcript for the newest
 /// answer.
 ///
@@ -1497,7 +1526,9 @@ pub fn transcript_path(thread: &crate::project::Thread) -> Option<PathBuf> {
     if !crate::agent_sessions::is_valid_session_id(session_id) {
         return None;
     }
-    let dir = project_dir_for_cwd(&thread.cwd)?;
+    // A session resumed after its worktree was removed is still written to
+    // the file the CLI filed under the worktree.
+    let dir = project_dir_for_cwd(thread.transcript_cwd.as_deref().unwrap_or(&thread.cwd))?;
     Some(dir.join(format!("{session_id}.jsonl")))
 }
 
@@ -1625,6 +1656,61 @@ pub fn read_sessions_for_cwd_with_omitted(cwd: &str) -> (Vec<SessionMeta>, usize
         );
     }
     (sessions, omitted)
+}
+
+/// Sessions whose first recorded cwd lies inside one of `dirs` - a project's
+/// worktree folders ([`crate::agent_sessions::worktree_roots`]).
+///
+/// The CLI files a session under the slug of the directory it started in, so
+/// every directory below `dir` slugs to a name that begins with `dir`'s own
+/// slug and a `-`. That prefix only narrows which project directories are
+/// opened: the slug is lossy (`/a/b.c` and `/a/b/c` share one), so each
+/// session is still kept only if its recorded cwd is really inside `dir`.
+///
+/// A session resumed from the project folder after its worktree was removed
+/// keeps being written to its file here, and its first line still names the
+/// worktree, so it stays in this read and out of the project folder's.
+///
+/// **Blocking I/O** - call from inside `smol::unblock`.
+pub fn read_sessions_within(dirs: &[String]) -> Vec<SessionMeta> {
+    match crate::claude_pid_state::claude_config_dir() {
+        Some(root) => read_sessions_within_projects(&root.join("projects"), dirs),
+        None => Vec::new(),
+    }
+}
+
+fn read_sessions_within_projects(projects: &Path, dirs: &[String]) -> Vec<SessionMeta> {
+    let prefixes: Vec<String> = dirs
+        .iter()
+        .map(|dir| format!("{}-", slug_for_cwd(normalize_cwd_for_slug(dir))))
+        .collect();
+    let Ok(entries) = fs::read_dir(projects) else {
+        return Vec::new();
+    };
+    let filter = crate::agent_sessions::CwdFilter::Within(dirs);
+    let sessions = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            prefixes
+                .iter()
+                .any(|prefix| name.starts_with(prefix.as_str()))
+        })
+        .filter_map(|entry| fs::read_dir(entry.path()).ok())
+        .flat_map(|files| files.flatten())
+        .filter_map(|file| {
+            let path = file.path();
+            if !is_jsonl_file(&path) {
+                return None;
+            }
+            read_session_meta(&path).filter(|meta| filter.admits(&meta.cwd))
+        });
+    crate::agent_sessions::collect_recent_sessions(
+        sessions,
+        crate::agent_sessions::SIDEBAR_SESSION_RETAINED_PER_SOURCE,
+    )
+    .0
 }
 
 /// Like [`read_sessions_for_cwd`] but the retained
@@ -1955,6 +2041,7 @@ fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta>
         git_branch: envelope.git_branch,
         summary,
         first_prompt,
+        transcript: Some(path.to_path_buf()),
         model,
         usage: saw_usage.then_some(usage),
     })
@@ -4210,6 +4297,7 @@ mod tests {
             git_branch: String::new(),
             summary: None,
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }];
@@ -4276,5 +4364,41 @@ mod tests {
             read_session_meta(&path).is_none(),
             "an oversized line must be skipped, not parsed"
         );
+    }
+
+    /// A session file as Claude Code writes it, started in `cwd`.
+    fn write_claude_session(projects: &Path, cwd: &str, id: &str) {
+        let dir = projects.join(slug_for_cwd(cwd));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join(format!("{id}.jsonl")),
+            format!(
+                r#"{{"type":"user","cwd":"{cwd}","sessionId":"{id}","timestamp":"2026-10-23T10:00:00.000Z","uuid":"u1","message":{{"role":"user","content":"look at the daily notes"}}}}"#
+            ) + "\n",
+        )
+        .expect("write");
+    }
+
+    #[test]
+    fn sessions_of_a_projects_worktrees_are_read_and_others_are_not() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let projects = tmp.path().join("projects");
+        let a = "11111111-1111-4111-8111-111111111111";
+        let b = "22222222-2222-4222-8222-222222222222";
+        let c = "33333333-3333-4333-8333-333333333333";
+        let d = "44444444-4444-4444-8444-444444444444";
+        write_claude_session(&projects, "/work/app.worktrees/topic", a);
+        write_claude_session(&projects, "/work/app/.claude/worktrees/quick", b);
+        // The project folder itself is the cwd read's, not this one's.
+        write_claude_session(&projects, "/work/app", c);
+        // Slugs to the same prefix as a worktree, and is not one.
+        write_claude_session(&projects, "/work/app/worktrees-topic", d);
+        let roots = crate::agent_sessions::worktree_roots("/work/app");
+        let mut ids: Vec<String> = read_sessions_within_projects(&projects, &roots)
+            .into_iter()
+            .map(|meta| meta.session_id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![a.to_string(), b.to_string()]);
     }
 }

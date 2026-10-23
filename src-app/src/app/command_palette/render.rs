@@ -118,7 +118,7 @@ impl SplitlaneApp {
             .border_b_1()
             .border_color(ui.border);
 
-        for tab in PaletteTab::ALL {
+        for tab in self.command_palette_tabs() {
             let is_active = tab == active;
             let (border, background, text) = if is_active {
                 (ui.accent_border, ui.accent_surface, ui.accent)
@@ -147,13 +147,21 @@ impl SplitlaneApp {
         }
 
         if matches!(active, PaletteTab::History) {
+            let reading = self
+                .command_palette
+                .as_ref()
+                .is_some_and(|state| state.history_prompts_pending());
             row = row.child(div().flex_1().min_w_0()).child(
                 div()
                     .flex_none()
                     .font_family(tok::font::MONO)
                     .text_size(tok::mono::LABEL)
                     .text_color(ui.faint)
-                    .child("sorted by last activity"),
+                    .child(if reading {
+                        "reading what you wrote\u{2026}"
+                    } else {
+                        "sorted by last activity"
+                    }),
             );
         }
 
@@ -186,6 +194,14 @@ impl SplitlaneApp {
                         .is_some_and(|state| state.history_loading()) =>
                 {
                     "Reading the agents' session stores…"
+                }
+                PaletteTab::History
+                    if self
+                        .command_palette
+                        .as_ref()
+                        .is_some_and(|state| state.history_prompts_pending()) =>
+                {
+                    "No session's name matches. Still reading what you wrote in them…"
                 }
                 _ => "Nothing matches.",
             };
@@ -220,6 +236,10 @@ impl SplitlaneApp {
             PaletteItem::Surface { group, .. } => group.clone(),
             _ => None,
         };
+        let hit = match item {
+            PaletteItem::History { hit, .. } => hit.clone(),
+            _ => None,
+        };
         // `list_selection`, not `subtle`: `subtle` is what hover paints, so
         // the row the arrows are on and a row the pointer happens to rest over
         // used to be the same colour.
@@ -247,9 +267,7 @@ impl SplitlaneApp {
                 )
             })
             .flex()
-            .flex_row()
-            .items_center()
-            .gap(tok::space::MD)
+            .flex_col()
             .px(tok::space::XL)
             .py(tok::space::XS)
             .text_size(tok::text::ROW)
@@ -273,42 +291,53 @@ impl SplitlaneApp {
             }))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_x_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(ui.text)
-                    .child(SharedString::from(label)),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(tok::space::MD)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_x_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(ui.text)
+                            .child(SharedString::from(label)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(200.))
+                            .truncate()
+                            .text_color(ui.muted)
+                            .child(SharedString::from(detail)),
+                    )
+                    .when_some(group, |row, group| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .max_w(px(120.))
+                                .truncate()
+                                .font_family(tok::font::MONO)
+                                .text_size(tok::mono::LABEL)
+                                .text_color(ui.dim)
+                                .child(SharedString::from(group)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(tok::font::MONO)
+                            .text_size(tok::mono::LABEL)
+                            .text_color(ui.dim)
+                            .child(SharedString::from(hint)),
+                    ),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .max_w(px(200.))
-                    .truncate()
-                    .text_color(ui.muted)
-                    .child(SharedString::from(detail)),
-            )
-            .when_some(group, |row, group| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .max_w(px(120.))
-                        .truncate()
-                        .font_family(tok::font::MONO)
-                        .text_size(tok::mono::LABEL)
-                        .text_color(ui.dim)
-                        .child(SharedString::from(group)),
-                )
-            })
-            .child(
-                div()
-                    .flex_none()
-                    .font_family(tok::font::MONO)
-                    .text_size(tok::mono::LABEL)
-                    .text_color(ui.dim)
-                    .child(SharedString::from(hint)),
-            )
+            // The whole width, not the name's column: the name shares its line
+            // with the project and the age, and a line cut there lost the very
+            // word it was found by.
+            .when_some(hit, |row, hit| row.child(prompt_hit_line(hit, ui)))
             .into_any_element()
     }
 
@@ -328,7 +357,7 @@ impl SplitlaneApp {
             PaletteItem::StopDriving { label, detail, .. } => {
                 (label.clone(), detail.clone(), String::new())
             }
-            PaletteItem::History { index } => {
+            PaletteItem::History { index, .. } => {
                 let Some(row) = self
                     .command_palette
                     .as_ref()
@@ -346,6 +375,27 @@ impl SplitlaneApp {
                     row.title.clone(),
                     detail,
                     format!("last active {}", relative_age(row.last_activity_secs)),
+                )
+            }
+            PaletteItem::Branch { index } => {
+                let Some(row) = self
+                    .command_palette
+                    .as_ref()
+                    .and_then(|state| state.branches.as_ref())
+                    .and_then(|rows| rows.get(*index))
+                else {
+                    return (String::new(), String::new(), String::new());
+                };
+                let what = match &row.item.kind {
+                    crate::workspace::session_branch::LeftKind::Branch { branch } => branch.clone(),
+                    crate::workspace::session_branch::LeftKind::Snapshot { .. } => {
+                        "snapshot".to_string()
+                    }
+                };
+                (
+                    row.item.title.clone(),
+                    format!("{} \u{b7} {what} \u{b7} {}", row.project, row.holds),
+                    relative_age(row.item.when_secs as i64),
                 )
             }
             PaletteItem::Output { index } => {
@@ -379,6 +429,54 @@ impl SplitlaneApp {
             ))
             .into_any_element()
     }
+}
+
+/// The line a History row was found by, under it: what the person wrote, with
+/// the query in the brighter of the two text colours. Brightness, not a hue -
+/// every hue here is a status - and the same two steps the row itself uses for
+/// name and detail.
+fn prompt_hit_line(hit: crate::prompt_index::PromptHit, ui: crate::theme::UiColors) -> AnyElement {
+    let more = match hit.prompts {
+        0 | 1 => None,
+        n => Some(format!("+{} more", n - 1)),
+    };
+    let start = hit.before.len();
+    let end = start + hit.matched.len();
+    let text = format!("{}{}{}", hit.before, hit.matched, hit.after);
+    div()
+        .min_w_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tok::space::SM)
+        .text_size(tok::text::CAPTION)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_x_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(ui.muted)
+                .child(gpui::StyledText::new(text).with_highlights([(
+                    start..end,
+                    gpui::HighlightStyle {
+                        color: Some(ui.text),
+                        ..Default::default()
+                    },
+                )])),
+        )
+        .when_some(more, |line, more| {
+            line.child(
+                div()
+                    .flex_none()
+                    .font_family(tok::font::MONO)
+                    .text_size(tok::mono::LABEL)
+                    .text_color(ui.dim)
+                    .child(more),
+            )
+        })
+        .into_any_element()
 }
 
 /// How long ago, in the coarsest unit that still says something. The design

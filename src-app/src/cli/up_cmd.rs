@@ -399,7 +399,7 @@ pub(super) fn execute_worktree_plan(plan: &WorktreePlan) -> Result<(), CliError>
         .map_err(|e| CliError::runtime(format!("pane {}: {e}", plan.pane_idx)))?;
 
     if plan.copy_env {
-        let copied = worktree::copy_env_files(&plan.repo_root, &plan.path);
+        let copied = worktree::copy_local_files(&plan.repo_root, &plan.path);
         if !copied.is_empty() {
             eprintln!(
                 "pane {}: copied {} into {}",

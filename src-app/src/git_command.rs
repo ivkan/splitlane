@@ -102,6 +102,37 @@ pub(crate) fn run(
     splitlane_process::run_with_timeout(command, deadline, stdout_cap)
 }
 
+/// [`run`] with extra environment, for the few commands that need one:
+/// writing a snapshot through an index of its own (`GIT_INDEX_FILE`), so the
+/// worktree's own index is never touched, and naming who made it.
+pub(crate) fn run_with_env(
+    profile: GitProfile,
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+    deadline: Duration,
+    stdout_cap: u64,
+) -> Result<BoundedOutput, ProcError> {
+    if args.first().is_none_or(|sub| sub.starts_with('-')) {
+        return Err(ProcError::Spawn(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "git arguments must start with the subcommand",
+        )));
+    }
+    let mut command = command(profile, dir, args);
+    if profile == GitProfile::Probe
+        && args
+            .first()
+            .is_some_and(|sub| FILTERING_SUBCOMMANDS.contains(sub))
+    {
+        neutralize_repository_filters(&mut command, dir)?;
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    splitlane_process::run_with_timeout(command, deadline, stdout_cap)
+}
+
 /// `args` starts with the subcommand: global options are this function's to
 /// add, so a caller cannot put one in front and hide the subcommand from it.
 fn command(profile: GitProfile, dir: &Path, args: &[&str]) -> Command {

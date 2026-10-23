@@ -7,6 +7,12 @@
 //! project directory; `CLAUDE.md` says never to do it on the GPUI main thread,
 //! and this does not.
 //!
+//! **A query also searches what the person wrote.** A session's title comes
+//! from its first prompt, so a session that moved on to other subjects could
+//! not be found by them. The rows show at once, matched on names; the prompts
+//! are read next, off this thread (`prompt_index`), and a row found by them
+//! carries the line it was found in.
+//!
 //! **Sorted by last activity, never by creation time.** The design is explicit
 //! about why: a session created months ago but used daily has to stay at the
 //! top, or it is unreachable in a list of 150+. `SessionMeta` already carries
@@ -19,9 +25,16 @@ use crate::agent_sessions::SessionAgent;
 
 use super::{CommandPaletteState, PaletteItem, PaletteTab};
 
-/// How many sessions the tab holds. A palette is a list you scan, not an
-/// archive you page through, and the query is the way past the cut.
+/// How many sessions the tab lists before anything is typed. A palette is a
+/// list you scan, not an archive you page through, and the query is the way
+/// past the cut - so the cut is applied to what is shown, not to what is held,
+/// or a query could never reach a session past it.
 const HISTORY_CAP: usize = 200;
+
+/// How many sessions' prompts are read before the list is updated. Small
+/// enough that the first answers come in a fraction of a second, large enough
+/// that the list is not redrawn once per file.
+const PROMPTS_PIECE: usize = 8;
 
 /// One row of the History tab.
 pub(crate) struct HistoryRow {
@@ -38,7 +51,15 @@ pub(crate) struct HistoryRow {
     pub(crate) ws_idx: usize,
     pub(crate) project: String,
     pub(crate) branch: String,
+    /// Where the session started: the project's folder, or one of its
+    /// worktrees.
+    pub(crate) cwd: String,
     pub(crate) last_activity_secs: i64,
+    /// The session's file, where the agent's store has one this app reads
+    /// prompts from.
+    pub(crate) transcript: Option<std::path::PathBuf>,
+    /// What the person wrote, once read.
+    pub(crate) prompts: Option<std::sync::Arc<crate::prompt_index::SessionPrompts>>,
 }
 
 impl SplitlaneApp {
@@ -66,7 +87,13 @@ impl SplitlaneApp {
                     let mut rows: Vec<HistoryRow> = Vec::new();
                     for (ws_idx, project, cwd) in containers {
                         for agent in &agents {
-                            for meta in crate::agent_sessions::read_sessions_for_cwd(*agent, &cwd) {
+                            // A session that ran in one of the project's
+                            // worktrees is filed under the worktree, and is
+                            // still the project's - removed worktree or not.
+                            let own = crate::agent_sessions::read_sessions_for_cwd(*agent, &cwd);
+                            let in_worktrees =
+                                crate::agent_sessions::read_worktree_sessions(*agent, &cwd);
+                            for meta in own.into_iter().chain(in_worktrees) {
                                 rows.push(HistoryRow {
                                     agent: *agent,
                                     title: meta
@@ -81,22 +108,65 @@ impl SplitlaneApp {
                                     ws_idx,
                                     project: project.clone(),
                                     branch: meta.git_branch,
+                                    cwd: meta.cwd,
                                     last_activity_secs: meta.last_activity_secs,
+                                    transcript: meta.transcript,
+                                    prompts: None,
                                 });
                             }
                         }
                     }
                     // The one ordering rule the design states in bold.
                     rows.sort_by_key(|row| std::cmp::Reverse(row.last_activity_secs));
-                    rows.truncate(HISTORY_CAP);
                     rows
                 })
                 .await;
+                let sources: Vec<_> = rows
+                    .iter()
+                    .map(|row| (row.agent, row.transcript.clone()))
+                    .collect();
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
                         app.apply_palette_history(generation, rows, cx);
                     })
                 });
+                // Second, so the list is on screen while this runs, and in
+                // pieces, newest sessions first, so the likeliest answers
+                // arrive first. The first open reads every transcript of every
+                // open project - seconds, on a machine with many - and after
+                // that only what was appended.
+                let keep: std::collections::HashSet<_> = sources
+                    .iter()
+                    .filter_map(|(_, path)| path.clone())
+                    .collect();
+                smol::unblock(move || crate::prompt_index::forget_all_but(&keep)).await;
+                let mut sources = sources.into_iter().enumerate().peekable();
+                while sources.peek().is_some() {
+                    let piece: Vec<_> = sources.by_ref().take(PROMPTS_PIECE).collect();
+                    let read = smol::unblock(move || {
+                        piece
+                            .into_iter()
+                            .map(|(index, (agent, path))| {
+                                let prompts =
+                                    path.map(|path| crate::prompt_index::prompts_of(agent, &path));
+                                (index, prompts)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                    let last = sources.peek().is_none();
+                    let wanted = cx
+                        .update(|cx| {
+                            this.update(cx, |app, cx| {
+                                app.apply_palette_history_prompts(generation, read, last, cx)
+                            })
+                        })
+                        .unwrap_or(false);
+                    // Closed, or opened again: nobody is waiting for the rest.
+                    if !wanted {
+                        break;
+                    }
+                }
             },
         )
         .detach();
@@ -115,12 +185,69 @@ impl SplitlaneApp {
             return;
         }
         state.history = Some(rows);
+        state.history_prompts_read = false;
         state.selected = 0;
         cx.notify();
     }
 
-    /// The rows the History tab shows for `needle`, filtered on name, project
-    /// and branch - the three fields the design names.
+    /// Hand one piece of read prompts to their rows. Returns whether the
+    /// palette still wants the rest.
+    fn apply_palette_history_prompts(
+        &mut self,
+        generation: u64,
+        piece: Vec<(
+            usize,
+            Option<std::sync::Arc<crate::prompt_index::SessionPrompts>>,
+        )>,
+        last: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self
+            .command_palette
+            .as_ref()
+            .is_none_or(|state| state.history_generation != generation)
+        {
+            return false;
+        }
+        // Rows found by what was just read can land above the one the arrows
+        // are on. The selection follows the session, not the position, or
+        // Enter would open a session the person never moved to.
+        let needle = self.command_palette_query_text(cx);
+        let selected_row = |app: &Self| {
+            let state = app.command_palette.as_ref()?;
+            match app.palette_history_items(&needle).get(state.selected) {
+                Some(PaletteItem::History { index, .. }) => Some(*index),
+                _ => None,
+            }
+        };
+        let was_on = selected_row(self);
+        let Some(state) = &mut self.command_palette else {
+            return false;
+        };
+        let Some(rows) = &mut state.history else {
+            return false;
+        };
+        for (index, prompts) in piece {
+            if let Some(row) = rows.get_mut(index) {
+                row.prompts = prompts;
+            }
+        }
+        state.history_prompts_read = last;
+        if let Some(was_on) = was_on {
+            let now_at = self.palette_history_items(&needle).iter().position(
+                |item| matches!(item, PaletteItem::History { index, .. } if *index == was_on),
+            );
+            if let (Some(now_at), Some(state)) = (now_at, &mut self.command_palette) {
+                state.selected = now_at;
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    /// The rows the History tab shows for `needle`: matched on name, project
+    /// and branch - the three fields the design names - and on what the
+    /// person wrote in the session.
     pub(crate) fn palette_history_items(&self, needle: &str) -> Vec<PaletteItem> {
         let Some(state) = &self.command_palette else {
             return Vec::new();
@@ -128,19 +255,28 @@ impl SplitlaneApp {
         let Some(rows) = &state.history else {
             return Vec::new();
         };
+        if needle.is_empty() {
+            return (0..rows.len().min(HISTORY_CAP))
+                .map(|index| PaletteItem::History { index, hit: None })
+                .collect();
+        }
+        let in_prompts = crate::prompt_index::normalize_query(needle);
         rows.iter()
             .enumerate()
-            .filter(|(_, row)| {
-                needle.is_empty()
-                    || row.title.to_lowercase().contains(needle)
+            .filter_map(|(index, row)| {
+                let hit = row
+                    .prompts
+                    .as_ref()
+                    .and_then(|prompts| prompts.find(&in_prompts));
+                let named = row.title.to_lowercase().contains(needle)
                     || row
                         .first_prompt
                         .as_deref()
                         .is_some_and(|p| p.to_lowercase().contains(needle))
                     || row.project.to_lowercase().contains(needle)
-                    || row.branch.to_lowercase().contains(needle)
+                    || row.branch.to_lowercase().contains(needle);
+                (named || hit.is_some()).then_some(PaletteItem::History { index, hit })
             })
-            .map(|(index, _)| PaletteItem::History { index })
             .collect()
     }
 
@@ -148,7 +284,7 @@ impl SplitlaneApp {
     /// that container. `SessionBinding::resolve` sees the adopted id already
     /// has a transcript and resumes it on the surface's first mount.
     pub(crate) fn resume_palette_history_row(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some((ws_idx, agent, session_id, title)) = self
+        let Some((ws_idx, agent, session_id, cwd, title)) = self
             .command_palette
             .as_ref()
             .and_then(|state| state.history.as_ref())
@@ -158,6 +294,7 @@ impl SplitlaneApp {
                     row.ws_idx,
                     row.agent.terminal_agent(),
                     row.session_id.clone(),
+                    row.cwd.clone(),
                     row.title.clone(),
                 )
             })
@@ -167,7 +304,7 @@ impl SplitlaneApp {
         // The palette closes without handing focus back: the surface it just
         // opened is where the user is going.
         self.command_palette = None;
-        self.open_session_as_thread_in(ws_idx, agent, &session_id, title, cx);
+        self.open_session_as_thread_in(ws_idx, agent, &session_id, Some(&cwd), title, cx);
         cx.notify();
     }
 }
@@ -182,5 +319,11 @@ impl CommandPaletteState {
     /// Whether the History tab is still waiting for its first read.
     pub(crate) fn history_loading(&self) -> bool {
         self.tab == PaletteTab::History && self.history.is_none()
+    }
+
+    /// Whether a query on the History tab may still find more, because what
+    /// the person wrote has not been read yet.
+    pub(crate) fn history_prompts_pending(&self) -> bool {
+        self.tab == PaletteTab::History && self.history.is_some() && !self.history_prompts_read
     }
 }

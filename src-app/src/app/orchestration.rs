@@ -2097,6 +2097,9 @@ impl SplitlaneApp {
             }
         });
         let session_key = opened_by_script.as_ref().map(|by| by.key.clone());
+        if let Caller::Pane(pane) = &caller {
+            self.inherit_opener_worktree(ws_idx, thread_id, pane.thread_id);
+        }
         if let Some(thread) = self.thread_by_id_mut(thread_id) {
             thread.opened_by = opened_by;
             thread.opened_by_script = opened_by_script;

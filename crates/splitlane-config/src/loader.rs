@@ -1430,6 +1430,7 @@ mod tests {
             managed_worktrees: Vec::new(),
             preferred_agent: None,
             worktree_setup: None,
+            session_worktrees: None,
             group: None,
         }
     }
@@ -1455,6 +1456,7 @@ mod tests {
                 opened_by: None,
                 opened_by_script: None,
                 host_session: None,
+                transcript_cwd: None,
             }),
         }
     }
