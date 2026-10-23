@@ -195,20 +195,34 @@ kept sessions live in the app's own process and survive none of these.
 - **From the rail.** Each project row has `+ agent` and `+ shell`, and
   `+ worktree` in a git repository whose sessions do not get their own branch.
 - **Each session in its own branch.** In a git repository, an agent session
-  you start gets its own worktree and branch, `splitlane/` and four
-  characters, made from the project's current branch in
-  `<repo>.worktrees/`. It takes about a third of a second, before the agent
-  starts. Sessions that another session opens work in their opener's
-  worktree. The project's setup command, if it has one, runs in the new
-  worktree beside the agent. When you close the session, its worktree is
-  removed if it holds nothing but committed files and copies nobody changed,
-  and its branch goes too if nothing was committed on it; otherwise Splitlane
-  keeps them and says so. Each worktree also gets ten ports of its own, the
+  you start gets its own worktree and branch, `splitlane/` and six
+  characters, made from the project's current branch in `<repo>.worktrees/`.
+  It usually takes about a third of a second, before the agent starts; past
+  half a second the session's row says `making branch…`. If the worktree
+  cannot be made, the row says `no branch` and the session waits: its menu
+  has **Open without branch** to start it in the project folder instead.
+  Sessions that another session opens work in their opener's worktree. The
+  project's setup command, if it has one, runs in the new worktree beside the
+  agent. Hovering a session's row shows its branch, the branch it was made
+  from and its port.
+- **Closing a session with its own branch.** When nothing in the branch is
+  new, the session's worktree and branch go with it. When something is, the
+  delete card says what (changed files, lines, and commits that are on no
+  other branch) and offers **Keep branch**, which leaves the branch and its
+  worktree for git and the palette, or **Delete everything**, which first
+  saves a snapshot: a commit holding the branch's commits and the worktree's
+  uncommitted files, kept for 30 days. Files git ignores are not in a
+  snapshot. The palette's **Branches** tab (`⌘K`, then `Tab`) lists the kept
+  branches and snapshots by session name; `Enter` opens a new session on one
+  (a snapshot comes back as uncommitted changes on a new branch), and `⌘⌫`
+  deletes a kept branch, snapshot first. The tab appears only when there is
+  something in it.
+- **Ports per session.** Each session worktree gets ten ports of its own, the
   first in `SPLITLANE_PORT` (from 4000 up), so two sessions of one project
   can each run a dev server: start it with that port, or write the port into
-  `.env` from the setup command. Turn this off for a project whose work goes
-  straight to its main branch with **New sessions get their own branch** in
-  the project's menu (right-click its row).
+  `.env` from the setup command. Turn branches per session off for a project
+  whose work goes straight to its main branch with **New sessions get their
+  own branch** in the project's menu (right-click its row).
 - **Worktrees.** `+ worktree` asks for a branch name, bases the new branch on
   the project's current branch and creates the checkout in
   `<repo>.worktrees/<branch>`. It can run a setup command (remembered for the

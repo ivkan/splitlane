@@ -1033,6 +1033,9 @@ struct AgentsViewState {
     /// happens only after the user confirms in the dialog. Still used by the
     /// context-menu "Delete" path; the hover-trash path uses
     pub(crate) agents_confirm_delete: Option<crate::app::agents_sidebar::AgentsDeleteTarget>,
+    /// The branch a session's delete card is about, when the session is the
+    /// last one in a worktree made for it - read before the card opens.
+    pub(crate) delete_branch: Option<crate::app::session_worktree::DeleteBranch>,
     /// Inline delete-confirm (ergonomics): the row whose trash icon was just
     /// clicked. While `Some`, that row's action cluster shows a red "Delete"
     /// button (click-to-confirm) instead of opening the confirmation dialog.
@@ -2604,6 +2607,7 @@ impl Render for SplitlaneApp {
             .on_action(cx.listener(Self::handle_open_launch_pad))
             .on_action(cx.listener(Self::handle_toggle_active_only))
             .on_action(cx.listener(Self::handle_open_running_sheet))
+            .on_action(cx.listener(Self::handle_open_branches))
             .on_action(cx.listener(Self::handle_new_worktree))
             .on_action(cx.listener(Self::handle_start_preset_1))
             .on_action(cx.listener(Self::handle_start_preset_2))

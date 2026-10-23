@@ -372,6 +372,83 @@ pub fn left_behind(repo_root: &Path, live: &[String]) -> Vec<LeftBehind> {
     out
 }
 
+/// The worktree record for a branch a session left behind: its worktree when
+/// one has it checked out, otherwise the path one would have.
+pub fn left_branch_worktree(repo_root: &Path, branch: &str) -> Result<ManagedWorktree, String> {
+    let path = worktree::list_worktrees(repo_root)?
+        .into_iter()
+        .find(|entry| entry.branch.as_deref() == Some(branch))
+        .map(|entry| entry.path)
+        .unwrap_or_else(|| worktree::worktree_dir(repo_root, branch));
+    Ok(ManagedWorktree {
+        path,
+        repo_root: repo_root.to_path_buf(),
+        branch: branch.to_string(),
+        teardown: TeardownPolicy::Auto,
+        base: None,
+        port: None,
+        from: None,
+    })
+}
+
+/// What a left-behind branch or snapshot holds, for its row:
+/// `2 commits · 4 changed files`.
+pub fn what_is_left(item: &LeftBehind) -> String {
+    let work = match &item.kind {
+        LeftKind::Branch { branch } => left_branch_worktree(&item.repo_root, branch)
+            .and_then(|wt| branch_work(&wt))
+            .unwrap_or_default(),
+        LeftKind::Snapshot { reference, .. } => {
+            let parent = format!("{reference}^");
+            let files = run_git(
+                GitProfile::Probe,
+                &item.repo_root,
+                &["diff", "--name-only", &parent, reference],
+                DEADLINE,
+            )
+            .map(|names| names.lines().filter(|l| !l.is_empty()).count())
+            .unwrap_or(0);
+            let commits = run_git(
+                GitProfile::Probe,
+                &item.repo_root,
+                &[
+                    "rev-list",
+                    "--count",
+                    &parent,
+                    "--not",
+                    "--branches",
+                    "--remotes",
+                ],
+                DEADLINE,
+            )
+            .ok()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0);
+            BranchWork {
+                changed_files: files,
+                commits,
+                ..BranchWork::default()
+            }
+        }
+    };
+    let mut parts = Vec::new();
+    match work.commits {
+        0 => {}
+        1 => parts.push("1 commit".to_string()),
+        n => parts.push(format!("{n} commits")),
+    }
+    match work.changed_files {
+        0 => {}
+        1 => parts.push("1 changed file".to_string()),
+        n => parts.push(format!("{n} changed files")),
+    }
+    if parts.is_empty() {
+        "nothing new".to_string()
+    } else {
+        parts.join(" \u{b7} ")
+    }
+}
+
 /// A worktree for a kept branch, so a new session can work on it again. The
 /// record carries no base: a branch with history is never deleted on close.
 pub fn reopen_branch(repo_root: &Path, branch: &str) -> Result<ManagedWorktree, String> {
@@ -389,6 +466,7 @@ pub fn reopen_branch(repo_root: &Path, branch: &str) -> Result<ManagedWorktree, 
             teardown: TeardownPolicy::Auto,
             base: None,
             port: None,
+            from: None,
         });
     }
     let path = worktree::worktree_dir(repo_root, branch);
@@ -401,6 +479,7 @@ pub fn reopen_branch(repo_root: &Path, branch: &str) -> Result<ManagedWorktree, 
         teardown: TeardownPolicy::Auto,
         base: None,
         port: None,
+        from: None,
     })
 }
 
@@ -440,20 +519,6 @@ pub fn restore_snapshot(repo_root: &Path, reference: &str) -> Result<ManagedWork
     );
     // Brought back with work on it: not a branch to drop quietly on close.
     Ok(ManagedWorktree { base: None, ..made })
-}
-
-/// Delete a snapshot for good.
-pub fn delete_snapshot(repo_root: &Path, reference: &str) -> Result<(), String> {
-    if !reference.starts_with(SNAPSHOT_REFS) {
-        return Err(format!("{reference} is not a snapshot"));
-    }
-    run_git(
-        GitProfile::UserAction,
-        repo_root,
-        &["update-ref", "-d", reference],
-        DEADLINE,
-    )
-    .map(|_| ())
 }
 
 #[cfg(test)]
@@ -541,7 +606,7 @@ mod tests {
         assert!(back.path.join("c.txt").is_file());
         assert_eq!(back.base, None, "restored work is never dropped quietly");
         assert!(
-            left_behind(&repo, &[back.branch.clone()]).is_empty(),
+            left_behind(&repo, std::slice::from_ref(&back.branch)).is_empty(),
             "the snapshot goes once it is back"
         );
         let _ = std::fs::remove_dir_all(repo.parent().expect("tmp"));
@@ -554,7 +619,7 @@ mod tests {
         let live = worktree::add_session_worktree(&repo).expect("made");
         describe_branch(&kept, "Search index");
 
-        let listed = left_behind(&repo, &[live.branch.clone()]);
+        let listed = left_behind(&repo, std::slice::from_ref(&live.branch));
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "Search index");
         assert_eq!(

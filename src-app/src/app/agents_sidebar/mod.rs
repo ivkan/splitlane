@@ -513,8 +513,19 @@ impl SplitlaneApp {
                 ws_idx,
                 thread_id: thread.id,
             });
+        let branch_word = if thread.worktree_failed.is_some() {
+            Some(RowBranchWord::Failed)
+        } else if thread.worktree_pending.is_some_and(|since| {
+            since.elapsed() >= crate::app::session_worktree::MAKING_BRANCH_AFTER
+        }) {
+            Some(RowBranchWord::Making)
+        } else {
+            None
+        };
         self.thread_row(
             ThreadRowArgs {
+                branch_word,
+                tooltip: self.session_branch_tooltip(ws_idx, thread),
                 target,
                 thread_id: thread.id,
                 title: thread.title.clone(),
@@ -1362,6 +1373,8 @@ impl SplitlaneApp {
     fn thread_row(&self, args: ThreadRowArgs, cx: &mut Context<Self>) -> gpui::AnyElement {
         let ThreadRowArgs {
             behind,
+            branch_word,
+            tooltip,
             target,
             thread_id,
             title,
@@ -1448,7 +1461,20 @@ impl SplitlaneApp {
             // every coloured signal in this interface has a word beside it and
             // every word has a colour. A failed run whose only evidence is a
             // red 6px dot is the case that rule exists to prevent.
-            .child(if unseen {
+            .child(if let Some(word) = branch_word {
+                div()
+                    .flex_none()
+                    .text_size(tok::mono::HINT)
+                    .text_color(match word {
+                        RowBranchWord::Making => ui.faint,
+                        RowBranchWord::Failed => ui.agent_error,
+                    })
+                    .child(match word {
+                        RowBranchWord::Making => "making branch\u{2026}",
+                        RowBranchWord::Failed => "no branch",
+                    })
+                    .into_any_element()
+            } else if unseen {
                 surface_row_news(news_word(status), ui)
             } else if let Some(tally) = opened
                 .as_ref()
@@ -1478,10 +1504,23 @@ impl SplitlaneApp {
             } else {
                 surface_row_meta(meta, ui)
             })
-            .child(if runs_command && !unseen {
-                command_dot(ui)
-            } else {
-                status_dot("rail-surface-row", Some(status), unseen, announcing, ui)
+            .child(match branch_word {
+                Some(RowBranchWord::Making) => status_dot(
+                    "rail-surface-row",
+                    Some(crate::project::ThreadStatus::Starting),
+                    false,
+                    None,
+                    ui,
+                ),
+                Some(RowBranchWord::Failed) => status_dot(
+                    "rail-surface-row",
+                    Some(crate::project::ThreadStatus::Failed),
+                    false,
+                    None,
+                    ui,
+                ),
+                None if runs_command && !unseen => command_dot(ui),
+                None => status_dot("rail-surface-row", Some(status), unseen, announcing, ui),
             })
             .into_any_element();
 
@@ -1492,7 +1531,10 @@ impl SplitlaneApp {
             ui,
         )
         .relative()
-        .children(bracket.map(|part| bracket_mark(part, tok::row::SESSION, ui)));
+        .children(bracket.map(|part| bracket_mark(part, tok::row::SESSION, ui)))
+        .when_some(tooltip.filter(|_| tooltips_ok), |row, tooltip| {
+            row.tooltip(crate::ui_primitives::text_tooltip(tooltip))
+        });
         let opened_count =
             opened.map(|opened| opened_counter(thread_id, opened, tooltips_ok, ui, cx));
 
@@ -1837,9 +1879,24 @@ struct SurfaceRowArgs {
     ui: crate::theme::UiColors,
 }
 
+/// What a session row says about its own branch, in place of its meta.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowBranchWord {
+    /// Being made for longer than goes unremarked.
+    Making,
+    /// Could not be made; the session waits.
+    Failed,
+}
+
 struct ThreadRowArgs {
     /// Loaded, but behind its pane's active tab (see `SurfaceRowArgs`).
     behind: bool,
+    /// Where the session's own branch stands, when that is what the row has
+    /// to say: still being made, or not made.
+    branch_word: Option<RowBranchWord>,
+    /// The row's hover text: the session's branch and port, or why it has no
+    /// branch.
+    tooltip: Option<String>,
     /// The unified selection target this row drives.
     target: crate::project::AgentsTarget,
     thread_id: u64,

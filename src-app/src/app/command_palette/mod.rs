@@ -26,6 +26,7 @@
 //! keyboard-only palette would leave a hidden-rail user with no mouse path at
 //! all.
 
+mod branches;
 mod history;
 mod output;
 mod render;
@@ -42,17 +43,23 @@ pub(crate) use output::OutputRow;
 pub(crate) enum PaletteTab {
     Open,
     History,
+    Branches,
     Output,
 }
 
 impl PaletteTab {
-    pub(crate) const ALL: [PaletteTab; 3] =
-        [PaletteTab::Open, PaletteTab::History, PaletteTab::Output];
+    pub(crate) const ALL: [PaletteTab; 4] = [
+        PaletteTab::Open,
+        PaletteTab::History,
+        PaletteTab::Branches,
+        PaletteTab::Output,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             PaletteTab::Open => "Open sessions",
             PaletteTab::History => "History",
+            PaletteTab::Branches => "Branches",
             PaletteTab::Output => "Output",
         }
     }
@@ -107,6 +114,9 @@ pub(crate) enum PaletteItem {
     /// A session whose live output matches the query, activated by focusing it
     /// and arming its find bar with the same query.
     Output { index: usize },
+    /// A branch or snapshot a session left behind, activated by opening a new
+    /// session on it.
+    Branch { index: usize },
 }
 
 /// Overlay state (`SplitlaneApp::command_palette`, `None` = closed). The query
@@ -134,6 +144,9 @@ pub(crate) struct CommandPaletteState {
     pub(crate) output_query: String,
     pub(crate) output_running: bool,
     pub(crate) output_generation: u64,
+    /// What sessions left behind, `None` until the read lands. Read when the
+    /// palette opens, because the tab is only shown when it has rows.
+    pub(crate) branches: Option<Vec<branches::BranchRow>>,
 }
 
 impl SplitlaneApp {
@@ -166,7 +179,9 @@ impl SplitlaneApp {
             output_query: String::new(),
             output_running: false,
             output_generation: 0,
+            branches: None,
         });
+        self.load_palette_branches(cx);
         query.read(cx).focus_handle.clone().focus(window, cx);
         cx.notify();
     }
@@ -204,8 +219,22 @@ impl SplitlaneApp {
         match tab {
             PaletteTab::History => self.load_palette_history(cx),
             PaletteTab::Output => self.run_palette_output_scan(cx),
-            PaletteTab::Open => {}
+            PaletteTab::Open | PaletteTab::Branches => {}
         }
+    }
+
+    /// The tabs to offer: every one but Branches, which is offered when it
+    /// has something in it, or when it is where the palette already is.
+    pub(crate) fn command_palette_tabs(&self) -> Vec<PaletteTab> {
+        let state = self.command_palette.as_ref();
+        let show_branches = state.is_some_and(|state| {
+            state.tab == PaletteTab::Branches
+                || state.branches.as_ref().is_some_and(|rows| !rows.is_empty())
+        });
+        PaletteTab::ALL
+            .into_iter()
+            .filter(|tab| *tab != PaletteTab::Branches || show_branches)
+            .collect()
     }
 
     pub(crate) fn command_palette_query_text(&self, cx: &gpui::App) -> String {
@@ -250,6 +279,7 @@ impl SplitlaneApp {
             PaletteTab::Open => self.palette_open_items(&needle, cx),
             PaletteTab::History => self.palette_history_items(&needle),
             PaletteTab::Output => self.palette_output_items(),
+            PaletteTab::Branches => self.palette_branch_items(&needle),
         }
     }
 
@@ -407,6 +437,7 @@ impl SplitlaneApp {
             StopDriving(u64),
             History(usize),
             Output(usize),
+            Branch(usize),
         }
         let target = match self.command_palette_items(cx).get(index) {
             Some(PaletteItem::Action { action_name, .. }) => {
@@ -416,6 +447,7 @@ impl SplitlaneApp {
             Some(PaletteItem::StopDriving { target, .. }) => Target::StopDriving(*target),
             Some(PaletteItem::History { index, .. }) => Target::History(*index),
             Some(PaletteItem::Output { index }) => Target::Output(*index),
+            Some(PaletteItem::Branch { index }) => Target::Branch(*index),
             None => return,
         };
         match target {
@@ -460,6 +492,7 @@ impl SplitlaneApp {
             }
             Target::History(index) => self.resume_palette_history_row(index, cx),
             Target::Output(index) => self.focus_palette_output_row(index, window, cx),
+            Target::Branch(index) => self.open_palette_branch_row(index, cx),
         }
     }
 
@@ -496,19 +529,27 @@ impl SplitlaneApp {
             // between them everywhere else in this app.
             "tab" => {
                 let current = self.command_palette_tab();
-                let idx = PaletteTab::ALL
-                    .iter()
-                    .position(|tab| *tab == current)
-                    .unwrap_or(0);
+                let tabs = self.command_palette_tabs();
+                let idx = tabs.iter().position(|tab| *tab == current).unwrap_or(0);
                 let step = if event.keystroke.modifiers.shift {
-                    PaletteTab::ALL.len() - 1
+                    tabs.len() - 1
                 } else {
                     1
                 };
-                self.set_command_palette_tab(
-                    PaletteTab::ALL[(idx + step) % PaletteTab::ALL.len()],
-                    cx,
-                );
+                self.set_command_palette_tab(tabs[(idx + step) % tabs.len()], cx);
+                cx.stop_propagation();
+            }
+            // `⌘⌫` on a branch row deletes it, snapshot first.
+            "backspace"
+                if event.keystroke.modifiers.secondary()
+                    && self.command_palette_tab() == PaletteTab::Branches
+                    && len > 0 =>
+            {
+                if let Some(PaletteItem::Branch { index }) =
+                    self.command_palette_items(cx).get(selected.min(len - 1))
+                {
+                    self.delete_palette_branch_row(*index, cx);
+                }
                 cx.stop_propagation();
             }
             "enter" if len > 0 => {

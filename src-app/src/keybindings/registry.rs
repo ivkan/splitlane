@@ -561,6 +561,12 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         description: "Running sessions and commands",
     },
     ActionMeta {
+        name: "open_branches",
+        factory: || Box::new(crate::OpenBranches),
+        context: "",
+        description: "Branches and snapshots sessions left",
+    },
+    ActionMeta {
         name: "open_launch_pad",
         factory: || Box::new(crate::OpenLaunchPad),
         context: "",

@@ -78,6 +78,9 @@ pub struct ManagedWorktree {
     /// server. Kept for the worktree's life, because a setup command may
     /// have written it into a file.
     pub port: Option<u16>,
+    /// The project's branch the worktree's branch was made from, for saying
+    /// so: `splitlane/ab12cd · from main`.
+    pub from: Option<String>,
 }
 
 pub fn owner_marker_path(worktree_path: &Path) -> PathBuf {
@@ -148,6 +151,7 @@ pub fn managed_worktree_from_record(
         teardown,
         base: None,
         port: None,
+        from: None,
     })
 }
 
@@ -263,6 +267,7 @@ pub fn add_session_worktree_at(repo_root: &Path, start: &str) -> Result<ManagedW
             teardown: TeardownPolicy::Auto,
             base,
             port: None,
+            from: None,
         });
     }
     Err("no free branch name was found".to_string())
@@ -1262,6 +1267,7 @@ mod tests {
             teardown: TeardownPolicy::Auto,
             base: None,
             port: None,
+            from: None,
         };
         (tmp, managed)
     }
@@ -1522,6 +1528,7 @@ mod tests {
             teardown: TeardownPolicy::Auto,
             base: Some(tip.clone()),
             port: None,
+            from: None,
         };
         assert_eq!(
             teardown_one(&forged, &[]),
@@ -1584,6 +1591,7 @@ mod tests {
             teardown: TeardownPolicy::Auto,
             base: None,
             port: None,
+            from: None,
         };
 
         teardown_all(vec![managed], &[]);

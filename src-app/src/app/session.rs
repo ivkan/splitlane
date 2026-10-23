@@ -196,6 +196,7 @@ impl SplitlaneApp {
                         teardown: wt.teardown.as_str().to_string(),
                         base: wt.base.clone(),
                         port: wt.port,
+                        from: wt.from.clone(),
                     })
                     .collect(),
                 preferred_agent: ws.preferred_agent.map(|pref| pref.tag().to_string()),
@@ -1505,6 +1506,7 @@ fn rehydrate_managed_worktree(
         .clone()
         .filter(|id| crate::workspace::worktree::is_commit_id(id));
     worktree.port = def.port.filter(|port| *port >= 1024);
+    worktree.from = def.from.clone().filter(|from| !from.trim().is_empty());
     Some(worktree)
 }
 
@@ -2501,6 +2503,7 @@ mod tests {
             teardown: "auto".to_string(),
             base: Some("not-a-commit".to_string()),
             port: Some(4100),
+            from: None,
         };
 
         let restored = rehydrate_managed_worktree(&valid).expect("valid owned worktree restores");
