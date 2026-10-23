@@ -758,6 +758,8 @@ impl SplitlaneApp {
                             self.turn_ends.insert(reading.thread_id, watch);
                         }
                         thread.session_id = Some(proposed);
+                        // The new session is filed where the agent runs now.
+                        thread.transcript_cwd = None;
                         changed = true;
                         adopted_any = true;
                     }

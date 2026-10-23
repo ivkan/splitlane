@@ -214,6 +214,9 @@ kept sessions live in the app's own process and survive none of these.
   starting Splitlane reads every session's file, which can take a few seconds
   with many sessions; results come in as they are read, and later searches
   are instant. Only what you wrote is searched, not the agent's answers.
+  Sessions that ran in one of the project's worktrees are listed with the
+  project, including after the worktree was removed. Such a session opens in
+  its worktree while it exists, and in the project folder once it does not.
 
 ## Dev servers
 

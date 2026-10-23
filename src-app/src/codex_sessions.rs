@@ -19,7 +19,9 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::agent_sessions::{AssistantUsage, SessionAgent, SessionMeta, clean_session_label};
+use crate::agent_sessions::{
+    AssistantUsage, CwdFilter, SessionAgent, SessionMeta, clean_session_label,
+};
 
 /// Maximum number of leading lines to scan for the first user message.
 /// In practice this lands within the first ~10 lines: on a 0.149.1 rollout
@@ -356,6 +358,48 @@ pub fn read_sessions_for_cwd_with_omitted(cwd: &str) -> (Vec<SessionMeta>, usize
     )
 }
 
+/// Sessions whose recorded cwd lies inside one of `dirs` - a project's
+/// worktree folders ([`crate::agent_sessions::worktree_roots`]). The store is
+/// one date tree for every project, so this is a second walk of it; it is
+/// cached under its own key, on the same tree fingerprint as the cwd read.
+pub fn read_sessions_within(dirs: &[String]) -> Vec<SessionMeta> {
+    let Some(root) = sessions_root() else {
+        return Vec::new();
+    };
+    // NUL cannot occur in a path, so this key never equals a real cwd's.
+    let key = format!("\0within\0{}", dirs.join("\0"));
+    let cache_mtime = jsonl_tree_mtime(&root);
+    if let Some(cache_mtime) = cache_mtime
+        && let Some((cached, _)) =
+            crate::agent_sessions::cache::lookup_with_mtime(SessionAgent::Codex, &key, cache_mtime)
+    {
+        return cached;
+    }
+    let (sessions, omitted) = read_sessions_within_root(&root, dirs);
+    if let Some(cache_mtime) = jsonl_tree_mtime(&root) {
+        crate::agent_sessions::cache::store_result_with_mtime(
+            SessionAgent::Codex,
+            &key,
+            cache_mtime,
+            &sessions,
+            omitted,
+        );
+    }
+    sessions
+}
+
+fn read_sessions_within_root(root: &Path, dirs: &[String]) -> (Vec<SessionMeta>, usize) {
+    let mut collector = crate::agent_sessions::RecentSessionCollector::new(
+        crate::agent_sessions::SIDEBAR_SESSION_RETAINED_PER_SOURCE,
+    );
+    walk_jsonl_files(root, &mut |path| {
+        if let Some(meta) = read_session_meta_inner(path, false, Some(CwdFilter::Within(dirs))) {
+            collector.push(meta);
+        }
+    });
+    collector.finish()
+}
+
 /// Like [`read_sessions_for_cwd`] but the retained
 /// attribution candidates are scanned deeper to populate `model`
 /// (`turn_context`) + cumulative `usage` (last `token_count` event).
@@ -367,7 +411,7 @@ pub fn read_sessions_with_usage_for_attribution(cwd: &str, branch: &str) -> Vec<
 
     let mut candidates: Vec<(SessionMeta, PathBuf)> = Vec::new();
     walk_jsonl_files(&root, &mut |path| {
-        if let Some(meta) = read_session_meta_inner(path, false, Some(cwd)) {
+        if let Some(meta) = read_session_meta_inner(path, false, Some(CwdFilter::Is(cwd))) {
             crate::agent_sessions::push_ranked_attribution(
                 &mut candidates,
                 meta,
@@ -384,7 +428,7 @@ pub fn read_sessions_with_usage_for_attribution(cwd: &str, branch: &str) -> Vec<
             // The deep re-read can fail where the cheap head scan succeeded (an
             // I/O error, a body that outruns the usage budget); keep the
             // already-matched head result rather than dropping the column.
-            read_session_meta_inner(&path, true, Some(cwd)).unwrap_or(fallback)
+            read_session_meta_inner(&path, true, Some(CwdFilter::Is(cwd))).unwrap_or(fallback)
         })
         .collect();
     crate::agent_sessions::match_sessions_to_column(enriched, cwd, branch)
@@ -413,7 +457,9 @@ fn read_sessions_for_cwd_inner(
         Some(cap) => {
             let mut collector = crate::agent_sessions::RecentSessionCollector::new(cap);
             walk_jsonl_files(&root, &mut |path| {
-                if let Some(meta) = read_session_meta_inner(path, scan_usage, Some(cwd)) {
+                if let Some(meta) =
+                    read_session_meta_inner(path, scan_usage, Some(CwdFilter::Is(cwd)))
+                {
                     collector.push(meta);
                 }
             });
@@ -422,7 +468,9 @@ fn read_sessions_for_cwd_inner(
         None => {
             let mut all = Vec::new();
             walk_jsonl_files(&root, &mut |path| {
-                if let Some(meta) = read_session_meta_inner(path, scan_usage, Some(cwd)) {
+                if let Some(meta) =
+                    read_session_meta_inner(path, scan_usage, Some(CwdFilter::Is(cwd)))
+                {
                     all.push(meta);
                 }
             });
@@ -532,7 +580,7 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
 fn read_session_meta_inner(
     path: &Path,
     scan_usage: bool,
-    cwd_filter: Option<&str>,
+    cwd_filter: Option<CwdFilter<'_>>,
 ) -> Option<SessionMeta> {
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
@@ -578,8 +626,8 @@ fn read_session_meta_inner(
     if cwd.is_empty() {
         return None;
     }
-    if let Some(want) = cwd_filter
-        && !crate::agent_sessions::cwd_matches(&cwd, want)
+    if let Some(filter) = cwd_filter
+        && !filter.admits(&cwd)
     {
         return None;
     }
@@ -1493,8 +1541,14 @@ mod tests {
             ),
         )
         .expect("write fixture");
-        assert!(read_session_meta_inner(&path, false, Some("/home/user/dev/project")).is_none());
-        assert!(read_session_meta_inner(&path, false, Some("/home/user/dev/other")).is_some());
+        assert!(
+            read_session_meta_inner(&path, false, Some(CwdFilter::Is("/home/user/dev/project")))
+                .is_none()
+        );
+        assert!(
+            read_session_meta_inner(&path, false, Some(CwdFilter::Is("/home/user/dev/other")))
+                .is_some()
+        );
     }
 
     #[test]
@@ -1582,5 +1636,43 @@ mod tests {
         // Terminates (no stack overflow) and still finds the one real file
         // exactly once - the symlinked directory was never descended.
         assert_eq!(found, vec![jsonl]);
+    }
+
+    #[test]
+    fn rollouts_of_a_projects_worktrees_are_read_and_others_are_not() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let day = tmp.path().join("2026").join("10").join("23");
+        std::fs::create_dir_all(&day).expect("mkdir");
+        for (file, id, cwd) in [
+            (
+                "a.jsonl",
+                "019dc9ea-0000-7000-8000-00000000000a",
+                "/work/app.worktrees/topic",
+            ),
+            (
+                "b.jsonl",
+                "019dc9ea-0000-7000-8000-00000000000b",
+                "/work/app",
+            ),
+            (
+                "c.jsonl",
+                "019dc9ea-0000-7000-8000-00000000000c",
+                "/work/app.worktrees-old/x",
+            ),
+        ] {
+            std::fs::write(
+                day.join(file),
+                format!(
+                    r#"{{"timestamp":"2026-10-23T10:00:00.000Z","type":"session_meta","payload":{{"id":"{id}","timestamp":"2026-10-23T10:00:00.000Z","cwd":"{cwd}"}}}}"#
+                ) + "\n"
+                    + r#"{"timestamp":"2026-10-23T10:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"look at the daily notes","images":[]}}"#
+                    + "\n",
+            )
+            .expect("write");
+        }
+        let roots = crate::agent_sessions::worktree_roots("/work/app");
+        let (sessions, _) = read_sessions_within_root(tmp.path(), &roots);
+        let ids: Vec<&str> = sessions.iter().map(|m| m.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["019dc9ea-0000-7000-8000-00000000000a"]);
     }
 }

@@ -1990,6 +1990,12 @@ pub struct AgentSurface {
     /// Absent for a surface whose terminal the window owned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_session: Option<String>,
+    /// The directory the agent session started in, when that is not the
+    /// surface's `cwd`. A session that ran in a worktree is filed by its CLI
+    /// under the worktree's path; once the worktree is removed the surface
+    /// runs in the project folder, and this is where the transcript still is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_cwd: Option<String>,
 }
 
 /// Which session opened another.
@@ -2242,6 +2248,7 @@ pub mod legacy_v1 {
                 opened_by: None,
                 opened_by_script: None,
                 host_session: None,
+                transcript_cwd: None,
             }),
         }
     }

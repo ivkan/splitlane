@@ -76,6 +76,7 @@ impl SplitlaneApp {
         title: impl Into<String>,
         terminal_agent: Option<crate::agent_launcher::TerminalAgent>,
         session_id: &str,
+        session_cwd: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Result<u64, OpError> {
         let project = self
@@ -92,12 +93,14 @@ impl SplitlaneApp {
         {
             return Err(OpError::ThreadNotFound);
         }
-        let thread = crate::project::Thread::new_terminal_for_session(
+        let (cwd, transcript_cwd) = session_placement(&project.cwd, session_cwd);
+        let mut thread = crate::project::Thread::new_terminal_for_session(
             title,
-            project.cwd.clone(),
+            cwd,
             terminal_agent,
             session_id,
         );
+        thread.transcript_cwd = transcript_cwd;
         let id = thread.id;
         project.threads.push(thread);
         cx.notify();
@@ -306,6 +309,31 @@ fn now_unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Where a session opened from history runs, and where its transcript is
+/// filed when that is somewhere else.
+///
+/// A session that started in one of the project's worktrees runs there again
+/// while the worktree is on disk. Once it is gone the session runs in the
+/// project folder, and the surface keeps the worktree's path, because the CLI
+/// goes on writing the transcript it filed there. Only a worktree of this
+/// project is taken: the directory comes from a file on disk, and becomes a
+/// cwd.
+pub(crate) fn session_placement(
+    project_cwd: &str,
+    session_cwd: Option<&str>,
+) -> (String, Option<String>) {
+    let worktree_cwd = session_cwd.filter(|dir| {
+        crate::agent_sessions::worktree_roots(project_cwd)
+            .iter()
+            .any(|root| crate::agent_sessions::cwd_within(dir, root))
+    });
+    match worktree_cwd {
+        Some(dir) if std::path::Path::new(dir).is_dir() => (dir.to_string(), None),
+        Some(dir) => (project_cwd.to_string(), Some(dir.to_string())),
+        None => (project_cwd.to_string(), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +342,54 @@ mod tests {
     fn home_container_cwd_never_empty() {
         let cwd = home_container_cwd();
         assert!(!cwd.trim().is_empty());
+    }
+
+    #[test]
+    fn a_session_from_a_live_worktree_runs_in_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("app");
+        let worktree = tmp.path().join("app.worktrees").join("topic");
+        std::fs::create_dir_all(&worktree).expect("mkdir");
+        let (project, worktree) = (
+            project.to_string_lossy().into_owned(),
+            worktree.to_string_lossy().into_owned(),
+        );
+        assert_eq!(
+            session_placement(&project, Some(&worktree)),
+            (worktree.clone(), None)
+        );
+    }
+
+    #[test]
+    fn a_session_from_a_removed_worktree_runs_in_the_project_and_keeps_its_transcript() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("app").to_string_lossy().into_owned();
+        let gone = tmp
+            .path()
+            .join("app.worktrees")
+            .join("topic")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            session_placement(&project, Some(&gone)),
+            (project.clone(), Some(gone.clone()))
+        );
+    }
+
+    #[test]
+    fn a_directory_outside_the_projects_worktrees_is_not_taken() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("app").to_string_lossy().into_owned();
+        let elsewhere = tmp.path().join("other").to_string_lossy().into_owned();
+        std::fs::create_dir_all(&elsewhere).expect("mkdir");
+        assert_eq!(
+            session_placement(&project, Some(&elsewhere)),
+            (project.clone(), None)
+        );
+        assert_eq!(
+            session_placement(&project, Some(&project)),
+            (project.clone(), None)
+        );
+        assert_eq!(session_placement(&project, None), (project.clone(), None));
     }
 }

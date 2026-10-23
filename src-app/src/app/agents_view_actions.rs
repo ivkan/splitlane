@@ -665,6 +665,15 @@ impl SplitlaneApp {
         // for a surface that launches something: a bare shell gets no command
         // and is not starting anything.
         let launches = thread.terminal_agent.is_some();
+        // A worktree removed while the app ran, under a surface not showing.
+        if let crate::project::AgentsTarget::Thread { ws_idx, thread_idx } = target
+            && let Some(container) = self.workspaces.get_mut(ws_idx)
+            && let Some(thread) = container.threads.get_mut(thread_idx)
+            && thread.leave_removed_worktree(&container.cwd)
+        {
+            self.save_session(cx);
+        }
+        let thread = self.thread_for_target(target)?;
         let view = Self::build_agent_terminal_view(thread, &self.cached_config, cx);
         if launches {
             self.mark_surface_starting(thread_id, &view, cx);
@@ -740,8 +749,13 @@ impl SplitlaneApp {
         let bound_session = thread.session_id.clone();
         // Resolved against the on-disk session store below: the first launch
         // mints the id, every reopen reattaches to it. See
-        // [`crate::agent_launcher::SessionBinding`].
-        let thread_cwd = thread.cwd.clone();
+        // [`crate::agent_launcher::SessionBinding`]. Where the transcript is
+        // filed, which is not where the surface runs once its worktree is
+        // gone.
+        let transcript_cwd = thread
+            .transcript_cwd
+            .clone()
+            .unwrap_or_else(|| thread.cwd.clone());
         // Explicit per-thread agent wins; legacy `Agent`-kind chat rows
         // fall back to their stored ACP agent so reopening them launches
         // the same CLI in a terminal. Plain Terminal Threads stay a bare
@@ -800,7 +814,7 @@ impl SplitlaneApp {
         if let Some(agent) = terminal_agent {
             let binding = crate::agent_launcher::SessionBinding::resolve(
                 bound_session.as_deref(),
-                &thread_cwd,
+                &transcript_cwd,
             );
             let cmd = agent.launch_command_with_session(
                 config,
