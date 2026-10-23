@@ -229,14 +229,20 @@ pub const SESSION_BRANCH_PREFIX: &str = "splitlane/";
 /// `HEAD`, and say so in the record: [`ManagedWorktree::base`] is set, so the
 /// branch goes with the worktree if nothing was committed on it. Blocking.
 pub fn add_session_worktree(repo_root: &Path) -> Result<ManagedWorktree, String> {
+    add_session_worktree_at(repo_root, "HEAD")
+}
+
+/// [`add_session_worktree`] with the new branch made at `start` rather than
+/// at `HEAD`.
+pub fn add_session_worktree_at(repo_root: &Path, start: &str) -> Result<ManagedWorktree, String> {
     for _ in 0..8 {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let branch = format!("{SESSION_BRANCH_PREFIX}{}", &suffix[..4]);
+        let branch = format!("{SESSION_BRANCH_PREFIX}{}", &suffix[..6]);
         let path = worktree_dir(repo_root, &branch);
         if path.exists() || branch_exists(repo_root, &branch) {
             continue;
         }
-        add_worktree(repo_root, &path, &branch, true)?;
+        add_worktree_from(repo_root, &path, &branch, Some(start))?;
         let base = run_git(
             GitProfile::Probe,
             &path,
@@ -379,7 +385,7 @@ pub fn is_splitlane_worktree_dir(repo_root: &Path, branch: &str, path: &Path) ->
 
 /// Run a git plumbing command and return trimmed stdout, mapping every
 /// failure mode (spawn, timeout, non-zero exit) to a displayable message.
-fn run_git(
+pub(crate) fn run_git(
     profile: GitProfile,
     repo: &Path,
     args: &[&str],
@@ -459,6 +465,30 @@ pub fn add_worktree(
     branch: &str,
     create_branch: bool,
 ) -> Result<(), String> {
+    if create_branch {
+        add_worktree_from(repo_root, path, branch, None)
+    } else {
+        add_worktree_inner(repo_root, path, branch, false, None)
+    }
+}
+
+/// A worktree on a new `branch` made at `start` (`HEAD` when `None`).
+fn add_worktree_from(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    start: Option<&str>,
+) -> Result<(), String> {
+    add_worktree_inner(repo_root, path, branch, true, start)
+}
+
+fn add_worktree_inner(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    create_branch: bool,
+    start: Option<&str>,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
@@ -469,6 +499,9 @@ pub fn add_worktree(
         args.push("-b");
     }
     args.push(branch);
+    if let Some(start) = start {
+        args.push(start);
+    }
     // Creating a worktree is the person's request, so the repository's
     // checkout hooks and filters run as they would from their own shell.
     run_git(GitProfile::UserAction, repo_root, &args, ADD_DEADLINE)?;
