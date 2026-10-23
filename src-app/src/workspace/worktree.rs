@@ -179,10 +179,7 @@ pub const PORT_BLOCK: u16 = 10;
 pub fn allocate_port(held: &[u16]) -> Option<u16> {
     let mut first = PORT_BASE;
     while first <= PORT_LAST {
-        let overlaps = held
-            .iter()
-            .any(|other| first < other.saturating_add(PORT_BLOCK) && *other < first + PORT_BLOCK);
-        if !overlaps && (first..first + PORT_BLOCK).all(port_is_free) {
+        if !port_block_overlaps(first, held) && (first..first + PORT_BLOCK).all(port_is_free) {
             return Some(first);
         }
         first += PORT_BLOCK;
@@ -190,8 +187,26 @@ pub fn allocate_port(held: &[u16]) -> Option<u16> {
     None
 }
 
+/// Whether nothing listens on `port`, on IPv4 or IPv6 - a dev server may
+/// take either. A machine without IPv6 answers for IPv4 alone.
 fn port_is_free(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    use std::io::ErrorKind;
+    if std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).is_err() {
+        return false;
+    }
+    match std::net::TcpListener::bind((std::net::Ipv6Addr::UNSPECIFIED, port)) {
+        Ok(_) => true,
+        Err(e) => matches!(
+            e.kind(),
+            ErrorKind::AddrNotAvailable | ErrorKind::Unsupported
+        ),
+    }
+}
+
+/// Whether the block starting at `first` overlaps one in `held`.
+pub fn port_block_overlaps(first: u16, held: &[u16]) -> bool {
+    held.iter()
+        .any(|other| first < other.saturating_add(PORT_BLOCK) && *other < first + PORT_BLOCK)
 }
 
 /// The environment a session running in `cwd` gets from the worktree it is
@@ -230,6 +245,11 @@ pub fn add_session_worktree(repo_root: &Path) -> Result<ManagedWorktree, String>
         )
         .ok()
         .filter(|id| is_commit_id(id));
+        if base.is_none() {
+            log::warn!(
+                "session worktree: no base commit read for {branch}; the branch will be kept"
+            );
+        }
         return Ok(ManagedWorktree {
             path,
             repo_root: repo_root.to_path_buf(),
@@ -249,6 +269,21 @@ fn delete_branch_if_untouched(wt: &ManagedWorktree) -> bool {
     let Some(base) = wt.base.as_deref().filter(|id| is_commit_id(id)) else {
         return false;
     };
+    // Only a branch of the shape this app makes, and only one no worktree has
+    // checked out: `update-ref` would delete a checked-out branch from under
+    // its checkout, and a record read from disk can name any branch.
+    if !wt.branch.starts_with(SESSION_BRANCH_PREFIX) {
+        return false;
+    }
+    let Ok(entries) = list_worktrees(&wt.repo_root) else {
+        return false;
+    };
+    if entries
+        .iter()
+        .any(|entry| entry.branch.as_deref() == Some(wt.branch.as_str()))
+    {
+        return false;
+    }
     run_git(
         GitProfile::UserAction,
         &wt.repo_root,
@@ -454,9 +489,10 @@ pub fn add_worktree(
 /// same plain question, so it deletes all three without a word. An ignored
 /// `.env` an agent filled in is exactly the file nobody committed.
 ///
-/// So this asks for everything, and then excuses two things by name: the
-/// owner marker, and a `.env*` file that is still byte for byte the copy
-/// [`copy_env_files`] made. Anything else keeps the worktree, an installed
+/// So this asks for everything, and then excuses two things: Splitlane's
+/// marker file, and an ignored file or link that is still what the checkout
+/// holds at the same path - what [`copy_local_files`] made, unchanged.
+/// Anything else keeps the worktree, an installed
 /// dependency directory included: it cannot be told from a directory of
 /// notes, and a kept directory can be deleted by hand while a deleted one
 /// cannot be brought back.
@@ -670,7 +706,7 @@ pub const DEFAULT_SETUP_TIMEOUT: Duration = Duration::from_secs(300);
 /// two callers - `splitlane up` (`cli/up_cmd.rs::execute_worktree_plan`) and
 /// the rail's `+ worktree` dialog - and a setup runner screwed into one of
 /// them would silently skip the other. That is why this lives beside
-/// `add_worktree` and `copy_env_files` rather than in either caller.
+/// `add_worktree` and `copy_local_files` rather than in either caller.
 ///
 /// **Creation only** is the caller's job to honour: a reused worktree already
 /// had its bootstrap, and re-running an install behind somebody's back is a
@@ -773,11 +809,12 @@ const MAX_COPY_DEPTH: u32 = 16;
 /// against what git reports as ignored and untracked in the checkout, with
 /// ignored directories reported whole, so a build directory is not walked.
 pub fn copy_local_files(src_root: &Path, dst_root: &Path) -> Vec<String> {
-    let mut copied = copy_env_files(src_root, dst_root);
+    let mut copied = Vec::new();
     let ignored = ignored_untracked(src_root);
     let mut wanted: Vec<String> = LOCAL_INSTRUCTION_FILES
         .iter()
         .map(|name| name.to_string())
+        .chain(top_level_env_files(src_root))
         .collect();
     if let Ok(list) = std::fs::read_to_string(src_root.join(WORKTREE_INCLUDE_FILE)) {
         wanted.extend(included_paths(src_root, &list, &ignored));
@@ -987,35 +1024,17 @@ fn copy_symlink(src: &Path, dst: &Path) -> bool {
     }
 }
 
-/// Copy top-level `.env*` FILES from `src_root` into `dst_root`, skipping any
-/// that already exist there (a tracked `.env.example` arrives via checkout -
-/// don't clobber it). Best-effort by design: a missing source dir or
-/// an unreadable entry yields an empty/partial copy, never an error. Returns
-/// the file names copied.
-pub fn copy_env_files(src_root: &Path, dst_root: &Path) -> Vec<String> {
+/// The names of the top-level `.env*` files in `src_root`.
+fn top_level_env_files(src_root: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(src_root) else {
         return Vec::new();
     };
-    let mut copied = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_s = name.to_string_lossy();
-        if !name_s.starts_with(".env") {
-            continue;
-        }
-        if !entry.path().is_file() {
-            continue;
-        }
-        let dst = dst_root.join(&name);
-        if dst.exists() {
-            continue;
-        }
-        if std::fs::copy(entry.path(), &dst).is_ok() {
-            copied.push(name_s.into_owned());
-        }
-    }
-    copied.sort();
-    copied
+    entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".env"))
+        .collect()
 }
 
 /// True when `open` is `worktree` itself or lives underneath it - i.e. when
@@ -1202,7 +1221,7 @@ mod tests {
 
         let path = worktree_dir(&repo, "feat");
         add_worktree(&repo, &path, "feat", true).expect("worktree");
-        assert_eq!(copy_env_files(&repo, &path), vec![".env".to_string()]);
+        assert_eq!(copy_local_files(&repo, &path), vec![".env".to_string()]);
         let managed = ManagedWorktree {
             path,
             repo_root: repo,
@@ -1440,6 +1459,53 @@ mod tests {
             }
         );
         assert!(branch_exists(&repo, &made.branch));
+        let _ = std::fs::remove_dir_all(repo.parent().expect("tmp"));
+    }
+
+    /// A record read from disk can name any branch with its current commit
+    /// as the base. Only a branch of this app's shape that nothing has
+    /// checked out may go.
+    #[test]
+    fn a_record_naming_main_never_deletes_it() {
+        let repo = committed_repo("record-main");
+        let tip = run_git(
+            GitProfile::Probe,
+            &repo,
+            &["rev-parse", "HEAD"],
+            GIT_DEADLINE,
+        )
+        .expect("tip");
+        let current = run_git(
+            GitProfile::Probe,
+            &repo,
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+            GIT_DEADLINE,
+        )
+        .expect("branch");
+        let forged = ManagedWorktree {
+            path: worktree_dir(&repo, "gone"),
+            repo_root: repo.clone(),
+            branch: current.clone(),
+            teardown: TeardownPolicy::Auto,
+            base: Some(tip.clone()),
+            port: None,
+        };
+        assert_eq!(
+            teardown_one(&forged, &[]),
+            Teardown::Removed {
+                branch_deleted: false
+            }
+        );
+        assert!(branch_exists(&repo, &current));
+        // Nor a session-shaped branch somebody has checked out.
+        test_git(&repo, &["branch", "splitlane/zz99"]);
+        test_git(&repo, &["checkout", "-q", "splitlane/zz99"]);
+        let checked_out = ManagedWorktree {
+            branch: "splitlane/zz99".to_string(),
+            ..forged
+        };
+        teardown_one(&checked_out, &[]);
+        assert!(branch_exists(&repo, "splitlane/zz99"));
         let _ = std::fs::remove_dir_all(repo.parent().expect("tmp"));
     }
 
@@ -1723,34 +1789,25 @@ mod tests {
         assert_eq!(restored.branch, branch);
     }
 
+    /// A `.env` git does not ignore is not copied: in the worktree it would be
+    /// an untracked file, and git refuses to remove a worktree that holds
+    /// one, so the session's close could never clean it up.
     #[test]
-    fn copy_env_files_copies_top_level_env_only_and_never_clobbers() {
-        let src = tempfile::tempdir().expect("src");
-        let dst = tempfile::tempdir().expect("dst");
-        std::fs::write(src.path().join(".env"), "A=1").unwrap();
-        std::fs::write(src.path().join(".env.local"), "B=2").unwrap();
-        std::fs::write(src.path().join("notenv"), "x").unwrap();
-        // Nested .env must NOT be picked up (top-level only).
-        std::fs::create_dir(src.path().join("sub")).unwrap();
-        std::fs::write(src.path().join("sub/.env"), "C=3").unwrap();
-        // Pre-existing destination file must survive (checkout owns it).
-        std::fs::write(dst.path().join(".env"), "KEEP").unwrap();
+    fn an_env_file_git_does_not_ignore_is_not_copied() {
+        let repo = committed_repo("env-not-ignored");
+        std::fs::write(repo.join(".env"), "A=1\n").expect("env");
+        let worktree = worktree_dir(&repo, "feat");
+        add_worktree(&repo, &worktree, "feat", true).expect("worktree");
 
-        let copied = copy_env_files(src.path(), dst.path());
-        assert_eq!(copied, vec![".env.local".to_string()]);
-        assert_eq!(
-            std::fs::read_to_string(dst.path().join(".env")).unwrap(),
-            "KEEP",
-            "existing destination file is never clobbered"
-        );
-        assert!(dst.path().join(".env.local").exists());
-        assert!(!dst.path().join("notenv").exists());
+        assert!(copy_local_files(&repo, &worktree).is_empty());
+        assert!(!worktree.join(".env").exists());
+        let _ = std::fs::remove_dir_all(repo.parent().expect("tmp"));
     }
 
     #[test]
-    fn copy_env_files_missing_source_is_silent_empty() {
+    fn copying_from_a_missing_checkout_is_silent_and_empty() {
         let dst = tempfile::tempdir().expect("dst");
-        let copied = copy_env_files(Path::new("/nonexistent-splitlane-test"), dst.path());
+        let copied = copy_local_files(Path::new("/nonexistent-splitlane-test"), dst.path());
         assert!(copied.is_empty());
     }
 

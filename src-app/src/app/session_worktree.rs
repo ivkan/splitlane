@@ -129,47 +129,80 @@ impl SplitlaneApp {
         made: Result<ManagedWorktree, String>,
         cx: &mut Context<Self>,
     ) -> Option<ManagedWorktree> {
-        let ws_idx = self.workspaces.iter().position(|ws| ws.id == container_id);
-        let thread_idx = ws_idx.and_then(|ws_idx| {
-            self.workspaces[ws_idx]
-                .threads
-                .iter()
-                .position(|t| t.id == thread_id)
-        });
-        let (Some(ws_idx), Some(thread_idx)) = (ws_idx, thread_idx) else {
-            // Closed while git ran: the worktree has nobody, and nothing is
-            // in it yet.
+        let Some(ws_idx) = self.workspaces.iter().position(|ws| ws.id == container_id) else {
+            // The project closed while git ran. Its close tore down what it
+            // owned, and this was not among it yet.
             if let Ok(made) = made {
                 cx.background_executor()
                     .spawn(async move {
-                        worktree::teardown_one(&made, &[]);
+                        if let Teardown::Kept(reason) = worktree::teardown_one(&made, &[]) {
+                            log::warn!(
+                                "session worktree left at {} ({reason}): its project closed",
+                                made.path.display()
+                            );
+                        }
                     })
                     .detach();
             }
             return None;
         };
-        let thread = &mut self.workspaces[ws_idx].threads[thread_idx];
-        thread.worktree_pending = false;
-        let started = match made {
-            Ok(made) => {
-                thread.cwd = made.path.to_string_lossy().into_owned();
-                self.workspaces[ws_idx].managed_worktrees.push(made.clone());
-                Some(made)
-            }
+        let mut made = match made {
+            Ok(made) => made,
             Err(error) => {
+                if let Some(thread) = self.workspaces[ws_idx]
+                    .threads
+                    .iter_mut()
+                    .find(|t| t.id == thread_id)
+                {
+                    thread.worktree_pending = false;
+                }
                 self.show_toast(
                     format!("No branch for this session ({error}); it runs in the project folder"),
                     cx,
                 );
-                None
+                self.select_session(ws_idx, thread_id, cx);
+                return None;
             }
         };
+        // Two sessions started together each chose a port before either was
+        // recorded; the second one to land takes another block.
+        let held: Vec<u16> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.managed_worktrees.iter().filter_map(|wt| wt.port))
+            .collect();
+        if made
+            .port
+            .is_some_and(|port| worktree::port_block_overlaps(port, &held))
+        {
+            made.port = worktree::allocate_port(&held);
+        }
         // Recorded before anything else can fail, so a quit now does not
         // cost the worktree its owner.
+        self.workspaces[ws_idx].managed_worktrees.push(made.clone());
+        let Some(thread) = self.workspaces[ws_idx]
+            .threads
+            .iter_mut()
+            .find(|t| t.id == thread_id)
+        else {
+            // The session was closed while git ran: its worktree goes the way
+            // a closed session's does.
+            self.save_session(cx);
+            self.spawn_session_worktree_release(container_id, made, cx);
+            return None;
+        };
+        thread.worktree_pending = false;
+        thread.cwd = made.path.to_string_lossy().into_owned();
         self.save_session(cx);
-        let _ = self.select_thread(ws_idx, thread_idx, cx);
+        self.select_session(ws_idx, thread_id, cx);
+        Some(made)
+    }
+
+    fn select_session(&mut self, ws_idx: usize, thread_id: u64, cx: &mut Context<Self>) {
+        if let Some(thread_idx) = self.thread_index_by_id(ws_idx, thread_id) {
+            let _ = self.select_thread(ws_idx, thread_idx, cx);
+        }
         cx.notify();
-        started
     }
 
     /// Where a session another session opened works: in its opener's
@@ -209,32 +242,49 @@ impl SplitlaneApp {
         closed_cwd: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+        let Some(ws) = self.workspaces.get(ws_idx) else {
             return;
         };
         let closed = std::path::Path::new(closed_cwd);
-        let Some(at) = ws
+        let Some(released) = ws
             .managed_worktrees
             .iter()
-            .position(|wt| wt.base.is_some() && closed.starts_with(&wt.path))
+            .find(|wt| wt.base.is_some() && closed.starts_with(&wt.path))
+            .cloned()
         else {
             return;
         };
-        let path = ws.managed_worktrees[at].path.clone();
         if ws
             .threads
             .iter()
-            .any(|t| std::path::Path::new(&t.cwd).starts_with(&path))
+            .any(|t| std::path::Path::new(&t.cwd).starts_with(&released.path))
         {
             return;
         }
-        let released = ws.managed_worktrees.remove(at);
         let container_id = ws.id;
-        let open = self.container_paths_outliving(usize::MAX);
-        self.save_session(cx);
+        self.spawn_session_worktree_release(container_id, released, cx);
+    }
+
+    /// Tear a released session worktree down after [`CLOSE_GRACE`]. It stays
+    /// on the project's record until the answer is in: a quit in between
+    /// leaves it owned, and its ports stay taken while a server may still
+    /// hold them.
+    fn spawn_session_worktree_release(
+        &mut self,
+        container_id: u64,
+        released: ManagedWorktree,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 smol::Timer::after(CLOSE_GRACE).await;
+                // Read after the grace, not before it: a project opened on
+                // the worktree in the meantime must keep it.
+                let Some(open) =
+                    cx.update(|cx| this.update(cx, |app, _| app.every_container_path()).ok())
+                else {
+                    return;
+                };
                 let examined = released.clone();
                 let outcome = smol::unblock(move || worktree::teardown_one(&examined, &open)).await;
                 let _ = cx.update(|cx| {
@@ -247,6 +297,14 @@ impl SplitlaneApp {
         .detach();
     }
 
+    /// Every open project's directory, none excluded.
+    fn every_container_path(&self) -> Vec<std::path::PathBuf> {
+        self.workspaces
+            .iter()
+            .map(|ws| std::path::PathBuf::from(&ws.cwd))
+            .collect()
+    }
+
     fn session_worktree_released(
         &mut self,
         container_id: u64,
@@ -255,6 +313,7 @@ impl SplitlaneApp {
         cx: &mut Context<Self>,
     ) {
         let branch = released.branch.clone();
+        let removed = matches!(outcome, Teardown::Removed { .. });
         match outcome {
             Teardown::Removed {
                 branch_deleted: true,
@@ -265,6 +324,7 @@ impl SplitlaneApp {
                 self.show_toast(format!("Branch {branch} kept: it has commits"), cx);
             }
             Teardown::Kept(reason) => {
+                // Still the project's, so its close tries again.
                 self.show_toast(
                     format!(
                         "Worktree for {branch} kept: {reason} - {}",
@@ -272,12 +332,11 @@ impl SplitlaneApp {
                     ),
                     cx,
                 );
-                // Still the project's, so its close tries again.
-                if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == container_id) {
-                    ws.managed_worktrees.push(released);
-                    self.save_session(cx);
-                }
             }
+        }
+        if removed && let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == container_id) {
+            ws.managed_worktrees.retain(|wt| wt.path != released.path);
+            self.save_session(cx);
         }
     }
 }
