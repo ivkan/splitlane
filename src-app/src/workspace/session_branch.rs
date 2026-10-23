@@ -619,6 +619,9 @@ mod tests {
         git(&repo, &["init", "-q"]);
         git(&repo, &["config", "user.email", "test@example.com"]);
         git(&repo, &["config", "user.name", "Test"]);
+        // Windows runners check files out with CRLF, which the restored
+        // files would then be compared against.
+        git(&repo, &["config", "core.autocrlf", "false"]);
         std::fs::write(repo.join("a.txt"), "one\ntwo\n").expect("file");
         std::fs::write(repo.join("gone.txt"), "tracked\n").expect("file");
         std::fs::write(repo.join(".gitignore"), ".env\n").expect("ignore");
