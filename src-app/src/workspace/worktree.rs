@@ -188,7 +188,8 @@ fn branch_hash_suffix(branch: &str) -> String {
     format!("{hash:016x}")[..8].to_string()
 }
 
-fn worktrees_parent(repo_root: &Path) -> PathBuf {
+/// `<repo>.worktrees`, the directory every branch's worktree is made in.
+pub fn worktrees_parent(repo_root: &Path) -> PathBuf {
     let repo_name = repo_root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

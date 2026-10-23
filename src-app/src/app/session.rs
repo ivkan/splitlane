@@ -556,6 +556,9 @@ impl SplitlaneApp {
             // them and one click puts one back on screen.
             parked_over_cap += park_evicted_surfaces(&capped.evicted, &cwd, &mut threads);
             parked_extra_tabs += park_evicted_surfaces(&capped.displaced_tabs, &cwd, &mut threads);
+            for thread in &mut threads {
+                thread.leave_removed_worktree(&cwd.to_string_lossy());
+            }
             let agent_views = Self::rebuild_slot_agent_views(ws_session, &threads, cx);
             // The ones that actually launched something are starting - the
             // same two seconds a restored window spends coming up, and the same

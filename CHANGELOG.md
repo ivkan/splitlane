@@ -16,6 +16,24 @@ Notable changes to Splitlane are recorded here. The format follows
   a copy nobody changed no longer keeps the worktree from being removed. See
   [Starting work](docs/user/index.md#starting-work).
 
+- **Search what you wrote in old sessions.** The palette's History tab now
+  also matches a query against everything you wrote in each Claude Code and
+  Codex session, not only its name and first prompt, and shows the line it
+  was found in. Searching also reaches past the 200 most recent sessions the
+  list shows. See [Starting work](docs/user/index.md#starting-work).
+
+### Fixed
+
+- **Sessions that ran in a worktree are listed with their project.** Claude
+  Code and Codex file a session under the folder it started in, so a session
+  in one of the project's worktrees was missing from the History tab and the
+  launcher, and once the worktree was removed nothing listed it. Both now
+  list it, from Splitlane's `<project>.worktrees` and from Claude Code's own
+  `.claude/worktrees`. Opening it resumes it in the worktree while that
+  exists, and in the project folder after it was removed. An open surface
+  whose worktree is removed moves to the project folder the next time it
+  starts, and resumes its session there.
+
 ## [0.2.12] - 2026-10-21
 
 ### Added

@@ -212,6 +212,18 @@ kept sessions live in the app's own process and survive none of these.
   lists them, edits them and can save the current layout as a new one;
   `⌘⇧1`-`⌘⇧3` start the first three. `splitlane up` reads the same files - see
   [Scripting](scripting.md).
+- **Going back to an old session.** The **History** tab of the command
+  palette (`⌘K`, then `Tab`) lists the agent sessions of every open project,
+  most recently active first. A query matches a session's name, project and
+  branch, and also anything you wrote in a Claude Code or Codex session, so a
+  session that moved on from its first subject is found by the later ones. A
+  row found that way shows the line it was found in. The first search after
+  starting Splitlane reads every session's file, which can take a few seconds
+  with many sessions; results come in as they are read, and later searches
+  are instant. Only what you wrote is searched, not the agent's answers.
+  Sessions that ran in one of the project's worktrees are listed with the
+  project, including after the worktree was removed. Such a session opens in
+  its worktree while it exists, and in the project folder once it does not.
 
 ## Dev servers
 
