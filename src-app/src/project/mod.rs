@@ -563,6 +563,11 @@ pub struct Thread {
     /// keeps the transcript under the worktree's path. Cleared when the
     /// surface moves to a session of its own. Persisted.
     pub transcript_cwd: Option<String>,
+    /// The worktree this new session is to run in is still being made. Its
+    /// terminal is not started until it is, or the agent would start in the
+    /// project folder. Transient: a restart finds the worktree made or not
+    /// and the surface where it is.
+    pub worktree_pending: bool,
     /// The terminal's count of keyboard submits when this session's opener
     /// last wrote text into it, or `None` if it never has.
     ///
@@ -626,6 +631,7 @@ impl Thread {
             opened_by_script: None,
             host_session: None,
             transcript_cwd: None,
+            worktree_pending: false,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -737,6 +743,7 @@ impl Thread {
             opened_by_script: None,
             host_session: None,
             transcript_cwd: None,
+            worktree_pending: false,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -944,6 +951,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         opened_by_script: payload.opened_by_script.clone(),
         host_session: payload.host_session.clone(),
         transcript_cwd: payload.transcript_cwd.clone(),
+        worktree_pending: false,
         opener_wrote_at: None,
         submits_at_turn_end: None,
         turn_began_unprompted: false,
@@ -1302,6 +1310,7 @@ mod tests {
             managed_worktrees: Vec::new(),
             preferred_agent: None,
             worktree_setup: None,
+            session_worktrees: None,
             group: None,
         }
     }

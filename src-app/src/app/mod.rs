@@ -43,6 +43,7 @@ pub mod running_sheet;
 pub mod self_update_flow;
 pub mod send_answer;
 pub mod session;
+pub mod session_worktree;
 pub mod sessions_sidebar;
 pub mod settings;
 pub mod sidebar;

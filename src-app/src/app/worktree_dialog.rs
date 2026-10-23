@@ -516,6 +516,9 @@ impl SplitlaneApp {
                 repo_root: plan.repo_root.clone(),
                 branch: plan.branch.clone(),
                 teardown: plan.teardown,
+                // A branch somebody named is theirs and is never deleted.
+                base: None,
+                port: None,
             });
 
         // The command is the repository's, not this worktree's: remember it

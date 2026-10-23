@@ -422,13 +422,26 @@ impl SplitlaneApp {
                     self.show_toast(format!("{} is not installed", agent.display_name()), cx);
                     return;
                 }
-                match self.add_terminal_thread(ws_idx, agent.display_name(), Some(agent), cx) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.show_toast(format!("Could not create session: {err:?}"), cx);
-                        return;
-                    }
+                let thread_id =
+                    match self.add_terminal_thread(ws_idx, agent.display_name(), Some(agent), cx) {
+                        Ok(id) => id,
+                        Err(err) => {
+                            self.show_toast(format!("Could not create session: {err:?}"), cx);
+                            return;
+                        }
+                    };
+                // Its terminal starts once its worktree is made, and the
+                // completion puts it on screen then.
+                if self.give_session_own_worktree(ws_idx, thread_id, cx) {
+                    pane.update(cx, |pane, cx| {
+                        pane.set_launching(false, cx);
+                        pane.clear_launcher_query(cx);
+                    });
+                    self.save_session(cx);
+                    cx.notify();
+                    return;
                 }
+                thread_id
             }
             LauncherAction::NewShell => {
                 let title = self

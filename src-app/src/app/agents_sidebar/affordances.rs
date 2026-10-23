@@ -455,6 +455,12 @@ impl SplitlaneApp {
                     return;
                 }
             };
+        // Selected when its worktree is made, since its terminal cannot start
+        // before.
+        if self.give_session_own_worktree(ws_idx, new_thread_id, cx) {
+            self.save_session(cx);
+            return;
+        }
         if let Some(project) = self.workspaces.get(ws_idx)
             && let Some(thread_idx) = project.threads.iter().position(|t| t.id == new_thread_id)
         {

@@ -222,6 +222,9 @@ impl SplitlaneApp {
         {
             Self::end_session_processes(view, cx);
         }
+        // Its worktree goes with it, if it was the session's own and holds
+        // nothing anybody would miss.
+        self.release_session_worktree(ws_idx, &removed.cwd, cx);
         // Keep the unified target in range. Only a target pointing
         // into THIS project's thread list is affected; a different
         // container's target is left untouched. Removing the

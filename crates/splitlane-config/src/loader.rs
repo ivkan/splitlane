@@ -1430,6 +1430,7 @@ mod tests {
             managed_worktrees: Vec::new(),
             preferred_agent: None,
             worktree_setup: None,
+            session_worktrees: None,
             group: None,
         }
     }
