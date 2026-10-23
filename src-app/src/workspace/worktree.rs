@@ -1234,7 +1234,9 @@ mod tests {
     }
 
     /// A repository with local files beside the code, a `.worktreeinclude`
-    /// naming some of them, and a fresh worktree of it.
+    /// naming some of them, and a fresh worktree of it. Only the Unix tests
+    /// use it: they make symlinks, which Windows hands out by privilege.
+    #[cfg(unix)]
     fn repo_with_local_files(name: &str) -> (PathBuf, PathBuf, PathBuf) {
         let tmp = std::env::temp_dir().join(format!(
             "splitlane-local-files-{name}-{}",
