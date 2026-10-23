@@ -5134,6 +5134,8 @@ impl SplitlaneApp {
         match session_binding_update(thread.session_id.as_deref(), reported, forced) {
             SessionBindingUpdate::Bind(id) => {
                 thread.session_id = Some(id);
+                // The new session is filed where the agent runs now.
+                thread.transcript_cwd = None;
                 self.save_session(cx);
             }
             SessionBindingUpdate::Conflict => {

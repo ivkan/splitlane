@@ -194,10 +194,14 @@ impl SplitlaneApp {
                         repo_root: wt.repo_root.to_string_lossy().into_owned(),
                         branch: wt.branch.clone(),
                         teardown: wt.teardown.as_str().to_string(),
+                        base: wt.base.clone(),
+                        port: wt.port,
+                        from: wt.from.clone(),
                     })
                     .collect(),
                 preferred_agent: ws.preferred_agent.map(|pref| pref.tag().to_string()),
                 worktree_setup: ws.worktree_setup.clone(),
+                session_worktrees: ws.session_worktrees,
                 // Only a group that is also written: one still waiting for its
                 // name is not a group yet, and a crash while naming it leaves
                 // the project where it now is, without one.
@@ -556,6 +560,9 @@ impl SplitlaneApp {
             // them and one click puts one back on screen.
             parked_over_cap += park_evicted_surfaces(&capped.evicted, &cwd, &mut threads);
             parked_extra_tabs += park_evicted_surfaces(&capped.displaced_tabs, &cwd, &mut threads);
+            for thread in &mut threads {
+                thread.leave_removed_worktree(&cwd.to_string_lossy());
+            }
             let agent_views = Self::rebuild_slot_agent_views(ws_session, &threads, cx);
             // The ones that actually launched something are starting - the
             // same two seconds a restored window spends coming up, and the same
@@ -644,6 +651,7 @@ impl SplitlaneApp {
             // What `+ worktree` runs in a tree it makes here. A blank string
             // in a hand-edited file reads as "run nothing", the same as
             // absent - the dialog only ever writes a trimmed value.
+            workspace.session_worktrees = ws_session.session_worktrees;
             workspace.worktree_setup = ws_session
                 .worktree_setup
                 .as_deref()
@@ -723,9 +731,18 @@ impl SplitlaneApp {
             let Some(thread) = threads.iter().find(|thread| thread.id == surface.id) else {
                 continue;
             };
+            let worktrees: Vec<(PathBuf, Option<u16>)> = ws_session
+                .managed_worktrees
+                .iter()
+                .map(|wt| (PathBuf::from(&wt.path), wt.port))
+                .collect();
+            let env = crate::workspace::worktree::port_env(
+                Path::new(&thread.cwd),
+                worktrees.iter().map(|(path, port)| (path.as_path(), *port)),
+            );
             views.insert(
                 thread.id,
-                Self::build_agent_terminal_view(thread, &config, cx),
+                Self::build_agent_terminal_view(thread, &config, env, cx),
             );
         }
         views
@@ -1475,12 +1492,22 @@ fn rehydrate_expanded_path(cwd: &str, rel: &str) -> Option<PathBuf> {
 fn rehydrate_managed_worktree(
     def: &splitlane_config::schema::ManagedWorktreeDef,
 ) -> Option<crate::workspace::worktree::ManagedWorktree> {
-    crate::workspace::worktree::managed_worktree_from_record(
+    let mut worktree = crate::workspace::worktree::managed_worktree_from_record(
         &def.path,
         &def.repo_root,
         &def.branch,
         &def.teardown,
-    )
+    )?;
+    // Only a full commit id, or the branch is not one this app may delete:
+    // the base is the whole permission, and a hand-edited value must not
+    // turn a person's branch into a disposable one.
+    worktree.base = def
+        .base
+        .clone()
+        .filter(|id| crate::workspace::worktree::is_commit_id(id));
+    worktree.port = def.port.filter(|port| *port >= 1024);
+    worktree.from = def.from.clone().filter(|from| !from.trim().is_empty());
+    Some(worktree)
 }
 
 fn persisted_expanded_paths(cwd: &str, expanded: &[PathBuf]) -> Vec<String> {
@@ -2474,9 +2501,15 @@ mod tests {
             repo_root: repo_root.to_string_lossy().into_owned(),
             branch: branch.to_string(),
             teardown: "auto".to_string(),
+            base: Some("not-a-commit".to_string()),
+            port: Some(4100),
+            from: None,
         };
 
         let restored = rehydrate_managed_worktree(&valid).expect("valid owned worktree restores");
+        // A base that is not a commit id gives no permission to delete.
+        assert_eq!(restored.base, None);
+        assert_eq!(restored.port, Some(4100));
         assert_eq!(restored.path, owned_path);
         assert_eq!(
             restored.teardown,

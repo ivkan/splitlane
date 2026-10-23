@@ -784,14 +784,23 @@ impl SplitlaneApp {
         // already has a transcript and resumes it on the thread's first mount.
         if let Some(ws_idx) = self.agent_sessions.sessions_project_idx {
             let terminal_agent = agent.terminal_agent();
-            let title = self
+            let row = self
                 .agent_sessions
                 .sessions_by_agent
                 .get(agent.index())
-                .and_then(|rows| rows.iter().find(|s| s.session_id == session_id))
+                .and_then(|rows| rows.iter().find(|s| s.session_id == session_id));
+            let cwd = row.map(|s| s.cwd.clone());
+            let title = row
                 .and_then(|s| s.summary.clone())
                 .unwrap_or_else(|| terminal_agent.display_name().to_string());
-            self.open_session_as_thread_in(ws_idx, terminal_agent, session_id, title, cx);
+            self.open_session_as_thread_in(
+                ws_idx,
+                terminal_agent,
+                session_id,
+                cwd.as_deref(),
+                title,
+                cx,
+            );
             return;
         }
         let Some(command) = resume_command(agent, session_id, &self.cached_config) else {
@@ -1342,6 +1351,7 @@ mod tests {
             git_branch: String::new(),
             summary: summary.map(str::to_string),
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }

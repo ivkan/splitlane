@@ -2093,7 +2093,7 @@ dependencies = [
  "fastrand",
  "futures-core",
  "futures-sink",
- "spin 0.9.8",
+ "spin 0.9.9",
 ]
 
 [[package]]
@@ -2562,7 +2562,7 @@ dependencies = [
  "serde_json",
  "slotmap",
  "smallvec",
- "spin 0.10.0",
+ "spin 0.10.1",
  "stacksafe",
  "strum",
  "sum_tree",
@@ -5600,9 +5600,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -6097,18 +6097,18 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 dependencies = [
  "lock_api",
 ]
@@ -6134,11 +6134,11 @@ dependencies = [
 
 [[package]]
 name = "splitlane-acp"
-version = "0.2.11"
+version = "0.2.12"
 
 [[package]]
 name = "splitlane-ai-hook"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "interprocess",
  "serde",
@@ -6148,7 +6148,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-app"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6245,7 +6245,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-config"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "dirs",
  "notify",
@@ -6258,7 +6258,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-ghostty-smoke"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "libc",
@@ -6268,7 +6268,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-host"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "alacritty_terminal",
  "interprocess",
@@ -6285,7 +6285,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-ipc-client"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "interprocess",
  "serde_json",
@@ -6295,14 +6295,14 @@ dependencies = [
 
 [[package]]
 name = "splitlane-libghostty-sys"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "splitlane-mcp"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "serde",
  "serde_json",
@@ -6311,7 +6311,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-mcp-install"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "dirs",
@@ -6325,11 +6325,11 @@ dependencies = [
 
 [[package]]
 name = "splitlane-process"
-version = "0.2.11"
+version = "0.2.12"
 
 [[package]]
 name = "splitlane-remote"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -6348,7 +6348,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-shim"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "ctrlc",
  "libc",
@@ -6359,7 +6359,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-telemetry"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "log",
  "serde",
@@ -6371,7 +6371,7 @@ dependencies = [
 
 [[package]]
 name = "splitlane-terminal-ghostty"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "base64",
  "regex",
@@ -7433,7 +7433,7 @@ dependencies = [
  "serde_json",
  "ureq-proto",
  "utf8-zero",
- "webpki-roots 1.0.7",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
@@ -7901,14 +7901,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.7",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.7"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]

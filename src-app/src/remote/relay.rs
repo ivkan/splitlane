@@ -19,6 +19,9 @@ use tungstenite::{Message, WebSocket};
 /// `JOIN_HEADER` reads the same name.
 const JOIN_HEADER: &str = "x-splitlane-join";
 
+/// How long a close waits for the relay's answer.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
+
 /// The relay unless `SPLITLANE_RELAY_URL` names another, as a test does.
 pub(crate) const DEFAULT_RELAY: &str = "wss://relay.splitlane.dev";
 
@@ -103,6 +106,19 @@ impl RelaySocket {
                 Err(e) => return Err(io::Error::other(e)),
             }
         }
+    }
+
+    /// End the connection with a close handshake, so that the last frame
+    /// sent reaches the relay. A socket that is just dropped with unread
+    /// data on it is reset, and a reset can take the frame sent just
+    /// before it along: a phone told nothing after the computer kept it.
+    pub(crate) fn close(mut self) {
+        let _ = self.socket.close(None);
+        let _ = self.set_read_timeout(Some(CLOSE_WAIT));
+        let deadline = std::time::Instant::now() + CLOSE_WAIT;
+        // Read until the relay's own close comes back, which ends the read
+        // with an error.
+        while std::time::Instant::now() < deadline && self.socket.read().is_ok() {}
     }
 
     /// Keep the connection alive through proxies and the relay's idle

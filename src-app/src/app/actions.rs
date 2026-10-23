@@ -184,6 +184,9 @@ actions!(
         // The Running sheet: every agent session, command and held session
         // at work, to look over and close.
         OpenRunning,
+        // The palette on its Branches tab: the branches and snapshots closed
+        // sessions left. What a kept-branch toast's `Show` opens.
+        OpenBranches,
         // The rail's `+ worktree`, beside `+ agent` and `+ shell`. It has no
         // default chord: the design gives worktree creation an affordance
         // where the project lives, not a key, and every unclaimed letter in a

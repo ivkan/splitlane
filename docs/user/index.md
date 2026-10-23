@@ -74,6 +74,12 @@ depends on the agent:
   Splitlane can read, so it only knows the process is running and when it
   exits.
 
+Hovering a Claude Code or Codex session's row lists what you wrote in it,
+each message on one line with when you sent it: all of them for a short
+session, the first and the last four for a longer one. It is your own words
+read from the session's record, not a summary, so it shows where a session
+got to when its title only says where it started.
+
 A run that finished while you were not looking stays marked until its pane is
 on screen. `⌥⇥` (`Ctrl+Shift+J`) jumps to the next session waiting for you.
 
@@ -192,19 +198,70 @@ kept sessions live in the app's own process and survive none of these.
 
 ## Starting work
 
-- **From the rail.** Each project row has `+ agent`, `+ shell` and
-  `+ worktree` (the last needs a git repository).
+- **From the rail.** Each project row has `+ agent` and `+ shell`, and
+  `+ worktree` in a git repository whose sessions do not get their own branch.
+- **Each session in its own branch.** In a git repository, an agent session
+  you start gets its own worktree and branch, `splitlane/` and six
+  characters, made from the project's current branch in `<repo>.worktrees/`.
+  It usually takes about a third of a second, before the agent starts; past
+  half a second the session's row says `making branch…`. If the worktree
+  cannot be made, the row says `no branch` and the session waits: its menu
+  has **Open without branch** to start it in the project folder instead.
+  Sessions that another session opens work in their opener's worktree. The
+  project's setup command, if it has one, runs in the new worktree beside the
+  agent. Hovering a session's row shows its branch, the branch it was made
+  from, what the branch holds (`3 changed files · 2 commits`) and its port;
+  the pane's header names the session's branch too.
+- **Closing a session with its own branch.** When nothing in the branch is
+  new, the session's worktree and branch go with it. When something is, the
+  delete card says what (changed files, lines, and commits that are on no
+  other branch) and offers **Keep branch**, which leaves the branch and its
+  worktree for git and the palette, or **Delete everything**, which first
+  saves a snapshot: a commit holding the branch's commits and the worktree's
+  uncommitted files, kept for 30 days. An ignored file you changed, such as
+  a filled-in `.env`, is in it too; ignored folders such as `node_modules`
+  are not. The palette's **Branches** tab (`⌘K`, then `Tab`) lists the kept
+  branches and snapshots by session name; `Enter` opens a new session on one
+  (a snapshot comes back as uncommitted changes on a new branch), and `⌘⌫`
+  deletes a kept branch, snapshot first. On a snapshot `⌘⌫` asks on a red
+  card, since nothing of that work is left after it. The tab appears only
+  when there is something in it.
+- **Ports per session.** Each session worktree gets ten ports of its own, the
+  first in `SPLITLANE_PORT` (from 4000 up), so two sessions of one project
+  can each run a dev server: start it with that port, or write the port into
+  `.env` from the setup command. Turn branches per session off for a project
+  whose work goes straight to its main branch with **New sessions get their
+  own branch** in the project's menu (right-click its row).
 - **Worktrees.** `+ worktree` asks for a branch name, bases the new branch on
   the project's current branch and creates the checkout in
   `<repo>.worktrees/<branch>`. It can run a setup command (remembered for the
   project), start an agent session in the new worktree, and remove the worktree
-  when the project closes.
+  when the project closes; a branch you named is never deleted. Files git does not track are not in a new
+  worktree, so Splitlane copies them from the project: the top-level `.env*`
+  files, `CLAUDE.local.md` and `AGENTS.override.md`, and whatever a
+  `.worktreeinclude` file in the project's root lists, one path or
+  gitignore-style pattern per line (the file Claude Code reads for its own
+  worktrees). Only what git ignores is copied, since an untracked copy would
+  keep git from removing the worktree later. A link is copied as a link that
+  points at the same place, and nothing already in the worktree is replaced.
 - **Presets.** A preset is a saved set of panes, each with its own directory
   and agent, stored as one TOML file per preset in
   `<config dir>/splitlane/presets/`. The Launch pad (`⌘⇧L`, `Ctrl+Shift+L`)
   lists them, edits them and can save the current layout as a new one;
   `⌘⇧1`-`⌘⇧3` start the first three. `splitlane up` reads the same files - see
   [Scripting](scripting.md).
+- **Going back to an old session.** The **History** tab of the command
+  palette (`⌘K`, then `Tab`) lists the agent sessions of every open project,
+  most recently active first. A query matches a session's name, project and
+  branch, and also anything you wrote in a Claude Code or Codex session, so a
+  session that moved on from its first subject is found by the later ones. A
+  row found that way shows the line it was found in. The first search after
+  starting Splitlane reads every session's file, which can take a few seconds
+  with many sessions; results come in as they are read, and later searches
+  are instant. Only what you wrote is searched, not the agent's answers.
+  Sessions that ran in one of the project's worktrees are listed with the
+  project, including after the worktree was removed. Such a session opens in
+  its worktree while it exists, and in the project folder once it does not.
 
 ## Dev servers
 
@@ -262,5 +319,6 @@ in CI but have had less hands-on use.
 - [Settings](settings.md) and [Themes](themes.md)
 - [Configuration schema](configuration/schema.md) - every `splitlane.json` key
 - [Hooks](hooks.md) - agent lifecycle hooks
+- [Your phone](phone.md) - following and answering agent sessions from a phone
 - [Troubleshooting](troubleshooting.md)
 - Source and issues: [github.com/ivkan/splitlane](https://github.com/ivkan/splitlane)

@@ -253,6 +253,11 @@ pub mod popover {
     pub const RUNNING_SHEET_LIST_MAX: Pixels = px(420.);
     /// The column its times are right-aligned in.
     pub const RUNNING_SHEET_TIME: Pixels = px(50.);
+    /// The widest a session row's hover card grows: room for a prompt's
+    /// first line, cut to fit, beside when it was sent.
+    pub const SESSION_TOOLTIP_MAX: Pixels = px(380.);
+    /// The column a prompt's time or day sits in, wide enough for `Dec 2025`.
+    pub const PROMPT_TIME: Pixels = px(48.);
 }
 
 /// The rail's project group: a filled label, and a rule down its members.

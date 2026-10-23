@@ -6,6 +6,93 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Each agent session in its own branch.** In a git repository, an agent
+  session you start now gets its own worktree and branch (`splitlane/` and
+  six characters) off the project's current branch, so two sessions never
+  edit the same checkout and you no longer decide up front whether a session
+  will touch code. Closing the session removes the worktree when it holds
+  nothing anybody would miss, and the branch when nothing was committed on
+  it; otherwise both stay and Splitlane says so. Sessions opened by another
+  session share their opener's worktree. Each worktree gets ten ports, the
+  first in `SPLITLANE_PORT`, for a dev server per session. **New sessions get
+  their own branch** in a project's menu turns it off, and brings back
+  `+ worktree` there. See [Starting work](docs/user/index.md#starting-work).
+- **Closing a session with work in its branch asks.** The delete card names
+  the branch and what it holds, and offers to keep it or delete everything;
+  deleting saves a snapshot first, kept for 30 days. The palette's new
+  **Branches** tab lists kept branches and snapshots by session name and opens
+  a new session on one. A session's row shows `making branch…` while its
+  worktree is slow to make, and `no branch`, with **Open without branch**,
+  when it cannot be made; hovering the row names its branch, what it holds
+  and its port. A snapshot can be deleted early from the Branches tab, on a
+  red card.
+
+- **A session's row lists what you wrote in it.** Hovering a Claude Code or
+  Codex session's row shows your messages in it, one line each with when you
+  sent them: the first and the last four of a long session. See
+  [Agents and their status](docs/user/index.md#agents-and-their-status).
+- **Search what you wrote in old sessions.** The palette's History tab now
+  also matches a query against everything you wrote in each Claude Code and
+  Codex session, not only its name and first prompt, and shows the line it
+  was found in. Searching also reaches past the 200 most recent sessions the
+  list shows. See [Starting work](docs/user/index.md#starting-work).
+
+- **A new worktree gets the project's local files.** Besides the top-level
+  `.env*` files, Splitlane now copies `CLAUDE.local.md`, `AGENTS.override.md`
+  and whatever a `.worktreeinclude` file in the project's root lists, one
+  path or gitignore-style pattern per line, the same file Claude Code reads
+  for its own worktrees. A link is copied as a link. When the project closes,
+  a copy nobody changed no longer keeps the worktree from being removed. See
+  [Starting work](docs/user/index.md#starting-work).
+
+### Fixed
+
+- **Sessions that ran in a worktree are listed with their project.** Claude
+  Code and Codex file a session under the folder it started in, so a session
+  in one of the project's worktrees was missing from the History tab and the
+  launcher, and once the worktree was removed nothing listed it. Both now
+  list it, from Splitlane's `<project>.worktrees` and from Claude Code's own
+  `.claude/worktrees`. Opening it resumes it in the worktree while that
+  exists, and in the project folder after it was removed. An open surface
+  whose worktree is removed moves to the project folder the next time it
+  starts, and resumes its session there.
+
+## [0.2.12] - 2026-10-21
+
+### Added
+
+- **Your phone.** A phone follows the agent sessions on the computer and
+  answers them, from a page at <https://splitlane.dev/app> added to its home
+  screen: nothing to install from a store. It lists the agent sessions by
+  project with their state and the question a waiting agent asks, and opens
+  one with its last answer, its screen, a reply field, the keys a prompt asks
+  for and interrupt. Pair it in **Settings → Phone → Pair a phone**: tap
+  **Scan code** on the phone, point it at the computer, and type the six
+  digits the phone then shows. The phone reaches the computer through a relay
+  at `relay.splitlane.dev` with neither side opening a port, and everything
+  between them is encrypted end to end; the relay forwards it unread. It
+  works while the window is closed and sessions run in the session host,
+  except interrupting. Each reply goes into a journal on the computer, without
+  its text. A phone may only write into agent sessions, and **Can reply**
+  turns writing off for one phone. `splitlane remote pair` pairs from a
+  terminal. See [Your phone](docs/user/phone.md).
+
+### Fixed
+
+- A session that ends its turn and starts the next one by itself, when a long
+  command of its own finishes, tells the session that opened it about each
+  end. Before, after a person asked it something in between, every later end
+  went to the person and the opener heard nothing. The opener's line now says
+  when a turn was taken up by itself, and when a command of its own is still
+  running.
+
+### Security
+
+- Certificate checks no longer accept paths through the distrusted emSign
+  intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
 ### Changed
 
 - Until you choose a theme, Splitlane follows the OS appearance: Harbor Light
