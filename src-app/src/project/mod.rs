@@ -558,6 +558,11 @@ pub struct Thread {
     /// yet is attached to when it gets one. `None` for a surface whose
     /// terminal the window owns.
     pub host_session: Option<String>,
+    /// The directory this surface's agent session started in, when it is not
+    /// [`Self::cwd`]: the session ran in a worktree that is gone, and its CLI
+    /// keeps the transcript under the worktree's path. Cleared when the
+    /// surface moves to a session of its own. Persisted.
+    pub transcript_cwd: Option<String>,
     /// The terminal's count of keyboard submits when this session's opener
     /// last wrote text into it, or `None` if it never has.
     ///
@@ -620,6 +625,7 @@ impl Thread {
             opened_by: None,
             opened_by_script: None,
             host_session: None,
+            transcript_cwd: None,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -711,6 +717,7 @@ impl Thread {
             opened_by: None,
             opened_by_script: None,
             host_session: None,
+            transcript_cwd: None,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -768,6 +775,7 @@ pub fn thread_to_surface(t: &Thread, slot: Option<usize>) -> ProjectSurface {
             opened_by: t.opened_by.clone(),
             opened_by_script: t.opened_by_script.clone(),
             host_session: t.host_session.clone(),
+            transcript_cwd: t.transcript_cwd.clone(),
         }),
     }
 }
@@ -916,6 +924,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         opened_by: payload.opened_by.clone(),
         opened_by_script: payload.opened_by_script.clone(),
         host_session: payload.host_session.clone(),
+        transcript_cwd: payload.transcript_cwd.clone(),
         opener_wrote_at: None,
         submits_at_turn_end: None,
         turn_began_unprompted: false,
@@ -1299,6 +1308,7 @@ mod tests {
                 opened_by: None,
                 opened_by_script: None,
                 host_session: None,
+                transcript_cwd: None,
             }),
         }
     }
@@ -1490,6 +1500,35 @@ mod tests {
         let plain = Thread::new_terminal("T", "/home/me", None);
         let json = serde_json::to_value(thread_to_surface(&plain, None)).expect("serialises");
         assert!(json["agent"].get("opened_by").is_none());
+    }
+
+    /// A session resumed after its worktree was removed reads its transcript
+    /// from the worktree's project directory, before and after a restart.
+    #[test]
+    fn a_transcript_filed_under_a_removed_worktree_is_found_after_restore() {
+        let mut thread = Thread::new_terminal_for_session(
+            "T",
+            "/work/app",
+            Some(crate::agent_launcher::TerminalAgent::ClaudeCode),
+            "11111111-1111-4111-8111-111111111111",
+        );
+        thread.transcript_cwd = Some("/work/app.worktrees/topic".to_string());
+        let restored = thread_from_surface(&thread_to_surface(&thread, None)).expect("restores");
+        assert_eq!(
+            restored.transcript_cwd.as_deref(),
+            Some("/work/app.worktrees/topic")
+        );
+        let path = crate::claude_sessions::transcript_path(&restored).expect("a path");
+        assert_eq!(
+            path.parent().and_then(|dir| dir.file_name()),
+            Some(std::ffi::OsStr::new(&crate::claude_sessions::slug_for_cwd(
+                "/work/app.worktrees/topic"
+            )))
+        );
+        // And a surface that never left its own folder writes no key at all.
+        let plain = Thread::new_terminal("T", "/home/me", None);
+        let json = serde_json::to_value(thread_to_surface(&plain, None)).expect("serialises");
+        assert!(json["agent"].get("transcript_cwd").is_none());
     }
 
     #[test]

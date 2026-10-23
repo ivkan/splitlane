@@ -51,6 +51,9 @@ pub(crate) struct HistoryRow {
     pub(crate) ws_idx: usize,
     pub(crate) project: String,
     pub(crate) branch: String,
+    /// Where the session started: the project's folder, or one of its
+    /// worktrees.
+    pub(crate) cwd: String,
     pub(crate) last_activity_secs: i64,
     /// The session's file, where the agent's store has one this app reads
     /// prompts from.
@@ -84,7 +87,13 @@ impl SplitlaneApp {
                     let mut rows: Vec<HistoryRow> = Vec::new();
                     for (ws_idx, project, cwd) in containers {
                         for agent in &agents {
-                            for meta in crate::agent_sessions::read_sessions_for_cwd(*agent, &cwd) {
+                            // A session that ran in one of the project's
+                            // worktrees is filed under the worktree, and is
+                            // still the project's - removed worktree or not.
+                            let own = crate::agent_sessions::read_sessions_for_cwd(*agent, &cwd);
+                            let in_worktrees =
+                                crate::agent_sessions::read_worktree_sessions(*agent, &cwd);
+                            for meta in own.into_iter().chain(in_worktrees) {
                                 rows.push(HistoryRow {
                                     agent: *agent,
                                     title: meta
@@ -99,6 +108,7 @@ impl SplitlaneApp {
                                     ws_idx,
                                     project: project.clone(),
                                     branch: meta.git_branch,
+                                    cwd: meta.cwd,
                                     last_activity_secs: meta.last_activity_secs,
                                     transcript: meta.transcript,
                                     prompts: None,
@@ -274,7 +284,7 @@ impl SplitlaneApp {
     /// that container. `SessionBinding::resolve` sees the adopted id already
     /// has a transcript and resumes it on the surface's first mount.
     pub(crate) fn resume_palette_history_row(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some((ws_idx, agent, session_id, title)) = self
+        let Some((ws_idx, agent, session_id, cwd, title)) = self
             .command_palette
             .as_ref()
             .and_then(|state| state.history.as_ref())
@@ -284,6 +294,7 @@ impl SplitlaneApp {
                     row.ws_idx,
                     row.agent.terminal_agent(),
                     row.session_id.clone(),
+                    row.cwd.clone(),
                     row.title.clone(),
                 )
             })
@@ -293,7 +304,7 @@ impl SplitlaneApp {
         // The palette closes without handing focus back: the surface it just
         // opened is where the user is going.
         self.command_palette = None;
-        self.open_session_as_thread_in(ws_idx, agent, &session_id, title, cx);
+        self.open_session_as_thread_in(ws_idx, agent, &session_id, Some(&cwd), title, cx);
         cx.notify();
     }
 }

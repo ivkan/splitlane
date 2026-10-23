@@ -791,7 +791,7 @@ impl SplitlaneApp {
                 .and_then(|rows| rows.iter().find(|s| s.session_id == session_id))
                 .and_then(|s| s.summary.clone())
                 .unwrap_or_else(|| terminal_agent.display_name().to_string());
-            self.open_session_as_thread_in(ws_idx, terminal_agent, session_id, title, cx);
+            self.open_session_as_thread_in(ws_idx, terminal_agent, session_id, None, title, cx);
             return;
         }
         let Some(command) = resume_command(agent, session_id, &self.cached_config) else {

@@ -740,8 +740,13 @@ impl SplitlaneApp {
         let bound_session = thread.session_id.clone();
         // Resolved against the on-disk session store below: the first launch
         // mints the id, every reopen reattaches to it. See
-        // [`crate::agent_launcher::SessionBinding`].
-        let thread_cwd = thread.cwd.clone();
+        // [`crate::agent_launcher::SessionBinding`]. Where the transcript is
+        // filed, which is not where the surface runs once its worktree is
+        // gone.
+        let transcript_cwd = thread
+            .transcript_cwd
+            .clone()
+            .unwrap_or_else(|| thread.cwd.clone());
         // Explicit per-thread agent wins; legacy `Agent`-kind chat rows
         // fall back to their stored ACP agent so reopening them launches
         // the same CLI in a terminal. Plain Terminal Threads stay a bare
@@ -800,7 +805,7 @@ impl SplitlaneApp {
         if let Some(agent) = terminal_agent {
             let binding = crate::agent_launcher::SessionBinding::resolve(
                 bound_session.as_deref(),
-                &thread_cwd,
+                &transcript_cwd,
             );
             let cmd = agent.launch_command_with_session(
                 config,

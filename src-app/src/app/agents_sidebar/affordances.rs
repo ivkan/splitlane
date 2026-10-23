@@ -514,11 +514,15 @@ impl SplitlaneApp {
     /// open in this project the existing thread is selected instead of a
     /// second one being created: two PTYs sharing one transcript is precisely
     /// what the forced session id is there to prevent.
+    ///
+    /// `session_cwd` is where the session started, for one that ran in a
+    /// worktree of the project; see `add_terminal_thread_for_session`.
     pub(crate) fn open_session_as_thread_in(
         &mut self,
         ws_idx: usize,
         agent: crate::agent_launcher::TerminalAgent,
         session_id: &str,
+        session_cwd: Option<&str>,
         title: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
@@ -536,6 +540,7 @@ impl SplitlaneApp {
             title,
             Some(agent),
             session_id,
+            session_cwd,
             cx,
         ) {
             Ok(id) => id,

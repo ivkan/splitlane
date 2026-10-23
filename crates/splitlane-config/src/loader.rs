@@ -1455,6 +1455,7 @@ mod tests {
                 opened_by: None,
                 opened_by_script: None,
                 host_session: None,
+                transcript_cwd: None,
             }),
         }
     }
