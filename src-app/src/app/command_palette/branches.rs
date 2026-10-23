@@ -10,8 +10,12 @@
 //! Enter opens a new session on the branch, in its worktree, made again if
 //! it was removed; on a snapshot it brings the snapshot back into a new
 //! branch first. `⌘⌫` on a branch deletes it the way the delete card's
+<<<<<<< HEAD
 //! `Delete everything` does, snapshot and all. On a snapshot it asks first,
 //! on a red card: nothing of the work is left after that one.
+=======
+//! `Delete everything` does, snapshot and all.
+>>>>>>> origin/main
 
 use gpui::Context;
 
@@ -20,6 +24,7 @@ use crate::workspace::session_branch::{self, LeftBehind, LeftKind};
 
 use super::{PaletteItem, PaletteTab};
 
+<<<<<<< HEAD
 /// A snapshot the person asked to delete, waiting on the card.
 pub(crate) struct DropSnapshot {
     repo_root: std::path::PathBuf,
@@ -29,6 +34,8 @@ pub(crate) struct DropSnapshot {
     holds: String,
 }
 
+=======
+>>>>>>> origin/main
 /// One row of the Branches tab.
 pub(crate) struct BranchRow {
     pub(crate) item: LeftBehind,
@@ -229,6 +236,7 @@ impl SplitlaneApp {
         else {
             return;
         };
+<<<<<<< HEAD
         let branch = match &row.item.kind {
             LeftKind::Branch { branch } => branch,
             LeftKind::Snapshot { reference, branch } => {
@@ -245,6 +253,17 @@ impl SplitlaneApp {
                 cx.notify();
                 return;
             }
+=======
+        let LeftKind::Branch { branch } = &row.item.kind else {
+            self.show_toast(
+                format!(
+                    "Snapshots go by themselves after {} days",
+                    session_branch::SNAPSHOT_DAYS
+                ),
+                cx,
+            );
+            return;
+>>>>>>> origin/main
         };
         // The list was read when the palette opened; a session may have
         // opened on the branch since.
@@ -294,6 +313,7 @@ impl SplitlaneApp {
         .detach();
     }
 
+<<<<<<< HEAD
     pub(crate) fn render_drop_snapshot_confirm(
         &self,
         asked: &DropSnapshot,
@@ -349,6 +369,8 @@ impl SplitlaneApp {
         .detach();
     }
 
+=======
+>>>>>>> origin/main
     /// The `Show` on a kept-branch toast: the palette, on this tab.
     pub(crate) fn handle_open_branches(
         &mut self,
@@ -367,6 +389,7 @@ impl SplitlaneApp {
     }
 }
 
+<<<<<<< HEAD
 /// The card's title, and what follows the branch's name in its body. Red,
 /// unlike `Delete everything`: that one leaves a snapshot behind, and this
 /// is the snapshot.
@@ -377,6 +400,8 @@ fn drop_snapshot_copy(asked: &DropSnapshot) -> (String, String) {
     )
 }
 
+=======
+>>>>>>> origin/main
 /// The branch a row is about, or the one a snapshot was taken of.
 pub(crate) fn branch_name(item: &LeftBehind) -> &str {
     match &item.kind {

@@ -25,9 +25,13 @@ Notable changes to Splitlane are recorded here. The format follows
   **Branches** tab lists kept branches and snapshots by session name and opens
   a new session on one. A session's row shows `making branch…` while its
   worktree is slow to make, and `no branch`, with **Open without branch**,
+<<<<<<< HEAD
   when it cannot be made; hovering the row names its branch, what it holds
   and its port. A snapshot can be deleted early from the Branches tab, on a
   red card.
+=======
+  when it cannot be made; hovering the row names its branch and port.
+>>>>>>> origin/main
 
 - **A session's row lists what you wrote in it.** Hovering a Claude Code or
   Codex session's row shows your messages in it, one line each with when you

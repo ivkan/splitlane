@@ -39,8 +39,11 @@ pub(crate) enum PromptSource {
 pub(crate) struct RowTooltip {
     /// The title, then the branch and port when the session has its own.
     pub(crate) head: Vec<String>,
+<<<<<<< HEAD
     /// The session's own worktree, whose work is counted under the branch.
     pub(crate) worktree: Option<crate::workspace::worktree::ManagedWorktree>,
+=======
+>>>>>>> origin/main
     pub(crate) prompts: Option<PromptSource>,
 }
 
@@ -51,12 +54,17 @@ pub(crate) fn row_tooltip(tip: RowTooltip) -> impl Fn(&mut Window, &mut App) -> 
 struct SessionTooltip {
     head: Vec<gpui::SharedString>,
     outline: Vec<OutlineLine>,
+<<<<<<< HEAD
     /// What the branch holds - `3 changed files · 2 commits` - once counted,
     /// and only when it holds something.
     work: Option<gpui::SharedString>,
     /// Dropped with the card, which cancels a read nobody is waiting for.
     _read: Option<Task<()>>,
     _count: Option<Task<()>>,
+=======
+    /// Dropped with the card, which cancels a read nobody is waiting for.
+    _read: Option<Task<()>>,
+>>>>>>> origin/main
 }
 
 impl SessionTooltip {
@@ -88,6 +96,7 @@ impl SessionTooltip {
                 }
             })
         });
+<<<<<<< HEAD
         let count = tip.worktree.map(|wt| {
             cx.spawn(async move |this, cx| {
                 let work =
@@ -110,6 +119,12 @@ impl SessionTooltip {
             work: None,
             _read: read,
             _count: count,
+=======
+        Self {
+            head: tip.head.into_iter().map(Into::into).collect(),
+            outline,
+            _read: read,
+>>>>>>> origin/main
         }
     }
 }
@@ -119,18 +134,26 @@ impl Render for SessionTooltip {
         let theme = crate::theme::active_theme();
         let ui = crate::theme::ui_colors();
         let now = chrono::Local::now();
+<<<<<<< HEAD
         // The title, the branch, what it holds, then the port.
         let mut lines = self.head.clone();
         if let Some(work) = &self.work {
             lines.insert(lines.len().min(2), work.clone());
         }
         let head = lines.into_iter().enumerate().map(|(i, line)| {
+=======
+        let head = self.head.iter().enumerate().map(|(i, line)| {
+>>>>>>> origin/main
             div()
                 .text_color(if i == 0 { ui.text } else { ui.text_tertiary })
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
+<<<<<<< HEAD
                 .child(line)
+=======
+                .child(line.clone())
+>>>>>>> origin/main
         });
         let prompts = (!self.outline.is_empty()).then(|| {
             div()

@@ -546,6 +546,7 @@ impl SplitlaneApp {
             .is_some_and(|ws| ws.repo_root.is_some())
         {
             context_menu = context_menu.child(context_menu_divider(ui));
+<<<<<<< HEAD
             // What unticking it means, on hover: a caption under one entry
             // would read as foreign in a menu.
             context_menu = context_menu.child(
@@ -568,6 +569,21 @@ impl SplitlaneApp {
                             }),
                         ),
                     ),
+=======
+            context_menu = context_menu.child(
+                self.render_select_menu_item(
+                    "workspace-context-session-worktrees".into(),
+                    "New sessions get their own branch",
+                    self.sessions_get_worktrees(idx)
+                        .then(|| SharedString::from("\u{2713}")),
+                    ui,
+                    cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        this.workspace_menu_open = None;
+                        this.toggle_session_worktrees(idx, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+>>>>>>> origin/main
             );
         }
 

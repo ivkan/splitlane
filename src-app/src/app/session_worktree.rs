@@ -603,6 +603,7 @@ impl SplitlaneApp {
     /// A session row's hover text about its branch: the branch and where it
     /// came from, or whose worktree the session shares, and its port. Or why
     /// it has no branch.
+<<<<<<< HEAD
     /// The managed worktree `thread` works in, if it works in one.
     pub(crate) fn session_worktree_of(
         &self,
@@ -617,6 +618,8 @@ impl SplitlaneApp {
             .find(|wt| cwd.starts_with(&wt.path))
     }
 
+=======
+>>>>>>> origin/main
     pub(crate) fn session_branch_tooltip(
         &self,
         ws_idx: usize,
@@ -629,7 +632,15 @@ impl SplitlaneApp {
             ));
         }
         let ws = self.workspaces.get(ws_idx)?;
+<<<<<<< HEAD
         let wt = self.session_worktree_of(ws_idx, thread)?;
+=======
+        let cwd = std::path::Path::new(&thread.cwd);
+        let wt = ws
+            .managed_worktrees
+            .iter()
+            .find(|wt| cwd.starts_with(&wt.path))?;
+>>>>>>> origin/main
         let opener = thread
             .opened_by
             .as_ref()
