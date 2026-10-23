@@ -14,6 +14,14 @@ Notable changes to Splitlane are recorded here. The format follows
   was found in. Searching also reaches past the 200 most recent sessions the
   list shows. See [Starting work](docs/user/index.md#starting-work).
 
+- **A new worktree gets the project's local files.** Besides the top-level
+  `.env*` files, Splitlane now copies `CLAUDE.local.md`, `AGENTS.override.md`
+  and whatever a `.worktreeinclude` file in the project's root lists, one
+  path or gitignore-style pattern per line, the same file Claude Code reads
+  for its own worktrees. A link is copied as a link. When the project closes,
+  a copy nobody changed no longer keeps the worktree from being removed. See
+  [Starting work](docs/user/index.md#starting-work).
+
 ### Fixed
 
 - **Sessions that ran in a worktree are listed with their project.** Claude
