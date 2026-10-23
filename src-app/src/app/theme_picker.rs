@@ -244,11 +244,9 @@ impl SplitlaneApp {
                 // neutral trailing check - no accent-blue focus text.
                 let is_selected = idx == self.theme_picker_selected_idx;
                 let is_current = *name == current_name.as_str();
-                let label = if *name == crate::theme::DEFAULT_THEME_NAME {
-                    format!("{} (Default)", name)
-                } else {
-                    (*name).to_string()
-                };
+                // No "(Default)" mark: with nothing chosen the app follows the
+                // OS, so no single name in this list is the default.
+                let label = (*name).to_string();
                 let name_owned = name.to_string();
 
                 list = list.child(

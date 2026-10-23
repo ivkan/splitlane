@@ -5,7 +5,7 @@ chosen by name from the bundled set.
 
 | Name | |
 |---|---|
-| `Harbor Dark` | Dark. The default. |
+| `Harbor Dark` | Dark. |
 | `Harbor Light` | Light counterpart of Harbor Dark. |
 | `One Dark` | Dark, based on the One Dark palette. |
 
@@ -31,7 +31,10 @@ With **System**, Splitlane follows the OS: when the appearance changes, it
 switches between Harbor Light and Harbor Dark and saves the new name to
 `theme`. System only ever chooses between the two Harbor themes.
 
-**Reset to default** removes both keys, which gives Harbor Dark.
+Until you choose a theme, Splitlane behaves as if you had chosen **System**:
+the first time the window opens it saves `"theme_mode": "system"` and the
+Harbor theme that matches the OS. **Reset to default** removes both keys, which
+returns to that.
 
 ## In splitlane.json
 
@@ -42,7 +45,8 @@ The theme that is drawn is the one named by `theme`:
 ```
 
 - The name is matched case-insensitively.
-- An absent or `null` `theme` gives Harbor Dark.
+- An absent or `null` `theme`, with no `theme_mode`, follows the OS as
+  System does.
 - An unknown name also gives Harbor Dark, and logs `Unknown theme '<name>',
   using default`.
 
