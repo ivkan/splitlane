@@ -59,6 +59,11 @@ Notable changes to Splitlane are recorded here. The format follows
   whose worktree is removed moves to the project folder the next time it
   starts, and resumes its session there.
 
+### Changed
+
+- A pinned session keeps a star beside its status dot in the rail, so the
+  pinned ones stand out from the rest of the project without hovering.
+
 ### Fixed
 
 - **Opening a Codex or other non-Claude session from history resumes it.**
@@ -102,6 +107,13 @@ Notable changes to Splitlane are recorded here. The format follows
 
 - Certificate checks no longer accept paths through the distrusted emSign
   intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
+### Changed
+
+- Until you choose a theme, Splitlane follows the OS appearance: Harbor Light
+  on a light desktop, Harbor Dark on a dark one. Before, it always started
+  dark. A theme you already chose is kept, and Reset to default now returns
+  to following the OS.
 
 ## [0.2.11] - 2026-10-18
 

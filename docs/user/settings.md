@@ -32,7 +32,7 @@ what they mean. For keys that have no row here, see the
 
 | Row | What it is | Key |
 |---|---|---|
-| Theme | System, Harbor Dark, Harbor Light or One Dark, each shown with a preview of its colours. **Reset to default** returns to Harbor Dark. | `theme`, `theme_mode` |
+| Theme | System, Harbor Dark, Harbor Light or One Dark, each shown with a preview of its colours. **Reset to default** returns to System. | `theme`, `theme_mode` |
 
 How the choice is stored, and what System does, is on the
 [Themes](themes.md) page.

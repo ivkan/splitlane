@@ -46,8 +46,8 @@ pub struct SplitlaneConfig {
     pub shortcuts: HashMap<String, String>,
     /// Default shell binary path. `None` uses the system default.
     pub default_shell: Option<String>,
-    /// Terminal color theme name: "Harbor Dark" (the default), "Harbor Light"
-    /// or "One Dark".
+    /// Terminal color theme name: "Harbor Dark", "Harbor Light" or "One Dark".
+    /// Unset together with `theme_mode`, the app follows the OS appearance.
     pub theme: Option<String>,
     /// Theme selection mode: `"light"`, `"dark"`, or `"system"`. `theme`
     /// stores the currently resolved concrete bundled theme for compatibility.
@@ -1965,8 +1965,8 @@ pub struct AgentSurface {
     /// shell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_agent: Option<String>,
-    /// Whether the user pinned this surface. Pinned rows are surfaced in the
-    /// rail's PINNED section across containers and free chats.
+    /// Whether the user pinned this surface. A pinned row rises to the top of
+    /// its project in the rail and keeps a star at rest.
     #[serde(default)]
     pub pinned: bool,
     /// Forced agent session UUID for a Claude surface, passed as
