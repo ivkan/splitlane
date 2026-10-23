@@ -462,6 +462,28 @@ fn person_mark(value: &serde_json::Value) -> Option<PersonMark> {
         .then_some(PersonMark::Prompt)
 }
 
+/// What a person wrote in one transcript record, for searching: the text of a
+/// prompt, every text block of it, and nothing for a record [`person_mark`]
+/// does not call a prompt. An image or a document sent alone has no text and
+/// gives nothing.
+pub(crate) fn prompt_text(value: &serde_json::Value) -> Option<String> {
+    if person_mark(value)? != PersonMark::Prompt {
+        return None;
+    }
+    let content = value.get("message")?.get("content")?;
+    let text = match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// Read the last `window` bytes of a `len`-byte transcript for the newest
 /// answer.
 ///
@@ -1955,6 +1977,7 @@ fn read_session_meta_inner(path: &Path, scan_usage: bool) -> Option<SessionMeta>
         git_branch: envelope.git_branch,
         summary,
         first_prompt,
+        transcript: Some(path.to_path_buf()),
         model,
         usage: saw_usage.then_some(usage),
     })
@@ -4210,6 +4233,7 @@ mod tests {
             git_branch: String::new(),
             summary: None,
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }];

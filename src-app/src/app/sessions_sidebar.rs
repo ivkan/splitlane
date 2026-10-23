@@ -1342,6 +1342,7 @@ mod tests {
             git_branch: String::new(),
             summary: summary.map(str::to_string),
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }
