@@ -64,6 +64,16 @@ Notable changes to Splitlane are recorded here. The format follows
 - A pinned session keeps a star beside its status dot in the rail, so the
   pinned ones stand out from the rest of the project without hovering.
 
+### Fixed
+
+- **Opening a Codex or other non-Claude session from history resumes it.**
+  The History tab and the launcher opened a session of any agent but Claude
+  Code as a new, empty one: the picked id was dropped when the surface was
+  made, and the launch did not use it. A Codex surface also started a new
+  conversation when it was launched again after a restart. Both now resume
+  the session with the agent's own resume command (`codex resume <id>`,
+  `opencode --session <id>`, and so on).
+
 ## [0.2.12] - 2026-10-21
 
 ### Added

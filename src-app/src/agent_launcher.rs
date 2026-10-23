@@ -36,8 +36,8 @@ use splitlane_config::schema::SplitlaneConfig;
 /// [`SessionBinding::resolve`] exists to prevent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBinding<'a> {
-    /// No forced id: bare shell, non-Claude agent, or a thread that never
-    /// minted one.
+    /// No id: a bare shell, or a surface whose agent has not yet reported or
+    /// been given one.
     Unbound,
     /// The id has no session file yet - mint it (`--session-id <uuid>`).
     Mint(&'a str),
@@ -696,8 +696,9 @@ impl TerminalAgent {
     /// `--session-id <uuid>` to mint, `--resume <uuid>` to reattach. The flag
     /// lands right after the binary so it composes with the optional
     /// `--permission-mode bypassPermissions` already baked into the base
-    /// command. Any other agent (or [`SessionBinding::Unbound`]) yields the
-    /// plain base command.
+    /// command. Any other agent with an id is resumed with its own resume
+    /// command (the one the sessions sidebar types); without one, or for
+    /// [`SessionBinding::Unbound`], it gets the plain base command.
     fn command_with_session(
         self,
         config: &SplitlaneConfig,
@@ -705,6 +706,19 @@ impl TerminalAgent {
         opening_prompt_key: Option<&str>,
     ) -> String {
         let mut spec = self.launch_spec(config);
+        // Every other agent this build lists sessions for reopens one by id
+        // with its own resume command. It never mints: an id on such a
+        // surface came from that agent - adopted from history, or reported by
+        // its hook - so `Mint` here only means there is no *Claude* file for
+        // it, and the session is resumed either way.
+        if self != TerminalAgent::ClaudeCode
+            && let SessionBinding::Mint(id) | SessionBinding::Resume(id) = binding
+            && let Some(resume) = self.session_agent().and_then(|agent| {
+                crate::app::sessions_sidebar::resume_command_spec(agent, id, config)
+            })
+        {
+            spec = resume;
+        }
         if self == TerminalAgent::ClaudeCode {
             let bound = match binding {
                 SessionBinding::Unbound => None,
@@ -1501,8 +1515,13 @@ mod tests {
         assert_eq!(TerminalAgent::Openclaw.command(&cfg), "openclaw tui");
     }
 
+    /// An id on a non-Claude surface came from that agent, so it is resumed
+    /// with the agent's own command whatever the Claude-file check said, and
+    /// never sent as `--session-id`. It used to be ignored, so a session
+    /// picked from history, or a Codex surface relaunched after a restart,
+    /// started a new conversation.
     #[test]
-    fn non_claude_ignores_forced_session_id() {
+    fn non_claude_resumes_its_own_session_by_id() {
         let cfg = SplitlaneConfig::default();
         for binding in [
             SessionBinding::Mint(SAMPLE_UUID),
@@ -1510,13 +1529,27 @@ mod tests {
         ] {
             assert_eq!(
                 TerminalAgent::Codex.command_with_session(&cfg, binding, None),
-                "codex"
+                format!("codex resume {SAMPLE_UUID}")
             );
             assert_eq!(
                 TerminalAgent::OpenCode.command_with_session(&cfg, binding, None),
-                "opencode"
+                format!("opencode --session {SAMPLE_UUID}")
             );
         }
+        assert_eq!(
+            TerminalAgent::Codex.command_with_session(&cfg, SessionBinding::Unbound, None),
+            "codex"
+        );
+        // A flag-shaped id is refused by the resume builder, and the agent
+        // starts unbound rather than with it.
+        assert_eq!(
+            TerminalAgent::Codex.command_with_session(
+                &cfg,
+                SessionBinding::Resume("--dangerously-bypass-approvals-and-sandbox"),
+                None
+            ),
+            "codex"
+        );
     }
 
     #[test]

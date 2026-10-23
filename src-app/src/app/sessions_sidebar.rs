@@ -1272,7 +1272,7 @@ pub(crate) fn resume_command(
     resume_command_spec(agent, session_id, config).map(|spec| spec.render_shell_command())
 }
 
-fn resume_command_spec(
+pub(crate) fn resume_command_spec(
     agent: SessionAgent,
     session_id: &str,
     config: &splitlane_config::schema::SplitlaneConfig,
