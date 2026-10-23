@@ -11,6 +11,7 @@
 pub(crate) mod git;
 pub mod pid_resolve;
 mod ports;
+pub mod session_branch;
 pub mod surface_naming;
 pub mod worktree;
 

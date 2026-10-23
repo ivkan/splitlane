@@ -118,7 +118,7 @@ impl SplitlaneApp {
             .border_b_1()
             .border_color(ui.border);
 
-        for tab in PaletteTab::ALL {
+        for tab in self.command_palette_tabs() {
             let is_active = tab == active;
             let (border, background, text) = if is_active {
                 (ui.accent_border, ui.accent_surface, ui.accent)
@@ -375,6 +375,27 @@ impl SplitlaneApp {
                     row.title.clone(),
                     detail,
                     format!("last active {}", relative_age(row.last_activity_secs)),
+                )
+            }
+            PaletteItem::Branch { index } => {
+                let Some(row) = self
+                    .command_palette
+                    .as_ref()
+                    .and_then(|state| state.branches.as_ref())
+                    .and_then(|rows| rows.get(*index))
+                else {
+                    return (String::new(), String::new(), String::new());
+                };
+                let what = match &row.item.kind {
+                    crate::workspace::session_branch::LeftKind::Branch { branch } => branch.clone(),
+                    crate::workspace::session_branch::LeftKind::Snapshot { .. } => {
+                        "snapshot".to_string()
+                    }
+                };
+                (
+                    row.item.title.clone(),
+                    format!("{} \u{b7} {what} \u{b7} {}", row.project, row.holds),
+                    relative_age(row.item.when_secs as i64),
                 )
             }
             PaletteItem::Output { index } => {

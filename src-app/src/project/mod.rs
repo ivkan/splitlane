@@ -567,7 +567,13 @@ pub struct Thread {
     /// terminal is not started until it is, or the agent would start in the
     /// project folder. Transient: a restart finds the worktree made or not
     /// and the surface where it is.
-    pub worktree_pending: bool,
+    pub worktree_pending: Option<std::time::Instant>,
+    /// Why its worktree could not be made. The session does not start in the
+    /// project folder on its own: a person who thinks their session is
+    /// isolated must not find it editing the main checkout. It waits, with a
+    /// red dot and `no branch`, until they choose to open it without one.
+    /// Transient, like [`Self::worktree_pending`].
+    pub worktree_failed: Option<String>,
     /// The terminal's count of keyboard submits when this session's opener
     /// last wrote text into it, or `None` if it never has.
     ///
@@ -631,7 +637,8 @@ impl Thread {
             opened_by_script: None,
             host_session: None,
             transcript_cwd: None,
-            worktree_pending: false,
+            worktree_pending: None,
+            worktree_failed: None,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -743,7 +750,8 @@ impl Thread {
             opened_by_script: None,
             host_session: None,
             transcript_cwd: None,
-            worktree_pending: false,
+            worktree_pending: None,
+            worktree_failed: None,
             opener_wrote_at: None,
             submits_at_turn_end: None,
             turn_began_unprompted: false,
@@ -951,7 +959,8 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         opened_by_script: payload.opened_by_script.clone(),
         host_session: payload.host_session.clone(),
         transcript_cwd: payload.transcript_cwd.clone(),
-        worktree_pending: false,
+        worktree_pending: None,
+        worktree_failed: None,
         opener_wrote_at: None,
         submits_at_turn_end: None,
         turn_began_unprompted: false,

@@ -638,7 +638,7 @@ impl SplitlaneApp {
         let thread_id = thread.id;
         // Its worktree is still being made: the terminal starts when it is
         // there, and the completion selects the surface then.
-        if thread.worktree_pending {
+        if thread.worktree_pending.is_some() || thread.worktree_failed.is_some() {
             return None;
         }
         // A surface showing in a slot is authoritative over the cache: the

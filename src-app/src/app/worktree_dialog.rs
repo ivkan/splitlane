@@ -519,6 +519,7 @@ impl SplitlaneApp {
                 // A branch somebody named is theirs and is never deleted.
                 base: None,
                 port: None,
+                from: None,
             });
 
         // The command is the repository's, not this worktree's: remember it

@@ -2061,6 +2061,9 @@ pub struct ManagedWorktreeDef {
     /// The first of the worktree's ten ports (`SPLITLANE_PORT`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// The project branch the worktree's branch was made from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// A user-defined command button rendered in a workspace's tab bar.

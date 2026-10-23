@@ -10,7 +10,7 @@ Notable changes to Splitlane are recorded here. The format follows
 
 - **Each agent session in its own branch.** In a git repository, an agent
   session you start now gets its own worktree and branch (`splitlane/` and
-  four characters) off the project's current branch, so two sessions never
+  six characters) off the project's current branch, so two sessions never
   edit the same checkout and you no longer decide up front whether a session
   will touch code. Closing the session removes the worktree when it holds
   nothing anybody would miss, and the branch when nothing was committed on
@@ -19,6 +19,13 @@ Notable changes to Splitlane are recorded here. The format follows
   first in `SPLITLANE_PORT`, for a dev server per session. **New sessions get
   their own branch** in a project's menu turns it off, and brings back
   `+ worktree` there. See [Starting work](docs/user/index.md#starting-work).
+- **Closing a session with work in its branch asks.** The delete card names
+  the branch and what it holds, and offers to keep it or delete everything;
+  deleting saves a snapshot first, kept for 30 days. The palette's new
+  **Branches** tab lists kept branches and snapshots by session name and opens
+  a new session on one. A session's row shows `making branch…` while its
+  worktree is slow to make, and `no branch`, with **Open without branch**,
+  when it cannot be made; hovering the row names its branch and port.
 
 - **Search what you wrote in old sessions.** The palette's History tab now
   also matches a query against everything you wrote in each Claude Code and
