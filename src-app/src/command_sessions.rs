@@ -214,6 +214,7 @@ fn parse_session_line(
         cwd: cwd.to_string(),
         git_branch: String::new(),
         first_prompt: summary.clone(),
+        transcript: None,
         summary,
         model: None,
         usage: None,

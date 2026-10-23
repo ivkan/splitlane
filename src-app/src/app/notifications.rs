@@ -46,6 +46,8 @@ pub(crate) enum ToastAction {
     /// Used for the 4th-attempt fallback (AC: "Download manually from the
     /// releases page").
     OpenReleasesPage(String),
+    /// "Show" - opens the palette on the branches and snapshots sessions left.
+    ShowBranches,
 }
 
 impl SplitlaneApp {
@@ -128,10 +130,12 @@ impl SplitlaneApp {
         let has_actions = !toast.actions.is_empty();
         // An action button marks an error only when it is a way to recover
         // from one; `Review…` is a way to look.
-        let recovers = toast
-            .actions
-            .iter()
-            .any(|action| !matches!(action, ToastAction::ReviewRunning));
+        let recovers = toast.actions.iter().any(|action| {
+            !matches!(
+                action,
+                ToastAction::ReviewRunning | ToastAction::ShowBranches
+            )
+        });
         let is_error = recovers || toast_message_reads_like_error(&toast.message);
         let (icon, icon_color, max_w) = if is_error {
             ("icons/triangle-alert.svg", ui.agent_error, px(440.))
@@ -179,6 +183,7 @@ impl SplitlaneApp {
                 let (label, button_id): (&str, String) = match action {
                     ToastAction::RetryUpdate => ("Retry", format!("toast-retry-{idx}")),
                     ToastAction::ReviewRunning => ("Review…", format!("toast-review-{idx}")),
+                    ToastAction::ShowBranches => ("Show", format!("toast-branches-{idx}")),
                     ToastAction::OpenReleasesPage(_) => {
                         ("Open releases", format!("toast-releases-{idx}"))
                     }
@@ -208,6 +213,9 @@ impl SplitlaneApp {
                         }
                         ToastAction::ReviewRunning => {
                             window.dispatch_action(Box::new(crate::OpenRunning), cx);
+                        }
+                        ToastAction::ShowBranches => {
+                            window.dispatch_action(Box::new(crate::OpenBranches), cx);
                         }
                         ToastAction::OpenReleasesPage(url) => {
                             if let Err(err) = crate::external_open::open_url(url) {

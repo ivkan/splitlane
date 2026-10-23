@@ -530,6 +530,7 @@ pub mod cache {
                 git_branch: "main".into(),
                 summary: Some("old".into()),
                 first_prompt: None,
+                transcript: None,
                 model: None,
                 usage: None,
             }];
@@ -747,6 +748,84 @@ pub(crate) fn cwd_matches(recorded: &str, scanned: &str) -> bool {
     }
 }
 
+/// Whether `recorded` is a directory strictly inside `dir`, with the same
+/// case and separator rules as [`cwd_matches`]. A path that climbs with `..`
+/// is never inside: it is compared as text, and `dir/../elsewhere` would
+/// pass.
+pub(crate) fn cwd_within(recorded: &str, dir: &str) -> bool {
+    if Path::new(recorded)
+        .components()
+        .any(|part| part == std::path::Component::ParentDir)
+    {
+        return false;
+    }
+    #[cfg(windows)]
+    fn normalize(path: &str) -> String {
+        trim_trailing_path_separators(path)
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    fn normalize(path: &str) -> String {
+        trim_trailing_path_separators(path).to_string()
+    }
+    let (recorded, dir) = (normalize(recorded), normalize(dir));
+    recorded
+        .strip_prefix(&dir)
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|c| c == '/' || c == '\\')
+}
+
+/// Which recorded working directories a session read keeps.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CwdFilter<'a> {
+    /// Exactly this directory.
+    Is(&'a str),
+    /// Anywhere inside one of these directories, never one of them itself.
+    Within(&'a [String]),
+}
+
+impl CwdFilter<'_> {
+    pub(crate) fn admits(&self, recorded: &str) -> bool {
+        match self {
+            CwdFilter::Is(cwd) => cwd_matches(recorded, cwd),
+            CwdFilter::Within(dirs) => dirs.iter().any(|dir| cwd_within(recorded, dir)),
+        }
+    }
+}
+
+/// The folders under which a project's worktrees are made: Splitlane's own
+/// `<repo>.worktrees/` beside the checkout, and Claude Code's
+/// `.claude/worktrees/` inside it.
+///
+/// A session that ran in a worktree is filed by its CLI under the worktree's
+/// path, not the project's, so a read of the project folder alone loses it -
+/// and once the worktree is removed, nothing else lists it either. These are
+/// derived from the path alone, without asking git, so a worktree that is
+/// already gone still counts.
+pub(crate) fn worktree_roots(cwd: &str) -> Vec<String> {
+    let root = Path::new(trim_trailing_path_separators(cwd));
+    [
+        crate::workspace::worktree::worktrees_parent(root),
+        root.join(".claude").join("worktrees"),
+    ]
+    .into_iter()
+    .map(|dir| dir.to_string_lossy().into_owned())
+    .collect()
+}
+
+/// Sessions of the project at `cwd` that started in one of its worktrees, for
+/// the agents whose stores this build can search that way. Blocking: call from
+/// inside `smol::unblock`.
+pub(crate) fn read_worktree_sessions(agent: SessionAgent, cwd: &str) -> Vec<SessionMeta> {
+    let roots = worktree_roots(cwd);
+    match agent {
+        SessionAgent::Claude => crate::claude_sessions::read_sessions_within(&roots),
+        SessionAgent::Codex => crate::codex_sessions::read_sessions_within(&roots),
+        _ => Vec::new(),
+    }
+}
+
 /// Unified session metadata. Anything the UI needs to render a row +
 /// resume the session is here; the heavier message payload stays on disk.
 #[derive(Debug, Clone)]
@@ -799,6 +878,10 @@ pub struct SessionMeta {
     /// worst gap zero; the other 390 have no title and already fall back to
     /// this very text.
     pub first_prompt: Option<String>,
+    /// The file the session is stored in, for readers that search what the
+    /// person wrote in it. Only Claude Code and Codex fill it: theirs are the
+    /// stores whose prompt records this app can tell from the CLI's own.
+    pub transcript: Option<std::path::PathBuf>,
     /// Model name from the session transcript (e.g.
     /// `claude-opus-4-...`, `gpt-5`). `None` on the title-only popover scan or
     /// when the agent doesn't record one. Drives the attribution badge label +
@@ -1185,6 +1268,7 @@ mod tests {
             git_branch: String::new(),
             summary: None,
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }
@@ -1482,6 +1566,7 @@ mod tests {
             git_branch: branch.into(),
             summary: None,
             first_prompt: None,
+            transcript: None,
             model: None,
             usage: None,
         }
@@ -1623,5 +1708,60 @@ mod tests {
         // boundary (chars().take(10) -- not bytes().take(10)).
         let multi = format_relative_time("café-timestamp-very-long");
         assert_eq!(multi.chars().count(), 10);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn cwd_within_takes_directories_below_and_nothing_beside() {
+        assert!(cwd_within(
+            "/work/app.worktrees/topic",
+            "/work/app.worktrees"
+        ));
+        assert!(cwd_within(
+            "/work/app.worktrees/topic/sub",
+            "/work/app.worktrees/"
+        ));
+        assert!(!cwd_within("/work/app.worktrees", "/work/app.worktrees"));
+        assert!(!cwd_within(
+            "/work/app.worktrees-old/x",
+            "/work/app.worktrees"
+        ));
+        assert!(!cwd_within("/work/app", "/work/app.worktrees"));
+        assert!(!cwd_within(
+            "/work/app.worktrees/../../etc",
+            "/work/app.worktrees"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cwd_within_ignores_case_and_separator_on_windows() {
+        assert!(cwd_within(
+            r"c:\Work\app.worktrees\topic",
+            "C:/work/app.worktrees"
+        ));
+        assert!(!cwd_within(
+            r"C:\work\app.worktrees-old\x",
+            r"C:\work\app.worktrees"
+        ));
+    }
+
+    #[test]
+    fn a_projects_worktree_roots_are_beside_it_and_inside_its_claude_folder() {
+        let root = std::path::Path::new("work").join("app");
+        let roots = worktree_roots(&root.to_string_lossy());
+        assert_eq!(
+            roots,
+            vec![
+                std::path::Path::new("work")
+                    .join("app.worktrees")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join(".claude")
+                    .join("worktrees")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        );
     }
 }

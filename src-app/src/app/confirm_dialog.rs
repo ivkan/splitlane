@@ -28,6 +28,13 @@ pub(crate) struct ConfirmDialog {
     pub id: &'static str,
     pub title: String,
     pub body: String,
+    /// A name to set in the body as code - a branch, a path - and the text
+    /// that follows it: `body`, then the code, then the rest, as one
+    /// paragraph.
+    pub body_code: Option<(String, String)>,
+    /// A quieter second paragraph under the body: what each answer does with
+    /// what is at stake.
+    pub note: Option<String>,
     pub confirm_label: String,
     /// An answer that ends nothing, drawn between `Cancel` and the danger
     /// button. When there is one, `enter` gives it: a key pressed without
@@ -69,6 +76,8 @@ pub(crate) fn render_confirm_dialog(
         id,
         title,
         body,
+        body_code,
+        note,
         confirm_label,
         safe,
         focus,
@@ -142,12 +151,13 @@ pub(crate) fn render_confirm_dialog(
                         .text_color(ui.text)
                         .child(title),
                 )
-                .child(
+                .child(body_paragraph(body, body_code, ui))
+                .children(note.map(|note| {
                     div()
-                        .text_size(tok::text::ROW)
-                        .text_color(ui.muted)
-                        .child(body),
-                )
+                        .text_size(tok::text::CAPTION)
+                        .text_color(ui.dim)
+                        .child(note)
+                }))
                 .child({
                     let plain = |part: &str, label: String, weight: FontWeight| {
                         div()
@@ -243,4 +253,38 @@ pub(crate) fn render_confirm_dialog(
             );
 
     deferred(backdrop).priority(4).into_any_element()
+}
+
+/// The body as one paragraph that can wrap, with the code set in the mono
+/// face. Each word is its own element so the line breaks between words.
+fn body_paragraph(
+    body: String,
+    code: Option<(String, String)>,
+    ui: crate::theme::UiColors,
+) -> AnyElement {
+    let Some((code, rest)) = code else {
+        return div()
+            .text_size(tok::text::ROW)
+            .text_color(ui.muted)
+            .child(body)
+            .into_any_element();
+    };
+    let word = |text: &str| div().child(text.to_string());
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap_x(tok::space::XS)
+        .text_size(tok::text::ROW)
+        .text_color(ui.muted)
+        .children(body.split_whitespace().map(word))
+        .child(
+            div()
+                .font_family(tok::font::MONO)
+                .text_size(tok::mono::ROW)
+                .text_color(ui.text)
+                .child(code),
+        )
+        .children(rest.split_whitespace().map(word))
+        .into_any_element()
 }

@@ -71,6 +71,9 @@ pub(crate) enum LauncherAction {
     ResumeSession {
         agent: TerminalAgent,
         session_id: String,
+        /// Where the session started: the container's folder or one of its
+        /// worktrees.
+        cwd: String,
         title: String,
     },
 }
@@ -316,6 +319,7 @@ impl SplitlaneApp {
                 action: LauncherAction::ResumeSession {
                     agent,
                     session_id: row.session_id.clone(),
+                    cwd: row.cwd.clone(),
                     title: row.title.clone(),
                 },
                 haystack,
@@ -350,7 +354,10 @@ impl SplitlaneApp {
                 let rows = smol::unblock(move || {
                     let mut rows: Vec<crate::app::command_palette::HistoryRow> = Vec::new();
                     for agent in &agents {
-                        for meta in crate::agent_sessions::read_sessions_for_cwd(*agent, &cwd) {
+                        let own = crate::agent_sessions::read_sessions_for_cwd(*agent, &cwd);
+                        let in_worktrees =
+                            crate::agent_sessions::read_worktree_sessions(*agent, &cwd);
+                        for meta in own.into_iter().chain(in_worktrees) {
                             rows.push(crate::app::command_palette::HistoryRow {
                                 agent: *agent,
                                 title: meta
@@ -363,7 +370,10 @@ impl SplitlaneApp {
                                 ws_idx,
                                 project: project.clone(),
                                 branch: meta.git_branch,
+                                cwd: meta.cwd,
                                 last_activity_secs: meta.last_activity_secs,
+                                transcript: meta.transcript,
+                                prompts: None,
                             });
                         }
                     }
@@ -412,13 +422,26 @@ impl SplitlaneApp {
                     self.show_toast(format!("{} is not installed", agent.display_name()), cx);
                     return;
                 }
-                match self.add_terminal_thread(ws_idx, agent.display_name(), Some(agent), cx) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.show_toast(format!("Could not create session: {err:?}"), cx);
-                        return;
-                    }
+                let thread_id =
+                    match self.add_terminal_thread(ws_idx, agent.display_name(), Some(agent), cx) {
+                        Ok(id) => id,
+                        Err(err) => {
+                            self.show_toast(format!("Could not create session: {err:?}"), cx);
+                            return;
+                        }
+                    };
+                // Its terminal starts once its worktree is made, and the
+                // completion puts it on screen then.
+                if self.give_session_own_worktree(ws_idx, thread_id, cx) {
+                    pane.update(cx, |pane, cx| {
+                        pane.set_launching(false, cx);
+                        pane.clear_launcher_query(cx);
+                    });
+                    self.save_session(cx);
+                    cx.notify();
+                    return;
                 }
+                thread_id
             }
             LauncherAction::NewShell => {
                 let title = self
@@ -466,6 +489,7 @@ impl SplitlaneApp {
             LauncherAction::ResumeSession {
                 agent,
                 session_id,
+                cwd,
                 title,
             } => {
                 if !agent.is_installed() {
@@ -503,6 +527,7 @@ impl SplitlaneApp {
                         title,
                         Some(agent),
                         &session_id,
+                        Some(&cwd),
                         cx,
                     ) {
                         Ok(id) => id,

@@ -1816,6 +1816,11 @@ pub struct ProjectSession {
     /// thing a preset pane carries as `setup`. Absent means "run nothing".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_setup: Option<String>,
+    /// Whether a session a person starts in this project gets a worktree of
+    /// its own. Absent means yes; written only when a person turned it off
+    /// or back on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_worktrees: Option<bool>,
     /// The [`ProjectGroupSession::id`] this project belongs to. Absent means
     /// no group; an id no group carries is read as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1990,6 +1995,12 @@ pub struct AgentSurface {
     /// Absent for a surface whose terminal the window owned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_session: Option<String>,
+    /// The directory the agent session started in, when that is not the
+    /// surface's `cwd`. A session that ran in a worktree is filed by its CLI
+    /// under the worktree's path; once the worktree is removed the surface
+    /// runs in the project folder, and this is where the transcript still is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_cwd: Option<String>,
 }
 
 /// Which session opened another.
@@ -2042,6 +2053,17 @@ pub struct ManagedWorktreeDef {
     /// Teardown policy: `"auto"` | `"keep"`. Unknown values read as `"auto"`;
     /// the data-loss protection is the clean-check, not this flag.
     pub teardown: String,
+    /// The commit Splitlane made the branch at, for a branch it made for a
+    /// session. Such a branch is deleted with the worktree while it still
+    /// points there. Absent for a branch somebody named.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// The first of the worktree's ten ports (`SPLITLANE_PORT`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// The project branch the worktree's branch was made from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// A user-defined command button rendered in a workspace's tab bar.
@@ -2242,6 +2264,7 @@ pub mod legacy_v1 {
                 opened_by: None,
                 opened_by_script: None,
                 host_session: None,
+                transcript_cwd: None,
             }),
         }
     }
@@ -2337,6 +2360,7 @@ pub mod legacy_v1 {
                     // honest reading of a file that never recorded a choice.
                     preferred_agent: None,
                     worktree_setup: None,
+                    session_worktrees: None,
                     group: None,
                 }
             })
@@ -2358,6 +2382,7 @@ pub mod legacy_v1 {
                 managed_worktrees: Vec::new(),
                 preferred_agent: None,
                 worktree_setup: None,
+                session_worktrees: None,
                 group: None,
             })
             .collect();

@@ -67,6 +67,7 @@ mod preset;
 mod pricing;
 mod process_tree;
 mod project;
+mod prompt_index;
 mod rail_state;
 mod remote;
 mod running_commands;
@@ -1032,6 +1033,13 @@ struct AgentsViewState {
     /// happens only after the user confirms in the dialog. Still used by the
     /// context-menu "Delete" path; the hover-trash path uses
     pub(crate) agents_confirm_delete: Option<crate::app::agents_sidebar::AgentsDeleteTarget>,
+    /// The branch a session's delete card is about, when the session is the
+    /// last one in a worktree made for it - read before the card opens.
+    pub(crate) delete_branch: Option<crate::app::session_worktree::DeleteBranch>,
+    /// The session whose branch is being read for a delete card. The read
+    /// opens the card only if this still names it when it lands: an `escape`
+    /// or another card in the meantime cancels it.
+    pub(crate) delete_branch_asking: Option<u64>,
     /// Inline delete-confirm (ergonomics): the row whose trash icon was just
     /// clicked. While `Some`, that row's action cluster shows a red "Delete"
     /// button (click-to-confirm) instead of opening the confirmation dialog.
@@ -1499,6 +1507,9 @@ struct SplitlaneApp {
     /// Settings -> Agents: the card asking whether Codex may reach this app
     /// is up (`app::codex_drive`).
     codex_drive_confirm: bool,
+    /// The palette's Branches tab: the card asking to delete a snapshot
+    /// before its time is up (`command_palette::branches`).
+    drop_snapshot_asked: Option<app::command_palette::DropSnapshot>,
     /// What the last press of that switch came to, shown under it.
     codex_drive_note: Option<String>,
     /// Openers whose sessions the person folded away in the rail, by surface
@@ -2603,6 +2614,7 @@ impl Render for SplitlaneApp {
             .on_action(cx.listener(Self::handle_open_launch_pad))
             .on_action(cx.listener(Self::handle_toggle_active_only))
             .on_action(cx.listener(Self::handle_open_running_sheet))
+            .on_action(cx.listener(Self::handle_open_branches))
             .on_action(cx.listener(Self::handle_new_worktree))
             .on_action(cx.listener(Self::handle_start_preset_1))
             .on_action(cx.listener(Self::handle_start_preset_2))
@@ -3093,6 +3105,9 @@ impl Render for SplitlaneApp {
         }
         if self.codex_drive_confirm {
             app_content = app_content.child(self.render_codex_drive_confirm(ui, cx));
+        }
+        if let Some(asked) = &self.drop_snapshot_asked {
+            app_content = app_content.child(self.render_drop_snapshot_confirm(asked, ui, cx));
         }
         // The branch picker: a container's menu, not a panel's, so it renders
         // here with the other context menus and anchors where it was opened.

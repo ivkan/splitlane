@@ -28,6 +28,7 @@ pub(crate) mod limits_footer;
 // rows with the same matcher so both search fields behave identically.
 pub(crate) mod filter;
 mod header;
+mod session_tooltip;
 mod state;
 
 pub(crate) use context_menus::render_open_agents_menu;
@@ -513,8 +514,23 @@ impl SplitlaneApp {
                 ws_idx,
                 thread_id: thread.id,
             });
+        let branch_word = if thread.worktree_failed.is_some() {
+            Some(RowBranchWord::Failed)
+        } else if thread.worktree_pending.is_some_and(|since| {
+            since.elapsed() >= crate::app::session_worktree::MAKING_BRANCH_AFTER
+        }) {
+            Some(RowBranchWord::Making)
+        } else {
+            None
+        };
         self.thread_row(
             ThreadRowArgs {
+                branch_word,
+                tooltip: session_tooltip_for(
+                    self.session_branch_tooltip(ws_idx, thread),
+                    self.session_worktree_of(ws_idx, thread).cloned(),
+                    thread,
+                ),
                 target,
                 thread_id: thread.id,
                 title: thread.title.clone(),
@@ -1362,6 +1378,8 @@ impl SplitlaneApp {
     fn thread_row(&self, args: ThreadRowArgs, cx: &mut Context<Self>) -> gpui::AnyElement {
         let ThreadRowArgs {
             behind,
+            branch_word,
+            tooltip,
             target,
             thread_id,
             title,
@@ -1448,7 +1466,20 @@ impl SplitlaneApp {
             // every coloured signal in this interface has a word beside it and
             // every word has a colour. A failed run whose only evidence is a
             // red 6px dot is the case that rule exists to prevent.
-            .child(if unseen {
+            .child(if let Some(word) = branch_word {
+                div()
+                    .flex_none()
+                    .text_size(tok::mono::HINT)
+                    .text_color(match word {
+                        RowBranchWord::Making => ui.faint,
+                        RowBranchWord::Failed => ui.agent_error,
+                    })
+                    .child(match word {
+                        RowBranchWord::Making => "making branch\u{2026}",
+                        RowBranchWord::Failed => "no branch",
+                    })
+                    .into_any_element()
+            } else if unseen {
                 surface_row_news(news_word(status), ui)
             } else if let Some(tally) = opened
                 .as_ref()
@@ -1479,10 +1510,23 @@ impl SplitlaneApp {
                 surface_row_meta(meta, ui)
             })
             .children(is_pinned.then(|| pinned_mark(ui)))
-            .child(if runs_command && !unseen {
-                command_dot(ui)
-            } else {
-                status_dot("rail-surface-row", Some(status), unseen, announcing, ui)
+            .child(match branch_word {
+                Some(RowBranchWord::Making) => status_dot(
+                    "rail-surface-row",
+                    Some(crate::project::ThreadStatus::Starting),
+                    false,
+                    None,
+                    ui,
+                ),
+                Some(RowBranchWord::Failed) => status_dot(
+                    "rail-surface-row",
+                    Some(crate::project::ThreadStatus::Failed),
+                    false,
+                    None,
+                    ui,
+                ),
+                None if runs_command && !unseen => command_dot(ui),
+                None => status_dot("rail-surface-row", Some(status), unseen, announcing, ui),
             })
             .into_any_element();
 
@@ -1493,7 +1537,10 @@ impl SplitlaneApp {
             ui,
         )
         .relative()
-        .children(bracket.map(|part| bracket_mark(part, tok::row::SESSION, ui)));
+        .children(bracket.map(|part| bracket_mark(part, tok::row::SESSION, ui)))
+        .when_some(tooltip.filter(|_| tooltips_ok), |row, tooltip| {
+            row.tooltip(session_tooltip::row_tooltip(tooltip))
+        });
         let opened_count =
             opened.map(|opened| opened_counter(thread_id, opened, tooltips_ok, ui, cx));
 
@@ -1838,9 +1885,60 @@ struct SurfaceRowArgs {
     ui: crate::theme::UiColors,
 }
 
+/// What a session row says about its own branch, in place of its meta.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowBranchWord {
+    /// Being made for longer than goes unremarked.
+    Making,
+    /// Could not be made; the session waits.
+    Failed,
+}
+
+/// A session row's hover card: the branch lines when it has its own branch,
+/// and the prompts of an agent whose transcript can be read. A row with
+/// neither says nothing on hover, as before.
+fn session_tooltip_for(
+    branch: Option<String>,
+    worktree: Option<crate::workspace::worktree::ManagedWorktree>,
+    thread: &crate::project::Thread,
+) -> Option<session_tooltip::RowTooltip> {
+    use crate::agent_launcher::TerminalAgent;
+    use session_tooltip::PromptSource;
+    let prompts = match thread.terminal_agent {
+        Some(TerminalAgent::ClaudeCode) => {
+            crate::claude_sessions::transcript_path(thread).map(PromptSource::Claude)
+        }
+        Some(TerminalAgent::Codex) => thread
+            .session_id
+            .clone()
+            .filter(|id| crate::agent_sessions::is_valid_session_id(id))
+            .map(PromptSource::Codex),
+        _ => None,
+    };
+    if branch.is_none() && prompts.is_none() {
+        return None;
+    }
+    let head = match branch {
+        Some(branch) => branch.lines().map(str::to_string).collect(),
+        None => vec![thread.title.clone()],
+    };
+    Some(session_tooltip::RowTooltip {
+        head,
+        // Counted only for a row that names its branch; a failed one has none.
+        worktree: worktree.filter(|_| thread.worktree_failed.is_none()),
+        prompts,
+    })
+}
+
 struct ThreadRowArgs {
     /// Loaded, but behind its pane's active tab (see `SurfaceRowArgs`).
     behind: bool,
+    /// Where the session's own branch stands, when that is what the row has
+    /// to say: still being made, or not made.
+    branch_word: Option<RowBranchWord>,
+    /// The row's hover card: the session's branch and port, or why it has no
+    /// branch, and what the person wrote in it.
+    tooltip: Option<session_tooltip::RowTooltip>,
     /// The unified selection target this row drives.
     target: crate::project::AgentsTarget,
     thread_id: u64,

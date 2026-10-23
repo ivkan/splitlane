@@ -109,6 +109,7 @@ fn read_session_meta(path: &Path) -> Option<SessionMeta> {
         cwd: header.cwd,
         git_branch: String::new(),
         first_prompt: summary.clone(),
+        transcript: None,
         summary,
         model: None,
         usage: None,

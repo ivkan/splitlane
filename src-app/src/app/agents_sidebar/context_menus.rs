@@ -234,6 +234,25 @@ impl SplitlaneApp {
             }
         }
 
+        // A session whose worktree could not be made waits; this is the way
+        // to start it anyway, in the project folder, by choice.
+        if let Some(thread_id) = source_thread_id.filter(|id| {
+            self.thread_by_id(*id)
+                .is_some_and(|thread| thread.worktree_failed.is_some())
+        }) {
+            menu = menu.child(self.render_select_menu_item(
+                "agents-thread-open-without-branch".into(),
+                "Open without branch",
+                None,
+                ui,
+                cx.listener(move |this, _: &ClickEvent, _w, cx| {
+                    this.close_agents_menu(cx);
+                    this.open_session_without_branch(thread_id, cx);
+                    cx.stop_propagation();
+                }),
+            ));
+        }
+
         menu = menu.child(self.render_select_menu_item(
             "agents-thread-duplicate".into(),
             "Duplicate",
@@ -344,6 +363,15 @@ impl SplitlaneApp {
         ui: crate::theme::UiColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let AgentsDeleteTarget::Thread { thread_id } = target
+            && let Some(asked) = self
+                .agents_view
+                .delete_branch
+                .as_ref()
+                .filter(|asked| asked.thread_id == thread_id)
+        {
+            return self.render_session_branch_delete(thread_id, asked, ui, cx);
+        }
         let (title, body, danger_label) = match target {
             AgentsDeleteTarget::Project { ws_idx } => {
                 let (name, thread_count) = self
@@ -387,6 +415,8 @@ impl SplitlaneApp {
         };
         crate::app::confirm_dialog::render_confirm_dialog(
             crate::app::confirm_dialog::ConfirmDialog {
+                body_code: None,
+                note: None,
                 id: "agents-confirm",
                 title,
                 body,
@@ -409,6 +439,72 @@ impl SplitlaneApp {
 }
 
 impl SplitlaneApp {
+    /// The delete card for the last session in its own branch. It names the
+    /// branch, and when the branch holds work it offers to keep it - the safe
+    /// answer, and the one `enter` gives. `Delete everything` is not red:
+    /// a snapshot is taken first, so it can be taken back.
+    fn render_session_branch_delete(
+        &self,
+        thread_id: u64,
+        asked: &crate::app::session_worktree::DeleteBranch,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::app::confirm_dialog::{ConfirmDialog, ConfirmTone};
+        let name = self
+            .thread_by_id(thread_id)
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| "this session".to_string());
+        let title = format!("Delete session \"{name}\"?");
+        let branch = asked.worktree.branch.clone();
+        let on_cancel: crate::app::confirm_dialog::ConfirmHandler =
+            std::rc::Rc::new(|this, _window, cx| this.cancel_agents_confirm_delete(cx));
+        let dialog = if asked.has_work() {
+            ConfirmDialog {
+                id: "agents-confirm",
+                title,
+                body: "Its branch".to_string(),
+                body_code: Some((branch, asked.what_it_holds())),
+                note: Some(format!(
+                    "Keep branch leaves it for git and \u{2318}K \u{203a} Branches. Delete \
+                     everything saves a snapshot first; restore it from the same place for {} \
+                     days.",
+                    crate::workspace::session_branch::SNAPSHOT_DAYS
+                )),
+                confirm_label: "Delete everything".to_string(),
+                safe: Some((
+                    "Keep branch".to_string(),
+                    std::rc::Rc::new(|this, _window, cx| this.delete_session_keep_branch(cx)),
+                )),
+                focus: None,
+                on_cancel: on_cancel.clone(),
+                on_confirm: std::rc::Rc::new(|this, _window, cx| {
+                    this.delete_session_and_branch(cx)
+                }),
+                aside: Some(("Cancel".to_string(), on_cancel)),
+                tone: ConfirmTone::SafeForward,
+            }
+        } else {
+            ConfirmDialog {
+                id: "agents-confirm",
+                title,
+                body: "Splitlane stops it and drops its row. Its branch".to_string(),
+                body_code: Some((branch, asked.what_it_holds())),
+                note: None,
+                confirm_label: "Delete".to_string(),
+                safe: None,
+                focus: None,
+                on_cancel,
+                on_confirm: std::rc::Rc::new(|this, window, cx| {
+                    this.execute_agents_confirm_delete(window, cx);
+                }),
+                aside: None,
+                tone: ConfirmTone::Danger,
+            }
+        };
+        crate::app::confirm_dialog::render_confirm_dialog(dialog, ui, cx)
+    }
+
     /// The name of an opener or a driver was pressed in the header of the
     /// pane showing `thread_id`.
     ///

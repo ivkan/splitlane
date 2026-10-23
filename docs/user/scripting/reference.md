@@ -488,7 +488,7 @@ The preset format. Unknown keys are errors.
 | `env` | table of strings | none | Merged over `terminal.env`; `${port_offset}` is the only variable |
 | `name` | string | none | Surface name (trimmed, control characters removed, 64 characters max; duplicates get `-2`, `-3`) |
 | `worktree` | string | none | Branch for a git worktree at `<repo>.worktrees/<branch-slug>`. Needs `cwd` inside a repository; may not start with `-` |
-| `copy_env` | bool | `true` | Copy the repository's top-level git-ignored `.env*` files into a new worktree. Needs `worktree` |
+| `copy_env` | bool | `true` | Copy the repository's local files into a new worktree: the top-level `.env*` files, `CLAUDE.local.md`, `AGENTS.override.md` and what `.worktreeinclude` lists. Needs `worktree` |
 | `setup` | string | none | Command run in a new worktree before the pane starts; failure warns only. Needs `worktree` |
 | `setup_timeout_secs` | integer | `300` | Limit for `setup`. Needs `worktree` |
 | `worktree_teardown` | string | `"auto"` | `auto` removes the worktree on close when it holds only committed files (an ignored file keeps it); `keep` leaves it. Needs `worktree` |

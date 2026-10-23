@@ -352,8 +352,9 @@ env = { PORT = "${port_offset}" }
   `worktree_teardown = "keep"`; the branch is never deleted. Ignored files
   count as something to keep: a worktree with `node_modules`, a build
   directory or an edited `.env` stays, because git would delete those without
-  asking. Only the `.env*` files Splitlane copied in, still unchanged, do not
-  hold it back.
+  asking. An ignored file or link that is still the same as the one at the
+  same path in the repository does not hold it back, which covers what
+  Splitlane copied in and nobody changed. A copied directory does.
 - `${port_offset}` in an `env` value becomes a port from a free block of ten
   starting at `port_base` (default 3000), a different block per pane.
 

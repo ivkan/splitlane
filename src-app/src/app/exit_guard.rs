@@ -721,6 +721,8 @@ impl SplitlaneApp {
         if self.pending_exit_offers_keep && self.open_sessions().total() > 0 {
             return crate::app::confirm_dialog::render_confirm_dialog(
                 crate::app::confirm_dialog::ConfirmDialog {
+                    body_code: None,
+                    note: None,
                     id: "exit-keep-or-stop",
                     title: "Quit Splitlane?".to_string(),
                     body: if crate::terminal::held_sessions::enabled() {
@@ -749,6 +751,8 @@ impl SplitlaneApp {
         let (title, body, confirm_label) = exit_confirm_copy(intent, &running, &commands);
         crate::app::confirm_dialog::render_confirm_dialog(
             crate::app::confirm_dialog::ConfirmDialog {
+                body_code: None,
+                note: None,
                 id: "exit-confirm",
                 title,
                 body,

@@ -6,6 +6,59 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Each agent session in its own branch.** In a git repository, an agent
+  session you start now gets its own worktree and branch (`splitlane/` and
+  six characters) off the project's current branch, so two sessions never
+  edit the same checkout and you no longer decide up front whether a session
+  will touch code. Closing the session removes the worktree when it holds
+  nothing anybody would miss, and the branch when nothing was committed on
+  it; otherwise both stay and Splitlane says so. Sessions opened by another
+  session share their opener's worktree. Each worktree gets ten ports, the
+  first in `SPLITLANE_PORT`, for a dev server per session. **New sessions get
+  their own branch** in a project's menu turns it off, and brings back
+  `+ worktree` there. See [Starting work](docs/user/index.md#starting-work).
+- **Closing a session with work in its branch asks.** The delete card names
+  the branch and what it holds, and offers to keep it or delete everything;
+  deleting saves a snapshot first, kept for 30 days. The palette's new
+  **Branches** tab lists kept branches and snapshots by session name and opens
+  a new session on one. A session's row shows `making branch…` while its
+  worktree is slow to make, and `no branch`, with **Open without branch**,
+  when it cannot be made; hovering the row names its branch, what it holds
+  and its port. A snapshot can be deleted early from the Branches tab, on a
+  red card.
+
+- **A session's row lists what you wrote in it.** Hovering a Claude Code or
+  Codex session's row shows your messages in it, one line each with when you
+  sent them: the first and the last four of a long session. See
+  [Agents and their status](docs/user/index.md#agents-and-their-status).
+- **Search what you wrote in old sessions.** The palette's History tab now
+  also matches a query against everything you wrote in each Claude Code and
+  Codex session, not only its name and first prompt, and shows the line it
+  was found in. Searching also reaches past the 200 most recent sessions the
+  list shows. See [Starting work](docs/user/index.md#starting-work).
+
+- **A new worktree gets the project's local files.** Besides the top-level
+  `.env*` files, Splitlane now copies `CLAUDE.local.md`, `AGENTS.override.md`
+  and whatever a `.worktreeinclude` file in the project's root lists, one
+  path or gitignore-style pattern per line, the same file Claude Code reads
+  for its own worktrees. A link is copied as a link. When the project closes,
+  a copy nobody changed no longer keeps the worktree from being removed. See
+  [Starting work](docs/user/index.md#starting-work).
+
+### Fixed
+
+- **Sessions that ran in a worktree are listed with their project.** Claude
+  Code and Codex file a session under the folder it started in, so a session
+  in one of the project's worktrees was missing from the History tab and the
+  launcher, and once the worktree was removed nothing listed it. Both now
+  list it, from Splitlane's `<project>.worktrees` and from Claude Code's own
+  `.claude/worktrees`. Opening it resumes it in the worktree while that
+  exists, and in the project folder after it was removed. An open surface
+  whose worktree is removed moves to the project folder the next time it
+  starts, and resumes its session there.
+
 ### Changed
 
 - A pinned session keeps a star beside its status dot in the rail, so the
