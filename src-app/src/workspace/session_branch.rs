@@ -496,7 +496,6 @@ pub fn what_is_left(item: &LeftBehind) -> String {
             }
         }
     };
-<<<<<<< HEAD
     work_summary(&work).unwrap_or_else(|| "nothing new".to_string())
 }
 
@@ -509,28 +508,12 @@ pub fn work_summary(work: &BranchWork) -> Option<String> {
         1 => parts.push("1 changed file".to_string()),
         n => parts.push(format!("{n} changed files")),
     }
-=======
-    let mut parts = Vec::new();
->>>>>>> origin/main
     match work.commits {
         0 => {}
         1 => parts.push("1 commit".to_string()),
         n => parts.push(format!("{n} commits")),
     }
-<<<<<<< HEAD
     (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
-=======
-    match work.changed_files {
-        0 => {}
-        1 => parts.push("1 changed file".to_string()),
-        n => parts.push(format!("{n} changed files")),
-    }
-    if parts.is_empty() {
-        "nothing new".to_string()
-    } else {
-        parts.join(" \u{b7} ")
-    }
->>>>>>> origin/main
 }
 
 /// A worktree for a kept branch, so a new session can work on it again. The
@@ -756,7 +739,6 @@ mod tests {
         assert_eq!(parse_shortstat(" 1 file changed, 1 deletion(-)"), (0, 1));
         assert_eq!(parse_shortstat(""), (0, 0));
     }
-<<<<<<< HEAD
 
     #[test]
     fn what_a_branch_holds_is_said_in_a_few_words() {
@@ -772,6 +754,4 @@ mod tests {
             Some("3 changed files \u{b7} 2 commits")
         );
     }
-=======
->>>>>>> origin/main
 }
