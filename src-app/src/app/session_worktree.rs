@@ -407,11 +407,16 @@ impl SplitlaneApp {
             return false;
         };
         let examined = wt.clone();
+        self.agents_view.delete_branch_asking = Some(thread_id);
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let work = smol::unblock(move || session_branch::branch_work(&examined)).await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
+                        if app.agents_view.delete_branch_asking != Some(thread_id) {
+                            return;
+                        }
+                        app.agents_view.delete_branch_asking = None;
                         app.agents_view.delete_branch = Some(DeleteBranch {
                             thread_id,
                             worktree: wt,
@@ -460,6 +465,22 @@ impl SplitlaneApp {
             return;
         };
         self.agents_view.agents_confirm_delete = None;
+        // Another session may have come to work in the worktree since the
+        // card opened. Then only this session goes.
+        if self
+            .last_session_worktree(asked.thread_id)
+            .is_none_or(|(_, wt)| wt.path != asked.worktree.path)
+        {
+            self.remove_session_by_id(asked.thread_id, cx);
+            self.show_toast(
+                format!(
+                    "{} kept: another session works in it",
+                    asked.worktree.branch
+                ),
+                cx,
+            );
+            return;
+        }
         let title = self.forget_session_worktree(&asked);
         let container_id = self
             .workspaces
@@ -489,9 +510,11 @@ impl SplitlaneApp {
                         Ok(None) => {}
                         Err(error) => {
                             app.show_toast(format!("{} kept: {error}", wt.branch), cx);
-                            // Not deleted, so still the project's.
-                            if let Some(ws) = container_id
-                                .and_then(|id| app.workspaces.iter_mut().find(|ws| ws.id == id))
+                            // Not deleted, so still the project's - if it is
+                            // still there to own.
+                            if wt.path.exists()
+                                && let Some(ws) = container_id
+                                    .and_then(|id| app.workspaces.iter_mut().find(|ws| ws.id == id))
                             {
                                 ws.managed_worktrees.push(wt);
                                 app.save_session(cx);

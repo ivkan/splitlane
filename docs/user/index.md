@@ -211,8 +211,9 @@ kept sessions live in the app's own process and survive none of these.
   other branch) and offers **Keep branch**, which leaves the branch and its
   worktree for git and the palette, or **Delete everything**, which first
   saves a snapshot: a commit holding the branch's commits and the worktree's
-  uncommitted files, kept for 30 days. Files git ignores are not in a
-  snapshot. The palette's **Branches** tab (`⌘K`, then `Tab`) lists the kept
+  uncommitted files, kept for 30 days. An ignored file you changed, such as
+  a filled-in `.env`, is in it too; ignored folders such as `node_modules`
+  are not. The palette's **Branches** tab (`⌘K`, then `Tab`) lists the kept
   branches and snapshots by session name; `Enter` opens a new session on one
   (a snapshot comes back as uncommitted changes on a new branch), and `⌘⌫`
   deletes a kept branch, snapshot first. The tab appears only when there is

@@ -226,6 +226,11 @@ pub fn port_env<'a>(
         .map(|port| std::collections::HashMap::from([(PORT_VAR.to_string(), port.to_string())]))
 }
 
+/// The git config key that marks a branch as one this app made for a session.
+pub fn session_branch_mark_key(branch: &str) -> String {
+    format!("branch.{branch}.splitlane-session")
+}
+
 /// The prefix of the branches new sessions are given.
 pub const SESSION_BRANCH_PREFIX: &str = "splitlane/";
 
@@ -247,6 +252,14 @@ pub fn add_session_worktree_at(repo_root: &Path, start: &str) -> Result<ManagedW
             continue;
         }
         add_worktree_from(repo_root, &path, &branch, Some(start))?;
+        // Marked as this app's, so nothing later mistakes a branch somebody
+        // named `splitlane/...` for one it may delete.
+        let _ = run_git(
+            GitProfile::UserAction,
+            repo_root,
+            &["config", &session_branch_mark_key(&branch), "true"],
+            GIT_DEADLINE,
+        );
         let base = run_git(
             GitProfile::Probe,
             &path,
@@ -634,7 +647,7 @@ fn is_splitlanes_own(record: &[u8], worktree_path: &Path, repo_root: &Path) -> b
     }
 }
 
-fn is_unchanged_copy(source: &Path, copy: &Path) -> bool {
+pub(crate) fn is_unchanged_copy(source: &Path, copy: &Path) -> bool {
     let (Ok(source_meta), Ok(copy_meta)) = (
         std::fs::symlink_metadata(source),
         std::fs::symlink_metadata(copy),

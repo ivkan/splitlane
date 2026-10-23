@@ -1363,6 +1363,7 @@ impl SplitlaneApp {
                 agents_menu_open: None,
                 agents_confirm_delete: None,
                 delete_branch: None,
+                delete_branch_asking: None,
                 agents_skills_tab: crate::agents_view::SkillsTab::default(),
                 agents_skills: Vec::new(),
                 agents_skills_loading: false,

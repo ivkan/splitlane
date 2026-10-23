@@ -135,6 +135,12 @@ impl SplitlaneApp {
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let title = item.title.clone();
+                let snapshot = match &item.kind {
+                    LeftKind::Snapshot { reference, .. } => {
+                        Some((item.repo_root.clone(), reference.clone()))
+                    }
+                    LeftKind::Branch { .. } => None,
+                };
                 let made = smol::unblock(move || {
                     let mut made = match &item.kind {
                         LeftKind::Branch { branch } => {
@@ -150,7 +156,7 @@ impl SplitlaneApp {
                 .await;
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
-                        app.palette_branch_opened(container_id, title, made, cx);
+                        app.palette_branch_opened(container_id, title, made, snapshot, cx);
                     })
                 });
             },
@@ -163,6 +169,7 @@ impl SplitlaneApp {
         container_id: u64,
         title: String,
         made: Result<crate::workspace::worktree::ManagedWorktree, String>,
+        snapshot: Option<(std::path::PathBuf, String)>,
         cx: &mut Context<Self>,
     ) {
         let made = match made {
@@ -173,6 +180,11 @@ impl SplitlaneApp {
             }
         };
         let Some(ws_idx) = self.workspaces.iter().position(|ws| ws.id == container_id) else {
+            // The snapshot stays: the worktree it went into has no owner.
+            self.show_toast(
+                format!("Its project closed; the work is at {}", made.path.display()),
+                cx,
+            );
             return;
         };
         let path = made.path.clone();
@@ -184,6 +196,12 @@ impl SplitlaneApp {
             self.workspaces[ws_idx].managed_worktrees.push(made);
         }
         self.save_session(cx);
+        // Recorded and saved: the snapshot is now the worktree.
+        if let Some((repo_root, reference)) = snapshot {
+            cx.background_executor()
+                .spawn(async move { session_branch::drop_snapshot(&repo_root, &reference) })
+                .detach();
+        }
         let agent = self
             .default_agent_for(ws_idx)
             .unwrap_or(crate::agent_launcher::TerminalAgent::ClaudeCode);
@@ -211,6 +229,21 @@ impl SplitlaneApp {
             );
             return;
         };
+        // The list was read when the palette opened; a session may have
+        // opened on the branch since.
+        let live = self.workspaces.iter().any(|ws| {
+            ws.managed_worktrees.iter().any(|wt| {
+                wt.branch == *branch
+                    && ws
+                        .threads
+                        .iter()
+                        .any(|t| std::path::Path::new(&t.cwd).starts_with(&wt.path))
+            })
+        });
+        if live {
+            self.show_toast(format!("{branch} has a session open in it"), cx);
+            return;
+        }
         let (repo_root, branch, title) = (
             row.item.repo_root.clone(),
             branch.clone(),

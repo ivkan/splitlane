@@ -7,8 +7,9 @@
 //! worktree as it was, uncommitted changes and new files included, made on
 //! top of the branch's last commit so the branch's own commits are in it
 //! too. It lives under [`SNAPSHOT_REFS`], which no branch listing shows and
-//! no push sends, for [`SNAPSHOT_DAYS`] days. Files git ignores are not in
-//! it.
+//! no push sends, for [`SNAPSHOT_DAYS`] days. An ignored file that differs
+//! from the checkout's - an `.env` an agent filled in - is in it; whole
+//! ignored directories are not.
 //!
 //! Everything here is blocking git; the app calls it off the render thread.
 
@@ -60,7 +61,8 @@ pub fn branch_work(wt: &ManagedWorktree) -> Result<BranchWork, String> {
             .split('\0')
             .filter(|record| record.len() > 3)
             .filter(|record| !record[3..].starts_with(".splitlane-worktree"))
-            .count();
+            .count()
+            + changed_ignored_files(wt).len();
         let stat = run_git(
             GitProfile::Probe,
             &wt.path,
@@ -88,6 +90,52 @@ pub fn branch_work(wt: &ManagedWorktree) -> Result<BranchWork, String> {
     )?;
     work.commits = count.trim().parse().unwrap_or(0);
     Ok(work)
+}
+
+/// Ignored files in `wt` that are not what the checkout holds at the same
+/// path: an `.env` an agent filled in. Kept in a snapshot though git ignores
+/// them, since nothing else holds them. Whole ignored directories (installed
+/// dependencies, build output) are not.
+fn changed_ignored_files(wt: &ManagedWorktree) -> Vec<String> {
+    let Ok(status) = run_git(
+        GitProfile::Probe,
+        &wt.path,
+        &[
+            "status",
+            "--porcelain",
+            "-z",
+            "--ignored=matching",
+            "--untracked-files=all",
+        ],
+        DEADLINE,
+    ) else {
+        return Vec::new();
+    };
+    status
+        .split('\0')
+        .filter_map(|record| record.strip_prefix("!! "))
+        .filter(|path| !path.ends_with('/') && *path != ".splitlane-worktree")
+        .filter(|path| !worktree::is_unchanged_copy(&wt.repo_root.join(path), &wt.path.join(path)))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `branch` is one this app made for a session: marked when it was
+/// made, or known by the record's base commit.
+fn is_session_branch(wt: &ManagedWorktree) -> bool {
+    wt.branch.starts_with(SESSION_BRANCH_PREFIX)
+        && (wt.base.is_some()
+            || run_git(
+                GitProfile::Probe,
+                &wt.repo_root,
+                &[
+                    "config",
+                    "--get",
+                    &worktree::session_branch_mark_key(&wt.branch),
+                ],
+                DEADLINE,
+            )
+            .is_ok_and(|value| value.trim() == "true"))
 }
 
 /// `N files changed, A insertions(+), D deletions(-)` → `(A, D)`.
@@ -157,6 +205,12 @@ fn snapshot_with_index(
     };
     git(&["read-tree", "HEAD"])?;
     git(&["add", "-A", "--", "."])?;
+    let ignored = changed_ignored_files(wt);
+    if !ignored.is_empty() {
+        let mut args = vec!["add", "-f", "--"];
+        args.extend(ignored.iter().map(String::as_str));
+        git(&args)?;
+    }
     // The marker is this app's, not the person's work.
     let _ = git(&[
         "rm",
@@ -210,8 +264,8 @@ fn now_secs() -> u64 {
 /// changes in it, and delete the branch. Returns the snapshot made, if there
 /// was anything to keep. Only for a branch this app made for a session.
 pub fn discard(wt: &ManagedWorktree, session: &str) -> Result<Option<String>, String> {
-    if !wt.branch.starts_with(SESSION_BRANCH_PREFIX) {
-        return Err(format!("{} is not a session branch", wt.branch));
+    if !is_session_branch(wt) {
+        return Err(format!("{} is not a branch Splitlane made", wt.branch));
     }
     let work = branch_work(wt)?;
     let saved = if work.is_empty() {
@@ -278,7 +332,11 @@ pub fn left_behind(repo_root: &Path, live: &[String]) -> Vec<LeftBehind> {
     let descriptions = run_git(
         GitProfile::Probe,
         repo_root,
-        &["config", "--get-regexp", r"^branch\..*\.description$"],
+        &[
+            "config",
+            "--get-regexp",
+            r"^branch\..*\.(description|splitlane-session)$",
+        ],
         DEADLINE,
     )
     .unwrap_or_default();
@@ -308,6 +366,13 @@ pub fn left_behind(repo_root: &Path, live: &[String]) -> Vec<LeftBehind> {
                 continue;
             };
             if live.iter().any(|open| open == branch) {
+                continue;
+            }
+            let mark = worktree::session_branch_mark_key(branch);
+            if !descriptions
+                .lines()
+                .any(|line| line.strip_prefix(&mark).is_some_and(|v| v.trim() == "true"))
+            {
                 continue;
             }
             out.push(LeftBehind {
@@ -511,14 +576,21 @@ pub fn restore_snapshot(repo_root: &Path, reference: &str) -> Result<ManagedWork
         &["restore", "--source", &commit, "--worktree", "--", "."],
         DEADLINE,
     )?;
-    let _ = run_git(
-        GitProfile::UserAction,
-        repo_root,
-        &["update-ref", "-d", reference, &commit],
-        DEADLINE,
-    );
     // Brought back with work on it: not a branch to drop quietly on close.
+    // The snapshot stays until the caller has recorded the new worktree.
     Ok(ManagedWorktree { base: None, ..made })
+}
+
+/// Drop a snapshot that has been brought back.
+pub fn drop_snapshot(repo_root: &Path, reference: &str) {
+    if reference.starts_with(SNAPSHOT_REFS) {
+        let _ = run_git(
+            GitProfile::UserAction,
+            repo_root,
+            &["update-ref", "-d", reference],
+            DEADLINE,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -546,6 +618,8 @@ mod tests {
         git(&repo, &["config", "user.email", "test@example.com"]);
         git(&repo, &["config", "user.name", "Test"]);
         std::fs::write(repo.join("a.txt"), "one\ntwo\n").expect("file");
+        std::fs::write(repo.join("gone.txt"), "tracked\n").expect("file");
+        std::fs::write(repo.join(".gitignore"), ".env\n").expect("ignore");
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-q", "-m", "init"]);
         repo
@@ -582,6 +656,10 @@ mod tests {
         git(&made.path, &["commit", "-q", "-m", "work on the branch"]);
         std::fs::write(made.path.join("a.txt"), "edited\n").expect("edit");
         std::fs::write(made.path.join("c.txt"), "new file\n").expect("file");
+        // A tracked file the session deleted stays deleted when it comes back.
+        std::fs::remove_file(made.path.join("gone.txt")).expect("delete");
+        // An ignored file an agent filled in has nothing else holding it.
+        std::fs::write(made.path.join(".env"), "KEY=filled\n").expect("env");
         std::fs::remove_file(made.path.join(".splitlane-worktree")).ok();
 
         let saved = discard(&made, "Fix login")
@@ -604,7 +682,13 @@ mod tests {
             "edited\n"
         );
         assert!(back.path.join("c.txt").is_file());
+        assert!(!back.path.join("gone.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(back.path.join(".env")).expect("env"),
+            "KEY=filled\n"
+        );
         assert_eq!(back.base, None, "restored work is never dropped quietly");
+        drop_snapshot(&repo, &saved);
         assert!(
             left_behind(&repo, std::slice::from_ref(&back.branch)).is_empty(),
             "the snapshot goes once it is back"
@@ -628,6 +712,19 @@ mod tests {
                 branch: kept.branch.clone()
             }
         );
+        let _ = std::fs::remove_dir_all(repo.parent().expect("tmp"));
+    }
+
+    /// A branch a person named `splitlane/...` is not this app's: not
+    /// listed, and not deleted.
+    #[test]
+    fn a_person_named_splitlane_branch_is_left_alone() {
+        let repo = repo("named");
+        git(&repo, &["branch", "splitlane/mine"]);
+        assert!(left_behind(&repo, &[]).is_empty());
+        let wt = left_branch_worktree(&repo, "splitlane/mine").expect("record");
+        assert!(discard(&wt, "x").is_err());
+        assert!(worktree::branch_exists(&repo, "splitlane/mine"));
         let _ = std::fs::remove_dir_all(repo.parent().expect("tmp"));
     }
 

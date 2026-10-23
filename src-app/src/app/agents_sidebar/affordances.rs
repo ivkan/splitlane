@@ -79,6 +79,7 @@ impl SplitlaneApp {
     ) {
         self.agents_view.agents_menu_open = None;
         self.agents_view.delete_branch = None;
+        self.agents_view.delete_branch_asking = None;
         // A session that is the last one in its own branch is asked about
         // that branch, which takes a read of git first.
         if let AgentsDeleteTarget::Thread { thread_id } = target
@@ -92,6 +93,7 @@ impl SplitlaneApp {
 
     pub(crate) fn cancel_agents_confirm_delete(&mut self, cx: &mut Context<Self>) {
         self.agents_view.delete_branch = None;
+        self.agents_view.delete_branch_asking = None;
         if self.agents_view.agents_confirm_delete.take().is_some() {
             cx.notify();
         }
