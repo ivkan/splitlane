@@ -2361,7 +2361,8 @@ fn retry_button(
 /// day for the same reason this footer does and has no business owning a
 /// second clock.
 pub(crate) fn clock_hhmm(unix_ms: u64) -> String {
-    hhmm((unix_ms / 1000) as i64 + local_utc_offset_secs())
+    let secs = (unix_ms / 1000) as i64;
+    hhmm(secs + local_utc_offset_secs(secs))
 }
 
 /// `HH:MM` for a count of seconds since a local midnight-aligned epoch.
@@ -2376,10 +2377,23 @@ fn hhmm(local_secs: i64) -> String {
     )
 }
 
-/// Seconds east of UTC where this machine is. `std` has no local-time API and
-/// the app already depends on `chrono` for its logging setup.
-fn local_utc_offset_secs() -> i64 {
-    chrono::Local::now().offset().local_minus_utc() as i64
+/// Seconds east of UTC where this machine is at `at_secs`. `std` has no
+/// local-time API and the app already depends on `chrono` for its logging
+/// setup.
+///
+/// The offset of that moment, not of now: with today's offset a time on the
+/// other side of a daylight-saving change was an hour off, and a reset shown
+/// as `HH:MM` disagreed with the same reset shown as `Mon HH:MM`, which
+/// `chrono` places correctly.
+fn local_utc_offset_secs(at_secs: i64) -> i64 {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(at_secs, 0)
+        .earliest()
+        .map_or_else(
+            || chrono::Local::now().offset().local_minus_utc(),
+            |local| local.offset().local_minus_utc(),
+        ) as i64
 }
 
 pub(crate) fn now_unix_millis() -> u64 {
