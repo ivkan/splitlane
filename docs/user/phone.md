@@ -51,6 +51,19 @@ The phone reaches the computer while the window is open, and while it is
 closed with sessions still running in the session host. Interrupting needs the
 window.
 
+## Updates
+
+The page updates itself: each time it opens with a network, it loads the
+current version from <https://splitlane.dev/app>. On an iPhone, an app left
+in the background comes back as it was, without loading anything; close it
+(swipe it up in the app switcher) and open it again to be sure.
+
+The foot of a computer's screen says which versions are talking, for example
+*Splitlane 0.2.15 on this computer · page 2026-10-25.1*; Settings shows the
+page's alone. The computer's version changes when Splitlane on it updates,
+the page's when the page does. A computer that names no version runs
+Splitlane 0.2.14 or older.
+
 ## How it is connected
 
 Neither side opens a port. Both keep an outgoing connection to

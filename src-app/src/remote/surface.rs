@@ -168,6 +168,12 @@ fn read(surface: &impl IpcTransport, method: &str, params: &Value) -> Result<Val
                     fleet.insert("projects".into(), json!(projects));
                 }
             }
+            // Which Splitlane answers, for the phone to show beside its own
+            // version: whether the computer has been updated is then read
+            // off the phone rather than asked.
+            if let Some(fleet) = fleet.as_object_mut() {
+                fleet.insert("app_version".into(), json!(env!("CARGO_PKG_VERSION")));
+            }
             if let Some(mut rail) = rail {
                 let agents = fleet.get("agents").cloned().unwrap_or(Value::Null);
                 add_unlisted_agents(&mut rail, &agents);
@@ -366,6 +372,7 @@ mod tests {
         // the agent the rail has no row for after them under its pane name.
         assert_eq!(titles, ["Fix the login", "Old idea", "codex@app"]);
         assert_eq!(list["rail"]["groups"][0]["name"], "Work");
+        assert_eq!(list["app_version"], env!("CARGO_PKG_VERSION"));
         // An agent in a project the rail does not list stays in `agents`.
         assert_eq!(list["agents"].as_array().unwrap().len(), 3);
     }
