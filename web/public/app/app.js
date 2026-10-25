@@ -775,9 +775,7 @@ function railList(rail) {
       "section",
       { class: "list project" },
       h("h3", {}, project.title),
-      project.sessions?.length
-        ? project.sessions.map((session) => railRow(session))
-        : h("p", { class: "muted" }, "No agent sessions."),
+      project.sessions?.length ? projectSessions(project.sessions) : h("p", { class: "muted" }, "No agent sessions."),
     );
   const groups = rail.groups ?? [];
   const parts = [];
@@ -807,9 +805,37 @@ function railList(rail) {
   return parts;
 }
 
-function railRow(session) {
+/// A project's sessions as the rail draws them: a session another opened sits
+/// indented under its opener, which says how many it opened, and the sessions
+/// of an opener that was closed sit under a line that names it. The order is
+/// already the rail's, so an opened session follows its opener.
+function projectSessions(sessions) {
+  const here = new Set(sessions.map((s) => s.thread_id).filter((id) => id != null));
+  const openedBy = (s) => (s.opened_by && s.opened_by.thread_id !== s.thread_id ? s.opened_by : null);
+  const count = new Map();
+  for (const s of sessions) {
+    const by = openedBy(s);
+    if (by && here.has(by.thread_id)) count.set(by.thread_id, (count.get(by.thread_id) ?? 0) + 1);
+  }
+  const out = [];
+  let closedOpener = null;
+  for (const s of sessions) {
+    const by = openedBy(s);
+    const closed = by && !here.has(by.thread_id) ? by.thread_id : null;
+    if (closed != null && closed !== closedOpener) {
+      out.push(h("p", { class: "opened-caption" }, `opened by ${by.title} · closed`));
+    }
+    closedOpener = closed;
+    const n = count.get(s.thread_id);
+    const row = railRow(s, n ? (n === 1 ? "Opened 1 session" : `Opened ${n} sessions`) : null);
+    out.push(by ? h("div", { class: "opened" }, row) : row);
+  }
+  return out;
+}
+
+function railRow(session, note) {
   const row = session.surface_id != null ? rowFor(session.surface_id) : null;
-  if (row) return sessionRow(row);
+  if (row) return sessionRow(row, note);
   return h(
     "div",
     { class: "row inert" },
@@ -819,17 +845,18 @@ function railRow(session) {
       h("span", { class: "title" }, session.title || toolName(session.agent)),
       h("span", { class: "chip" }, "Not running"),
     ),
-    h("span", { class: "sub" }, toolName(session.agent)),
+    h("span", { class: "sub" }, [toolName(session.agent), note].filter(Boolean).join(" · ")),
   );
 }
 
-function sessionRow(row) {
+function sessionRow(row, note) {
   const at = route();
   const [kind] = stateOf(row);
   const message = kind === "waiting" ? row.rail?.message ?? row.message : null;
+  const sub = [sessionTitle(row) !== toolName(row.tool) ? toolName(row.tool) : null, note].filter(Boolean).join(" · ");
   const inner = [
     h("span", { class: "line" }, h("span", { class: "title" }, sessionTitle(row)), chip(row)),
-    sessionTitle(row) !== toolName(row.tool) ? h("span", { class: "sub" }, toolName(row.tool)) : null,
+    sub ? h("span", { class: "sub" }, sub) : null,
     message ? h("span", { class: "sub question" }, message) : null,
   ];
   if (row.surface_id == null) return h("div", { class: "row inert" }, inner);

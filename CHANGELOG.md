@@ -12,6 +12,9 @@ Notable changes to Splitlane are recorded here. The format follows
   screen names the Splitlane version on that computer and the page's own,
   so whether either has updated is read off the phone. See
   [Updates](docs/user/phone.md#updates).
+- **The phone shows which session opened which.** A session another session
+  opened is indented under its opener, which says how many it opened, as the
+  rail brackets them.
 
 ## [0.2.14] - 2026-10-25
 
