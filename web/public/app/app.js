@@ -60,6 +60,10 @@ const state = {
 const ua = navigator.userAgent;
 // iPadOS reports itself as a Mac; touch tells them apart.
 const IOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+// Every iOS browser can add a page to the home screen, but its Share button
+// sits somewhere else; Chrome, Firefox and Edge name themselves in the UA.
+const IOS_CHROME = IOS && /CriOS/.test(ua);
+const IOS_SAFARI = IOS && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
 const ANDROID = /Android/.test(ua);
 const PHONE = IOS || ANDROID || matchMedia("(pointer: coarse)").matches;
 
@@ -209,7 +213,7 @@ function renderPairing() {
           ? h(
               "p",
               { class: "warn" },
-              "On iPhone, a pairing made in Safari stays in Safari: Splitlane on the home screen keeps its own data and will not see it. To use it from the home screen, add it there first and scan the code from it.",
+              "On iPhone, a pairing made in the browser stays in the browser: Splitlane on the home screen keeps its own data and will not see it. To use it from the home screen, add it there first and scan the code from it.",
             )
           : null,
         h("label", { for: "phone-name" }, "This phone's name, as the computer will show it"),
@@ -553,10 +557,15 @@ function openOnPhone() {
 /// iPhone it has to be: the home-screen app keeps its own data, and only it
 /// will be able to show notifications.
 function installSteps() {
+  const share = IOS_CHROME
+    ? "Tap the Share button (the square with an arrow) at the right of Chrome's address bar, or open the ⋯ menu and choose Share."
+    : IOS_SAFARI
+      ? "Tap the Share button (the square with an arrow) in Safari's toolbar."
+      : "Open the browser's Share menu.";
   const steps = IOS
     ? [
-        "Tap the Share button (the square with an arrow) in Safari's toolbar.",
-        "Choose Add to Home Screen, then Add.",
+        share,
+        "Scroll down, choose Add to Home Screen, then Add.",
         "Open Splitlane from the home screen and pair it there.",
       ]
     : [

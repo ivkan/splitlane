@@ -10,10 +10,11 @@ interrupt a turn. The phone needs no app. It is a page at
 
 1. **Add the page to the phone's home screen.** Open
    <https://splitlane.dev/app> on the phone; the page walks you through it.
-   On an iPhone: Share, then Add to Home Screen. On Android: Install, or the
-   browser's menu, then Install app. On an iPhone this comes first: the
-   home-screen app keeps its own data, apart from Safari's, and it is the
-   one that will be able to show notifications.
+   On an iPhone: Share, then Add to Home Screen; this works in Safari and in
+   Chrome alike, where Share is at the right of the address bar. On Android:
+   Install, or the browser's menu, then Install app. On an iPhone this comes
+   first: the home-screen app keeps its own data, apart from the browser's,
+   and it is the one that will be able to show notifications.
 2. **Show a code on the computer:** Settings → Phone → **Pair a phone**. A QR
    code appears; it lasts five minutes and pairs one phone.
 3. **Scan it from the phone:** open Splitlane from the home screen, tap
