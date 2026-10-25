@@ -1835,6 +1835,19 @@ impl SplitlaneApp {
     /// in the same situation, because there it means the answer we got is not
     /// about now, which is a fact about the reading rather than about them.
     fn limits_rows(&self, window: &gpui::Window, cx: &gpui::App, now: i64) -> Vec<VendorRowState> {
+        let mut rows = self.vendor_rows(now);
+        if let Some(focused) = self.focused_vendor(window, cx)
+            && let Some(at) = rows.iter().position(|row| row.reading.vendor == focused)
+        {
+            rows.swap(0, at);
+        }
+        rows
+    }
+
+    /// The vendors that have a row, Claude first; [`Self::limits_rows`] puts
+    /// the focused one first, and the phone, which has no focus, takes them
+    /// as they are.
+    fn vendor_rows(&self, now: i64) -> Vec<VendorRowState> {
         let mut rows: Vec<VendorRowState> = Vec::with_capacity(2);
         if let Some(reading) = self.claude_vendor_limits() {
             rows.push(VendorRowState {
@@ -1853,12 +1866,55 @@ impl SplitlaneApp {
         {
             rows.push(codex);
         }
-        if let Some(focused) = self.focused_vendor(window, cx)
-            && let Some(at) = rows.iter().position(|row| row.reading.vendor == focused)
-        {
-            rows.swap(0, at);
-        }
         rows
+    }
+
+    /// The footer's rows as data, for the phone (`limits.list`): every current
+    /// window of each vendor that has a row, which one the footer shows, and
+    /// the two thresholds the meter colours at, so the phone draws the same
+    /// row without a second copy of the rules.
+    pub(crate) fn limits_for_phone(&self, now: i64) -> serde_json::Value {
+        let vendors: Vec<serde_json::Value> = self
+            .vendor_rows(now)
+            .into_iter()
+            .map(|row| {
+                let reading = &row.reading;
+                let (state, reason) = match &reading.reading {
+                    LimitsReading::Limits(_) => ("limits", None),
+                    LimitsReading::NoPlanLimit => ("no_plan_limit", None),
+                    LimitsReading::Unreadable(err) => ("unreadable", Some(err.reason())),
+                };
+                let windows: Vec<serde_json::Value> = reading
+                    .current(now)
+                    .into_iter()
+                    .map(|limit| {
+                        serde_json::json!({
+                            "name": window_name(limit.window_minutes),
+                            "window_minutes": limit.window_minutes,
+                            "utilization": limit.utilization,
+                            "resets_at": limit.resets_at,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "vendor": reading.vendor.name(),
+                    "delivery": match reading.delivery() {
+                        Delivery::Polled => "polled",
+                        Delivery::Passive => "passive",
+                    },
+                    "observed_at": reading.observed_at,
+                    "state": state,
+                    "reason": reason,
+                    "windows": windows,
+                    "shown_window_minutes": row.shown.flatten(),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "vendors": vendors,
+            "nearly_out_at": NEARLY_OUT_AT,
+            "reached_at": REACHED_AT,
+        })
     }
 
     /// The held forecasts that belong to this vendor's row. Only the polled

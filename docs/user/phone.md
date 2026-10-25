@@ -40,6 +40,15 @@ the phone's own camera app can open the code's link directly.
   under the names the rail gives them, and the sessions whose agent is not
   running, dimmed. With only the session host running, the phone lists the
   running agents by project.
+
+  The screen opens with **Needs you** - the sessions waiting for an answer
+  or failed, with the question - and **Active**, which shows only the
+  projects with something working, waiting, failed or newly finished.
+  **All** shows everything. Tap a project to fold or open it; the phone
+  remembers. At the foot of a session, **Next** goes to the next one that
+  needs you.
+- **Limits:** the plan limits the rail's footer shows, in a line over the
+  list - tap it for every window and when it resets.
 - **Reply:** text into an agent session, the keys a prompt asks for (digits,
   `y`, `n`, `Enter`, `Esc`, the arrows), and interrupting a turn. Only agent
   sessions take it, never a plain shell. Each reply goes into a journal on the

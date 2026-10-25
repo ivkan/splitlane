@@ -174,6 +174,14 @@ fn read(surface: &impl IpcTransport, method: &str, params: &Value) -> Result<Val
             if let Some(fleet) = fleet.as_object_mut() {
                 fleet.insert("app_version".into(), json!(env!("CARGO_PKG_VERSION")));
             }
+            // The plan limits the rail's footer shows, where the window has
+            // them; the phone says they are unavailable otherwise.
+            if let Ok(limits) = surface.call("limits.list", json!({}))
+                && limits.get("vendors").is_some_and(Value::is_array)
+                && let Some(fleet) = fleet.as_object_mut()
+            {
+                fleet.insert("limits".into(), limits);
+            }
             if let Some(mut rail) = rail {
                 let agents = fleet.get("agents").cloned().unwrap_or(Value::Null);
                 add_unlisted_agents(&mut rail, &agents);
@@ -298,13 +306,14 @@ mod tests {
         assert_eq!(calls[0].0, "rail.list");
         assert_eq!(calls[1].0, "fleet.list");
         assert_eq!(calls[2].0, "workspace.list");
+        assert_eq!(calls[3].0, "limits.list");
         assert_eq!(
-            calls[3],
+            calls[4],
             ("surface.status".into(), json!({ "surface_id": 7 }))
         );
-        assert_eq!(calls[4].0, "surface.read");
-        assert_eq!(calls[4].1["lines"], READ_MAX_LINES);
-        assert_eq!(calls[4].1["fenced"], false);
+        assert_eq!(calls[5].0, "surface.read");
+        assert_eq!(calls[5].1["lines"], READ_MAX_LINES);
+        assert_eq!(calls[5].1["fenced"], false);
     }
 
     #[test]
@@ -350,6 +359,9 @@ mod tests {
                         { "surface_id": 13, "surface_name": "claude@lost", "tool": "claude", "workspace": 5 }
                     ] })),
                     "workspace.list" => Ok(json!({ "workspaces": [] })),
+                    "limits.list" => {
+                        Ok(json!({ "vendors": [{ "vendor": "Claude", "windows": [] }] }))
+                    }
                     "rail.list" => Ok(json!({
                         "groups": [{ "id": 1, "name": "Work", "private": false }],
                         "projects": [{ "index": 0, "title": "app", "group": 1, "sessions": [
@@ -373,6 +385,7 @@ mod tests {
         assert_eq!(titles, ["Fix the login", "Old idea", "codex@app"]);
         assert_eq!(list["rail"]["groups"][0]["name"], "Work");
         assert_eq!(list["app_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(list["limits"]["vendors"][0]["vendor"], "Claude");
         // An agent in a project the rail does not list stays in `agents`.
         assert_eq!(list["agents"].as_array().unwrap().len(), 3);
     }

@@ -6,6 +6,18 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The phone puts what needs you first.** A computer's screen opens with
+  the sessions waiting for an answer or failed, then **Active** - only the
+  projects where something is working, waiting, failed or newly finished -
+  with **All** a tap away. Projects fold as in the rail and the phone
+  remembers. A session's card ends with **Next**, to the next one that needs
+  you. See [What the phone may do](docs/user/phone.md#what-the-phone-may-do).
+- **Plan limits on the phone.** The line over the list shows what the
+  rail's limits footer shows; tap it for every window and its reset. New IPC
+  method `limits.list`; `rail.list` sessions gain `finished_unseen`.
+
 ## [0.2.15] - 2026-10-25
 
 ### Added

@@ -108,6 +108,10 @@ function h(tag, props = {}, ...children) {
 
 function show(...children) {
   app.replaceChildren(...[newerPageLine(), ...children].filter((c) => c != null));
+  // Section headings stick under the bar, and the bar's height depends on
+  // the phone's safe area.
+  const bar = app.querySelector(".bar");
+  if (bar) document.documentElement.style.setProperty("--bar-height", `${bar.offsetHeight}px`);
 }
 
 /// A newer page is on the server. The service worker would load it on the
@@ -164,6 +168,7 @@ function route() {
     if (parts[2] === "s" && /^\d+$/.test(parts[3] ?? "")) {
       return { view: "session", computer, surface: Number(parts[3]) };
     }
+    if (parts[2] === "limits") return { view: "limits", computer };
     return { view: "computer", computer };
   }
   return { view: "home" };
@@ -183,6 +188,7 @@ function render() {
   }
   ensureConnection(at.computer);
   if (at.view === "computer") return renderComputer(at.computer);
+  if (at.view === "limits") return renderLimits(at.computer);
   return renderSession(at.computer, at.surface);
 }
 
@@ -518,7 +524,9 @@ function chip(row) {
 }
 
 function projectName(row) {
-  const named = state.fleet?.projects?.find((p) => p.index === row.workspace)?.title;
+  const named =
+    state.fleet?.rail?.projects?.find((p) => p.index === row.workspace)?.title ??
+    state.fleet?.projects?.find((p) => p.index === row.workspace)?.title;
   if (named) return named;
   const cwd = row.rail?.cwd;
   if (cwd) return cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd;
@@ -763,6 +771,7 @@ function fillComputer(body) {
   if (state.fleetError) parts.push(h("p", { class: "error" }, state.fleetError));
   const agents = state.fleet?.agents;
   const rail = state.fleet?.rail;
+  if (state.fleet) parts.push(limitsLine());
   if (rail) {
     parts.push(...railList(rail));
   } else if (agents && agents.length === 0) {
@@ -812,38 +821,192 @@ function versionLine() {
   );
 }
 
-/// The rail's list: projects without a group, then each group with its
-/// projects, every session the rail shows in the rail's order. A session
-/// whose agent is not running is listed too, so the two lists hold the same
-/// sessions; it has nothing to open.
+// ---- The list -----------------------------------------------------------
+//
+// Triage first, the rail's hierarchy second: what needs the person heads
+// the screen, `Active` hides what is not doing anything, and projects fold
+// as they do in the rail. The rules are in docs/internals/design-decisions.md,
+// "The phone lists what the rail lists".
+
+/// What a session is doing, in the words `stateOf` uses, or `rest` for one
+/// whose agent is not running.
+function kindOf(session) {
+  const row = session.surface_id != null ? rowFor(session.surface_id) : null;
+  return row ? stateOf(row)[0] : "rest";
+}
+
+/// Working, waiting, failed, or finished while nobody looked: what the rail
+/// would draw a word for on a folded project.
+function isActive(session) {
+  const kind = kindOf(session);
+  // A turn that ended unseen stays news after its agent has gone.
+  return kind === "waiting" || kind === "failed" || kind === "running" || (session.finished_unseen && (kind === "done" || kind === "rest"));
+}
+
+/// This phone's choices for one computer's list - the tab and the projects
+/// opened or folded by hand - kept in the browser and nowhere else.
+function listPrefs(computer) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`splitlane.list.${computer.id}`) ?? "null");
+    if (saved && typeof saved === "object") return { tab: saved.tab === "all" ? "all" : "active", open: saved.open ?? {} };
+  } catch {
+    // Storage refused or garbled: the defaults.
+  }
+  return { tab: "active", open: {} };
+}
+
+function saveListPrefs(computer, prefs) {
+  try {
+    localStorage.setItem(`splitlane.list.${computer.id}`, JSON.stringify(prefs));
+  } catch {
+    // A private window keeps nothing; the list still works.
+  }
+}
+
+/// The sessions waiting for an answer or failed, across every project, in the
+/// rail's order: the phone's first question, and the order "next waiting"
+/// walks.
+function needsYou() {
+  const rail = state.fleet?.rail;
+  const groups = new Map((rail?.groups ?? []).map((g) => [g.id, g.name]));
+  const out = [];
+  const listed = new Set();
+  for (const project of rail?.projects ?? []) {
+    for (const session of project.sessions ?? []) {
+      if (session.surface_id != null) listed.add(session.surface_id);
+      const kind = kindOf(session);
+      if (kind !== "waiting" && kind !== "failed") continue;
+      out.push({ session, row: rowFor(session.surface_id), project: project.title, group: groups.get(project.group) ?? null });
+    }
+  }
+  // Agents the rail has no row for, and every agent while the window is
+  // closed and there is no rail: they can be waiting too.
+  for (const row of state.fleet?.agents ?? []) {
+    if (row.surface_id == null || listed.has(row.surface_id)) continue;
+    const kind = stateOf(row)[0];
+    if (kind !== "waiting" && kind !== "failed") continue;
+    out.push({ session: { title: sessionTitle(row) }, row, project: projectName(row), group: null });
+  }
+  return out;
+}
+
 function railList(rail) {
+  const at = route();
+  const computer = at.computer;
+  const prefs = listPrefs(computer);
   const projects = rail.projects ?? [];
+  const parts = [];
   if (!projects.length && !state.fleet?.agents?.length) {
     return [h("p", { class: "muted center" }, "No agent sessions on this computer.")];
   }
-  const block = (project) =>
+  const all = projects.flatMap((p) => p.sessions ?? []);
+  const activeCount = all.filter(isActive).length;
+  const tab = (name, label) =>
     h(
+      "button",
+      {
+        role: "tab",
+        "aria-selected": prefs.tab === name ? "true" : "false",
+        class: prefs.tab === name ? "tab on" : "tab",
+        onclick: () => {
+          saveListPrefs(computer, { ...listPrefs(computer), tab: name });
+          update();
+        },
+      },
+      label,
+    );
+  parts.push(
+    h("div", { class: "tabs", role: "tablist", "aria-label": "Which sessions" }, tab("active", `Active · ${activeCount}`), tab("all", `All · ${all.length}`)),
+  );
+
+  const needs = needsYou();
+  if (needs.length) {
+    parts.push(
+      h(
+        "section",
+        { class: "list needs", "aria-label": "Needs you" },
+        h("h2", { class: "needs-head" }, `Needs you · ${needs.length}`),
+        needs.map(({ session, row, project, group }) =>
+          sessionRow(row, [project, group].filter(Boolean).join(" · ")),
+        ),
+      ),
+    );
+  }
+
+  const showAll = prefs.tab === "all";
+  const block = (project) => {
+    const sessions = project.sessions ?? [];
+    const active = sessions.filter(isActive);
+    if (!showAll && !active.length) return null;
+    const key = `${project.index}:${project.title}`;
+    const open = prefs.open[key] ?? active.length > 0;
+    const shown = showAll ? sessions : withOpeners(active, sessions);
+    const hidden = sessions.length - shown.length;
+    const toggle = h(
+      "button",
+      {
+        class: "project-head",
+        "aria-expanded": open ? "true" : "false",
+        onclick: () => {
+          const now = listPrefs(computer);
+          saveListPrefs(computer, { ...now, open: { ...now.open, [key]: !open } });
+          update();
+        },
+      },
+      h("span", { class: "caret", "aria-hidden": "true" }, open ? "▾" : "▸"),
+      h("span", { class: "project-title" }, project.title),
+      h("span", { class: "tally" }, tallyWords(sessions)),
+    );
+    return h(
       "section",
       { class: "list project" },
-      h("h3", {}, project.title),
-      project.sessions?.length ? projectSessions(project.sessions) : h("p", { class: "muted" }, "No agent sessions."),
+      toggle,
+      open && shown.length ? projectSessions(shown, sessions) : null,
+      open && !sessions.length ? h("p", { class: "muted" }, "No agent sessions.") : null,
+      open && hidden > 0
+        ? h(
+            "button",
+            {
+              class: "quiet more",
+              onclick: () => {
+                saveListPrefs(computer, { ...listPrefs(computer), tab: "all" });
+                update();
+              },
+            },
+            `+ ${hidden} idle or not running`,
+          )
+        : null,
     );
+  };
+  const section = (label, isGroup, members) => {
+    const blocks = members.map(block).filter(Boolean);
+    if (!blocks.length) return null;
+    const active = members.flatMap((p) => p.sessions ?? []).filter(isActive).length;
+    return h(
+      "section",
+      { class: "group", "aria-label": label },
+      h(
+        "div",
+        { class: "group-head" },
+        isGroup ? h("span", { class: "group-label" }, label) : h("span", { class: "eyebrow" }, "Projects"),
+        h("span", { class: "muted" }, active ? `${active} active` : members.length === 1 ? "1 project" : `${members.length} projects`),
+      ),
+      blocks,
+    );
+  };
   const groups = rail.groups ?? [];
-  const parts = [];
-  const ungrouped = projects.filter((p) => p.group == null);
-  if (ungrouped.length) {
-    if (groups.length) parts.push(h("h2", {}, "Projects"));
-    parts.push(...ungrouped.map(block));
+  parts.push(section("Projects", false, projects.filter((p) => p.group == null)));
+  for (const group of groups) parts.push(section(group.name, true, projects.filter((p) => p.group === group.id)));
+  if (!showAll && !activeCount && !needs.length) {
+    parts.push(h("p", { class: "muted center" }, "Nothing is running or waiting. All shows every session."));
   }
-  for (const group of groups) {
-    const members = projects.filter((p) => p.group === group.id);
-    if (!members.length) continue;
-    parts.push(h("h2", {}, group.name), ...members.map(block));
-  }
+
   // A running agent with no row in the rail's list is still listed, under
   // its project's name, as the list without the rail lists it.
   const listed = new Set(railSessions().map((s) => s.surface_id).filter((id) => id != null));
-  const rest = (state.fleet?.agents ?? []).filter((row) => !listed.has(row.surface_id));
+  const rest = (state.fleet?.agents ?? []).filter(
+    (row) => !listed.has(row.surface_id) && (showAll || ["waiting", "failed", "running"].includes(stateOf(row)[0])),
+  );
   const restByProject = new Map();
   for (const row of rest) {
     const name = projectName(row);
@@ -853,24 +1016,53 @@ function railList(rail) {
   for (const [name, rows] of restByProject) {
     parts.push(h("section", { class: "list project" }, h("h3", {}, name), rows.map((row) => sessionRow(row))));
   }
-  return parts;
+  return parts.filter(Boolean);
+}
+
+/// `active` with the opener of each session in it added, so an opened
+/// session still sits under its opener when only it is doing anything.
+function withOpeners(active, sessions) {
+  const keep = new Set(active.map((s) => s.thread_id));
+  for (const s of active) if (s.opened_by) keep.add(s.opened_by.thread_id);
+  return sessions.filter((s) => keep.has(s.thread_id) || active.includes(s));
+}
+
+/// The folded project's words: trouble, then what wants the person, then
+/// work and news, or how many sessions there are when nothing is happening.
+function tallyWords(sessions) {
+  const counts = { failed: 0, waiting: 0, running: 0, done: 0 };
+  for (const s of sessions) {
+    const kind = kindOf(s);
+    if (kind === "done" ? s.finished_unseen : kind in counts) counts[kind]++;
+  }
+  const words = [
+    ["failed", "failed"],
+    ["waiting", "waiting"],
+    ["running", "running"],
+    ["done", "finished"],
+  ]
+    .filter(([k]) => counts[k])
+    .map(([k, word]) => h("span", { class: `word ${k}` }, `${counts[k]} ${word}`));
+  if (words.length) return words;
+  return [h("span", { class: "word" }, sessions.length === 1 ? "1 session" : `${sessions.length} sessions`)];
 }
 
 /// A project's sessions as the rail draws them: a session another opened sits
 /// indented under its opener, which says how many it opened, and the sessions
-/// of an opener that was closed sit under a line that names it. The order is
-/// already the rail's, so an opened session follows its opener.
-function projectSessions(sessions) {
-  const here = new Set(sessions.map((s) => s.thread_id).filter((id) => id != null));
+/// of an opener that was closed sit under a line that names it. `shown` is in
+/// the rail's order, so an opened session follows its opener; `all` is the
+/// project's every session, for the counts.
+function projectSessions(shown, all = shown) {
+  const here = new Set(all.map((s) => s.thread_id).filter((id) => id != null));
   const openedBy = (s) => (s.opened_by && s.opened_by.thread_id !== s.thread_id ? s.opened_by : null);
   const count = new Map();
-  for (const s of sessions) {
+  for (const s of all) {
     const by = openedBy(s);
     if (by && here.has(by.thread_id)) count.set(by.thread_id, (count.get(by.thread_id) ?? 0) + 1);
   }
   const out = [];
   let closedOpener = null;
-  for (const s of sessions) {
+  for (const s of shown) {
     const by = openedBy(s);
     const closed = by && !here.has(by.thread_id) ? by.thread_id : null;
     if (closed != null && closed !== closedOpener) {
@@ -889,7 +1081,7 @@ function railRow(session, note) {
   if (row) return sessionRow(row, note);
   return h(
     "div",
-    { class: "row inert" },
+    { class: "row inert rest" },
     h(
       "span",
       { class: "line" },
@@ -900,13 +1092,163 @@ function railRow(session, note) {
   );
 }
 
+// ---- Limits -------------------------------------------------------------
+
+/// `HH:MM` today, `Thu 09:00` past a day away, in the phone's own time.
+function clock(unixSecs) {
+  const at = new Date(unixSecs * 1000);
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (unixSecs * 1000 - Date.now() < 24 * 3600 * 1000) return time;
+  // The page's words are English, so is the day's name.
+  return `${at.toLocaleDateString("en", { weekday: "short" })} ${time}`;
+}
+
+/// The window a vendor's row shows: the footer's own choice when it said,
+/// else the fullest.
+function headlineWindow(vendor) {
+  const windows = vendor.windows ?? [];
+  return (
+    windows.find((w) => w.window_minutes === vendor.shown_window_minutes) ??
+    windows.reduce((a, b) => (b.utilization > (a?.utilization ?? -1) ? b : a), null)
+  );
+}
+
+/// The meter's tone and word, at the thresholds the computer sent.
+function limitTone(utilization) {
+  const limits = state.fleet?.limits;
+  if (utilization >= (limits?.reached_at ?? 100)) return ["failed", "reached"];
+  if (utilization >= (limits?.nearly_out_at ?? 85)) return ["waiting", "nearly out"];
+  return ["", null];
+}
+
+function meter(utilization, tone) {
+  const fill = h("span", { class: `meter-fill ${tone}` });
+  fill.style.width = `${Math.max(0, Math.min(100, utilization))}%`;
+  return h("span", { class: "meter", "aria-hidden": "true" }, fill);
+}
+
+/// The computer's plan limits in one line over the list, as the rail's
+/// footer has them. Missing data is said, not hidden - an absent line would
+/// read as "no limits". With no vendor to report at all the footer draws
+/// nothing either, and so does this.
+function limitsLine() {
+  const at = route();
+  const limits = state.fleet?.limits;
+  const vendors = limits?.vendors ?? [];
+  if (!limits) {
+    const app = state.fleet?.app_version;
+    const why = !app || newerThan("0.2.16", app) ? "update Splitlane on the computer" : "Splitlane's window is closed";
+    return h("p", { class: "limits-line muted" }, `Limits unavailable · ${why}`);
+  }
+  if (!vendors.length) return null;
+  const [first, ...others] = vendors;
+  const win = headlineWindow(first);
+  const [tone, word] = win ? limitTone(win.utilization) : ["", null];
+  const lead =
+    first.state === "unreadable"
+      ? [h("strong", {}, first.vendor), ` limits unavailable · ${first.reason ?? "not read"}`]
+      : first.state === "no_plan_limit"
+        ? [h("strong", {}, first.vendor), " · no plan limit"]
+        : win
+          ? [
+              h("strong", {}, first.vendor),
+              " ",
+              h("span", { class: `pct ${tone}` }, `${Math.round(win.utilization)}%`),
+              h(
+                "span",
+                { class: "muted" },
+                ` of ${win.name ?? "window"}${word ? ` · ${word}` : ""}${win.resets_at ? ` · resets ${clock(win.resets_at)}` : ""}`,
+              ),
+            ]
+          : [h("strong", {}, first.vendor), h("span", { class: "muted" }, " · no current window")];
+  const rest = others.map((v) => {
+    const w = headlineWindow(v);
+    return w ? `${v.vendor} ${Math.round(w.utilization)}%` : v.vendor;
+  });
+  return h(
+    "a",
+    { class: "limits-line", href: `#/c/${at.computer.id}/limits` },
+    h("span", { class: "line" }, h("span", {}, lead), h("span", { class: "muted" }, [...rest, "›"].join(" "))),
+    win && first.state === "limits" ? meter(win.utilization, tone) : null,
+  );
+}
+
+/// Whether version `a` is newer than `b`, both `x.y.z`.
+function newerThan(a, b) {
+  const parts = (v) => String(v).split(".").map((n) => parseInt(n, 10) || 0);
+  const pa = parts(a);
+  const pb = parts(b);
+  for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0);
+  return false;
+}
+
+function renderLimits(computer) {
+  const body = h("div", { id: "body" });
+  show(header("Limits", `#/c/${computer.id}`), body);
+  fillLimits(body);
+}
+
+function fillLimits(body) {
+  const limits = state.fleet?.limits;
+  const parts = [connectionLine()];
+  if (!state.fleet) {
+    parts.push(h("p", { class: "muted center" }, "Asking the computer…"));
+  } else if (!limits) {
+    parts.push(limitsLine());
+  } else if (!(limits.vendors ?? []).length) {
+    parts.push(h("p", { class: "muted center" }, "No plan limits to show: no agent here reports them."));
+  }
+  for (const vendor of limits?.vendors ?? []) {
+    const rows = (vendor.windows ?? []).map((w) => {
+      const [tone, word] = limitTone(w.utilization);
+      return h(
+        "div",
+        { class: "limit" },
+        h(
+          "div",
+          { class: "line" },
+          h("span", { class: "limit-name" }, w.name ? `${w.name[0].toUpperCase()}${w.name.slice(1)} window` : "Window"),
+          h("span", { class: `limit-pct ${tone}` }, `${Math.round(w.utilization)}%`),
+        ),
+        meter(w.utilization, tone),
+        h("span", { class: "sub" }, [word, w.resets_at ? `resets ${clock(w.resets_at)}` : null].filter(Boolean).join(" · ")),
+      );
+    });
+    const said =
+      vendor.state === "unreadable"
+        ? `Unavailable · ${vendor.reason ?? "not read"}`
+        : vendor.state === "no_plan_limit"
+          ? "No plan limit"
+          : !rows.length
+            ? "No current window"
+            : null;
+    const when = vendor.observed_at
+      ? vendor.delivery === "passive"
+        ? `as ${vendor.vendor} last stated it · ${clock(vendor.observed_at)}`
+        : `read ${clock(vendor.observed_at)} on the computer`
+      : null;
+    parts.push(
+      h(
+        "section",
+        { class: "panel limits" },
+        h("h2", {}, vendor.vendor),
+        said ? h("p", { class: "muted" }, said) : null,
+        rows,
+        when ? h("p", { class: "origin" }, when) : null,
+      ),
+    );
+  }
+  body.replaceChildren(...parts.filter(Boolean));
+}
+
 function sessionRow(row, note) {
   const at = route();
   const [kind] = stateOf(row);
   const message = kind === "waiting" ? row.rail?.message ?? row.message : null;
-  const sub = [sessionTitle(row) !== toolName(row.tool) ? toolName(row.tool) : null, note].filter(Boolean).join(" · ");
+  const title = sessionTitle(row);
+  const sub = [title !== toolName(row.tool) ? toolName(row.tool) : null, note].filter(Boolean).join(" · ");
   const inner = [
-    h("span", { class: "line" }, h("span", { class: "title" }, sessionTitle(row)), chip(row)),
+    h("span", { class: "line" }, h("span", { class: "title" }, title), chip(row)),
     sub ? h("span", { class: "sub" }, sub) : null,
     message ? h("span", { class: "sub question" }, message) : null,
   ];
@@ -985,7 +1327,8 @@ function renderSession(computer, surface) {
     result,
   );
   const said = h("div", { id: "said" });
-  show(header("Session", `#/c/${computer.id}`), head, said, compose, body);
+  const next = h("nav", { id: "next", class: "next-bar", "aria-label": "Next session" });
+  show(header("Session", `#/c/${computer.id}`), head, said, compose, body, next);
   fillSession(head, said, body, surface);
 }
 
@@ -1052,6 +1395,34 @@ function fillSession(head, said, body, surface) {
   parts.push(h("section", { class: "screen-box" }, toggle, screen));
   body.replaceChildren(...parts.filter(Boolean));
   if (screen?.tagName === "PRE") screen.scrollTop = screen.scrollHeight;
+  fillNext(surface);
+}
+
+/// The bar at the foot of a session: back to the list, and on to the next
+/// session that needs the person, so answering several does not mean going
+/// back to the list between each.
+function fillNext(surface) {
+  const bar = document.getElementById("next");
+  if (!bar) return;
+  const at = route();
+  const needs = needsYou().filter((n) => n.row);
+  const here = needs.findIndex((n) => n.row.surface_id === surface);
+  const next = needs.length ? needs[(here + 1) % needs.length] : null;
+  const list = h("a", { class: "next-list", href: `#/c/${at.computer.id}` }, "List");
+  if (!next || next.row.surface_id === surface) {
+    bar.replaceChildren(list, h("span", { class: "next-none muted" }, here >= 0 ? "No other session needs you." : "Nothing else needs you."));
+    return;
+  }
+  const [, words] = stateOf(next.row);
+  bar.replaceChildren(
+    list,
+    h(
+      "a",
+      { class: "next-go", href: `#/c/${at.computer.id}/s/${next.row.surface_id}` },
+      h("span", { class: "next-label" }, here >= 0 ? `Next · ${here + 1} of ${needs.length} need you ›` : `Next that needs you ›`),
+      h("span", { class: "next-title" }, `${next.session.title || toolName(next.row.tool)} · ${words}`),
+    ),
+  );
 }
 
 /// Refill what changes in the current view, keeping what is being typed.
@@ -1062,6 +1433,7 @@ function update() {
   const said = document.getElementById("said");
   const body = document.getElementById("body");
   if (at.view === "computer" && body) return fillComputer(body);
+  if (at.view === "limits" && body) return fillLimits(body);
   if (at.view === "session" && body && head && said) return fillSession(head, said, body, at.surface);
 }
 

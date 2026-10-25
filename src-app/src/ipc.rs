@@ -1258,6 +1258,7 @@ fn handle_connection(
                                         "app.activate",
                                         "fleet.list",
                                         "rail.list",
+                                        "limits.list",
                                         "events.subscribe",
                                         "ai.session_start",
                                         "ai.prompt_submit",

@@ -1740,10 +1740,37 @@ and the missing session read as lost. A second list with its own rules is a
 second thing to learn, so the phone reads the rail's (`rail.list`) and draws
 it, a session at rest dimmed and with nothing to open.
 
-- **Folding is the rail's view, not the list.** A folded group, a folded
-  project and an opener with its sessions folded away are all listed in full;
-  the phone has its own screen, and hiding a session there because a fold on
-  the desktop hides it would be the missing-session problem again.
+- **Folding is each screen's own.** The rail's folds do not reach the phone:
+  a project folded on the desktop to get it out of the way there is not
+  thereby one the person wants hidden on the phone, and hiding it would be
+  the missing-session problem again. The phone folds projects of its own, by
+  hand, and remembers that in its own storage; untouched, a project is open
+  while something in it is active and folded otherwise. A folded project
+  says what is under it in the rail's folded-project words - `1 failed`,
+  `2 waiting`, `1 running`, `1 finished` - or how many sessions it holds.
+- **Triage comes first, the hierarchy second.** The list was the rail's,
+  and with fifteen projects the one thing a phone is opened for - who needs
+  me, who is still working - meant scrolling past all of them. So the screen
+  opens with **Needs you**: every session waiting for an answer or failed,
+  across projects, in the rail's order, with the question. Those sessions
+  also stay in their projects, so a project never looks short of a session.
+  Below it, **Active** (the default) lists only projects with something
+  active, and in them only the active sessions and the openers they sit
+  under; **All** is the whole rail. *Active* is working, waiting, failed, or
+  finished while nobody looked - the rail's unread `finished`
+  (`finished_unseen` in `rail.list`), because a turn that ended is the state
+  of nearly every session that ever ran, and counting it would make Active
+  the whole list again.
+- **The session card walks the same list.** Its foot names the next session
+  that needs the person and goes there, so answering three of them does not
+  mean three trips back to the list.
+- **Limits sit over the list and never disappear.** The rail's footer comes
+  to the phone as data (`limits.list`): every current window, the one the
+  footer shows, and the two thresholds, so the phone colours and words the
+  meter as the footer does without its own copy of the rules. When there is
+  nothing to show, the line says why - the window is closed, or Splitlane on
+  the computer predates the method - because an absent line reads as "no
+  limits".
 - **What an opener opened is drawn under it.** The rail brackets the
   sessions a session opened under that session, and the phone indents them
   under it and says how many it opened; the sessions of an opener that was

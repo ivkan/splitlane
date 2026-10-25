@@ -62,7 +62,7 @@ main {
 .bar {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -104,6 +104,294 @@ h2 {
 h3 {
   margin: 0 0 8px;
   font-size: 15px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.tabs .tab {
+  flex: 1;
+  min-height: 36px;
+  margin: 0;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.tabs .tab.on {
+  background: var(--line);
+  color: var(--text);
+}
+
+.needs {
+  margin-top: 18px;
+}
+
+.needs-head {
+  margin: 0;
+  color: var(--waiting);
+}
+
+.group {
+  margin-top: 18px;
+}
+
+.group-head {
+  position: sticky;
+  /* Under the page's own bar, whose height app.js measures. */
+  top: var(--bar-height, 0px);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.group-label {
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--line);
+  color: var(--text);
+  font: 600 12px/1.3 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.eyebrow {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.project-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.project-head .caret {
+  width: 14px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.project-head .project-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-head .tally {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.word.failed {
+  color: var(--failed);
+}
+
+.word.waiting {
+  color: var(--waiting);
+}
+
+.word.running {
+  color: var(--running);
+}
+
+.word.done {
+  color: var(--done);
+}
+
+.more {
+  align-self: flex-start;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 4px 0 28px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.row.rest {
+  border-style: dashed;
+  background: transparent;
+}
+
+.limits-line {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: inherit;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+p.limits-line {
+  background: transparent;
+  border-style: dashed;
+}
+
+.limits-line .line {
+  align-items: baseline;
+}
+
+.pct,
+.limit-pct {
+  font-weight: 600;
+}
+
+.pct.waiting,
+.limit-pct.waiting {
+  color: var(--waiting);
+}
+
+.pct.failed,
+.limit-pct.failed {
+  color: var(--failed);
+}
+
+.meter {
+  display: block;
+  height: 4px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--muted);
+}
+
+.meter-fill.waiting {
+  background: var(--waiting);
+}
+
+.meter-fill.failed {
+  background: var(--failed);
+}
+
+.panel.limits {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.panel.limits h2 {
+  margin: 0;
+}
+
+.limit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.limit-name {
+  font-weight: 600;
+}
+
+.limit-pct {
+  font-size: 20px;
+}
+
+.limit .meter {
+  height: 6px;
+}
+
+.origin {
+  margin: 0;
+  font: 13px var(--mono);
+  color: var(--muted);
+}
+
+.next-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin: 16px calc(-1 * var(--gutter)) 0;
+  padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.next-bar a {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.next-list {
+  flex: none;
+  align-items: center;
+  padding: 0 14px;
+  min-height: 48px;
+  font-weight: 600;
+}
+
+.next-go {
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  padding: 4px 14px;
+  border-color: var(--waiting) !important;
+}
+
+.next-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--waiting);
+  text-transform: uppercase;
+}
+
+.next-title {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.next-none {
+  align-self: center;
+  font-size: 14px;
 }
 
 .opened {
