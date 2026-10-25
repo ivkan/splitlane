@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-10-25
+
 ### Changed
 
 - **The phone lists sessions as the rail does.** The same project groups and
@@ -14,6 +16,13 @@ Notable changes to Splitlane are recorded here. The format follows
   Before, the phone showed only running agents, named after their panes, and
   no groups. The page also tells Chrome on iPhone where its Share button is.
   New IPC method `rail.list`.
+
+### Security
+
+- **Constant-time arithmetic under the phone's key exchange.** The P-256
+  library the phone pairing uses moved to a version whose big-integer code
+  no longer branches on secret values (RUSTSEC-2026-0387). Existing pairings
+  keep working.
 
 ## [0.2.13] - 2026-10-23
 

@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.14" date="2026-10-25">
+      <description>
+        <p>A paired phone lists sessions as the rail does: the same project
+        groups and projects, each session under the name the rail shows, and
+        the sessions whose agent is not running, dimmed. The P-256 library
+        under the phone pairing moved to a version whose arithmetic no longer
+        branches on secret values.</p>
+      </description>
+    </release>
     <release version="0.2.13" date="2026-10-23">
       <description>
         <p>Each agent session started in a git repository gets its own branch
