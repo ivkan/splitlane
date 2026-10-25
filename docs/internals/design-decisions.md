@@ -1744,6 +1744,13 @@ it, a session at rest dimmed and with nothing to open.
   project and an opener with its sessions folded away are all listed in full;
   the phone has its own screen, and hiding a session there because a fold on
   the desktop hides it would be the missing-session problem again.
+- **What an opener opened is drawn under it.** The rail brackets the
+  sessions a session opened under that session, and the phone indents them
+  under it and says how many it opened; the sessions of an opener that was
+  closed sit under a line naming it, as the rail's caption does. Without
+  this the phone listed an orchestrator and its workers as neighbours, and
+  which session was working for which was the one thing the rail said that
+  the phone did not.
 - **Only agent sessions.** The phone is for following agents and answering
   them; a shell is listed only while an agent runs in it, which is when the
   rail counts it as a session too.

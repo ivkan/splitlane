@@ -106,6 +106,18 @@ h3 {
   font-size: 15px;
 }
 
+.opened {
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+
+.opened-caption {
+  margin: 4px 0 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .versions {
   margin-top: 24px;
   font-size: 13px;

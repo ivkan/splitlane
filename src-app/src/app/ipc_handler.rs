@@ -3521,6 +3521,13 @@ impl SplitlaneApp {
                                         "title": thread.title,
                                         "agent": thread.terminal_agent.map(|agent| agent.binary()),
                                         "pinned": thread.pinned,
+                                        // The session that opened this one, so the
+                                        // phone can draw it under its opener as the
+                                        // rail does; the title names an opener that
+                                        // has been closed.
+                                        "opened_by": thread.opened_by.as_ref().map(|by| {
+                                            serde_json::json!({ "thread_id": by.id, "title": by.title })
+                                        }),
                                         "surface_id": surface_of.get(&thread.id),
                                     })
                                 })
