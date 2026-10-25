@@ -35,7 +35,11 @@ the phone's own camera app can open the code's link directly.
 ## What the phone may do
 
 - **Read:** the list of agent sessions, their state, the question an agent is
-  asking, its last answer and the text on its screen.
+  asking, its last answer and the text on its screen. While the window is
+  open the list is the rail's: the same groups and projects, the sessions
+  under the names the rail gives them, and the sessions whose agent is not
+  running, dimmed. With only the session host running, the phone lists the
+  running agents by project.
 - **Reply:** text into an agent session, the keys a prompt asks for (digits,
   `y`, `n`, `Enter`, `Esc`, the arrows), and interrupting a turn. Only agent
   sessions take it, never a plain shell. Each reply goes into a journal on the

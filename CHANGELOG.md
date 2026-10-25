@@ -6,6 +6,15 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The phone lists sessions as the rail does.** The same project groups and
+  projects, each session under the name the rail shows (a session you renamed
+  keeps its new name), and the sessions whose agent is not running, dimmed.
+  Before, the phone showed only running agents, named after their panes, and
+  no groups. The page also tells Chrome on iPhone where its Share button is.
+  New IPC method `rail.list`.
+
 ## [0.2.13] - 2026-10-23
 
 ### Added

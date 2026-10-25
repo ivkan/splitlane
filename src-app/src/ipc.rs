@@ -1257,6 +1257,7 @@ fn handle_connection(
                                         "surface.send_answer", "app.dispatch_action",
                                         "app.activate",
                                         "fleet.list",
+                                        "rail.list",
                                         "events.subscribe",
                                         "ai.session_start",
                                         "ai.prompt_submit",

@@ -142,6 +142,16 @@ fn read(surface: &impl IpcTransport, method: &str, params: &Value) -> Result<Val
     };
     match method {
         "list" => {
+            // The rail's own list, so the phone groups, names and counts
+            // sessions as the window does. Only the window has it; without
+            // it the phone lists the running agents by project, as before.
+            // Asked before the agents: an agent that starts between the two
+            // calls is then listed under its pane's name until the next
+            // list, where asked after it would be drawn as not running.
+            let rail = surface
+                .call("rail.list", json!({}))
+                .ok()
+                .filter(|rail| rail.get("projects").is_some_and(Value::is_array));
             let mut fleet = surface.call("fleet.list", json!({}))?;
             // Project names, for the phone to group sessions under. Only
             // the window has them; without, the phone falls back on each
@@ -156,6 +166,13 @@ fn read(surface: &impl IpcTransport, method: &str, params: &Value) -> Result<Val
                     .collect();
                 if let Some(fleet) = fleet.as_object_mut() {
                     fleet.insert("projects".into(), json!(projects));
+                }
+            }
+            if let Some(mut rail) = rail {
+                let agents = fleet.get("agents").cloned().unwrap_or(Value::Null);
+                add_unlisted_agents(&mut rail, &agents);
+                if let Some(fleet) = fleet.as_object_mut() {
+                    fleet.insert("rail".into(), rail);
                 }
             }
             Ok(fleet)
@@ -176,6 +193,52 @@ fn read(surface: &impl IpcTransport, method: &str, params: &Value) -> Result<Val
         }
         "answer" => crate::cli::answer_cmd::answer_value(surface, surface_id()?, ANSWER_MAX_BYTES),
         other => Err(format!("unknown request `{other}`")),
+    }
+}
+
+/// Put each running agent the rail has no session row for under its
+/// project, after the rail's own: an agent somebody started by hand in a
+/// pane the rail does not list as a session. Named by its pane, as the phone
+/// named every session before it had the rail's names.
+fn add_unlisted_agents(rail: &mut Value, agents: &Value) {
+    let Some(projects) = rail.get_mut("projects").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let listed: Vec<Value> = projects
+        .iter()
+        .filter_map(|project| project.get("sessions").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|session| {
+            session
+                .get("surface_id")
+                .filter(|id| !id.is_null())
+                .cloned()
+        })
+        .collect();
+    for agent in agents.as_array().into_iter().flatten() {
+        let Some(surface_id) = agent.get("surface_id").filter(|id| !id.is_null()) else {
+            continue;
+        };
+        if listed.contains(surface_id) {
+            continue;
+        }
+        let Some(sessions) = projects
+            .iter_mut()
+            .find(|project| {
+                project.get("index").is_some() && project.get("index") == agent.get("workspace")
+            })
+            .and_then(|project| project.get_mut("sessions"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        sessions.push(json!({
+            "thread_id": null,
+            "title": agent.get("surface_name"),
+            "agent": agent.get("tool"),
+            "pinned": false,
+            "surface_id": surface_id,
+        }));
     }
 }
 
@@ -226,15 +289,16 @@ mod tests {
         )
         .unwrap();
         let calls = surface.0.into_inner();
-        assert_eq!(calls[0].0, "fleet.list");
-        assert_eq!(calls[1].0, "workspace.list");
+        assert_eq!(calls[0].0, "rail.list");
+        assert_eq!(calls[1].0, "fleet.list");
+        assert_eq!(calls[2].0, "workspace.list");
         assert_eq!(
-            calls[2],
+            calls[3],
             ("surface.status".into(), json!({ "surface_id": 7 }))
         );
-        assert_eq!(calls[3].0, "surface.read");
-        assert_eq!(calls[3].1["lines"], READ_MAX_LINES);
-        assert_eq!(calls[3].1["fenced"], false);
+        assert_eq!(calls[4].0, "surface.read");
+        assert_eq!(calls[4].1["lines"], READ_MAX_LINES);
+        assert_eq!(calls[4].1["fenced"], false);
     }
 
     #[test]
@@ -266,6 +330,44 @@ mod tests {
             false,
         );
         assert!(closed.is_ok());
+    }
+
+    #[test]
+    fn a_list_carries_the_rails_list_with_every_running_agent_in_it() {
+        struct Window;
+        impl IpcTransport for Window {
+            fn call(&self, method: &str, _: Value) -> Result<Value, String> {
+                match method {
+                    "fleet.list" => Ok(json!({ "agents": [
+                        { "surface_id": 11, "surface_name": "claude@app", "tool": "claude", "workspace": 0 },
+                        { "surface_id": 12, "surface_name": "codex@app", "tool": "codex", "workspace": 0 },
+                        { "surface_id": 13, "surface_name": "claude@lost", "tool": "claude", "workspace": 5 }
+                    ] })),
+                    "workspace.list" => Ok(json!({ "workspaces": [] })),
+                    "rail.list" => Ok(json!({
+                        "groups": [{ "id": 1, "name": "Work", "private": false }],
+                        "projects": [{ "index": 0, "title": "app", "group": 1, "sessions": [
+                            { "thread_id": 3, "title": "Fix the login", "agent": "claude", "pinned": false, "surface_id": 11 },
+                            { "thread_id": 2, "title": "Old idea", "agent": "claude", "pinned": false, "surface_id": null }
+                        ] }]
+                    })),
+                    _ => Err("no".into()),
+                }
+            }
+        }
+        let list = answer(&Window, "list", &Value::Null, &phone(true), None, true).unwrap();
+        let titles: Vec<&str> = list["rail"]["projects"][0]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["title"].as_str().unwrap())
+            .collect();
+        // The rail's names in the rail's order, the session at rest kept, and
+        // the agent the rail has no row for after them under its pane name.
+        assert_eq!(titles, ["Fix the login", "Old idea", "codex@app"]);
+        assert_eq!(list["rail"]["groups"][0]["name"], "Work");
+        // An agent in a project the rail does not list stays in `agents`.
+        assert_eq!(list["agents"].as_array().unwrap().len(), 3);
     }
 
     #[test]

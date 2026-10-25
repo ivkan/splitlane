@@ -3475,6 +3475,66 @@ impl SplitlaneApp {
                     "idle_shells": idle_shells,
                 })
             }
+            "rail.list" => {
+                // The rail's list as data: groups, projects and the agent
+                // sessions under each, in the order the rail draws them,
+                // sessions whose agent is not running included. The phone
+                // shows this list, so that what it calls a session and where
+                // it puts it is what the window does. Read-only.
+                let surface_of: HashMap<u64, u64> = self
+                    .collect_surface_entries(cx)
+                    .iter()
+                    .filter_map(|entry| Some((entry.thread_id?, entry.entity.entity_id().as_u64())))
+                    .collect();
+                let order = Self::compute_display_order(&self.workspaces);
+                let sections = crate::app::project_groups::rail_sections(
+                    &order,
+                    |index| self.workspaces.get(index).and_then(|ws| ws.group),
+                    &self.project_groups,
+                );
+                let groups: Vec<_> = sections
+                    .groups
+                    .iter()
+                    .filter_map(|(position, _)| self.project_groups.get(*position))
+                    .map(|group| {
+                        serde_json::json!({
+                            "id": group.id,
+                            "name": group.name,
+                            "private": group.private,
+                        })
+                    })
+                    .collect();
+                let projects: Vec<_> = sections
+                    .ungrouped
+                    .iter()
+                    .copied()
+                    .chain(sections.groups.iter().flat_map(|(_, members)| members.iter().copied()))
+                    .filter_map(|index| Some((index, self.workspaces.get(index)?)))
+                    .map(|(index, ws)| {
+                        let sessions: Vec<_> =
+                            crate::app::agents_sidebar::rail_session_order(&ws.threads)
+                                .into_iter()
+                                .map(|idx| &ws.threads[idx])
+                                .map(|thread| {
+                                    serde_json::json!({
+                                        "thread_id": thread.id,
+                                        "title": thread.title,
+                                        "agent": thread.terminal_agent.map(|agent| agent.binary()),
+                                        "pinned": thread.pinned,
+                                        "surface_id": surface_of.get(&thread.id),
+                                    })
+                                })
+                                .collect();
+                        serde_json::json!({
+                            "index": index,
+                            "title": ws.title,
+                            "group": ws.group.filter(|id| self.project_groups.iter().any(|g| g.id == *id)),
+                            "sessions": sessions,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "groups": groups, "projects": projects })
+            }
             "surface.status" => {
                 // One pane's agent state.
                 // Read-only; `idle` when no agent session lives in the pane.

@@ -1726,3 +1726,38 @@ from the rollout and not from a hook
 (`docs/internals/agent-state-and-the-rail.md`). A Codex pane that has not run
 a turn yet has no session and is still placed nowhere; by the time Codex runs
 a command it has.
+
+## The phone lists what the rail lists
+
+**The phone's list is the rail's list: its groups, its projects, its session
+names and its sessions, in its order.** It used to be `fleet.list` - the
+running agents, each named after its pane (`claude@splitlane-b857a2`), under
+its project. Set beside the rail it differed in three ways at once: no groups,
+other names for the same sessions (a session the person renamed most of all),
+and fewer sessions, because a session whose agent is not running has no row in
+`fleet.list`. Reported from live use: matching the two lists by eye was work,
+and the missing session read as lost. A second list with its own rules is a
+second thing to learn, so the phone reads the rail's (`rail.list`) and draws
+it, a session at rest dimmed and with nothing to open.
+
+- **Folding is the rail's view, not the list.** A folded group, a folded
+  project and an opener with its sessions folded away are all listed in full;
+  the phone has its own screen, and hiding a session there because a fold on
+  the desktop hides it would be the missing-session problem again.
+- **Only agent sessions.** The phone is for following agents and answering
+  them; a shell is listed only while an agent runs in it, which is when the
+  rail counts it as a session too.
+- **A running agent with no row in the rail's list is not dropped.** An agent
+  started by hand in a pane the rail lists as no session is added under its
+  project, after the rail's sessions, under its pane's name.
+- **State comes from `fleet.list`, never from the rail's list.** `rail.list`
+  says which sessions exist and what they are called; whether one is working,
+  waiting or finished is `fleet.list`'s word, joined by surface id, so the
+  phone has one vocabulary for state.
+- **A private group's names are shown.** `Keep names private` keeps names out
+  of what comes to the person - Activity and notifications. The phone's list
+  is a place the person goes to look, as the open rail is, so it names the
+  sessions; `private` travels with the group for a phone notification to keep
+  the rule when there is one.
+- **With the window closed there is no rail.** The session host has no groups
+  or titles, so the phone falls back on the running agents by project.

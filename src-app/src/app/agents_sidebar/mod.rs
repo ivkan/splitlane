@@ -3067,6 +3067,27 @@ pub(crate) fn bracketed_rows(
     out
 }
 
+/// A project's agent sessions in the order the rail draws them, for a reader
+/// that has no rail of its own (the phone). Folding is the rail's view of the
+/// list, not the list, so nothing folded is left out. A shell is a session
+/// only while somebody runs an agent in it, and then it keeps the shell's
+/// place, after the agents.
+pub(crate) fn rail_session_order(threads: &[crate::project::Thread]) -> Vec<usize> {
+    let SurfaceRowOrder { agents, shells } = surface_row_order(threads);
+    bracketed_rows(&agents, threads, &std::collections::HashSet::new())
+        .into_iter()
+        .filter_map(|row| match row {
+            AgentRow::Session { idx, .. } => Some(idx),
+            AgentRow::ClosedOpener { .. } => None,
+        })
+        .chain(
+            shells
+                .into_iter()
+                .filter(|&idx| threads[idx].shell_runs_agent),
+        )
+        .collect()
+}
+
 /// The actions a rail row carries under the pointer: pin, delete, overflow.
 ///
 /// `is_pinned` is `None` for a row that cannot be pinned - a container - and
@@ -3408,6 +3429,33 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), threads.len());
+    }
+
+    /// The phone's list is the rail's: newest first, what an opener opened
+    /// under it even when the rail has it folded, and a shell only while an
+    /// agent runs in it.
+    #[test]
+    fn the_phone_gets_the_rails_sessions_in_the_rails_order() {
+        use crate::agent_launcher::TerminalAgent;
+        use crate::project::Thread;
+        let agent =
+            |title: &str| Thread::new_terminal(title, "/w", Some(TerminalAgent::ClaudeCode));
+        let mut threads = vec![
+            agent("plan"),
+            agent("api"),
+            Thread::new_terminal("a shell", "/w", None),
+            Thread::new_terminal("hand-run agent", "/w", None),
+            agent("newest"),
+        ];
+        threads[1].opened_by = Some(splitlane_config::schema::OpenedBy {
+            id: threads[0].id,
+            title: "plan".to_string(),
+        });
+        threads[3].shell_runs_agent = true;
+        assert_eq!(
+            titles(&threads, &rail_session_order(&threads)),
+            ["newest", "plan", "api", "hand-run agent"]
+        );
     }
 
     /// With the opener gone there is nothing to sit under.
