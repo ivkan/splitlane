@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-10-25
+
 ### Added
 
 - **The phone puts what needs you first.** A computer's screen opens with

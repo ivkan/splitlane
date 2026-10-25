@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.16" date="2026-10-25">
+      <description>
+        <p>A paired phone opens on the sessions that need you, then lists only
+        the projects where something is happening, with every session a tap
+        away. Projects fold as in the rail, a session's card goes on to the
+        next one waiting, and the plan limits the rail shows are shown on the
+        phone too.</p>
+      </description>
+    </release>
     <release version="0.2.15" date="2026-10-25">
       <description>
         <p>On a paired phone, an agent's answer is drawn as Markdown, a
