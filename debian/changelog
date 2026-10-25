@@ -1,3 +1,9 @@
+splitlane (0.2.17-1) stable; urgency=medium
+
+  * Release v0.2.17. See GitHub release notes for the full diff.
+
+ -- Ivan Kalashnik <ivkan@users.noreply.github.com>  Sun, 25 Oct 2026 21:33:31 +0200
+
 splitlane (0.2.16-1) stable; urgency=medium
 
   * Release v0.2.16. See GitHub release notes for the full diff.

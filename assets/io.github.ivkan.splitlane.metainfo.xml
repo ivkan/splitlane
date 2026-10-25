@@ -63,6 +63,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.17" date="2026-10-25">
+      <description>
+        <p>A paired phone can start an agent session: pick a project, an agent
+        and what it should do, and it starts on a branch of its own, in the
+        rail rather than on the computer's screen, with a notice naming the
+        phone. The phone also shows what a waiting agent asks, with its
+        choices as buttons, and lists the shells running a build or a
+        server.</p>
+      </description>
+    </release>
     <release version="0.2.16" date="2026-10-25">
       <description>
         <p>A paired phone opens on the sessions that need you, then lists only

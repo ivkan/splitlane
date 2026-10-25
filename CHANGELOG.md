@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-10-25
+
 ### Added
 
 - **Start a session from the phone.** **+** over the phone's list picks a
