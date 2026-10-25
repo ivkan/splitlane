@@ -3521,6 +3521,11 @@ impl SplitlaneApp {
                                         "title": thread.title,
                                         "agent": thread.terminal_agent.map(|agent| agent.binary()),
                                         "pinned": thread.pinned,
+                                        // A turn that ended while nobody looked, the
+                                        // rail's unread `finished`: what the phone's
+                                        // Active view counts, where any finished turn
+                                        // would hold every session that ever ran.
+                                        "finished_unseen": thread.finished_unseen.is_some(),
                                         // The session that opened this one, so the
                                         // phone can draw it under its opener as the
                                         // rail does; the title names an opener that
@@ -3541,6 +3546,10 @@ impl SplitlaneApp {
                     })
                     .collect();
                 serde_json::json!({ "groups": groups, "projects": projects })
+            }
+            "limits.list" => {
+                // The rail's limits footer as data, for the phone. Read-only.
+                self.limits_for_phone(chrono::Utc::now().timestamp())
             }
             "surface.status" => {
                 // One pane's agent state.

@@ -26,15 +26,15 @@ test("an underscore inside a word and a lone asterisk stay letters", () => {
 
 test("an answer like the one on the phone reads as paragraphs and lists", () => {
   const text = [
-    "**Ответы на вопросы плана**",
+    "**Answers to the plan's questions**",
     "(`.specflow/reference/SPEC-397.md`):",
-    "1. Доказательную ячейку гоняем на Mac.",
-    "2. Удаление ключа и LWW-запись поверх OR-слота.",
+    "1. The proof cell runs on the Mac.",
+    "2. Key removal and an LWW write over an OR slot.",
     "",
-    "**Разбиение принято**, по одной части:",
-    "- **397a** — стенд",
-    "  - вложенный пункт",
-    "- **397b** — серия",
+    "**The split is accepted**, one part at a time:",
+    "- **397a** — the rig",
+    "  - a nested item",
+    "- **397b** — the series",
   ].join("\n");
   const tree = parse(text);
   assert.deepEqual(
@@ -42,7 +42,7 @@ test("an answer like the one on the phone reads as paragraphs and lists", () => 
     ["paragraph", "list", "paragraph", "list"],
   );
   assert.deepEqual(tree[0].inline, [
-    { type: "strong", inline: ["Ответы на вопросы плана"] },
+    { type: "strong", inline: ["Answers to the plan's questions"] },
     { type: "break" },
     "(",
     { type: "code", text: ".specflow/reference/SPEC-397.md" },
