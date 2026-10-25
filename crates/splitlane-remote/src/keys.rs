@@ -1,7 +1,7 @@
 //! The long-lived keys of the machine and of each phone.
 
-use p256::elliptic_curve::sec1::ToEncodedPoint;
-use rand_core::OsRng;
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
 use zeroize::Zeroizing;
 
 use crate::Error;
@@ -25,7 +25,7 @@ impl PublicKey {
 
     fn from_point(point: p256::PublicKey) -> Self {
         let mut bytes = [0u8; PUBLIC_KEY_LEN];
-        bytes.copy_from_slice(point.to_encoded_point(false).as_bytes());
+        bytes.copy_from_slice(point.to_sec1_point(false).as_bytes());
         Self { bytes, point }
     }
 
@@ -53,7 +53,7 @@ pub struct DeviceKey(p256::SecretKey);
 
 impl DeviceKey {
     pub fn generate() -> Self {
-        Self(p256::SecretKey::random(&mut OsRng))
+        Self(p256::SecretKey::generate())
     }
 
     /// The 32-byte scalar, for storing the key; see [`Self::from_bytes`].
