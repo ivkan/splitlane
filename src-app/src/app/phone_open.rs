@@ -262,9 +262,31 @@ impl SplitlaneApp {
             ),
             cx,
         );
-        if self.start_phone_session(thread_id, prompt, cx).is_none() {
-            self.show_toast("The session from the phone could not be started", cx);
+        self.start_phone_session_or_drop(thread_id, prompt, cx);
+    }
+
+    /// [`Self::start_phone_session`], and when no terminal can be made, the
+    /// row goes: a session that never started is not left in the rail, and
+    /// its absence is what tells the phone it failed.
+    pub(crate) fn start_phone_session_or_drop(
+        &mut self,
+        thread_id: u64,
+        prompt: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.start_phone_session(thread_id, prompt, cx).is_some() {
+            return;
         }
+        if let Some(ws_idx) = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.threads.iter().any(|t| t.id == thread_id))
+            && let Some(thread_idx) = self.thread_index_by_id(ws_idx, thread_id)
+        {
+            let _ = self.remove_thread(ws_idx, thread_idx, cx);
+            self.save_session(cx);
+        }
+        self.show_toast("The session from the phone could not be started", cx);
     }
 
     /// How many sessions started from phones are running, those still
@@ -286,7 +308,15 @@ impl SplitlaneApp {
                     && running.contains(&thread.id)
             })
             .count();
-        started + self.phone_starts.awaiting_worktree.len()
+        // Only those whose row is still there: a wait that lost its row
+        // must not hold a place for ever.
+        let awaiting = self
+            .phone_starts
+            .awaiting_worktree
+            .keys()
+            .filter(|id| self.thread_by_id(**id).is_some())
+            .count();
+        started + awaiting
     }
 
     /// The person had these sessions on screen at the computer: those a

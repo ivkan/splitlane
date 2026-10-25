@@ -1681,6 +1681,7 @@ function fillNew(body) {
 
 /// The terminal of a session just started, once it has one; `null` when it
 /// has none within a few seconds, and the list is the place to look then.
+/// Throws when the session's row is gone: the computer could not start it.
 async function surfaceOf(threadId) {
   if (threadId == null) return null;
   const until = Date.now() + START_WAIT_MS;
@@ -1692,6 +1693,7 @@ async function surfaceOf(threadId) {
       continue;
     }
     const session = railSessions().find((s) => s.thread_id === threadId);
+    if (!session && state.fleet?.rail) throw new Error("the computer could not start the session; it says why on its screen");
     if (session?.surface_id != null && rowFor(session.surface_id)) return session.surface_id;
   }
   return null;

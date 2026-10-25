@@ -169,6 +169,7 @@ impl SplitlaneApp {
         let Some(ws_idx) = self.workspaces.iter().position(|ws| ws.id == container_id) else {
             // The project closed while git ran. Its close tore down what it
             // owned, and this was not among it yet.
+            self.phone_starts.take_awaiting(thread_id);
             if let Ok(made) = made {
                 cx.background_executor()
                     .spawn(async move {
@@ -237,9 +238,7 @@ impl SplitlaneApp {
         // person at the computer did not ask for it to come on screen.
         match self.phone_starts.take_awaiting(thread_id) {
             Some(prompt) => {
-                if self.start_phone_session(thread_id, prompt, cx).is_none() {
-                    self.show_toast("The session from the phone could not be started", cx);
-                }
+                self.start_phone_session_or_drop(thread_id, prompt, cx);
             }
             None => self.select_session(ws_idx, thread_id, cx),
         }
