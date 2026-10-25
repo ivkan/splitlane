@@ -15,6 +15,12 @@ Notable changes to Splitlane are recorded here. The format follows
 - **The phone shows which session opened which.** A session another session
   opened is indented under its opener, which says how many it opened, as the
   rail brackets them.
+- **The phone reads an agent's answer as Markdown.** Headings, emphasis,
+  code, lists, quotes and tables are drawn as such instead of as asterisks
+  and backticks. Links are shown but do not open, as on the desktop.
+- **The phone offers to reload when a newer page is out.** An open page
+  checks when it comes back from the background and every ten minutes, and
+  says *A new version of this page is ready* with **Reload**.
 
 ## [0.2.14] - 2026-10-25
 
