@@ -63,6 +63,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.15" date="2026-10-25">
+      <description>
+        <p>On a paired phone, an agent's answer is drawn as Markdown, a
+        session another session opened is shown under its opener, and the
+        foot of the screen names the Splitlane version on the computer and
+        the page's own. An open page offers to reload when a newer one is
+        out. Times of day in the limits footer are right across a
+        daylight-saving change.</p>
+      </description>
+    </release>
     <release version="0.2.14" date="2026-10-25">
       <description>
         <p>A paired phone lists sessions as the rail does: the same project

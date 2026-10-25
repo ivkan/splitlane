@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-10-25
+
 ### Added
 
 - **The phone says which versions it is running.** The foot of a computer's
@@ -21,6 +23,12 @@ Notable changes to Splitlane are recorded here. The format follows
 - **The phone offers to reload when a newer page is out.** An open page
   checks when it comes back from the background and every ten minutes, and
   says *A new version of this page is ready* with **Reload**.
+
+### Fixed
+
+- **Times of day across a daylight-saving change.** The limits footer's reset
+  and last-read times, and the status bar's restore time, were an hour off
+  for about a day around each change.
 
 ## [0.2.14] - 2026-10-25
 
