@@ -6,6 +6,15 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The phone shows what a waiting agent asks.** A permission prompt
+  reached the phone as *Claude needs your permission* and nothing more: the
+  command and the choices were only on the agent's screen. A waiting
+  session's card now shows the foot of its screen, and a numbered menu there
+  becomes one button per choice, which presses its digit. The last answer's
+  place no longer shows advice written for scripts.
+
 ## [0.2.16] - 2026-10-25
 
 ### Added

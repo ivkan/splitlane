@@ -394,6 +394,54 @@ p.limits-line {
   font-size: 14px;
 }
 
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.prompt-screen {
+  margin: 0;
+  padding: 10px;
+  overflow-x: auto;
+  font: 12px/1.4 var(--mono);
+  white-space: pre;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 12px;
+  justify-content: flex-start;
+  text-align: left;
+  font-weight: 400;
+}
+
+.choice.chosen {
+  border-color: var(--waiting);
+}
+
+.choice-key {
+  flex: none;
+  font: 600 14px var(--mono);
+  color: var(--waiting);
+}
+
+.choice-label {
+  overflow-wrap: anywhere;
+}
+
 .opened {
   margin-left: 12px;
   padding-left: 10px;

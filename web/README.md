@@ -15,6 +15,7 @@ but its own origin and the relay.
 | `public/app/app.js` | The screens: pairing, sessions by project, one session's card |
 | `public/app/sw.js` | Keeps the page's files so it opens without a network |
 | `public/app/markdown.js` | Reads an agent's answer as Markdown into a tree and builds elements from it with text nodes only; links are drawn, not followed |
+| `public/app/prompt.js` | Reads a waiting agent's question and numbered choices off the foot of its screen |
 | `public/app/version.js` | The page's version, shown on the phone; raise it with every change to the page (`test/version.test.mjs` fails until you do and prints the hash to record) |
 | `public/_headers` | Content Security Policy and the other response headers |
 
