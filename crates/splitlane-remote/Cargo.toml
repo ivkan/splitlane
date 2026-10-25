@@ -16,7 +16,7 @@ aes-gcm = { version = "0.10", features = ["zeroize"] }
 base64 = "0.22"
 hkdf = "0.12"
 hmac = "0.12"
-p256 = { version = "0.13", features = ["ecdh"] }
+p256 = { version = "0.14", features = ["ecdh", "getrandom"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde.workspace = true
 serde_json.workspace = true
