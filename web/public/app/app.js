@@ -12,6 +12,7 @@ import { startScan } from "./scan.js";
 import * as store from "./store.js";
 import { PAGE_VERSION } from "./version.js";
 import { parse as parseMarkdown, render as renderMarkdown } from "./markdown.js";
+import { screenPrompt } from "./prompt.js";
 
 const app = document.getElementById("app");
 const POLL_MS = 4000;
@@ -50,6 +51,10 @@ const state = {
   answers: new Map(),
   screen: null,
   showScreen: false,
+  /// What a waiting session's screen asks, read off its foot.
+  prompt: null,
+  /// The open session's way to press a key, for the prompt's choices.
+  pressKey: null,
   notice: null,
   armedInterrupt: null,
   refreshing: false,
@@ -445,6 +450,20 @@ async function refreshOnce() {
         state.answers.set(at.surface, { runs, error: error.message });
       }
     }
+    // A waiting agent's question is on its screen, not in what the hook
+    // said; read the foot of the screen to show it.
+    if (row && stateOf(row)[0] === "waiting") {
+      try {
+        const screen = await ask("read", { surface_id: at.surface, lines: 60 });
+        if (stale()) return;
+        state.prompt = { surface: at.surface, ...screenPrompt(screen.text) };
+      } catch {
+        if (stale()) return;
+        state.prompt = null;
+      }
+    } else {
+      state.prompt = null;
+    }
     if (state.showScreen) {
       try {
         const screen = await ask("read", { surface_id: at.surface, lines: 120 });
@@ -487,6 +506,7 @@ setInterval(() => {
 window.addEventListener("hashchange", () => {
   state.showScreen = false;
   state.screen = null;
+  state.prompt = null;
   state.armedInterrupt = null;
   render();
   refresh();
@@ -796,6 +816,56 @@ function fillComputer(body) {
   }
   parts.push(versionLine());
   body.replaceChildren(...parts.filter(Boolean));
+}
+
+/// What a waiting agent asks, as on its screen, with its menu's choices as
+/// buttons that press their digit - the same key a person at the computer
+/// would press.
+function promptView(surface) {
+  const prompt = state.prompt;
+  if (!prompt || prompt.surface !== surface || !prompt.lines.length) return null;
+  return h(
+    "div",
+    { class: "prompt" },
+    h("pre", { class: "prompt-screen" }, prompt.lines.join("\n")),
+    prompt.choices.length
+      ? h(
+          "div",
+          { class: "choices" },
+          prompt.choices.map((choice) =>
+            h(
+              "button",
+              { class: choice.chosen ? "choice chosen" : "choice", onclick: () => state.pressKey?.(choice.key) },
+              h("span", { class: "choice-key" }, choice.key),
+              h("span", { class: "choice-label" }, choice.label),
+            ),
+          ),
+        )
+      : null,
+  );
+}
+
+/// Why there is no answer to show, in the phone's words: the computer's are
+/// written for scripts and name CLI flags.
+function answerWords(answer) {
+  switch (answer?.outcome) {
+    case "turn_in_flight":
+      return "Working on a turn - its answer appears here when it ends.";
+    case "not_yet":
+      return "No answer yet.";
+    case "no_transcript":
+      return "Nothing said in this session yet.";
+    case "unreadable":
+      return "The session's conversation could not be read.";
+    case "no_reader":
+      return "This agent's answers cannot be shown here; Show screen has what it wrote.";
+    case "turn_aborted":
+      return "The turn was stopped before it answered.";
+    case "turn_failed":
+      return "The turn ended in an error.";
+    default:
+      return answer?.hint ? sentence(answer.hint) : "No answer yet.";
+  }
 }
 
 /// An answer read as Markdown, or as plain text should reading it fail: the
@@ -1294,6 +1364,7 @@ function renderSession(computer, surface) {
       state.drafts.delete(draftKey);
     }
   };
+  state.pressKey = (key) => write("key", { keystroke: key }, `Pressed ${key}.`);
   const keys = h(
     "div",
     { class: "keys" },
@@ -1351,6 +1422,7 @@ function fillSession(head, said, body, surface) {
         kind === "waiting" && (row.rail?.message ?? row.message)
           ? h("p", { class: "question" }, row.rail?.message ?? row.message)
           : null,
+        kind === "waiting" ? promptView(surface) : null,
       ),
     );
   } else {
@@ -1369,7 +1441,7 @@ function fillSession(head, said, body, surface) {
           ? h("p", { class: "error" }, sentence(known.error))
           : answer?.text
             ? answerText(answer.text)
-            : h("p", { class: "muted" }, answer?.hint ?? "No answer yet."),
+            : h("p", { class: "muted" }, answerWords(answer)),
         answer?.truncated ? h("p", { class: "muted" }, "Cut short; the rest is on the computer.") : null,
       ),
     );

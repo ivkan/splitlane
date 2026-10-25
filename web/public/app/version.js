@@ -1,5 +1,5 @@
 // Which page this is, for the phone to say. Raised with every change to the
 // page; test/version.test.mjs fails until it is, by checking the SHA-256 of
 // every other file under app/ against the one recorded here.
-export const PAGE_VERSION = "2026-10-25.4";
-export const PAGE_FILES_SHA256 = "64a04ee5bdc3694c95db12e025d9e87c665f541ce4e480b21ce08f9b7c861486";
+export const PAGE_VERSION = "2026-10-25.5";
+export const PAGE_FILES_SHA256 = "3b39405206bf5a34fbdb4b68187b11b4d0adc4a99845331eb30959f7150b4fdb";

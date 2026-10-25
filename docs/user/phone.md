@@ -46,7 +46,9 @@ the phone's own camera app can open the code's link directly.
   projects with something working, waiting, failed or newly finished.
   **All** shows everything. Tap a project to fold or open it; the phone
   remembers. At the foot of a session, **Next** goes to the next one that
-  needs you.
+  needs you. A session waiting on a question shows it as its screen does -
+  a permission prompt with its command - and each numbered choice as a
+  button.
 - **Limits:** the plan limits the rail's footer shows, in a line over the
   list - tap it for every window and when it resets.
 - **Reply:** text into an agent session, the keys a prompt asks for (digits,
