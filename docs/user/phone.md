@@ -56,7 +56,10 @@ window.
 The page updates itself: each time it opens with a network, it loads the
 current version from <https://splitlane.dev/app>. On an iPhone, an app left
 in the background comes back as it was, without loading anything; close it
-(swipe it up in the app switcher) and open it again to be sure.
+(swipe it up in the app switcher) and open it again to be sure. A page that
+is open when a newer one comes out says so at the top - *A new version of
+this page is ready* - with **Reload**; it checks when it comes back from the
+background and every ten minutes.
 
 The foot of a computer's screen says which versions are talking, for example
 *Splitlane 0.2.15 on this computer · page 2026-10-25.1*; Settings shows the

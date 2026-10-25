@@ -3,7 +3,7 @@
 // a new version is taken as soon as it is reachable.
 
 const CACHE = "splitlane-app-v3";
-const SHELL = ["./", "app.js", "link.js", "protocol.js", "scan.js", "store.js", "style.css", "version.js", "manifest.webmanifest", "icon-192.png"];
+const SHELL = ["./", "app.js", "link.js", "protocol.js", "scan.js", "store.js", "style.css", "version.js", "markdown.js", "manifest.webmanifest", "icon-192.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));

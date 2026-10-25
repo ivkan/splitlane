@@ -404,6 +404,110 @@ button.small {
   border-radius: var(--radius);
 }
 
+.notice.update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--running-bg);
+  color: var(--running);
+}
+
+.notice.update button {
+  flex: none;
+  width: auto;
+  margin: 0;
+}
+
+.md {
+  overflow-wrap: anywhere;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md pre,
+.md .md-table {
+  margin: 0 0 10px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 22px;
+}
+
+.md li > p,
+.md li > ul,
+.md li > ol {
+  margin: 0;
+}
+
+.md .md-h {
+  margin: 14px 0 6px;
+  font-size: 16px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+.md code {
+  font: 13px var(--mono);
+  padding: 1px 4px;
+  background: var(--bg);
+  border-radius: 4px;
+}
+
+.md pre {
+  padding: 10px;
+  overflow-x: auto;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.md pre code {
+  padding: 0;
+  white-space: pre;
+}
+
+.md blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 12px 0;
+}
+
+.md .md-table {
+  overflow-x: auto;
+}
+
+.md table {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.md th,
+.md td {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md .md-link {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .paste summary {
   cursor: pointer;
   color: var(--muted);

@@ -3,18 +3,23 @@
 //
 // Everything a computer sends is shown as text (`textContent`), never as
 // markup: an agent's answer or question is words it wrote, and nothing in
-// it runs here.
+// it runs here. An answer's Markdown is read into elements by markdown.js,
+// which keeps to that: its strings become text nodes.
 
 import { cleanName, expired, fingerprint, parseLink } from "./protocol.js";
 import { RELAY, connect, pair } from "./link.js";
 import { startScan } from "./scan.js";
 import * as store from "./store.js";
 import { PAGE_VERSION } from "./version.js";
+import { parse as parseMarkdown, render as renderMarkdown } from "./markdown.js";
 
 const app = document.getElementById("app");
 const POLL_MS = 4000;
 const RETRY_FIRST_MS = 1000;
 const RETRY_MAX_MS = 30000;
+/// How often an open page asks whether a newer one is out, besides each time
+/// it comes back from the background.
+const PAGE_CHECK_MS = 10 * 60 * 1000;
 /// Keys the computer lets a phone press, in the order they are offered.
 const KEYS = [
   ["1", "1"],
@@ -54,6 +59,8 @@ const state = {
   scanNumber: 0,
   inBrowser: false,
   installPrompt: null,
+  /// The version a newer page on the server carries, once one is seen.
+  newerPage: null,
 };
 
 // ---- Where the page runs ----------------------------------------------
@@ -100,7 +107,36 @@ function h(tag, props = {}, ...children) {
 }
 
 function show(...children) {
-  app.replaceChildren(...children.filter((c) => c != null));
+  app.replaceChildren(...[newerPageLine(), ...children].filter((c) => c != null));
+}
+
+/// A newer page is on the server. The service worker would load it on the
+/// next start, but an iPhone brings a backgrounded page back as it was, so
+/// the page says so and reloads when asked.
+function newerPageLine() {
+  if (!state.newerPage) return null;
+  return h(
+    "div",
+    { class: "notice update", role: "status" },
+    h("span", {}, "A new version of this page is ready."),
+    h("button", { class: "primary", onclick: () => location.reload() }, "Reload"),
+  );
+}
+
+/// Ask the server which page it serves now. Quietly does nothing when it
+/// cannot tell: offline, or a page from before versions.
+async function checkForNewerPage() {
+  try {
+    const response = await fetch("version.js", { cache: "no-store" });
+    if (!response.ok) return;
+    const served = (await response.text()).match(/PAGE_VERSION = "([^"]+)"/)?.[1];
+    if (served && served !== PAGE_VERSION && served !== state.newerPage) {
+      state.newerPage = served;
+      render();
+    }
+  } catch {
+    // Offline: the next check will tell.
+  }
 }
 
 function header(title, back) {
@@ -434,8 +470,13 @@ document.addEventListener("visibilitychange", () => {
   } else {
     state.retryMs = RETRY_FIRST_MS;
     render();
+    checkForNewerPage();
   }
 });
+
+setInterval(() => {
+  if (document.visibilityState === "visible") checkForNewerPage();
+}, PAGE_CHECK_MS);
 
 window.addEventListener("hashchange", () => {
   state.showScreen = false;
@@ -748,6 +789,16 @@ function fillComputer(body) {
   body.replaceChildren(...parts.filter(Boolean));
 }
 
+/// An answer read as Markdown, or as plain text should reading it fail: the
+/// answer is what the person came for, and a reader's fault must not cost it.
+function answerText(text) {
+  try {
+    return h("div", { class: "md" }, renderMarkdown(parseMarkdown(text), h));
+  } catch {
+    return h("div", { class: "text" }, text);
+  }
+}
+
 /// Which page this is and which Splitlane answers it, so "is it updated?" is
 /// read off the screen. A computer that does not say is older than the first
 /// release that does.
@@ -974,7 +1025,7 @@ function fillSession(head, said, body, surface) {
         known.error
           ? h("p", { class: "error" }, sentence(known.error))
           : answer?.text
-            ? h("div", { class: "text" }, answer.text)
+            ? answerText(answer.text)
             : h("p", { class: "muted" }, answer?.hint ?? "No answer yet."),
         answer?.truncated ? h("p", { class: "muted" }, "Cut short; the rest is on the computer.") : null,
       ),
@@ -1084,6 +1135,7 @@ async function start() {
   }
   render();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  checkForNewerPage();
 }
 
 start();
