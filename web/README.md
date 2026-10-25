@@ -14,6 +14,7 @@ but its own origin and the relay.
 | `public/app/store.js` | Paired computers in IndexedDB, each key a non-exportable `CryptoKey` |
 | `public/app/app.js` | The screens: pairing, sessions by project, one session's card |
 | `public/app/sw.js` | Keeps the page's files so it opens without a network |
+| `public/app/version.js` | The page's version, shown on the phone; raise it with every change to the page (`test/version.test.mjs` fails until you do and prints the hash to record) |
 | `public/_headers` | Content Security Policy and the other response headers |
 
 What a phone may ask, and what the computer answers, is in

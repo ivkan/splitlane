@@ -9,6 +9,7 @@ import { cleanName, expired, fingerprint, parseLink } from "./protocol.js";
 import { RELAY, connect, pair } from "./link.js";
 import { startScan } from "./scan.js";
 import * as store from "./store.js";
+import { PAGE_VERSION } from "./version.js";
 
 const app = document.getElementById("app");
 const POLL_MS = 4000;
@@ -743,7 +744,21 @@ function fillComputer(body) {
       );
     }
   }
+  parts.push(versionLine());
   body.replaceChildren(...parts.filter(Boolean));
+}
+
+/// Which page this is and which Splitlane answers it, so "is it updated?" is
+/// read off the screen. A computer that does not say is older than the first
+/// release that does.
+function versionLine() {
+  if (!state.fleet) return h("p", { class: "muted center versions" }, `Page ${PAGE_VERSION}`);
+  const app = state.fleet.app_version;
+  return h(
+    "p",
+    { class: "muted center versions" },
+    `${app ? `Splitlane ${app}` : "Splitlane 0.2.14 or older"} on this computer · page ${PAGE_VERSION}`,
+  );
 }
 
 /// The rail's list: projects without a group, then each group with its
@@ -995,6 +1010,7 @@ function renderSettings() {
         "Everything between this phone and your computer is encrypted end to end. The relay in between sees only that a message passed, how long it was and when.",
       ),
     ),
+    h("p", { class: "muted center versions" }, `Page ${PAGE_VERSION}`),
   );
 }
 
