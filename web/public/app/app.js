@@ -60,6 +60,10 @@ const state = {
 const ua = navigator.userAgent;
 // iPadOS reports itself as a Mac; touch tells them apart.
 const IOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+// Every iOS browser can add a page to the home screen, but its Share button
+// sits somewhere else; Chrome, Firefox and Edge name themselves in the UA.
+const IOS_CHROME = IOS && /CriOS/.test(ua);
+const IOS_SAFARI = IOS && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
 const ANDROID = /Android/.test(ua);
 const PHONE = IOS || ANDROID || matchMedia("(pointer: coarse)").matches;
 
@@ -209,7 +213,7 @@ function renderPairing() {
           ? h(
               "p",
               { class: "warn" },
-              "On iPhone, a pairing made in Safari stays in Safari: Splitlane on the home screen keeps its own data and will not see it. To use it from the home screen, add it there first and scan the code from it.",
+              "On iPhone, a pairing made in the browser stays in the browser: Splitlane on the home screen keeps its own data and will not see it. To use it from the home screen, add it there first and scan the code from it.",
             )
           : null,
         h("label", { for: "phone-name" }, "This phone's name, as the computer will show it"),
@@ -479,8 +483,16 @@ function projectName(row) {
   return row.workspace != null ? `Project ${row.workspace + 1}` : "Other";
 }
 
+/// The rail's name for a running session when the computer sends the rail's
+/// list, so the phone and the window call it the same; its pane's name when
+/// it does not.
 function sessionTitle(row) {
-  return row.surface_name || toolName(row.tool);
+  const listed = railSessions().find((s) => s.surface_id != null && s.surface_id === row.surface_id);
+  return listed?.title || row.surface_name || toolName(row.tool);
+}
+
+function railSessions() {
+  return (state.fleet?.rail?.projects ?? []).flatMap((p) => p.sessions ?? []);
 }
 
 function toolName(tool) {
@@ -553,10 +565,15 @@ function openOnPhone() {
 /// iPhone it has to be: the home-screen app keeps its own data, and only it
 /// will be able to show notifications.
 function installSteps() {
+  const share = IOS_CHROME
+    ? "Tap the Share button (the square with an arrow) at the right of Chrome's address bar, or open the ⋯ menu and choose Share."
+    : IOS_SAFARI
+      ? "Tap the Share button (the square with an arrow) in Safari's toolbar."
+      : "Open the browser's Share menu.";
   const steps = IOS
     ? [
-        "Tap the Share button (the square with an arrow) in Safari's toolbar.",
-        "Choose Add to Home Screen, then Add.",
+        share,
+        "Scroll down, choose Add to Home Screen, then Add.",
         "Open Splitlane from the home screen and pair it there.",
       ]
     : [
@@ -703,7 +720,10 @@ function fillComputer(body) {
   const parts = [connectionLine()];
   if (state.fleetError) parts.push(h("p", { class: "error" }, state.fleetError));
   const agents = state.fleet?.agents;
-  if (agents && agents.length === 0) {
+  const rail = state.fleet?.rail;
+  if (rail) {
+    parts.push(...railList(rail));
+  } else if (agents && agents.length === 0) {
     parts.push(h("p", { class: "muted center" }, "No agent sessions are running on this computer."));
   } else if (agents) {
     const groups = new Map();
@@ -726,13 +746,75 @@ function fillComputer(body) {
   body.replaceChildren(...parts.filter(Boolean));
 }
 
+/// The rail's list: projects without a group, then each group with its
+/// projects, every session the rail shows in the rail's order. A session
+/// whose agent is not running is listed too, so the two lists hold the same
+/// sessions; it has nothing to open.
+function railList(rail) {
+  const projects = rail.projects ?? [];
+  if (!projects.length && !state.fleet?.agents?.length) {
+    return [h("p", { class: "muted center" }, "No agent sessions on this computer.")];
+  }
+  const block = (project) =>
+    h(
+      "section",
+      { class: "list project" },
+      h("h3", {}, project.title),
+      project.sessions?.length
+        ? project.sessions.map((session) => railRow(session))
+        : h("p", { class: "muted" }, "No agent sessions."),
+    );
+  const groups = rail.groups ?? [];
+  const parts = [];
+  const ungrouped = projects.filter((p) => p.group == null);
+  if (ungrouped.length) {
+    if (groups.length) parts.push(h("h2", {}, "Projects"));
+    parts.push(...ungrouped.map(block));
+  }
+  for (const group of groups) {
+    const members = projects.filter((p) => p.group === group.id);
+    if (!members.length) continue;
+    parts.push(h("h2", {}, group.name), ...members.map(block));
+  }
+  // A running agent with no row in the rail's list is still listed, under
+  // its project's name, as the list without the rail lists it.
+  const listed = new Set(railSessions().map((s) => s.surface_id).filter((id) => id != null));
+  const rest = (state.fleet?.agents ?? []).filter((row) => !listed.has(row.surface_id));
+  const restByProject = new Map();
+  for (const row of rest) {
+    const name = projectName(row);
+    if (!restByProject.has(name)) restByProject.set(name, []);
+    restByProject.get(name).push(row);
+  }
+  for (const [name, rows] of restByProject) {
+    parts.push(h("section", { class: "list project" }, h("h3", {}, name), rows.map((row) => sessionRow(row))));
+  }
+  return parts;
+}
+
+function railRow(session) {
+  const row = session.surface_id != null ? rowFor(session.surface_id) : null;
+  if (row) return sessionRow(row);
+  return h(
+    "div",
+    { class: "row inert" },
+    h(
+      "span",
+      { class: "line" },
+      h("span", { class: "title" }, session.title || toolName(session.agent)),
+      h("span", { class: "chip" }, "Not running"),
+    ),
+    h("span", { class: "sub" }, toolName(session.agent)),
+  );
+}
+
 function sessionRow(row) {
   const at = route();
   const [kind] = stateOf(row);
   const message = kind === "waiting" ? row.rail?.message ?? row.message : null;
   const inner = [
     h("span", { class: "line" }, h("span", { class: "title" }, sessionTitle(row)), chip(row)),
-    row.surface_name ? h("span", { class: "sub" }, toolName(row.tool)) : null,
+    sessionTitle(row) !== toolName(row.tool) ? h("span", { class: "sub" }, toolName(row.tool)) : null,
     message ? h("span", { class: "sub question" }, message) : null,
   ];
   if (row.surface_id == null) return h("div", { class: "row inert" }, inner);

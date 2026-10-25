@@ -106,6 +106,14 @@ h3 {
   font-size: 15px;
 }
 
+.list.project {
+  margin-top: 12px;
+}
+
+.list.project h3 {
+  margin: 0;
+}
+
 .panel,
 .compose,
 .answer,

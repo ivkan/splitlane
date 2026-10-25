@@ -10,10 +10,11 @@ interrupt a turn. The phone needs no app. It is a page at
 
 1. **Add the page to the phone's home screen.** Open
    <https://splitlane.dev/app> on the phone; the page walks you through it.
-   On an iPhone: Share, then Add to Home Screen. On Android: Install, or the
-   browser's menu, then Install app. On an iPhone this comes first: the
-   home-screen app keeps its own data, apart from Safari's, and it is the
-   one that will be able to show notifications.
+   On an iPhone: Share, then Add to Home Screen; this works in Safari and in
+   Chrome alike, where Share is at the right of the address bar. On Android:
+   Install, or the browser's menu, then Install app. On an iPhone this comes
+   first: the home-screen app keeps its own data, apart from the browser's,
+   and it is the one that will be able to show notifications.
 2. **Show a code on the computer:** Settings → Phone → **Pair a phone**. A QR
    code appears; it lasts five minutes and pairs one phone.
 3. **Scan it from the phone:** open Splitlane from the home screen, tap
@@ -34,7 +35,11 @@ the phone's own camera app can open the code's link directly.
 ## What the phone may do
 
 - **Read:** the list of agent sessions, their state, the question an agent is
-  asking, its last answer and the text on its screen.
+  asking, its last answer and the text on its screen. While the window is
+  open the list is the rail's: the same groups and projects, the sessions
+  under the names the rail gives them, and the sessions whose agent is not
+  running, dimmed. With only the session host running, the phone lists the
+  running agents by project.
 - **Reply:** text into an agent session, the keys a prompt asks for (digits,
   `y`, `n`, `Enter`, `Esc`, the arrows), and interrupting a turn. Only agent
   sessions take it, never a plain shell. Each reply goes into a journal on the
