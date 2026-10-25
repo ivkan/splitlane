@@ -159,7 +159,7 @@ impl SplitlaneApp {
         if on_screen.is_empty() {
             return;
         }
-        let mut cleared = false;
+        let mut cleared = self.note_phone_sessions_seen(&on_screen);
         for thread_id in on_screen {
             if let Some(thread) = self.thread_by_id_mut(thread_id)
                 && thread.finished_unseen.take().is_some()
@@ -206,8 +206,9 @@ impl SplitlaneApp {
     /// and does not always: a click on a row of a *background* container walks
     /// the panes of a container the pass is no longer looking at.
     pub(crate) fn clear_unseen_mark(&mut self, thread_id: u64, cx: &mut gpui::Context<Self>) {
+        let seen = self.note_phone_sessions_seen(&[thread_id]);
         if let Some(thread) = self.thread_by_id_mut(thread_id)
-            && thread.finished_unseen.take().is_some()
+            && (thread.finished_unseen.take().is_some() || seen)
         {
             cx.notify();
         }

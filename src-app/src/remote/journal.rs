@@ -16,17 +16,53 @@ pub(crate) fn record(
     bytes: usize,
     outcome: &str,
 ) -> std::io::Result<()> {
+    append(
+        device,
+        action,
+        serde_json::json!({ "surface_id": surface_id }),
+        bytes,
+        outcome,
+    )
+}
+
+/// [`record`] for a session a phone started: which project and which agent,
+/// since there is no session to name until it has started.
+pub(crate) fn record_open(
+    device: &Device,
+    project_id: u64,
+    agent: &str,
+    bytes: usize,
+    outcome: &str,
+) -> std::io::Result<()> {
+    append(
+        device,
+        "open",
+        serde_json::json!({ "project_id": project_id, "agent": agent }),
+        bytes,
+        outcome,
+    )
+}
+
+fn append(
+    device: &Device,
+    action: &str,
+    target: serde_json::Value,
+    bytes: usize,
+    outcome: &str,
+) -> std::io::Result<()> {
     let dir = journal_dir().ok_or_else(|| std::io::Error::other("no configuration directory"))?;
-    let line = serde_json::json!({
+    let mut line = serde_json::json!({
         "at_unix": super::now_unix(),
         "device": device.name,
         // Names can repeat and be changed; the key cannot.
         "device_key": fingerprint(&device.public),
         "action": action,
-        "surface_id": surface_id,
         "bytes": bytes,
         "outcome": outcome,
     });
+    if let (Some(line), Some(target)) = (line.as_object_mut(), target.as_object()) {
+        line.extend(target.clone());
+    }
     store::append_private(&dir, "journal.log", format!("{line}\n").as_bytes())
 }
 

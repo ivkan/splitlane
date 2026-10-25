@@ -585,6 +585,12 @@ impl SplitlaneApp {
                     // Opened by a program outside a pane: nobody was looking
                     // when it appeared, so the row says where it came from.
                     SharedString::from(format!("by {script}"))
+                } else if let Some(from) =
+                    thread.opened_from_phone.as_ref().filter(|from| !from.seen)
+                {
+                    // Started from a phone, and not on screen here since: it
+                    // appeared while nobody at the computer saw it.
+                    SharedString::from(format!("from {}", from.phone))
                 } else {
                     SharedString::from(
                         thread
@@ -1915,13 +1921,20 @@ fn session_tooltip_for(
             .map(PromptSource::Codex),
         _ => None,
     };
-    if branch.is_none() && prompts.is_none() {
+    let phone = thread.opened_from_phone.as_ref();
+    if branch.is_none() && prompts.is_none() && phone.is_none() {
         return None;
     }
-    let head = match branch {
+    let mut head: Vec<String> = match branch {
         Some(branch) => branch.lines().map(str::to_string).collect(),
         None => vec![thread.title.clone()],
     };
+    // Said for as long as the session lasts: the row's word goes once the
+    // person has seen it, and where a session came from is still worth
+    // knowing later.
+    if let Some(from) = phone {
+        head.push(format!("Started from {} (phone)", from.phone));
+    }
     Some(session_tooltip::RowTooltip {
         head,
         // Counted only for a row that names its branch; a failed one has none.
@@ -3085,6 +3098,19 @@ pub(crate) fn rail_session_order(threads: &[crate::project::Thread]) -> Vec<usiz
                 .into_iter()
                 .filter(|&idx| threads[idx].shell_runs_agent),
         )
+        .collect()
+}
+
+/// The shells the rail shows with a command running in them - a build, a
+/// server - in the rail's order: what its `Active only` filter keeps of the
+/// shells beside the sessions [`rail_session_order`] lists.
+pub(crate) fn rail_command_shells(threads: &[crate::project::Thread], now: i64) -> Vec<usize> {
+    surface_row_order(threads)
+        .shells
+        .into_iter()
+        .filter(|&idx| {
+            crate::app::running_census::thread_shell_command(&threads[idx], now).is_some()
+        })
         .collect()
 }
 

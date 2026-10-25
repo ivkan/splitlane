@@ -43,6 +43,17 @@ impl SplitlaneApp {
         cx.notify();
     }
 
+    /// Settings, on the paired phones.
+    pub(crate) fn handle_open_phone_settings(
+        &mut self,
+        _: &crate::OpenPhoneSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings_window(window, cx);
+        self.select_settings_section(SettingsSection::Phone, window, cx);
+    }
+
     pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_section = None;
         self.font_dropdown_open = false;

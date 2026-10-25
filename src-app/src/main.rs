@@ -1287,6 +1287,9 @@ struct SplitlaneApp {
     /// Pending toasts waiting for the active one to finish. Runtime bursts
     /// should not overwrite user-visible messages.
     toast_queue: std::collections::VecDeque<Toast>,
+    /// Sessions started from paired phones: how often each phone started
+    /// one, and those still waiting for their worktree.
+    phone_starts: crate::app::phone_open::PhoneStarts,
     /// Dismiss timer for the active toast - dropped on new toast to cancel the old timer.
     _toast_task: Option<gpui::Task<()>>,
     /// Last light/dark value applied to the Windows native backdrop.
@@ -2622,6 +2625,7 @@ impl Render for SplitlaneApp {
             .on_action(cx.listener(Self::handle_toggle_active_only))
             .on_action(cx.listener(Self::handle_open_running_sheet))
             .on_action(cx.listener(Self::handle_open_branches))
+            .on_action(cx.listener(Self::handle_open_phone_settings))
             .on_action(cx.listener(Self::handle_new_worktree))
             .on_action(cx.listener(Self::handle_start_preset_1))
             .on_action(cx.listener(Self::handle_start_preset_2))

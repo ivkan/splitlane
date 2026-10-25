@@ -148,12 +148,13 @@ async function checkForNewerPage() {
   }
 }
 
-function header(title, back) {
+function header(title, back, action) {
   return h(
     "header",
     { class: "bar" },
     back ? h("a", { class: "back", href: back, "aria-label": "Back" }, "‹") : h("span", { class: "mark" }, "◧"),
     h("h1", {}, title),
+    action ?? null,
     h("a", { class: "gear", href: "#/settings", "aria-label": "Settings" }, "⋯"),
   );
 }
@@ -174,6 +175,7 @@ function route() {
       return { view: "session", computer, surface: Number(parts[3]) };
     }
     if (parts[2] === "limits") return { view: "limits", computer };
+    if (parts[2] === "new") return { view: "new", computer };
     return { view: "computer", computer };
   }
   return { view: "home" };
@@ -194,6 +196,7 @@ function render() {
   ensureConnection(at.computer);
   if (at.view === "computer") return renderComputer(at.computer);
   if (at.view === "limits") return renderLimits(at.computer);
+  if (at.view === "new") return renderNew(at.computer);
   return renderSession(at.computer, at.surface);
 }
 
@@ -782,7 +785,8 @@ function pasteBox() {
 
 function renderComputer(computer) {
   const body = h("div", { id: "body" });
-  show(header(computer.label, state.computers.length > 1 ? "#/" : null), noticeLine(), body);
+  const start = h("a", { class: "plus", href: `#/c/${computer.id}/new`, "aria-label": "New session" }, "+");
+  show(header(computer.label, state.computers.length > 1 ? "#/" : null, start), noticeLine(), body);
   fillComputer(body);
 }
 
@@ -901,6 +905,8 @@ function versionLine() {
 /// What a session is doing, in the words `stateOf` uses, or `rest` for one
 /// whose agent is not running.
 function kindOf(session) {
+  // The rail lists a shell only while a command runs in it.
+  if (session.shell) return "command";
   const row = session.surface_id != null ? rowFor(session.surface_id) : null;
   return row ? stateOf(row)[0] : "rest";
 }
@@ -910,7 +916,16 @@ function kindOf(session) {
 function isActive(session) {
   const kind = kindOf(session);
   // A turn that ended unseen stays news after its agent has gone.
-  return kind === "waiting" || kind === "failed" || kind === "running" || (session.finished_unseen && (kind === "done" || kind === "rest"));
+  return (
+    kind === "waiting" ||
+    kind === "failed" ||
+    kind === "running" ||
+    // A build or a server going in a shell, or left going by an agent whose
+    // turn is over: work under way, as the rail's Active filter has it.
+    kind === "command" ||
+    session.background_shells > 0 ||
+    (session.finished_unseen && (kind === "done" || kind === "rest"))
+  );
 }
 
 /// This phone's choices for one computer's list - the tab and the projects
@@ -1100,7 +1115,7 @@ function withOpeners(active, sessions) {
 /// The folded project's words: trouble, then what wants the person, then
 /// work and news, or how many sessions there are when nothing is happening.
 function tallyWords(sessions) {
-  const counts = { failed: 0, waiting: 0, running: 0, done: 0 };
+  const counts = { failed: 0, waiting: 0, running: 0, done: 0, command: 0 };
   for (const s of sessions) {
     const kind = kindOf(s);
     if (kind === "done" ? s.finished_unseen : kind in counts) counts[kind]++;
@@ -1110,6 +1125,7 @@ function tallyWords(sessions) {
     ["waiting", "waiting"],
     ["running", "running"],
     ["done", "finished"],
+    ["command", counts.command === 1 ? "command" : "commands"],
   ]
     .filter(([k]) => counts[k])
     .map(([k, word]) => h("span", { class: `word ${k}` }, `${counts[k]} ${word}`));
@@ -1147,6 +1163,7 @@ function projectSessions(shown, all = shown) {
 }
 
 function railRow(session, note) {
+  if (session.shell) return shellRow(session);
   const row = session.surface_id != null ? rowFor(session.surface_id) : null;
   if (row) return sessionRow(row, note);
   return h(
@@ -1160,6 +1177,32 @@ function railRow(session, note) {
     ),
     h("span", { class: "sub" }, [toolName(session.agent), note].filter(Boolean).join(" · ")),
   );
+}
+
+/// A shell with a command running in it: shown, and how long it has run, but
+/// not opened - the phone writes into agents only.
+function shellRow(session) {
+  return h(
+    "div",
+    { class: "row inert command" },
+    h(
+      "span",
+      { class: "line" },
+      h("span", { class: "title" }, session.title || "Shell"),
+      h("span", { class: "chip running" }, "Running"),
+    ),
+    h("span", { class: "sub" }, ["Shell", lasted(session.command_secs)].filter(Boolean).join(" · ")),
+  );
+}
+
+/// `for 5 min`, `for 2 h 10 min`; nothing when the start is not known.
+function lasted(secs) {
+  if (secs == null) return null;
+  const minutes = Math.floor(secs / 60);
+  if (minutes < 1) return "just started";
+  if (minutes < 60) return `for ${minutes} min`;
+  const rest = minutes % 60;
+  return `for ${Math.floor(minutes / 60)} h${rest ? ` ${rest} min` : ""}`;
 }
 
 // ---- Limits -------------------------------------------------------------
@@ -1316,7 +1359,16 @@ function sessionRow(row, note) {
   const [kind] = stateOf(row);
   const message = kind === "waiting" ? row.rail?.message ?? row.message : null;
   const title = sessionTitle(row);
-  const sub = [title !== toolName(row.tool) ? toolName(row.tool) : null, note].filter(Boolean).join(" · ");
+  const listed = railSessions().find((s) => s.surface_id != null && s.surface_id === row.surface_id);
+  const shells = listed?.background_shells ?? 0;
+  const sub = [
+    title !== toolName(row.tool) ? toolName(row.tool) : null,
+    listed?.from_phone ? `from ${listed.from_phone}` : null,
+    shells && kind !== "running" ? (shells === 1 ? "1 shell running" : `${shells} shells running`) : null,
+    note,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const inner = [
     h("span", { class: "line" }, h("span", { class: "title" }, title), chip(row)),
     sub ? h("span", { class: "sub" }, sub) : null,
@@ -1497,6 +1549,156 @@ function fillNext(surface) {
   );
 }
 
+// ---- New session ------------------------------------------------------
+
+/// The longest first message the computer takes from a phone.
+const MAX_PROMPT_BYTES = 8 * 1024;
+/// How long a start waits for the new session to have a terminal: its
+/// branch is made first, usually in well under a second.
+const START_WAIT_MS = 15000;
+
+/// This phone's last project and agent on one computer's start screen.
+function startPrefs(computer) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`splitlane.start.${computer.id}`) ?? "null");
+    if (saved && typeof saved === "object") return saved;
+  } catch {
+    // Storage refused or garbled: the defaults.
+  }
+  return {};
+}
+
+function saveStartPrefs(computer, prefs) {
+  try {
+    localStorage.setItem(`splitlane.start.${computer.id}`, JSON.stringify(prefs));
+  } catch {
+    // A private window keeps nothing; the screen still works.
+  }
+}
+
+function renderNew(computer) {
+  const body = h("div", { id: "body" });
+  show(header("New session", `#/c/${computer.id}`), body);
+  fillNew(body);
+}
+
+/// The start screen, built once the computer's list is in and left alone
+/// after it: a poll must not undo what is being chosen or typed.
+function fillNew(body) {
+  if (body.querySelector("form")) return;
+  const computer = route().computer;
+  const rail = state.fleet?.rail;
+  const top = [connectionLine()];
+  if (state.fleetError) top.push(h("p", { class: "error" }, state.fleetError));
+  const projects = (rail?.projects ?? []).filter((p) => p.id != null);
+  const agents = rail?.installed_agents ?? [];
+  let why = null;
+  if (state.fleet && (!rail || rail.installed_agents == null)) {
+    why = "Open Splitlane on the computer to start a session there - or update it, if it is older than this page.";
+  } else if (state.fleet && !projects.length) {
+    why = "No project is open on the computer.";
+  } else if (state.fleet && !agents.length) {
+    why = "No agent is installed on the computer.";
+  }
+  if (!state.fleet || why) {
+    if (why) top.push(h("p", { class: "muted center" }, why));
+    body.replaceChildren(...top.filter(Boolean));
+    return;
+  }
+
+  const prefs = startPrefs(computer);
+  const groups = new Map((rail.groups ?? []).map((g) => [g.id, g.name]));
+  const busy = projects.find((p) => (p.sessions ?? []).some(isActive));
+  const projectId = projects.some((p) => p.id === prefs.project) ? prefs.project : (busy ?? projects[0]).id;
+  const agentTag = agents.some((a) => a.tag === prefs.agent) ? prefs.agent : agents[0].tag;
+  const project = h(
+    "select",
+    { id: "start-project" },
+    projects.map((p) =>
+      h("option", { value: String(p.id), selected: p.id === projectId }, [p.title, groups.get(p.group)].filter(Boolean).join(" · ")),
+    ),
+  );
+  const agent = h(
+    "select",
+    { id: "start-agent" },
+    agents.map((a) => h("option", { value: a.tag, selected: a.tag === agentTag }, a.name)),
+  );
+  const draftKey = `${computer.id}/new`;
+  const text = h("textarea", {
+    id: "start-prompt",
+    rows: "4",
+    placeholder: "Optional. Without it the agent just starts.",
+    value: state.drafts.get(draftKey) ?? "",
+    oninput: (e) => state.drafts.set(draftKey, e.target.value),
+  });
+  const result = h("p", { class: "result", role: "status" });
+  const say = (words, bad) => {
+    result.textContent = words;
+    result.className = bad ? "result error" : "result";
+  };
+  const go = h("button", { class: "primary", type: "submit" }, "Start");
+  const start = async (event) => {
+    event.preventDefault();
+    const prompt = text.value.trim();
+    if (new TextEncoder().encode(prompt).length > MAX_PROMPT_BYTES) {
+      say(`The first message is longer than ${MAX_PROMPT_BYTES / 1024} KiB.`, true);
+      return;
+    }
+    const chosen = Number(project.value);
+    saveStartPrefs(computer, { project: chosen, agent: agent.value });
+    go.disabled = true;
+    say("Starting…");
+    try {
+      const started = await ask("open", { project_id: chosen, agent: agent.value, prompt });
+      state.drafts.delete(draftKey);
+      say("Started. Making its branch…");
+      const surface = started?.surface_id ?? (await surfaceOf(started?.thread_id));
+      location.hash = surface != null ? `#/c/${computer.id}/s/${surface}` : `#/c/${computer.id}`;
+    } catch (error) {
+      say(sentence(error.message), true);
+      go.disabled = false;
+    }
+  };
+  const field = (label, control) => h("label", { class: "field" }, h("span", { class: "field-label" }, label), control);
+  body.replaceChildren(
+    ...top.filter(Boolean),
+    h(
+      "form",
+      { class: "compose start", onsubmit: start },
+      field("Project", project),
+      field("Agent", agent),
+      field("What should it do?", text),
+      h(
+        "p",
+        { class: "muted note" },
+        "It starts in the rail on the computer, not on its screen, on a branch of its own where the project gives sessions one.",
+      ),
+      go,
+      result,
+    ),
+  );
+}
+
+/// The terminal of a session just started, once it has one; `null` when it
+/// has none within a few seconds, and the list is the place to look then.
+/// Throws when the session's row is gone: the computer could not start it.
+async function surfaceOf(threadId) {
+  if (threadId == null) return null;
+  const until = Date.now() + START_WAIT_MS;
+  while (Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    try {
+      state.fleet = await ask("list");
+    } catch {
+      continue;
+    }
+    const session = railSessions().find((s) => s.thread_id === threadId);
+    if (!session && state.fleet?.rail) throw new Error("the computer could not start the session; it says why on its screen");
+    if (session?.surface_id != null && rowFor(session.surface_id)) return session.surface_id;
+  }
+  return null;
+}
+
 /// Refill what changes in the current view, keeping what is being typed.
 function update() {
   if (state.offer || state.pairing || state.badLink) return;
@@ -1506,6 +1708,7 @@ function update() {
   const body = document.getElementById("body");
   if (at.view === "computer" && body) return fillComputer(body);
   if (at.view === "limits" && body) return fillLimits(body);
+  if (at.view === "new" && body) return fillNew(body);
   if (at.view === "session" && body && head && said) return fillSession(head, said, body, at.surface);
 }
 

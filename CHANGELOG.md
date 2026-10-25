@@ -6,6 +6,19 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Start a session from the phone.** **+** over the phone's list picks a
+  project, an agent and, if you like, a first message, and starts the
+  session as the launcher would - on a branch of its own - but in the rail,
+  not on the computer's screen. Its row reads `from <phone>` until it has
+  been on screen, and a notice on the computer names the phone with a way to
+  remove it. At most four run at once; one phone starts one every 15
+  seconds at most, and twelve an hour. **Can reply** covers it.
+- **The phone shows shells at work.** A shell running a build or a server is
+  listed under its project with how long it has run, and counts as active,
+  as does an idle session that left a command running.
+
 ### Fixed
 
 - **The phone shows what a waiting agent asks.** A permission prompt

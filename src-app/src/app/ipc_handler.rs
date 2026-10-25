@@ -3504,6 +3504,7 @@ impl SplitlaneApp {
                         })
                     })
                     .collect();
+                let now = chrono::Utc::now().timestamp();
                 let projects: Vec<_> = sections
                     .ungrouped
                     .iter()
@@ -3511,6 +3512,22 @@ impl SplitlaneApp {
                     .chain(sections.groups.iter().flat_map(|(_, members)| members.iter().copied()))
                     .filter_map(|index| Some((index, self.workspaces.get(index)?)))
                     .map(|(index, ws)| {
+                        // The shells running a command, after the sessions:
+                        // a build or a server the person left going is work
+                        // under way, and the rail's filter keeps it so.
+                        let shells = crate::app::agents_sidebar::rail_command_shells(&ws.threads, now)
+                            .into_iter()
+                            .map(|idx| &ws.threads[idx])
+                            .map(|thread| {
+                                serde_json::json!({
+                                    "thread_id": thread.id,
+                                    "title": thread.title,
+                                    "shell": true,
+                                    "command_secs": crate::app::running_census::thread_shell_command(thread, now)
+                                        .and_then(|command| command.secs),
+                                    "surface_id": surface_of.get(&thread.id),
+                                })
+                            });
                         let sessions: Vec<_> =
                             crate::app::agents_sidebar::rail_session_order(&ws.threads)
                                 .into_iter()
@@ -3534,18 +3551,40 @@ impl SplitlaneApp {
                                             serde_json::json!({ "thread_id": by.id, "title": by.title })
                                         }),
                                         "surface_id": surface_of.get(&thread.id),
+                                        // Background commands the agent left
+                                        // running beside an idle turn: still
+                                        // at work, as the rail's filter has it.
+                                        "background_shells": thread.rail.shells_beside_idle(thread.status),
+                                        // The phone that started it, if one did.
+                                        "from_phone": thread.opened_from_phone.as_ref().map(|from| from.phone.clone()),
                                     })
                                 })
+                                .chain(shells)
                                 .collect();
                         serde_json::json!({
                             "index": index,
+                            // What a phone names the project by when it
+                            // starts a session in it: the index moves when
+                            // projects are reordered.
+                            "id": ws.id,
                             "title": ws.title,
                             "group": ws.group.filter(|id| self.project_groups.iter().any(|g| g.id == *id)),
                             "sessions": sessions,
                         })
                     })
                     .collect();
-                serde_json::json!({ "groups": groups, "projects": projects })
+                // The agents a session can be started with here, for the
+                // phone's own start screen.
+                let installed: Vec<_> = crate::agent_launcher::TerminalAgent::ALL
+                    .iter()
+                    .filter(|agent| agent.is_installed())
+                    .map(|agent| serde_json::json!({ "tag": agent.tag(), "name": agent.display_name() }))
+                    .collect();
+                serde_json::json!({
+                    "groups": groups,
+                    "projects": projects,
+                    "installed_agents": installed,
+                })
             }
             "limits.list" => {
                 // The rail's limits footer as data, for the phone. Read-only.
@@ -4349,6 +4388,7 @@ impl SplitlaneApp {
                 })
             }
             "surface.add_agent" => self.handle_add_agent(params, caller, cx),
+            "surface.open_from_phone" => self.handle_open_from_phone(params, cx),
             "surface.wake" => self.handle_wake(params, caller, cx),
             "surface.park" => self.handle_park(params, caller, cx),
             "surface.show" => self.handle_show(params, caller, cx),

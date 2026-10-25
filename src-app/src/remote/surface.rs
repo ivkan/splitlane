@@ -63,10 +63,53 @@ pub(crate) fn answer(
     token: Option<&str>,
     window_open: bool,
 ) -> Result<Value, String> {
-    if matches!(method, "send" | "key" | "interrupt") {
+    if matches!(method, "send" | "key" | "interrupt" | "open") {
         return write(surface, method, params, device, token, window_open);
     }
     read(surface, method, params)
+}
+
+/// Start an agent session for the phone. The window decides the rest - the
+/// project by its id, how many and how often - and says why when it will not.
+fn open(
+    surface: &impl IpcTransport,
+    params: &Value,
+    device: &super::store::Device,
+    token: &str,
+) -> Result<Value, String> {
+    let project_id = params
+        .get("project_id")
+        .and_then(Value::as_u64)
+        .ok_or("open needs a project_id")?;
+    let agent = params
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or("open needs an agent")?;
+    let prompt = params
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Also checked by the window; refused here too so that a long text is
+    // not carried further than it has to be.
+    if prompt.len() > crate::app::phone_open::MAX_PHONE_PROMPT_BYTES {
+        return Err(format!(
+            "the first message is longer than {} KiB",
+            crate::app::phone_open::MAX_PHONE_PROMPT_BYTES / 1024
+        ));
+    }
+    let call = json!({
+        "project_id": project_id,
+        "agent": agent,
+        "prompt": prompt,
+        crate::remote::spawn::TOKEN_PARAM: token,
+        crate::remote::spawn::DEVICE_PARAM: device.name,
+    });
+    super::journal::record_open(device, project_id, agent, prompt.len(), "asked")
+        .map_err(|e| format!("the phone journal cannot be written ({e}); nothing was started"))?;
+    let result = surface.call("surface.open_from_phone", call);
+    let outcome = if result.is_ok() { "done" } else { "refused" };
+    let _ = super::journal::record_open(device, project_id, agent, prompt.len(), outcome);
+    result
 }
 
 fn write(
@@ -91,6 +134,13 @@ fn write(
     // knows; text and keys go through the session host while it is closed.
     if !window_open && method == "interrupt" {
         return Err("start Splitlane to interrupt from the phone".into());
+    }
+    // A session is made by the window: its branch, its row, its record.
+    if method == "open" {
+        if !window_open {
+            return Err("open Splitlane on the computer to start a session".into());
+        }
+        return open(surface, params, device, token);
     }
     let surface_id = params
         .get("surface_id")
@@ -444,6 +494,44 @@ mod tests {
                 &surface,
                 "key",
                 json!({ "surface_id": 7, "keystroke": "ctrl-d" }),
+                Some("t")
+            )
+            .is_err()
+        );
+        assert!(
+            surface.0.into_inner().is_empty(),
+            "nothing reached the window"
+        );
+    }
+
+    #[test]
+    fn a_phone_starts_a_session_through_the_window_only() {
+        let open = json!({ "project_id": 42, "agent": "claude_code", "prompt": "fix the login" });
+        let surface = Recording::default();
+        ask(&surface, "open", open.clone(), Some("t")).unwrap();
+        let calls = surface.0.into_inner();
+        assert_eq!(calls[0].0, "surface.open_from_phone");
+        assert_eq!(calls[0].1["project_id"], 42);
+        assert_eq!(calls[0].1["agent"], "claude_code");
+        assert_eq!(calls[0].1["prompt"], "fix the login");
+        assert_eq!(calls[0].1[crate::remote::spawn::TOKEN_PARAM], "t");
+        assert_eq!(calls[0].1[crate::remote::spawn::DEVICE_PARAM], "Pixel");
+
+        let surface = Recording::default();
+        // A bridge started by hand, a phone that may only read, the window
+        // closed, a first message past the limit.
+        assert!(ask(&surface, "open", open.clone(), None).is_err());
+        assert!(answer(&surface, "open", &open, &phone(false), Some("t"), true).is_err());
+        let closed = answer(&surface, "open", &open, &phone(true), Some("t"), false);
+        assert!(closed.unwrap_err().contains("open Splitlane"));
+        let long = "x".repeat(crate::app::phone_open::MAX_PHONE_PROMPT_BYTES + 1);
+        let too_long = json!({ "project_id": 42, "agent": "claude_code", "prompt": long });
+        assert!(ask(&surface, "open", too_long, Some("t")).is_err());
+        assert!(
+            ask(
+                &surface,
+                "open",
+                json!({ "agent": "claude_code" }),
                 Some("t")
             )
             .is_err()

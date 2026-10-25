@@ -34,6 +34,7 @@ pub mod opener_tell;
 pub mod orchestration;
 pub mod pane_drop_strip;
 pub mod pane_header;
+pub mod phone_open;
 pub mod preset_launch;
 pub mod project_groups;
 pub mod project_ops;

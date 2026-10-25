@@ -3,7 +3,7 @@
 A paired phone lists the agent sessions on your computer, shows each one's
 state, its question when it is waiting for you and its last answer, and lets
 you answer it: type a reply, press one of the keys a prompt asks for, or
-interrupt a turn. The phone needs no app. It is a page at
+interrupt a turn. It can also start a new session. The phone needs no app. It is a page at
 <https://splitlane.dev/app>, which you can add to the home screen.
 
 ## Pairing
@@ -49,6 +49,11 @@ the phone's own camera app can open the code's link directly.
   needs you. A session waiting on a question shows it as its screen does -
   a permission prompt with its command - and each numbered choice as a
   button.
+
+  A shell with a command running in it - a build, a server - is listed after
+  its project's sessions with how long it has run, and counts as active, as
+  does an idle session that left a command running. A shell is shown, not
+  opened.
 - **Limits:** the plan limits the rail's footer shows, in a line over the
   list - tap it for every window and when it resets.
 - **Reply:** text into an agent session, the keys a prompt asks for (digits,
@@ -57,6 +62,16 @@ the phone's own camera app can open the code's link directly.
   computer (time, phone, session, length; never the text), and while the
   window is open it shows a notice there naming the phone. Turn off **Can reply** in Settings → Phone to let a
   phone read only.
+- **Start a session:** **+** at the top of the list. Choose the project and
+  the agent - the phone remembers your last choice - and, if you like, what
+  it should do (up to 8 KiB). The session starts as one from the launcher
+  would, on a branch of its own where the project gives sessions one, but in
+  the rail rather than on the computer's screen. Its row reads `from <phone>`
+  until you have had it on screen at the computer, and the computer shows a
+  notice with a way to remove the phone. At most four sessions started from
+  phones run at once, and one phone starts at most one every 15 seconds and
+  twelve an hour. It needs the window open, and **Can reply**; each start
+  goes into the journal with the project and the agent.
 
 The phone reaches the computer while the window is open, and while it is
 closed with sessions still running in the session host. Interrupting needs the

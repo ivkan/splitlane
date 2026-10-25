@@ -1778,9 +1778,14 @@ it, a session at rest dimmed and with nothing to open.
   this the phone listed an orchestrator and its workers as neighbours, and
   which session was working for which was the one thing the rail said that
   the phone did not.
-- **Only agent sessions.** The phone is for following agents and answering
-  them; a shell is listed only while an agent runs in it, which is when the
-  rail counts it as a session too.
+- **Agent sessions, and shells at work.** The phone is for following agents
+  and answering them, so a shell at its prompt is not listed. A shell with a
+  command running in it - a build, a server - is, after the project's
+  sessions, with how long it has run, and an idle session whose agent left a
+  command going says so: both are work under way, which the rail's `Active
+  only` filter keeps, and a phone that did not show them answered "is
+  anything still running?" wrongly. They count as active. A shell row opens
+  nothing: the phone writes into agents only.
 - **A running agent with no row in the rail's list is not dropped.** An agent
   started by hand in a pane the rail lists as no session is added under its
   project, after the rail's sessions, under its pane's name.
@@ -1795,3 +1800,51 @@ it, a session at rest dimmed and with nothing to open.
   the rule when there is one.
 - **With the window closed there is no rail.** The session host has no groups
   or titles, so the phone falls back on the running agents by project.
+
+## A phone starts a session as the person does
+
+**A paired phone may start an agent session, and the session is the one the
+launcher would have started.** The phone could watch, answer and interrupt,
+and asked whether starting one was left out on purpose, the answer was that
+it was where the first step stopped. The person holding the phone is the
+person at the computer: pairing, with its code typed on this computer, is
+their consent. So the session gets its own branch and worktree where the
+project gives sessions one, has no opener above it, and is not counted
+among the sessions programs outside a pane opened - a session from a phone
+put in the project folder beside the person's own work would be the one
+place it behaved unlike theirs.
+
+- **The same right as replying.** Opening a session is a write of the same
+  class as writing into one: an agent already open can do whatever a new
+  one would. A second switch would, by the rule that a feature works without
+  a step to turn it on, be on by default and protect nothing. `Can reply`
+  covers it, and its caption says so.
+- **Bounded, because a phone can be lost unlocked.** Each session spends the
+  person's tokens and leaves a branch behind. At most four sessions started
+  from phones run at once; one phone starts one at most every 15 seconds and
+  twelve an hour, so closing one and starting the next does not get round
+  the ceiling. The first message is at most 8 KiB: nobody types more on a
+  phone, and it is what the session spends first.
+- **Announced, and answerable at once.** Every start puts up a toast that
+  stays for about a minute, naming the phone, the agent and the project, with
+  a way to the phone settings where the phone is removed. That is the moment
+  a person learns of a start that was not theirs. Asking the computer to
+  confirm each start was rejected: the phone is for when nobody is at the
+  computer, and a start waiting for someone there would never happen.
+- **The row says where it came from until it is seen.** In place of the
+  agent's name the rail reads `from <phone>` until the session has been on
+  screen at the computer, as a session a program opened reads `by <script>`;
+  the row's hover card says it for as long as the session lasts.
+- **It starts in the rail, not on screen.** The launcher puts the session it
+  starts in front of the person who asked for it; here the person who asked
+  is elsewhere, and whoever is at the computer is doing something else.
+- **The project by its id, the window required.** The phone names the
+  project by the id `rail.list` gives it, because an index moves when
+  projects are reordered and two projects may share a title. A session is a
+  row, a branch and a record the window keeps, so with the window closed the
+  phone is told to open Splitlane. A branch that cannot be made does not stop
+  the session: it starts in the project folder and the toast says why,
+  because nobody may be there to choose.
+- **Every start is journalled** with the phone, the project and the agent,
+  and never the message, as every write from a phone is.
+

@@ -169,6 +169,7 @@ impl SplitlaneApp {
         let Some(ws_idx) = self.workspaces.iter().position(|ws| ws.id == container_id) else {
             // The project closed while git ran. Its close tore down what it
             // owned, and this was not among it yet.
+            self.phone_starts.take_awaiting(thread_id);
             if let Ok(made) = made {
                 cx.background_executor()
                     .spawn(async move {
@@ -186,6 +187,10 @@ impl SplitlaneApp {
         let mut made = match made {
             Ok(made) => made,
             Err(error) => {
+                if let Some(prompt) = self.phone_starts.take_awaiting(thread_id) {
+                    self.start_phone_session_without_branch(thread_id, prompt, &error, cx);
+                    return None;
+                }
                 if let Some(thread) = self.workspaces[ws_idx]
                     .threads
                     .iter_mut()
@@ -221,6 +226,7 @@ impl SplitlaneApp {
         else {
             // The session was closed while git ran: its worktree goes the way
             // a closed session's does.
+            self.phone_starts.take_awaiting(thread_id);
             self.save_session(cx);
             self.spawn_session_worktree_release(container_id, made, cx);
             return None;
@@ -228,7 +234,14 @@ impl SplitlaneApp {
         thread.worktree_pending = None;
         thread.cwd = made.path.to_string_lossy().into_owned();
         self.save_session(cx);
-        self.select_session(ws_idx, thread_id, cx);
+        // A session a phone started starts where it is, in the rail: the
+        // person at the computer did not ask for it to come on screen.
+        match self.phone_starts.take_awaiting(thread_id) {
+            Some(prompt) => {
+                self.start_phone_session_or_drop(thread_id, prompt, cx);
+            }
+            None => self.select_session(ws_idx, thread_id, cx),
+        }
         Some(made)
     }
 

@@ -1988,6 +1988,9 @@ pub struct AgentSurface {
     /// The program outside a pane that opened this session, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_by_script: Option<OpenedByScript>,
+    /// The paired phone this session was started from, when one was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_from_phone: Option<OpenedFromPhone>,
     /// The session in the session host this surface's terminal ran in when
     /// the session file was written. A window that starts while it is
     /// still running attaches the surface to it, turn in progress and all;
@@ -2032,6 +2035,18 @@ pub struct OpenedByScript {
     /// word, and only a caption.
     #[serde(default)]
     pub label: String,
+}
+
+/// The paired phone a session was started from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenedFromPhone {
+    /// The phone's name as it was paired.
+    pub phone: String,
+    /// Whether a person has had the session on screen at the computer since.
+    /// Until then the rail says where it came from where the agent's name
+    /// goes: it appeared while nobody was there to see it.
+    #[serde(default)]
+    pub seen: bool,
 }
 
 fn default_true() -> bool {
@@ -2263,6 +2278,7 @@ pub mod legacy_v1 {
                 title_user_set: t.title_user_set,
                 opened_by: None,
                 opened_by_script: None,
+                opened_from_phone: None,
                 host_session: None,
                 transcript_cwd: None,
             }),
