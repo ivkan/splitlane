@@ -21,7 +21,8 @@ but its own origin and the relay.
 
 What a phone may ask, and what the computer answers, is in
 `src-app/src/remote/surface.rs`: `list`, `status`, `read`, `answer`, and with
-the right to reply, `send`, `key` and `interrupt`.
+the right to reply, `send`, `key`, `interrupt` and `open`, which starts a
+session.
 
 ## Test
 

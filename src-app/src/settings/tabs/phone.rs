@@ -390,7 +390,7 @@ impl PhonePage {
                 SharedString::from(format!("phone-reply-{}", phone.room)),
                 "Can reply",
                 Some(SharedString::from(
-                    "type into agent sessions, answer prompts, interrupt",
+                    "type into agent sessions, answer prompts, interrupt, start sessions",
                 )),
                 reply,
                 cx.listener(move |this, _: &ClickEvent, _, cx| {

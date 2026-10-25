@@ -552,6 +552,10 @@ pub struct Thread {
     /// was given. `None` for every other session. Persisted for the reason
     /// [`Self::opened_by`] is.
     pub opened_by_script: Option<splitlane_config::schema::OpenedByScript>,
+    /// The paired phone that started this session, and whether it has been
+    /// on screen at the computer since. `None` for every other session.
+    /// Persisted for the reason [`Self::opened_by`] is.
+    pub opened_from_phone: Option<splitlane_config::schema::OpenedFromPhone>,
     /// The session in the session host this surface's terminal was last
     /// known to run in: read from the session file, and brought up to date
     /// whenever the file is written. What a surface that has no terminal
@@ -635,6 +639,7 @@ impl Thread {
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
             opened_by_script: None,
+            opened_from_phone: None,
             host_session: None,
             transcript_cwd: None,
             worktree_pending: None,
@@ -756,6 +761,7 @@ impl Thread {
             rail: crate::rail_state::RailRecord::default(),
             opened_by: None,
             opened_by_script: None,
+            opened_from_phone: None,
             host_session: None,
             transcript_cwd: None,
             worktree_pending: None,
@@ -816,6 +822,7 @@ pub fn thread_to_surface(t: &Thread, slot: Option<usize>) -> ProjectSurface {
             title_user_set: t.title_user_set,
             opened_by: t.opened_by.clone(),
             opened_by_script: t.opened_by_script.clone(),
+            opened_from_phone: t.opened_from_phone.clone(),
             host_session: t.host_session.clone(),
             transcript_cwd: t.transcript_cwd.clone(),
         }),
@@ -965,6 +972,7 @@ pub fn thread_from_surface(s: &ProjectSurface) -> Option<Thread> {
         // asked of the live records when it matters.
         opened_by: payload.opened_by.clone(),
         opened_by_script: payload.opened_by_script.clone(),
+        opened_from_phone: payload.opened_from_phone.clone(),
         host_session: payload.host_session.clone(),
         transcript_cwd: payload.transcript_cwd.clone(),
         worktree_pending: None,
@@ -1352,6 +1360,7 @@ mod tests {
                 title_user_set: false,
                 opened_by: None,
                 opened_by_script: None,
+                opened_from_phone: None,
                 host_session: None,
                 transcript_cwd: None,
             }),

@@ -48,6 +48,9 @@ pub(crate) enum ToastAction {
     OpenReleasesPage(String),
     /// "Show" - opens the palette on the branches and snapshots sessions left.
     ShowBranches,
+    /// "Remove phone…" - opens Settings on the paired phones, where a phone
+    /// is removed or its right to reply taken away.
+    PhoneSettings,
 }
 
 impl SplitlaneApp {
@@ -133,7 +136,7 @@ impl SplitlaneApp {
         let recovers = toast.actions.iter().any(|action| {
             !matches!(
                 action,
-                ToastAction::ReviewRunning | ToastAction::ShowBranches
+                ToastAction::ReviewRunning | ToastAction::ShowBranches | ToastAction::PhoneSettings
             )
         });
         let is_error = recovers || toast_message_reads_like_error(&toast.message);
@@ -184,6 +187,7 @@ impl SplitlaneApp {
                     ToastAction::RetryUpdate => ("Retry", format!("toast-retry-{idx}")),
                     ToastAction::ReviewRunning => ("Review…", format!("toast-review-{idx}")),
                     ToastAction::ShowBranches => ("Show", format!("toast-branches-{idx}")),
+                    ToastAction::PhoneSettings => ("Remove phone…", format!("toast-phone-{idx}")),
                     ToastAction::OpenReleasesPage(_) => {
                         ("Open releases", format!("toast-releases-{idx}"))
                     }
@@ -216,6 +220,9 @@ impl SplitlaneApp {
                         }
                         ToastAction::ShowBranches => {
                             window.dispatch_action(Box::new(crate::OpenBranches), cx);
+                        }
+                        ToastAction::PhoneSettings => {
+                            window.dispatch_action(Box::new(crate::OpenPhoneSettings), cx);
                         }
                         ToastAction::OpenReleasesPage(url) => {
                             if let Err(err) = crate::external_open::open_url(url) {

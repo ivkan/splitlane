@@ -83,6 +83,10 @@ pub(crate) fn agent_has_left(exit_reported: bool, agent_found: bool) -> bool {
     exit_reported && !agent_found
 }
 
+/// A first message left for an agent's shim: the key its launch command
+/// names, and the file being written.
+pub(crate) type StashedPrompt = (String, gpui::Task<Option<std::path::PathBuf>>);
+
 /// Leave `text` where the agent's shim collects it by `key`, readable by the
 /// user alone. `None` when there is nowhere to leave it.
 fn stash_opening_prompt(key: &str, text: &str) -> Option<std::path::PathBuf> {
@@ -2116,39 +2120,15 @@ impl SplitlaneApp {
             Caller::Pane(pane) => format!("{}\n\n{prompt}", provenance_line(&pane.title)),
             Caller::Outside | Caller::Keyholder { .. } => prompt.to_string(),
         });
-        // Left for the agent's shim before the launch command is typed, so
-        // the file is there by the time the shell has started and run it.
-        let at_launch = opening_text
-            .as_deref()
-            .filter(|text| prompt_goes_at_launch(agent, submit, text))
-            .map(|text| {
-                let key = uuid::Uuid::new_v4().simple().to_string();
-                let (file, text) = (key.clone(), text.to_string());
-                let stashed = cx
-                    .background_executor()
-                    .spawn(async move { stash_opening_prompt(&file, &text) });
-                (key, stashed)
-            });
-        if let Some(thread) = self.thread_by_id_mut(thread_id) {
-            thread.opening_prompt_key = at_launch.as_ref().map(|(key, _)| key.clone());
-        }
         let target = crate::project::AgentsTarget::Thread { ws_idx, thread_idx };
-        let mounted = self.mount_agents_terminal_for_target(target, cx);
-        // The key was for that one launch: a later reopen resumes the
-        // conversation and must not ask for a prompt that is gone.
-        if let Some(thread) = self.thread_by_id_mut(thread_id) {
-            thread.opening_prompt_key = None;
-        }
-        let Some(view) = mounted else {
-            if let Some((_, stashed)) = at_launch {
-                cx.background_executor()
-                    .spawn(async move {
-                        if let Some(path) = stashed.await {
-                            let _ = std::fs::remove_file(path);
-                        }
-                    })
-                    .detach();
-            }
+        let Some((view, at_launch)) = self.mount_with_opening_text(
+            target,
+            thread_id,
+            agent,
+            opening_text.as_deref(),
+            submit,
+            cx,
+        ) else {
             // An error must not leave a row behind that the caller was told
             // does not exist.
             let _ = self.remove_thread(ws_idx, thread_idx, cx);
@@ -2180,14 +2160,7 @@ impl SplitlaneApp {
         view.update(cx, |view, cx| view.ensure_backend_started(cx));
 
         if let Some(text) = opening_text {
-            match at_launch {
-                Some((_, stashed)) => {
-                    self.await_prompt_collected(thread_id, &view, stashed, text, from_opener, cx);
-                }
-                None => {
-                    self.schedule_opening_prompt(thread_id, &view, text, submit, from_opener, cx);
-                }
-            }
+            self.deliver_opening_text(thread_id, &view, text, at_launch, submit, from_opener, cx);
         }
         self.save_session(cx);
         cx.notify();
@@ -2221,6 +2194,79 @@ impl SplitlaneApp {
                 .and_then(|rail| rail.opening_prompt)
                 .map(crate::rail_state::OpeningPrompt::wire_str),
         })
+    }
+
+    /// Give a just-created session its terminal, with its first message left
+    /// for the agent's shim when that goes into the launch command
+    /// ([`prompt_goes_at_launch`]). `None` when no terminal could be made;
+    /// the session's record is then the caller's to remove.
+    pub(crate) fn mount_with_opening_text(
+        &mut self,
+        target: crate::project::AgentsTarget,
+        thread_id: u64,
+        agent: crate::agent_launcher::TerminalAgent,
+        opening_text: Option<&str>,
+        submit: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<TerminalView>, Option<StashedPrompt>)> {
+        // Left for the agent's shim before the launch command is typed, so
+        // the file is there by the time the shell has started and run it.
+        let at_launch = opening_text
+            .filter(|text| prompt_goes_at_launch(agent, submit, text))
+            .map(|text| {
+                let key = uuid::Uuid::new_v4().simple().to_string();
+                let (file, text) = (key.clone(), text.to_string());
+                let stashed = cx
+                    .background_executor()
+                    .spawn(async move { stash_opening_prompt(&file, &text) });
+                (key, stashed)
+            });
+        if let Some(thread) = self.thread_by_id_mut(thread_id) {
+            thread.opening_prompt_key = at_launch.as_ref().map(|(key, _)| key.clone());
+        }
+        let mounted = self.mount_agents_terminal_for_target(target, cx);
+        // The key was for that one launch: a later reopen resumes the
+        // conversation and must not ask for a prompt that is gone.
+        if let Some(thread) = self.thread_by_id_mut(thread_id) {
+            thread.opening_prompt_key = None;
+        }
+        let Some(view) = mounted else {
+            if let Some((_, stashed)) = at_launch {
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Some(path) = stashed.await {
+                            let _ = std::fs::remove_file(path);
+                        }
+                    })
+                    .detach();
+            }
+            return None;
+        };
+        Some((view, at_launch))
+    }
+
+    /// See a new session's first message to its agent: followed until the
+    /// shim collects it when it went into the launch command, written into
+    /// the input line once the agent is there otherwise.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn deliver_opening_text(
+        &mut self,
+        thread_id: u64,
+        view: &Entity<TerminalView>,
+        text: String,
+        at_launch: Option<StashedPrompt>,
+        submit: bool,
+        from_opener: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match at_launch {
+            Some((_, stashed)) => {
+                self.await_prompt_collected(thread_id, view, stashed, text, from_opener, cx);
+            }
+            None => {
+                self.schedule_opening_prompt(thread_id, view, text, submit, from_opener, cx);
+            }
+        }
     }
 
     /// Follow a first prompt that went into the launch command

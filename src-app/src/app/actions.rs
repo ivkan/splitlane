@@ -187,6 +187,10 @@ actions!(
         // The palette on its Branches tab: the branches and snapshots closed
         // sessions left. What a kept-branch toast's `Show` opens.
         OpenBranches,
+        // Settings on the paired phones. What the toast announcing a session
+        // a phone started offers, so a start that was not the person's can
+        // be answered by removing the phone.
+        OpenPhoneSettings,
         // The rail's `+ worktree`, beside `+ agent` and `+ shell`. It has no
         // default chord: the design gives worktree creation an affordance
         // where the project lives, not a key, and every unclaimed letter in a

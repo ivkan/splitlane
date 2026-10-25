@@ -514,6 +514,11 @@ p.limits-line {
   opacity: 0.6;
 }
 
+/* Not opened from the phone, but at work: not dimmed like a session at rest. */
+.row.inert.command {
+  opacity: 1;
+}
+
 .line {
   display: flex;
   align-items: center;
@@ -894,4 +899,48 @@ summary:focus-visible {
 main > button {
   width: 100%;
   margin-top: 16px;
+}
+
+/* Starting a session from the phone. */
+
+.bar .plus {
+  font-size: 28px;
+  font-weight: 300;
+}
+
+.field {
+  display: block;
+  margin-top: 14px;
+}
+
+.field:first-child {
+  margin-top: 0;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.start .note {
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+
+.row.command .sub {
+  font-variant-numeric: tabular-nums;
 }

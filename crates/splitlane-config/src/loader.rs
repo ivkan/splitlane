@@ -1455,6 +1455,7 @@ mod tests {
                 title_user_set: false,
                 opened_by: None,
                 opened_by_script: None,
+                opened_from_phone: None,
                 host_session: None,
                 transcript_cwd: None,
             }),

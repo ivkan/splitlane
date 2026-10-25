@@ -567,6 +567,12 @@ pub(super) const ACTIONS: &[ActionMeta] = &[
         description: "Branches and snapshots sessions left",
     },
     ActionMeta {
+        name: "open_phone_settings",
+        factory: || Box::new(crate::OpenPhoneSettings),
+        context: "",
+        description: "Paired phones",
+    },
+    ActionMeta {
         name: "open_launch_pad",
         factory: || Box::new(crate::OpenLaunchPad),
         context: "",
