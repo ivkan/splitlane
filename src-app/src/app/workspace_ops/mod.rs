@@ -895,13 +895,7 @@ impl SplitlaneApp {
         // their agents must not outlive them, which dropping the terminal
         // alone does not see to.
         for thread in &removed.threads {
-            if let Some(view) = self
-                .agents_view
-                .agents_terminal_view_cache
-                .remove(&thread.id)
-            {
-                Self::end_session_processes(view, cx);
-            }
+            self.end_removed_session(thread, cx);
         }
         // Keep the center selection in range: a target inside the closed
         // container falls back to the picker, one after it shifts down.

@@ -895,6 +895,21 @@ deliberately no timeout that ends such a session: it may be the one turn that
 mattered. The card does not take the keyboard, so it is not a focus holder
 and the panes keep their keys while it is up.
 
+A row names what runs in the session: the title of its Claude Code session,
+read from the transcript its command line names, else the agent, else the
+command, else `Shell` - then the folder and the start. It named the folder
+alone at first, and five sessions left in one project read as one line five
+times, with nothing to tell the agent halfway through a task from the one
+nobody needed.
+
+**Deleting a session ends it, shown or not.** A window attaches to an agent
+session's host session when the session is first shown, so after a restart a
+session that has not been opened yet has no terminal in the window. Deleting
+it - or closing its project - ended only what had a terminal, and an unopened
+one went on running in the host with no record naming it, until the next
+window put it on this card. Such a session is now ended in the host by the id
+its record keeps.
+
 The chord's context is `Markdown && !MarkdownSearch`, because the find bar
 layers onto the same node and `enter` there belongs to `markdown_find_next`. It
 is a *predicate* context rather than a bare word, which is why

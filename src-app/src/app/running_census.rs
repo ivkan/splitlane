@@ -218,6 +218,7 @@ impl SplitlaneApp {
         }
         if self.held_commands != census.held {
             self.held_commands = census.held;
+            self.read_held_titles(cx);
             changed = true;
         }
         self.held_commands_read_secs = Some(census.read_secs);

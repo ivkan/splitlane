@@ -1419,6 +1419,10 @@ struct SplitlaneApp {
     held_commands: std::collections::HashMap<String, Vec<crate::running_commands::RunningCommand>>,
     /// When that census was taken, Unix seconds.
     held_commands_read_secs: Option<i64>,
+    /// The title of the agent session each of them runs, by session id,
+    /// read once from its transcript; `None` while it is being read, or
+    /// when there is none to read (`app::held_sessions`).
+    held_titles: std::collections::HashMap<String, Option<String>>,
     /// The card listing them was put away.
     held_card_dismissed: bool,
     exit_confirm_focus: FocusHandle,

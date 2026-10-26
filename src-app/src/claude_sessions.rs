@@ -1570,6 +1570,38 @@ pub fn session_file_exists(cwd: &str, session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The title of one session, read from the head of its transcript: the
+/// CLI's own title when it wrote one, else the first prompt. `None` when
+/// the id is not one, or no transcript of that session is filed for `cwd`.
+///
+/// **Blocking I/O** - call it off the GPUI main thread.
+pub fn session_title(cwd: &str, session_id: &str) -> Option<String> {
+    if !crate::agent_sessions::is_valid_session_id(session_id) {
+        return None;
+    }
+    let path = project_dir_for_cwd(cwd)?.join(format!("{session_id}.jsonl"));
+    read_session_meta(&path)?.summary
+}
+
+/// The session a Claude Code command line names, by `--session-id` or
+/// `--resume`, in either spelling of either. `None` for a command that
+/// names none, or names something that is not a session id.
+pub fn session_in_command(command: &str) -> Option<&str> {
+    let mut words = command.split_whitespace();
+    while let Some(word) = words.next() {
+        let id = match word {
+            "--session-id" | "--resume" | "-r" => words.next(),
+            _ => word
+                .strip_prefix("--session-id=")
+                .or_else(|| word.strip_prefix("--resume=")),
+        };
+        if let Some(id) = id {
+            return crate::agent_sessions::is_valid_session_id(id).then_some(id);
+        }
+    }
+    None
+}
+
 fn project_snapshot_mtime(project_dir: &Path) -> Option<SystemTime> {
     let mut latest = fs::metadata(project_dir)
         .ok()
@@ -4400,5 +4432,23 @@ mod tests {
             .collect();
         ids.sort();
         assert_eq!(ids, vec![a.to_string(), b.to_string()]);
+    }
+
+    #[test]
+    fn a_command_line_names_its_session_in_every_spelling() {
+        let id = "29e4e2d2-beed-41c4-b7e2-96dbbb39370f";
+        for line in [
+            format!("claude --session-id {id} [Splitlane] Sent by the agent session"),
+            format!("/Users/me/.local/bin/claude --resume {id}"),
+            format!("claude -r {id}"),
+            format!("claude --model opus --resume={id}"),
+            format!("claude --session-id={id}"),
+        ] {
+            assert_eq!(session_in_command(&line), Some(id), "{line}");
+        }
+        assert_eq!(session_in_command("claude"), None);
+        assert_eq!(session_in_command("claude --resume"), None);
+        // Something that is not a session id is not taken for one.
+        assert_eq!(session_in_command("claude --resume ../../etc"), None);
     }
 }

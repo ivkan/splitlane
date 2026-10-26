@@ -3307,13 +3307,7 @@ impl SplitlaneApp {
                         // and kept answering `surface.list`, belonging to no
                         // project anybody could open.
                         for thread in &removed.threads {
-                            if let Some(view) = self
-                                .agents_view
-                                .agents_terminal_view_cache
-                                .remove(&thread.id)
-                            {
-                                Self::end_session_processes(view, cx);
-                            }
+                            self.end_removed_session(thread, cx);
                         }
                         self.reconcile_project_groups();
                         if self.active_idx >= self.workspaces.len() {

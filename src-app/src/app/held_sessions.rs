@@ -25,6 +25,7 @@ use gpui::{
 use splitlane_config::schema::{LayoutNode, SessionState};
 
 use crate::SplitlaneApp;
+use crate::running_commands::RunningCommand;
 use crate::terminal::TerminalView;
 use crate::terminal::held_sessions::HeldSession;
 use crate::ui_primitives::{AnimatedHoverExt, lerp_color};
@@ -78,8 +79,28 @@ pub(crate) fn unshown(held: &[HeldSession], session: Option<&SessionState>) -> V
     unshown
 }
 
-/// One row of the card: where the session runs and since when.
-fn row_label(held: &HeldSession) -> String {
+/// The command in a held session that names it: the agent when one runs,
+/// else the first command the census found.
+fn naming_command(commands: &[RunningCommand]) -> Option<&RunningCommand> {
+    commands
+        .iter()
+        .find(|command| command.agent.is_some())
+        .or_else(|| commands.first())
+}
+
+/// One row of the card: what the session runs, in which folder, since when.
+///
+/// The folder alone was the whole label once, and several sessions left in
+/// one project read as one line repeated: nothing told the agent that was
+/// halfway through a task from the shell nobody needed. So the row leads
+/// with the agent session's title, or the agent, or the command, or says it
+/// is a shell. `commands` is `None` until the first census is in, when what
+/// runs is not known yet and only the folder is said.
+fn row_label(
+    held: &HeldSession,
+    commands: Option<&[RunningCommand]>,
+    title: Option<&str>,
+) -> String {
     let started = chrono::DateTime::from_timestamp_millis(held.created_at_ms as i64)
         .map(|at| {
             at.with_timezone(&chrono::Local)
@@ -87,10 +108,65 @@ fn row_label(held: &HeldSession) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "an unknown time".to_string());
-    format!("{} - since {started}", held.cwd)
+    let folder = std::path::Path::new(&held.cwd)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| held.cwd.clone());
+    let Some(commands) = commands else {
+        return format!("{folder} - since {started}");
+    };
+    let what = match naming_command(commands) {
+        None => "Shell".to_string(),
+        Some(command) => match (title, command.agent) {
+            (Some(title), Some(_)) => title.to_string(),
+            (None, Some(binary)) => crate::agent_launcher::TerminalAgent::from_binary(binary)
+                .map(|agent| agent.display_name().to_string())
+                .unwrap_or_else(|| binary.to_string()),
+            _ => crate::running_commands::short_command(&command.command),
+        },
+    };
+    format!("{what} - {folder}, since {started}")
 }
 
 impl SplitlaneApp {
+    /// Read, once each and off the main thread, the title of the Claude Code
+    /// session each held session runs, for the card's rows. Called when a
+    /// census brings new commands; a session already read, or being read,
+    /// is not read again.
+    pub(crate) fn read_held_titles(&mut self, cx: &mut Context<Self>) {
+        for held in &self.held_unshown {
+            if self.held_titles.contains_key(&held.id) {
+                continue;
+            }
+            let Some(session_id) = self
+                .held_commands
+                .get(&held.id)
+                .and_then(|commands| naming_command(commands))
+                .filter(|command| {
+                    command.agent == Some(crate::agent_launcher::TerminalAgent::ClaudeCode.binary())
+                })
+                .and_then(|command| crate::claude_sessions::session_in_command(&command.command))
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            self.held_titles.insert(held.id.clone(), None);
+            let (id, cwd) = (held.id.clone(), held.cwd.clone());
+            cx.spawn(async move |this, cx| {
+                let title =
+                    smol::unblock(move || crate::claude_sessions::session_title(&cwd, &session_id))
+                        .await;
+                if title.is_some() {
+                    let _ = this.update(cx, |this, cx| {
+                        this.held_titles.insert(id, title);
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+        }
+    }
+
     /// Show a held session in a new tab of the pane the person is in.
     pub(crate) fn open_held_session(
         &mut self,
@@ -226,8 +302,18 @@ impl SplitlaneApp {
                 .cursor_pointer()
                 .child(label)
         };
+        let census_in = self.held_commands_read_secs.is_some();
         let rows = self.held_unshown.iter().map(|held| {
             let (open_id, end_id) = (held.id.clone(), held.id.clone());
+            let label = row_label(
+                held,
+                census_in.then(|| {
+                    self.held_commands
+                        .get(&held.id)
+                        .map_or(&[][..], Vec::as_slice)
+                }),
+                self.held_titles.get(&held.id).and_then(Option::as_deref),
+            );
             div()
                 .flex()
                 .flex_row()
@@ -240,7 +326,7 @@ impl SplitlaneApp {
                         .overflow_hidden()
                         .text_size(tok::text::ROW)
                         .text_color(ui.text)
-                        .child(row_label(held)),
+                        .child(label),
                 )
                 .child(
                     button(format!("held-open-{}", held.id).into(), "Open").on_click(cx.listener(
@@ -407,8 +493,40 @@ mod tests {
         );
     }
 
+    fn command(line: &str, agent: Option<&'static str>) -> RunningCommand {
+        RunningCommand {
+            pid: 7,
+            command: line.to_string(),
+            started_unix: None,
+            stopped: false,
+            agent,
+        }
+    }
+
     #[test]
-    fn a_row_says_where_the_session_runs() {
-        assert!(row_label(&held("x", 0)).starts_with("/work - since "));
+    fn before_the_census_a_row_says_only_the_folder() {
+        assert!(row_label(&held("x", 0), None, None).starts_with("work - since "));
+    }
+
+    #[test]
+    fn a_row_leads_with_what_the_session_runs() {
+        let agent = [
+            command("zsh-helper", None),
+            command("claude --session-id abc", Some("claude")),
+        ];
+        let label =
+            |commands: &[RunningCommand], title| row_label(&held("x", 0), Some(commands), title);
+        assert!(label(&agent, Some("Fix the build")).starts_with("Fix the build - work, since "));
+        assert!(label(&agent, None).starts_with("Claude Code - work, since "));
+        assert!(
+            label(&[command("/usr/bin/npm run dev --port 3", None)], None)
+                .starts_with("npm run dev - work, since ")
+        );
+        // A title is the agent's; a plain command keeps its own name.
+        assert!(
+            label(&[command("npm run dev", None)], Some("stale"))
+                .starts_with("npm run dev - work, since ")
+        );
+        assert!(label(&[], None).starts_with("Shell - work, since "));
     }
 }
