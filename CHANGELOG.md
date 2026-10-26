@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-10-26
+
 ### Added
 
 - **An orchestration journal.** Each step of one session opening, driving
