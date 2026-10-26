@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.18" date="2026-10-26">
+      <description>
+        <p>Deleting an agent session that had not been opened since Splitlane
+        started now ends it, rather than leaving it running in the background
+        with nothing naming it; closing a project had the same gap. The
+        Sessions still running card names each session by its title, agent or
+        command rather than repeating its folder.</p>
+      </description>
+    </release>
     <release version="0.2.17" date="2026-10-25">
       <description>
         <p>A paired phone can start an agent session: pick a project, an agent

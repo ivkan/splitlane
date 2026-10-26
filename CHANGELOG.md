@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-10-26
+
 ### Fixed
 
 - **Deleting a session that had not been opened since Splitlane started
