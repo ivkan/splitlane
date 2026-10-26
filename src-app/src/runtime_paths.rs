@@ -217,6 +217,24 @@ pub(crate) fn host_log_path() -> Option<PathBuf> {
     Some(dirs::cache_dir()?.join(APP_SUBDIR).join("host.log"))
 }
 
+/// Where the window writes its log. Launched from Finder, the Dock or a
+/// desktop entry, the app has no terminal to show standard error in, and a
+/// warning written there is lost. Beside the host's log, for the same
+/// reason.
+pub(crate) fn app_log_path() -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join(APP_SUBDIR).join("app.log"))
+}
+
+/// Where the orchestration journal is written
+/// ([`crate::orchestration_journal`]).
+pub(crate) fn orchestration_journal_path() -> Option<PathBuf> {
+    Some(
+        dirs::cache_dir()?
+            .join(APP_SUBDIR)
+            .join("orchestration.jsonl"),
+    )
+}
+
 pub(crate) fn shell_integration_dir() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("shell"))
 }

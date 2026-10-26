@@ -35,6 +35,9 @@ pub(crate) const MAX_PHONE_PROMPT_BYTES: usize = 8 * 1024;
 
 const HOUR: Duration = Duration::from_secs(60 * 60);
 
+/// The request a phone starts a session with, as the journal names it.
+const METHOD: &str = "surface.open_from_phone";
+
 /// What the window keeps about starts from phones while it runs.
 #[derive(Default)]
 pub(crate) struct PhoneStarts {
@@ -116,7 +119,18 @@ impl SplitlaneApp {
         else {
             return JsonRpcError::invalid_params(format!("no agent called `{tag}`")).into_value();
         };
+        let refuse = |reason: &str| {
+            crate::orchestration_journal::record(
+                "refused",
+                crate::orchestration_journal::Session {
+                    agent: Some(agent.binary()),
+                    ..Default::default()
+                },
+                serde_json::json!({ "method": METHOD, "reason": reason, "caller": "phone" }),
+            );
+        };
         if !agent.is_installed() {
+            refuse("not_installed");
             return JsonRpcError::invalid_params(format!(
                 "{} is not installed on this computer",
                 agent.display_name()
@@ -146,6 +160,7 @@ impl SplitlaneApp {
             .and_then(|id| id.as_u64())
             .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id))
         else {
+            refuse("no_project");
             return JsonRpcError::invalid_params(
                 "that project is not open on the computer any more",
             )
@@ -154,6 +169,7 @@ impl SplitlaneApp {
         let now = Instant::now();
         let running = self.running_phone_sessions(cx);
         if let Err(why) = self.phone_starts.may_start(&phone, running, now) {
+            refuse("phone_limit");
             return JsonRpcError::invalid_params(why).into_value();
         }
 
@@ -206,6 +222,7 @@ impl SplitlaneApp {
                 "surface_id": view.entity_id().as_u64(),
             }),
             None => {
+                self.journal_refusal_from_phone(thread_id, "not_started");
                 if let Some(thread_idx) = self.thread_index_by_id(ws_idx, thread_id) {
                     let _ = self.remove_thread(ws_idx, thread_idx, cx);
                 }
@@ -234,6 +251,20 @@ impl SplitlaneApp {
             self.mount_with_opening_text(target, thread_id, agent, prompt.as_deref(), true, cx)?;
         // A session in the rail is never drawn, so nothing else starts it.
         view.update(cx, |view, cx| view.ensure_backend_started(cx));
+        let mut opened = self.journal_place(thread_id);
+        if let Some(fields) = opened.as_object_mut() {
+            fields.insert("via".into(), METHOD.into());
+            fields.insert("surface_id".into(), view.entity_id().as_u64().into());
+            fields.insert("caller".into(), "phone".into());
+            fields.insert("placement".into(), "parked".into());
+            fields.insert(
+                "prompt_bytes".into(),
+                prompt.as_ref().map(String::len).into(),
+            );
+            fields.insert("submit".into(), true.into());
+            fields.insert("prompt_at_launch".into(), at_launch.is_some().into());
+        }
+        self.journal("open", thread_id, opened);
         if let Some(text) = prompt {
             self.deliver_opening_text(thread_id, &view, text, at_launch, true, false, cx);
         }
@@ -277,6 +308,7 @@ impl SplitlaneApp {
         if self.start_phone_session(thread_id, prompt, cx).is_some() {
             return;
         }
+        self.journal_refusal_from_phone(thread_id, "not_started");
         if let Some(ws_idx) = self
             .workspaces
             .iter()
@@ -287,6 +319,18 @@ impl SplitlaneApp {
             self.save_session(cx);
         }
         self.show_toast("The session from the phone could not be started", cx);
+    }
+
+    fn journal_refusal_from_phone(&self, thread_id: u64, reason: &str) {
+        self.journal(
+            "refused",
+            thread_id,
+            serde_json::json!({
+                "method": METHOD,
+                "reason": reason,
+                "caller": "phone",
+            }),
+        );
     }
 
     /// How many sessions started from phones are running, those still

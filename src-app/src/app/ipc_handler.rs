@@ -1837,6 +1837,11 @@ impl SplitlaneApp {
             self.event_bus
                 .broadcast(crate::rail_state::RAIL_EVENT_TYPE, Some(sid), &event);
         }
+        let terminals: std::collections::HashMap<u64, Entity<TerminalView>> = hosted
+            .iter()
+            .map(|(sid, terminal, _)| (*sid, terminal.clone()))
+            .collect();
+        self.journal_rail_changes(&current, &terminals, cx);
         #[cfg(host_panes)]
         self.publish_states_to_host(&current, hosted, cx);
         #[cfg(not(host_panes))]
@@ -5067,6 +5072,11 @@ impl SplitlaneApp {
                     if let Some(flow) = self.pty_flow.get_mut(&thread_id) {
                         flow.agent_found = false;
                     }
+                    self.journal(
+                        "agent_exit",
+                        thread_id,
+                        serde_json::json!({ "code": exit_code, "errored": errored }),
+                    );
                     if let Some(t) = self.agents_thread_mut_by_id(thread_id) {
                         t.rail.agent_exited = true;
                         // A crash ends the run. Counted here only where the

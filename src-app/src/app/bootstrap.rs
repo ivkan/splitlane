@@ -1267,6 +1267,7 @@ impl SplitlaneApp {
             shell_waits: std::collections::HashMap::new(),
             shells_at_rest: std::collections::HashMap::new(),
             interrupts_asked: std::collections::HashMap::new(),
+            journal_seen: std::collections::HashMap::new(),
             drive: crate::app::drive::DriveBook::default(),
             opener_tells: std::collections::HashMap::new(),
             opener_told_at: std::collections::HashMap::new(),

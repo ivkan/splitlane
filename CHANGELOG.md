@@ -6,6 +6,21 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **An orchestration journal.** Each step of one session opening, driving
+  or closing another is a JSON line in `orchestration.jsonl` in the cache
+  directory: opens and refusals, what became of the first prompt and how
+  long it waited, turns starting and ending, waits for a person, exits with
+  their code, worktrees that could not be made, panes the session host did
+  not take, and turns that stalled. The text of a prompt is never written,
+  only its length.
+- **The app's log is kept in a file.** `app.log`, beside the session host's
+  `host.log`, has what standard error has, so a warning is not lost when
+  Splitlane was started from the Dock or a desktop entry. Orchestration and
+  the session host now log at `info` by default. Both files are kept to a
+  few megabytes. See [Troubleshooting](docs/user/troubleshooting.md#log-files).
+
 ## [0.2.18] - 2026-10-26
 
 ### Fixed

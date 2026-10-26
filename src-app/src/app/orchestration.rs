@@ -18,6 +18,7 @@ use crate::app::drive::{Drive, Standing};
 use crate::app::ipc_handler::{JSONRPC_ERROR_KEY, JsonRpcError};
 use crate::app::targeting::PaneRefusal;
 use crate::caller::CallerLineage;
+use crate::orchestration_journal as journal;
 use crate::pane::TabContent;
 use crate::terminal::view::TerminalView;
 
@@ -85,6 +86,28 @@ pub(crate) fn agent_has_left(exit_reported: bool, agent_found: bool) -> bool {
 
 /// A first message left for an agent's shim: the key its launch command
 /// names, and the file being written.
+/// How the delivery of a first prompt went, for the journal: by which way,
+/// how long, and how many looks it took before the agent was ready.
+struct PromptDelivery {
+    /// `launch` when it went into the launch command, `input_line` when it
+    /// was written where the agent reads its input.
+    via: &'static str,
+    bytes: usize,
+    started: std::time::Instant,
+    rounds: u32,
+}
+
+impl PromptDelivery {
+    fn begin(via: &'static str, bytes: usize) -> Self {
+        Self {
+            via,
+            bytes,
+            started: std::time::Instant::now(),
+            rounds: 0,
+        }
+    }
+}
+
 pub(crate) type StashedPrompt = (String, gpui::Task<Option<std::path::PathBuf>>);
 
 /// Leave `text` where the agent's shim collects it by `key`, readable by the
@@ -376,6 +399,24 @@ pub(crate) enum Caller {
         /// The surface record of the session the key belongs to.
         thread_id: u64,
     },
+}
+
+/// How a caller is named in the orchestration journal.
+fn caller_word(caller: &Caller) -> &'static str {
+    match caller {
+        Caller::Pane(_) => "pane",
+        Caller::Keyholder { .. } => "key",
+        Caller::Outside => "outside",
+    }
+}
+
+/// The session a caller speaks as, if it is one.
+fn caller_thread(caller: &Caller) -> Option<u64> {
+    match caller {
+        Caller::Pane(pane) => Some(pane.thread_id),
+        Caller::Keyholder { thread_id } => Some(*thread_id),
+        Caller::Outside => None,
+    }
 }
 
 /// The request parameter in which a caller outside a pane presents the key
@@ -1373,7 +1414,7 @@ impl SplitlaneApp {
         };
         let caller = self.caller_of(lineage, cx);
         if let Err(refusal) = may_arrange(&caller, target, LaunchGates::read()) {
-            return refusal.into_value("surface.park");
+            return self.refused(refusal, "surface.park", target.thread_id, &caller);
         }
         let surface_id = terminal.entity_id().as_u64();
         let (Some(thread_id), Some((ws_idx, _))) = (target.thread_id, position) else {
@@ -1383,11 +1424,17 @@ impl SplitlaneApp {
             .into_value();
         };
         // Already out of a pane is the state asked for.
-        if self.agent_surface_in_slot(ws_idx, thread_id, cx) {
+        let was_in_pane = self.agent_surface_in_slot(ws_idx, thread_id, cx);
+        if was_in_pane {
             self.remove_agent_from_slots(ws_idx, thread_id, cx);
             self.save_session(cx);
             cx.notify();
         }
+        self.journal(
+            "park",
+            thread_id,
+            serde_json::json!({ "was_in_pane": was_in_pane }),
+        );
         serde_json::json!({ "parked": true, "surface_id": surface_id })
     }
 
@@ -1433,9 +1480,15 @@ impl SplitlaneApp {
                 .is_some_and(|thread| thread.finished_unseen.is_some()),
         };
         if let Err(refusal) = may_close(&caller, close_target, LaunchGates::read(), stop_turn) {
-            return refusal.into_value(METHOD);
+            return self.refused(refusal, METHOD, Some(thread_id), &caller);
         }
         let surface_id = terminal.entity_id().as_u64();
+        // Before the record goes, while it still names the session.
+        self.journal(
+            "close",
+            thread_id,
+            serde_json::json!({ "turn_in_flight": turn_in_flight, "stop_turn": stop_turn }),
+        );
         // The one path that removes a session: it takes the surface out of
         // its pane, drops the view that owns the PTY, and with it the process.
         if self.remove_thread(ws_idx, thread_idx, cx).is_err() {
@@ -1483,6 +1536,12 @@ impl SplitlaneApp {
             target,
             LaunchGates::read().scripting || phone.is_some(),
         ) {
+            let reason = match denied {
+                WriteDenied::Refused(refusal) => refusal.word(),
+                WriteDenied::GateClosed => "gate_closed",
+                WriteDenied::AskPerson => "asked_person",
+            };
+            self.journal_refusal(METHOD, reason, target.thread_id, &caller);
             return self.deny_write(denied, &caller, target, METHOD, cx);
         }
         let rail = self.rail_snapshot_for(&terminal, target.thread_id, cx);
@@ -1495,7 +1554,7 @@ impl SplitlaneApp {
             .and_then(|thread| thread.terminal_agent)
             .and_then(crate::agent_launcher::TerminalAgent::interrupt_key);
         let Some(key) = key else {
-            return Refusal::NoInterrupt.into_value(METHOD);
+            return self.refused(Refusal::NoInterrupt, METHOD, target.thread_id, &caller);
         };
         let surface_id = terminal.entity_id().as_u64();
         let status = rail.as_ref().map(|rail| rail.status);
@@ -1533,6 +1592,11 @@ impl SplitlaneApp {
                 if let Some(thread_id) = target.thread_id {
                     self.interrupts_asked
                         .insert(thread_id, std::time::Instant::now());
+                    self.journal(
+                        "interrupt",
+                        thread_id,
+                        serde_json::json!({ "from_phone": phone.is_some() }),
+                    );
                 }
                 answer(true)
             }
@@ -1595,7 +1659,7 @@ impl SplitlaneApp {
         };
         let caller = self.caller_of(lineage, cx);
         if let Err(refusal) = may_arrange(&caller, target, LaunchGates::read()) {
-            return refusal.into_value(METHOD);
+            return self.refused(refusal, METHOD, target.thread_id, &caller);
         }
         let surface_id = terminal.entity_id().as_u64();
         let shown = |displaced: Option<u64>| {
@@ -1659,7 +1723,7 @@ impl SplitlaneApp {
                     Caller::Pane(pane) => pane.thread_id,
                     // A script outside a pane opened nothing it could give up.
                     Caller::Outside | Caller::Keyholder { .. } => {
-                        return Refusal::NoRoom.into_value(METHOD);
+                        return self.refused(Refusal::NoRoom, METHOD, Some(thread_id), &caller);
                     }
                 };
                 let facts: Vec<PaneFacts> = leaves
@@ -1685,7 +1749,7 @@ impl SplitlaneApp {
                     })
                     .collect();
                 let Some(idx) = pane_to_give_up(&facts, opener, thread_id) else {
-                    return Refusal::NoRoom.into_value(METHOD);
+                    return self.refused(Refusal::NoRoom, METHOD, Some(thread_id), &caller);
                 };
                 let pane = leaves[idx].clone();
                 let displaced = pane
@@ -1717,7 +1781,7 @@ impl SplitlaneApp {
                     .append_pane_with(ws_idx, TabContent::Terminal(view.clone()), cx)
                     .is_none()
                 {
-                    return Refusal::NoRoom.into_value(METHOD);
+                    return self.refused(Refusal::NoRoom, METHOD, Some(thread_id), &caller);
                 }
                 None
             }
@@ -1730,7 +1794,7 @@ impl SplitlaneApp {
                     .and_then(|container| container.root.as_mut())
                     .is_some_and(|root| root.split_at_pane(&neighbour, direction, pane));
                 if !inserted {
-                    return Refusal::NoRoom.into_value(METHOD);
+                    return self.refused(Refusal::NoRoom, METHOD, Some(thread_id), &caller);
                 }
                 None
             }
@@ -1738,6 +1802,11 @@ impl SplitlaneApp {
         view.update(cx, |view, cx| view.ensure_backend_started(cx));
         self.save_session(cx);
         cx.notify();
+        self.journal(
+            "show",
+            thread_id,
+            serde_json::json!({ "displaced_surface_id": displaced }),
+        );
         shown(displaced)
     }
 
@@ -1923,8 +1992,9 @@ impl SplitlaneApp {
         cx: &mut Context<Self>,
     ) -> serde_json::Value {
         const METHOD: &str = "surface.wake";
-        let Caller::Keyholder { thread_id } = self.caller_with_key(lineage, params, cx) else {
-            return Refusal::NotFromAPane.into_value(METHOD);
+        let caller = self.caller_with_key(lineage, params, cx);
+        let Caller::Keyholder { thread_id } = caller else {
+            return self.refused(Refusal::NotFromAPane, METHOD, None, &caller);
         };
         if let Some(terminal) = self.terminal_of(thread_id, cx) {
             return serde_json::json!({
@@ -1943,10 +2013,14 @@ impl SplitlaneApp {
         match target.and_then(|target| self.mount_agents_terminal_for_target(target, cx)) {
             Some(view) => {
                 cx.notify();
+                self.journal("wake", thread_id, serde_json::json!({ "woke": true }));
                 serde_json::json!({ "surface_id": view.entity_id().as_u64(), "woke": true })
             }
-            None => JsonRpcError::invalid_params("The session could not be given a terminal")
-                .into_value(),
+            None => {
+                self.journal_refusal(METHOD, "no_terminal", Some(thread_id), &caller);
+                JsonRpcError::invalid_params("The session could not be given a terminal")
+                    .into_value()
+            }
         }
     }
 
@@ -2017,10 +2091,30 @@ impl SplitlaneApp {
             enabled: self.cached_config.script_sessions_enabled(),
             running: self.running_script_sessions(cx),
         };
+        // Refused before there is a record: the asker and the agent are all
+        // the line can name.
+        let refuse_open = |reason: &str| {
+            journal::record(
+                "refused",
+                journal::Session {
+                    opener: caller_thread(&caller),
+                    agent: Some(agent.binary()),
+                    ..Default::default()
+                },
+                serde_json::json!({
+                    "method": METHOD,
+                    "reason": reason,
+                    "caller": caller_word(&caller),
+                    "running": already_open,
+                }),
+            );
+        };
         if let Err(refusal) = may_open(&caller, already_open, gates, submit, scripts) {
+            refuse_open(refusal.word());
             return refusal.into_value(METHOD);
         }
         if !agent.is_installed() {
+            refuse_open("not_installed");
             return JsonRpcError::invalid_params(format!(
                 "{} is not installed",
                 agent.display_name()
@@ -2049,7 +2143,10 @@ impl SplitlaneApp {
                 match here {
                     Some(ws_idx) => ws_idx,
                     None if gates.orchestration => self.active_idx,
-                    None => return Refusal::NoProjectHere.into_value(METHOD),
+                    None => {
+                        refuse_open(Refusal::NoProjectHere.word());
+                        return Refusal::NoProjectHere.into_value(METHOD);
+                    }
                 }
             }
         };
@@ -2068,7 +2165,10 @@ impl SplitlaneApp {
             self.refuse_another_pane_in(ws_idx, cx),
         ) {
             Ok(placement) => placement,
-            Err(refusal) => return refusal.into_value(METHOD),
+            Err(refusal) => {
+                refuse_open(refusal.word());
+                return refusal.into_value(METHOD);
+            }
         };
 
         let title = name
@@ -2131,6 +2231,7 @@ impl SplitlaneApp {
         ) else {
             // An error must not leave a row behind that the caller was told
             // does not exist.
+            refuse_open("not_started");
             let _ = self.remove_thread(ws_idx, thread_idx, cx);
             return JsonRpcError::invalid_params("The session could not be started").into_value();
         };
@@ -2159,6 +2260,27 @@ impl SplitlaneApp {
         // not drawn yet, so it is started here.
         view.update(cx, |view, cx| view.ensure_backend_started(cx));
 
+        let (placement_word, placement_reason) = match placement {
+            Placement::EmptyPane | Placement::NewPane => ("pane", None),
+            Placement::Parked(because) => ("parked", Some(because.word())),
+        };
+        // Before the prompt is handed on, so the open comes first in the
+        // journal and the delivery after it.
+        let mut opened = self.journal_place(thread_id);
+        if let Some(fields) = opened.as_object_mut() {
+            fields.insert("via".into(), METHOD.into());
+            fields.insert("surface_id".into(), view.entity_id().as_u64().into());
+            fields.insert("caller".into(), caller_word(&caller).into());
+            fields.insert("placement".into(), placement_word.into());
+            fields.insert("placement_reason".into(), placement_reason.into());
+            fields.insert(
+                "prompt_bytes".into(),
+                opening_text.as_ref().map(String::len).into(),
+            );
+            fields.insert("submit".into(), submit.into());
+            fields.insert("prompt_at_launch".into(), at_launch.is_some().into());
+        }
+        self.journal("open", thread_id, opened);
         if let Some(text) = opening_text {
             self.deliver_opening_text(thread_id, &view, text, at_launch, submit, from_opener, cx);
         }
@@ -2166,10 +2288,6 @@ impl SplitlaneApp {
         cx.notify();
 
         let rail = self.rail_snapshot_for(&view, Some(thread_id), cx);
-        let (placement_word, placement_reason) = match placement {
-            Placement::EmptyPane | Placement::NewPane => ("pane", None),
-            Placement::Parked(because) => ("parked", Some(because.word())),
-        };
         serde_json::json!({
             "surface_id": view.entity_id().as_u64(),
             "thread_id": thread_id,
@@ -2292,6 +2410,7 @@ impl SplitlaneApp {
         let weak = terminal.downgrade();
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut delivery = PromptDelivery::begin("launch", text.len());
                 let Some(path) = stashed.await else {
                     log::warn!(
                         "opening prompt: no place to leave it for surface record \
@@ -2300,6 +2419,7 @@ impl SplitlaneApp {
                     let _ = cx.update(|cx| {
                         let terminal = weak.upgrade()?;
                         this.update(cx, |app, cx| {
+                            app.journal_prompt(thread_id, "rerouted", None, &delivery);
                             app.schedule_opening_prompt(
                                 thread_id,
                                 &terminal,
@@ -2346,6 +2466,7 @@ impl SplitlaneApp {
                             .await;
                         break OpeningPrompt::NotWritten(NotWritten::NoAgent);
                     }
+                    delivery.rounds += 1;
                     smol::Timer::after(OPENING_PROMPT_POLL).await;
                 };
                 if became != OpeningPrompt::Submitted {
@@ -2360,6 +2481,12 @@ impl SplitlaneApp {
                         if from_opener && became == OpeningPrompt::Submitted {
                             app.note_opener_wrote(thread_id, cx);
                         }
+                        app.journal_prompt(
+                            thread_id,
+                            became.wire_str(),
+                            became.reason(),
+                            &delivery,
+                        );
                         app.note_opening_prompt(thread_id, became);
                     })
                 });
@@ -2400,6 +2527,7 @@ impl SplitlaneApp {
         cx.spawn(
             async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let started = std::time::Instant::now();
+                let mut delivery = PromptDelivery::begin("input_line", text.len());
                 let look = |cx: &mut gpui::AsyncApp| -> Option<OpeningLook> {
                     cx.update(|cx| {
                         let view = weak.upgrade()?;
@@ -2408,47 +2536,76 @@ impl SplitlaneApp {
                             .flatten()
                     })
                 };
-                let give_up = |because: NotWritten, cx: &mut gpui::AsyncApp| {
-                    log::warn!(
-                        "opening prompt: not written to surface record {thread_id} \
-                         ({because:?}) after {:?}",
-                        started.elapsed()
-                    );
+                let give_up =
+                    |because: NotWritten, delivery: &PromptDelivery, cx: &mut gpui::AsyncApp| {
+                        log::warn!(
+                            "opening prompt: not written to surface record {thread_id} \
+                             ({because:?}) after {:?}",
+                            started.elapsed()
+                        );
+                        let became = OpeningPrompt::NotWritten(because);
+                        let _ = cx.update(|cx| {
+                            this.update(cx, |app, _| {
+                                app.journal_prompt(
+                                    thread_id,
+                                    became.wire_str(),
+                                    became.reason(),
+                                    delivery,
+                                );
+                                app.note_opening_prompt(thread_id, became);
+                            })
+                        });
+                    };
+                // The session was closed, or the app is going away: the
+                // journal is told once, here, whichever look found it gone.
+                let gone = |delivery: &PromptDelivery, cx: &mut gpui::AsyncApp| {
                     let _ = cx.update(|cx| {
                         this.update(cx, |app, _| {
-                            app.note_opening_prompt(thread_id, OpeningPrompt::NotWritten(because));
+                            app.journal_prompt(thread_id, "session_gone", None, delivery);
                         })
                     });
                 };
                 loop {
-                    // The session was closed, or the app is going away.
-                    let seen = look(cx)?;
+                    let Some(seen) = look(cx) else {
+                        gone(&delivery, cx);
+                        return None;
+                    };
                     match opening_prompt_step(seen, started.elapsed()) {
                         OpeningStep::Write => {}
                         OpeningStep::Wait => {
+                            delivery.rounds += 1;
                             smol::Timer::after(OPENING_PROMPT_POLL).await;
                             continue;
                         }
                         OpeningStep::GiveUp(because) => {
-                            give_up(because, cx);
+                            give_up(because, &delivery, cx);
                             return None;
                         }
                     }
-                    Self::wait_for_terminal_settle(
+                    if Self::wait_for_terminal_settle(
                         &weak,
                         OPENING_PROMPT_SETTLE_FLOOR,
                         OPENING_PROMPT_SETTLE_MAX,
                         OPENING_PROMPT_POLL,
                         cx,
                     )
-                    .await?;
+                    .await
+                    .is_none()
+                    {
+                        gone(&delivery, cx);
+                        return None;
+                    }
                     // What the agent shows may have changed while it settled:
                     // a question can come up after the first screen.
-                    match opening_prompt_step(look(cx)?, started.elapsed()) {
+                    let Some(seen) = look(cx) else {
+                        gone(&delivery, cx);
+                        return None;
+                    };
+                    match opening_prompt_step(seen, started.elapsed()) {
                         OpeningStep::Write => break,
-                        OpeningStep::Wait => {}
+                        OpeningStep::Wait => delivery.rounds += 1,
                         OpeningStep::GiveUp(because) => {
-                            give_up(because, cx);
+                            give_up(because, &delivery, cx);
                             return None;
                         }
                     }
@@ -2470,7 +2627,7 @@ impl SplitlaneApp {
                     true
                 });
                 if !written {
-                    give_up(NotWritten::NoPaste, cx);
+                    give_up(NotWritten::NoPaste, &delivery, cx);
                     return None;
                 }
                 let _ = cx.update(|cx| {
@@ -2483,6 +2640,7 @@ impl SplitlaneApp {
                             Self::schedule_deferred_submit(&terminal, submit_floor, cx);
                             became = OpeningPrompt::Submitted;
                         }
+                        app.journal_prompt(thread_id, became.wire_str(), None, &delivery);
                         app.note_opening_prompt(thread_id, became);
                     })
                 });
@@ -2490,6 +2648,28 @@ impl SplitlaneApp {
             },
         )
         .detach();
+    }
+
+    /// What became of a session's first prompt, in the journal.
+    fn journal_prompt(
+        &self,
+        thread_id: u64,
+        outcome: &str,
+        reason: Option<&str>,
+        delivery: &PromptDelivery,
+    ) {
+        self.journal(
+            "prompt",
+            thread_id,
+            serde_json::json!({
+                "outcome": outcome,
+                "reason": reason,
+                "via": delivery.via,
+                "bytes": delivery.bytes,
+                "waited_ms": delivery.started.elapsed().as_millis() as u64,
+                "rounds": delivery.rounds,
+            }),
+        );
     }
 
     fn note_opening_prompt(&mut self, thread_id: u64, became: crate::rail_state::OpeningPrompt) {
@@ -2556,6 +2736,92 @@ impl SplitlaneApp {
                 view.read(cx).terminal.session_backend().modes(),
             ),
             waiting: thread.status == crate::project::ThreadStatus::WaitingForInput,
+        })
+    }
+
+    /// The ids the orchestration journal puts on a line about `thread_id`.
+    pub(crate) fn journal_session(&self, thread_id: u64) -> journal::Session<'_> {
+        let thread = self.thread_by_id(thread_id);
+        journal::Session {
+            thread_id: Some(thread_id),
+            opener: thread
+                .and_then(|thread| thread.opened_by.as_ref().map(|by| by.id))
+                .or_else(|| self.drive.driver_of(thread_id)),
+            agent: thread
+                .and_then(|thread| thread.terminal_agent)
+                .map(crate::agent_launcher::TerminalAgent::binary),
+            session_id: thread.and_then(|thread| thread.session_id.as_deref()),
+        }
+    }
+
+    /// Write one event about `thread_id` to the orchestration journal.
+    pub(crate) fn journal(&self, event: &str, thread_id: u64, fields: serde_json::Value) {
+        journal::record(event, self.journal_session(thread_id), fields);
+    }
+
+    /// A request about `thread_id` (`None` when it names no session) that
+    /// was turned down, in the journal: what was asked, by whom, and the
+    /// word the caller was answered with.
+    pub(crate) fn journal_refusal(
+        &self,
+        method: &str,
+        reason: &str,
+        thread_id: Option<u64>,
+        caller: &Caller,
+    ) {
+        let mut session =
+            thread_id.map_or_else(journal::Session::default, |id| self.journal_session(id));
+        // The one who asked, which for a refused open is the only id there is.
+        if session.opener.is_none() {
+            session.opener = caller_thread(caller);
+        }
+        journal::record(
+            "refused",
+            session,
+            serde_json::json!({
+                "method": method,
+                "reason": reason,
+                "caller": caller_word(caller),
+            }),
+        );
+    }
+
+    /// [`Refusal::into_value`], with the refusal journaled first.
+    fn refused(
+        &self,
+        refusal: Refusal,
+        method: &str,
+        thread_id: Option<u64>,
+        caller: &Caller,
+    ) -> serde_json::Value {
+        self.journal_refusal(method, refusal.word(), thread_id, caller);
+        refusal.into_value(method)
+    }
+
+    /// Where a session works: its directory, and the worktree and branch
+    /// when that directory is one of its project's worktrees.
+    pub(crate) fn journal_place(&self, thread_id: u64) -> serde_json::Value {
+        let Some(ws) = self
+            .workspaces
+            .iter()
+            .find(|ws| ws.threads.iter().any(|t| t.id == thread_id))
+        else {
+            return serde_json::json!({});
+        };
+        let cwd = ws
+            .threads
+            .iter()
+            .find(|t| t.id == thread_id)
+            .map(|t| t.cwd.clone())
+            .unwrap_or_default();
+        let worktree = ws
+            .managed_worktrees
+            .iter()
+            .find(|wt| std::path::Path::new(&cwd).starts_with(&wt.path));
+        serde_json::json!({
+            "cwd": cwd,
+            "worktree": worktree.map(|wt| wt.path.display().to_string()),
+            "branch": worktree.map(|wt| wt.branch.clone()),
         })
     }
 }

@@ -27,6 +27,7 @@ pub mod files_sidebar;
 pub mod files_tree;
 pub mod held_sessions;
 pub mod ipc_handler;
+pub mod journal_watch;
 pub mod launch_pad;
 pub mod launcher;
 pub mod notifications;
