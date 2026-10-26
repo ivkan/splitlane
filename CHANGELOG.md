@@ -20,6 +20,9 @@ Notable changes to Splitlane are recorded here. The format follows
   Splitlane was started from the Dock or a desktop entry. Orchestration and
   the session host now log at `info` by default. Both files are kept to a
   few megabytes. See [Troubleshooting](docs/user/troubleshooting.md#log-files).
+- **`splitlane close --unread`.** A session whose last answer went to a
+  person who has not read it is still refused by default; with `--unread`
+  the session that opened it may close it, for when the person asked it to.
 
 ## [0.2.18] - 2026-10-26
 

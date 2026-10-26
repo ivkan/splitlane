@@ -1196,6 +1196,14 @@ own finished work is never stopped by this. A dialog asking the person to confir
 considered and refused, because it would make a request wait on a person's
 answer, and the server has no call that waits on a person.
 
+`unread` lifts it, and nothing else does. The refusal stopped the case it was
+not written for: a person reads the result in the opener's pane, tells the
+opener to close the session, and the opener cannot, while it could stop a
+turn in flight, which loses more. The app cannot tell that the person asked,
+so the caller says it, the journal records each close made that way, and
+the agent instructions say to use it only on the person's word. The answer
+is not destroyed either way: the agent's own record keeps it.
+
 **What a session opened sits under it in the rail.** A session and the
 sessions it opened are one piece of work, and rows scattered through a
 project by age and by pin do not read as one. So they follow their opener,

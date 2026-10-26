@@ -202,6 +202,12 @@ session you opened cannot open sessions of its own; you cannot close, move
 or write into a session you did not open. A refusal is exit `8` with the
 reason in the message. Tell the person; do not retry.
 
+`close` is also refused with `unseen_by_person` when the person typed into
+the session and has not read its answer yet. Tell them the answer is
+waiting in that session. Only when the person has asked you to close it,
+close it with `splitlane close <name> --unread`, quoting their words in your
+reply.
+
 More sessions than panes:
 
 ```bash

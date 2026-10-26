@@ -308,18 +308,23 @@ pub fn show(
     Ok(EXIT_OK)
 }
 
-/// `splitlane close <target> [--stop-turn] [--json]`: stop a session and
-/// drop its row. The conversation stays in the agent's own history.
+/// `splitlane close <target> [--stop-turn] [--unread] [--json]`: stop a
+/// session and drop its row. The conversation stays in the agent's own
+/// history.
 pub fn close(
     client: &impl IpcTransport,
     target: &str,
     stop_turn: bool,
+    unread: bool,
     json: bool,
 ) -> Result<i32, CliError> {
     let surface_id = resolve_target(client, target)?;
     let mut params = json!({ "surface_id": surface_id });
     if stop_turn {
         params["stop_turn"] = json!(true);
+    }
+    if unread {
+        params["unread"] = json!(true);
     }
     let result =
         super::reject_legacy_error(client.call("surface.close", params).map_err(call_error)?)?;
@@ -747,12 +752,23 @@ mod tests {
             calls: RefCell::new(Vec::new()),
             reply: Ok(json!({ "closed": true, "surface_id": 12, "thread_id": 4 })),
         };
-        assert_eq!(close(&fake, "api-docs", false, true).expect("ok"), EXIT_OK);
-        assert_eq!(close(&fake, "api-docs", true, true).expect("ok"), EXIT_OK);
+        assert_eq!(
+            close(&fake, "api-docs", false, false, true).expect("ok"),
+            EXIT_OK
+        );
+        assert_eq!(
+            close(&fake, "api-docs", true, false, true).expect("ok"),
+            EXIT_OK
+        );
+        assert_eq!(
+            close(&fake, "api-docs", false, true, true).expect("ok"),
+            EXIT_OK
+        );
         let calls = fake.calls.borrow();
         assert_eq!(calls[0].0, "surface.close");
         assert_eq!(calls[0].1, json!({ "surface_id": 12 }));
         assert_eq!(calls[1].1, json!({ "surface_id": 12, "stop_turn": true }));
+        assert_eq!(calls[2].1, json!({ "surface_id": 12, "unread": true }));
     }
 
     #[test]
@@ -763,7 +779,7 @@ mod tests {
                 "splitlane error -32004: surface.close refused (turn_in_flight): no".to_string(),
             ),
         };
-        let err = close(&fake, "api-docs", false, false).expect_err("refused");
+        let err = close(&fake, "api-docs", false, false, false).expect_err("refused");
         assert_eq!(err.code, EXIT_REFUSED);
         assert!(err.message.contains("turn_in_flight"));
     }
