@@ -1242,6 +1242,7 @@ impl SplitlaneApp {
             held_unshown,
             held_commands: std::collections::HashMap::new(),
             held_commands_read_secs: None,
+            held_titles: std::collections::HashMap::new(),
             held_card_dismissed: false,
             exit_confirm_focus: cx.focus_handle(),
             // Fleet grep closed.

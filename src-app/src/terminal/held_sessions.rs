@@ -111,6 +111,47 @@ pub(crate) fn listing(wait: Duration) -> Vec<HeldSession> {
     }
 }
 
+/// End a session the host holds, knowing only its id. Returns at once.
+///
+/// For a session whose record is deleted while this window has not shown
+/// it: a window attaches to an agent session's host session when the
+/// session is first shown, so until then there is no pane whose going
+/// would end it. Ending only the record left the agent running in the
+/// host with nothing naming it, found again by the next window as a
+/// session nobody could tell apart from the others.
+///
+/// The host is asked what it holds first: that gives the pid to end the
+/// processes by if it stops answering half way, and a session it no
+/// longer runs is let be.
+pub(crate) fn end_by_id(id: &str) {
+    #[cfg(host_panes)]
+    if enabled()
+        && let (Ok(session), Some(endpoint)) = (
+            id.parse::<splitlane_host::SessionId>(),
+            super::host_session::process_endpoint(),
+        )
+    {
+        let id = id.to_string();
+        let _ = std::thread::Builder::new()
+            .name("held-session-end".into())
+            .spawn(move || {
+                if let Some(held) = endpoint
+                    .held_sessions()
+                    .into_iter()
+                    .find(|held| held.id == id)
+                {
+                    log::info!(
+                        target: "splitlane::terminal::host",
+                        "session {id}: its record was deleted before a pane showed it; ending it"
+                    );
+                    endpoint.end_held(session, held.pid);
+                }
+            });
+    }
+    #[cfg(not(host_panes))]
+    let _ = id;
+}
+
 /// The window is going away and what runs in the host stays.
 pub(crate) fn leave_running() {
     #[cfg(host_panes)]

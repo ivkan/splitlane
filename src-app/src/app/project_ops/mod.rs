@@ -215,13 +215,7 @@ impl SplitlaneApp {
         // (the alacritty event loop sends `Msg::Shutdown` in `Drop`, see
         // `src/terminal/pty_session.rs`) - and end what was running under it,
         // which the teardown alone does not.
-        if let Some(view) = self
-            .agents_view
-            .agents_terminal_view_cache
-            .remove(&removed.id)
-        {
-            Self::end_session_processes(view, cx);
-        }
+        self.end_removed_session(&removed, cx);
         // Its worktree goes with it, if it was the session's own and holds
         // nothing anybody would miss.
         self.release_session_worktree(ws_idx, &removed.cwd, cx);
@@ -241,6 +235,44 @@ impl SplitlaneApp {
 const JOB_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl SplitlaneApp {
+    /// End what a deleted session ran, shown in this window or not.
+    ///
+    /// A session with a terminal has it dropped and its processes ended. A
+    /// session this window has not shown yet has no terminal, and may still
+    /// be running in the session host from an earlier window: that one is
+    /// ended there, by the id its record keeps.
+    ///
+    /// Called once the record is out of the rail, so that any record still
+    /// in it is somebody else's.
+    pub(crate) fn end_removed_session(
+        &mut self,
+        thread: &crate::project::Thread,
+        cx: &mut Context<Self>,
+    ) {
+        match self
+            .agents_view
+            .agents_terminal_view_cache
+            .remove(&thread.id)
+        {
+            Some(view) => Self::end_session_processes(view, cx),
+            // Not while another record still names the same host session:
+            // that one would be left with a session that is gone.
+            None => {
+                if let Some(session) = thread.host_session.as_deref()
+                    && !self
+                        .workspaces
+                        .iter()
+                        .flat_map(|container| container.threads.iter())
+                        .any(|other| {
+                            other.id != thread.id && other.host_session.as_deref() == Some(session)
+                        })
+                {
+                    crate::terminal::held_sessions::end_by_id(session);
+                }
+            }
+        }
+    }
+
     /// Drop a deleted session's terminal and end the processes under it.
     ///
     /// Dropping the terminal closes the PTY, and the teardown signals the

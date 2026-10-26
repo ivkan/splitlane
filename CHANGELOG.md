@@ -6,6 +6,16 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deleting a session that had not been opened since Splitlane started
+  ends it.** Its agent used to keep running in the background with nothing
+  in the rail naming it, until the next start listed it under **Sessions
+  still running**. Closing a project had the same gap.
+- **Sessions still running says what each one is.** A row names the agent
+  session's title, or the agent, or the command, or says it is a shell,
+  then its folder - rather than the same folder path on every row.
+
 ## [0.2.17] - 2026-10-25
 
 ### Added
