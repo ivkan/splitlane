@@ -30,7 +30,7 @@ like a verb but is not one exits with code `2`.
 | `add --agent <name>` | `--name NAME`, `--prompt TEXT` or `--prompt-file PATH`, `--submit`, `--parked` or `--pane`, `--as NAME`, `--json` | `surface.add_agent` | `<surface_id>`, a tab and where the session went (default), or JSON |
 | `park <target>` | `--json` | `surface.park` | A line (default) or JSON |
 | `show <target>` | `--beside TARGET`, `--direction h\|v`, `--json` | `surface.show` | A line (default) or JSON |
-| `close <target>` | `--stop-turn`, `--json` | `surface.close` | A line (default) or JSON |
+| `close <target>` | `--stop-turn`, `--unread`, `--json` | `surface.close` | A line (default) or JSON |
 | `interrupt <target>` | `--timeout SECS` (default 10), `--json` | `surface.interrupt`, then `surface.status` | `<surface_id>`, a tab and the outcome (default), or JSON |
 | `wait` | `--match SEL` (required), one of `--pattern REGEX`, `--idle`, `--until turn-end`, `--until allowed`, `--state WORDS`; `--for MS`, `--timeout SECS`, `--any`, `--all`, `--after N`, `--through-waiting`, `--settled`, `--start-grace SECS` | `surface.read`, `surface.status`, `events.subscribe` | JSON |
 | `watch` | `--surface SEL`, `--type TYPE` (repeatable), `--events-only` | `events.subscribe` | JSON lines |
@@ -92,7 +92,9 @@ configuration files:
   row. The conversation stays in the agent's own history. A session in the
   middle of a turn is closed only with `--stop-turn`. A session that is
   asking something before its first prompt (`rail.source` is `terminal`) is
-  in no turn and closes without it.
+  in no turn and closes without it. A session whose last answer went to a
+  person who has not read it yet is closed only with `--unread`; pass it when
+  the person asked for the session to be closed.
 - `interrupt` stops the turn a session is in and leaves the session open. It
   writes the agent's own interrupt key, not `Ctrl-C`, and reports one of:
 
@@ -300,7 +302,7 @@ A call a rule refuses returns JSON-RPC error `-32004` with the reason under
 | `no_room` | A pane was required and there is none to give |
 | `other_project` | `close`: the target is in another project |
 | `turn_in_flight` | `close`: the target is in the middle of a turn or waiting for a person; pass `--stop-turn` to close it anyway |
-| `unseen_by_person` | `close`: the target finished a turn a person started and they have not looked at it. `--stop-turn` does not lift this |
+| `unseen_by_person` | `close`: the target finished a turn a person started and they have not looked at it. Pass `--unread` to close it anyway; `--stop-turn` does not lift this |
 | `no_interrupt` | `interrupt`: no interrupt key is known for the target's agent |
 | `person_declined` | A person was asked whether the caller may send messages to the target, and said no. They are not asked again until Splitlane restarts, unless they hand the session over from its row's menu |
 
@@ -599,7 +601,7 @@ Leave the key out to get the default.
 | `surface.park` | `surface_id` or `name` | `{parked, surface_id}` |
 | `surface.wake` | `session_key` | `{surface_id, woke}`. Gives the session the key belongs to a terminal when it has none after a restart, without starting its agent. The CLI calls it when a target matches nothing and a key is held. Refused (`not_from_a_pane`) without a key that is some session's |
 | `surface.show` | `surface_id` or `name`, `beside_surface_id`, `direction` | `{shown, surface_id, displaced_surface_id}` |
-| `surface.close` | `surface_id` or `name`, `stop_turn` | `{closed, surface_id, thread_id}` |
+| `surface.close` | `surface_id` or `name`, `stop_turn`, `unread` | `{closed, surface_id, thread_id}` |
 | `surface.interrupt` | `surface_id` or `name` | `{sent, surface_id, rail_status_at_send, runs_ended, last_outcome}`. Answers as soon as the key is written; the stop is confirmed by `rail.runs_ended` passing the value given here with `rail.last_outcome` `interrupted` |
 | `app.activate` | | `{activated}`. Brings the window forward, unhiding or restoring it. Always allowed. A second launch of the app sends it and exits with 0 |
 | `app.dispatch_action` | `action`: an action name from [Keybindings](../keybindings.md) (for example `jump_next_waiting`, `toggle_files_sidebar`) | `{dispatched, action}`. The action runs on the next frame, where the same key press would land; the result does not say whether anything answered it |
