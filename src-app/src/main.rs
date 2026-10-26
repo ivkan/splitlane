@@ -3839,10 +3839,13 @@ fn main() {
     // moment and says what it has to on its own standard error. Not before
     // here, either: each is written from a thread of its own, and no thread
     // may exist while the environment is still being changed above.
-    if let Some(path) = runtime_paths::app_log_path()
-        && let Ok(appender) = log_file::Appender::start(path, MAX_APP_LOG_BYTES)
-    {
-        let _ = APP_LOG.set(appender);
+    if let Some(path) = runtime_paths::app_log_path() {
+        match log_file::Appender::start(path, MAX_APP_LOG_BYTES) {
+            Ok(appender) => {
+                let _ = APP_LOG.set(appender);
+            }
+            Err(e) => log::warn!("app.log not started: {e}"),
+        }
     }
     orchestration_journal::start();
 

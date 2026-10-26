@@ -14,14 +14,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-pub(crate) struct Appender(mpsc::Sender<Vec<u8>>);
+/// How many lines may wait for the writer. A disk that does not answer
+/// would otherwise have the queue grow for as long as it slept, in the
+/// process that draws the window; past this, lines are dropped.
+const QUEUE_LINES: usize = 4096;
+
+pub(crate) struct Appender(mpsc::SyncSender<Vec<u8>>);
 
 impl Appender {
     /// Start the writer for `path`. Once the file would grow past
     /// `max_bytes` it becomes `<name>.1`, replacing the one before, and a new
     /// file is begun: two files at most, and the newest lines always kept.
     pub(crate) fn start(path: PathBuf, max_bytes: u64) -> std::io::Result<Self> {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(QUEUE_LINES);
         std::thread::Builder::new()
             .name(format!(
                 "log-file:{}",
@@ -39,7 +44,7 @@ impl Appender {
     }
 
     pub(crate) fn append(&self, bytes: Vec<u8>) {
-        let _ = self.0.send(bytes);
+        let _ = self.0.try_send(bytes);
     }
 }
 
@@ -47,6 +52,10 @@ struct RotatingFile {
     path: PathBuf,
     max_bytes: u64,
     open: Option<(std::fs::File, u64)>,
+    /// A write failed part of the way through a line, which may be in the
+    /// file without its newline. The next line starts on a line of its own,
+    /// so one reader's parse error does not take the line after it too.
+    torn: bool,
 }
 
 impl RotatingFile {
@@ -55,6 +64,7 @@ impl RotatingFile {
             path,
             max_bytes,
             open: None,
+            torn: false,
         }
     }
 
@@ -74,9 +84,14 @@ impl RotatingFile {
             self.open = open_append(&self.path);
         }
         if let Some((file, len)) = self.open.as_mut() {
+            if self.torn && *len > 0 && file.write_all(b"\n").is_ok() {
+                *len += 1;
+            }
+            self.torn = false;
             if file.write_all(bytes).is_ok() {
                 *len += bytes.len() as u64;
             } else {
+                self.torn = true;
                 // Opened again on the next line: the file may have been
                 // removed, or the disk filled and was cleared.
                 self.open = None;
@@ -124,6 +139,27 @@ mod tests {
             std::fs::read_to_string(rotated(&path)).expect("read rotated"),
             "second\n",
             "the older file is replaced, not kept"
+        );
+    }
+
+    #[test]
+    fn a_line_after_a_torn_one_starts_on_a_line_of_its_own() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.log");
+        let mut file = RotatingFile::new(path.clone(), 1024);
+        file.append(b"{\"whole\":1}\n");
+        // As a write that stopped part of the way through leaves it.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(b"{\"to"))
+            .expect("tear");
+        file.open = None;
+        file.torn = true;
+        file.append(b"{\"next\":2}\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "{\"whole\":1}\n{\"to\n{\"next\":2}\n"
         );
     }
 

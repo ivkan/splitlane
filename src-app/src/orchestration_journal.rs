@@ -28,8 +28,11 @@ pub(crate) fn start() {
     let Some(path) = crate::runtime_paths::orchestration_journal_path() else {
         return;
     };
-    if let Ok(appender) = Appender::start(path, MAX_JOURNAL_BYTES) {
-        let _ = JOURNAL.set(appender);
+    match Appender::start(path, MAX_JOURNAL_BYTES) {
+        Ok(appender) => {
+            let _ = JOURNAL.set(appender);
+        }
+        Err(e) => log::warn!("orchestration journal not started: {e}"),
     }
 }
 

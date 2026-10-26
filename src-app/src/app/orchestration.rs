@@ -1492,6 +1492,7 @@ impl SplitlaneApp {
         // The one path that removes a session: it takes the surface out of
         // its pane, drops the view that owns the PTY, and with it the process.
         if self.remove_thread(ws_idx, thread_idx, cx).is_err() {
+            self.journal_refusal(METHOD, "already_gone", None, &caller);
             return JsonRpcError::invalid_params("The session was already gone").into_value();
         }
         self.save_session(cx);

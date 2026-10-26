@@ -192,11 +192,11 @@ impl SplitlaneApp {
                 self.journal(name, thread_id, fields);
             }
         }
-        // A closed session takes its line of sight with it.
+        // A closed session takes its line of sight with it. One that is only
+        // out of sight for a while - no terminal until it is woken - keeps
+        // it, or its turn would be journaled as starting again.
         journal_seen.retain(|thread_id, _| {
-            current
-                .iter()
-                .any(|(_, current_id, _)| *current_id == Some(*thread_id))
+            crate::project::find_surface(&self.workspaces, *thread_id).is_some()
         });
         self.journal_seen = journal_seen;
     }
