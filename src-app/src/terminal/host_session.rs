@@ -1267,6 +1267,30 @@ pub(super) fn stop_all(endpoint: &Arc<HostEndpoint>, wait: Duration) {
     }
 }
 
+/// A pane the session host did not take, in the orchestration journal. Only
+/// the surface is known this deep: which session it is follows from the
+/// `open` line with the same `surface_id`. `fell_back` is `in_window` when
+/// the pane runs anyway, in a PTY the window owns, and `lost` when it has no
+/// shell at all.
+/// `held` names the session a restored pane asked to be attached to again.
+fn journal_attach_failure(
+    surface: u64,
+    held: Option<String>,
+    fell_back: &str,
+    error: &anyhow::Error,
+) {
+    crate::orchestration_journal::record(
+        "host_attach_failed",
+        crate::orchestration_journal::Session::default(),
+        serde_json::json!({
+            "surface_id": surface,
+            "host_session": held,
+            "fell_back": fell_back,
+            "error": format!("{error:#}"),
+        }),
+    );
+}
+
 /// How a pane ended up with a shell. `C` is what the pane's sink reports
 /// and `W` what opening the pane in the window gives.
 pub(super) enum Opened<C, W> {
@@ -1301,7 +1325,10 @@ pub(super) fn open_or<T: AttachTarget, W>(
                 );
                 return Opened::InHost(spawned);
             }
-            Err(OpenError::AfterSpawn(e)) => return Opened::Lost(e),
+            Err(OpenError::AfterSpawn(e)) => {
+                journal_attach_failure(surface, None, "lost", &e);
+                return Opened::Lost(e);
+            }
             Err(OpenError::BeforeSpawn(e)) => e,
         },
         None => anyhow!("there is no place for a session host socket"),
@@ -1310,6 +1337,7 @@ pub(super) fn open_or<T: AttachTarget, W>(
         target: "splitlane::terminal::host",
         "pane not opened in the session host, opening it in the window: {refused:#}"
     );
+    journal_attach_failure(surface, None, "in_window", &refused);
     Opened::InWindow(in_window(params, pending))
 }
 
@@ -1382,12 +1410,17 @@ pub(super) fn attach_or_open<T: AttachTarget, W>(
                 );
                 None
             }
-            Err(ReattachError::Failed(error)) => Some(Opened::Lost(error)),
+            Err(ReattachError::Failed(error)) => {
+                journal_attach_failure(surface, Some(session.to_string()), "lost", &error);
+                Some(Opened::Lost(error))
+            }
             Err(ReattachError::Unanswered(error)) => {
                 held_unanswered = true;
-                Some(Opened::Lost(error.context(
+                let error = error.context(
                     "this pane's session may still be running in the session host, so it was not started again; restart Splitlane to attach to it",
-                )))
+                );
+                journal_attach_failure(surface, Some(session.to_string()), "lost", &error);
+                Some(Opened::Lost(error))
             }
         }
     });

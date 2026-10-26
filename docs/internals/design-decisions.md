@@ -1863,3 +1863,61 @@ place it behaved unlike theirs.
 - **Every start is journalled** with the phone, the project and the agent,
   and never the message, as every write from a phone is.
 
+
+## Orchestration leaves a journal, and the window a log file
+
+**Every step of a hand-off between sessions is a line in
+`orchestration.jsonl`, and the window's own log goes to `app.log`.** Both
+are in the cache directory, beside the session host's `host.log`.
+
+- **Why a journal at all.** A hand-off that went wrong is reported after the
+  fact: the session that was opened never got its task, or got it and sat
+  there. By then the rail says how things stand now, and nothing says how
+  they got there - whether the prompt was written, how long it waited for
+  the agent, whether the worktree was made, whether the turn ever started.
+  The log had a few of these as prose, only at `warn`, and only on standard
+  error. The journal has one line per event, each with the session's record
+  id, the id of the session that opened or drives it, the agent and the
+  agent's own session id, so one hand-off can be followed from its open to
+  its close, and a program can read it.
+- **What is in it.** Opens, from a session, a program or a phone, with the
+  directory, worktree and branch; every refusal, with the word the caller was
+  answered with; what became of the first prompt - by which way, after how
+  many milliseconds and how many looks, written, submitted or not, and why;
+  turns starting and ending; waits for a person; wake, show, park, interrupt
+  and close; an agent's exit with its code, and the pane's; a worktree that
+  could not be made; a pane the session host did not take; and a turn that
+  has said it is working for five minutes while its transcript did not grow.
+- **Never the text.** A prompt and a question are written as their length in
+  bytes, for the reason the phone's journal gives: text sent to an agent
+  carries secrets, and a file of it would be one more place they sit.
+- **Turns are read from the rail, not from each writer.** The state pass and
+  the hook frames both change a session's status. The journal reads the same
+  snapshots `surface.rail` events are published from, so a script watching
+  the rail and the journal cannot disagree about whether a turn ended. A
+  session seen for the first time is taken as it stands, so a restart does
+  not begin with a line for every restored session.
+- **A stall is a transcript standing still, not silence.** A slow tool call
+  prints nothing for minutes and is not stuck; what a working agent does do is
+  add to its transcript as each step ends. Five minutes of a turn with the
+  transcript at one length is told once per turn. A session whose transcript
+  the state pass does not read has no stall line.
+- **Nothing is written on the thread that draws the window.** Every line is
+  handed to a writer thread of its own; a sleeping disk costs a line, not a
+  frozen window. Each file is kept under its size by moving it aside once to
+  `<name>.1`: two files at most, the newest lines always kept.
+- **Why a log file too.** Started from Finder, the Dock or a desktop entry,
+  the app's standard error goes nowhere anybody reads, and a warning written
+  there is gone. `app.log` takes the same lines as standard error. By default
+  that is warnings and errors, plus `info` for orchestration and the session
+  host: their lines are few, one per session opened, attached or lost, and
+  they are what is looked for afterwards, when it is too late to start again
+  with `RUST_LOG` set. `RUST_LOG` still replaces the whole filter.
+- **Only the window's process writes them.** A CLI call is over in a moment
+  and has its own standard error. And the writers start after the process
+  environment has been settled, because a thread may not exist while it is
+  being changed.
+
+**What would re-open it.** A journal that grows past what its two files keep
+between the failure and the person looking at it - then the cap, not the
+format, is what changes.

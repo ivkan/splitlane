@@ -225,6 +225,38 @@ $env:RUST_BACKTRACE = "1"
 
 If Splitlane crashes, set `RUST_BACKTRACE=1` and include the backtrace.
 
+### Log files
+
+The app also keeps its log in a file, so a warning is there afterwards even
+when Splitlane was started from the Dock, Finder or a desktop entry. The
+files are in the cache directory:
+
+| System | Directory |
+|---|---|
+| macOS | `~/Library/Caches/splitlane/` |
+| Linux | `$XDG_CACHE_HOME/splitlane/` (usually `~/.cache/splitlane/`) |
+| Windows | `%LOCALAPPDATA%\splitlane\` |
+
+A build from source (`cargo run`) uses `splitlane-dev` in place of
+`splitlane`.
+
+- `app.log` - the window's log: the same lines as standard error. Warnings
+  and errors, and `info` from orchestration and the session host. `RUST_LOG`
+  changes it as it changes standard error.
+- `host.log` - the session host's log, on macOS and on Linux built with
+  libghostty.
+- `orchestration.jsonl` - one JSON object per line for each step of a
+  session opening, driving or closing another: opens and refusals, what
+  became of a first prompt, turns starting and ending, waits for you, exits,
+  worktrees that could not be made, and turns that have said they are
+  working for five minutes while their transcript did not grow. Every line
+  has `at_unix`, `event`, `thread_id`, `opener`, `agent` and `session_id`.
+  The text of a prompt is never written, only its length.
+
+Each file is kept under a few megabytes: when it fills, it is renamed to
+`<name>.1`, replacing the older one, and a new file is begun. Attach the
+files to an issue about a session that was opened and never got its task.
+
 ## What to put in an issue
 
 Use the matching template:

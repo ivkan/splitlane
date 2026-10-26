@@ -187,6 +187,13 @@ impl SplitlaneApp {
         let mut made = match made {
             Ok(made) => made,
             Err(error) => {
+                // The session goes on without its branch, so this line is
+                // all that says why it is in the project folder.
+                self.journal(
+                    "worktree_failed",
+                    thread_id,
+                    serde_json::json!({ "error": error }),
+                );
                 if let Some(prompt) = self.phone_starts.take_awaiting(thread_id) {
                     self.start_phone_session_without_branch(thread_id, prompt, &error, cx);
                     return None;

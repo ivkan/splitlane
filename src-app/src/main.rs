@@ -56,10 +56,12 @@ mod keys;
 mod launch_cwd;
 mod layout;
 mod limits;
+mod log_file;
 mod login_shell_env;
 mod markdown;
 mod mouse;
 mod opencode_sessions;
+mod orchestration_journal;
 mod pane;
 mod pane_drag;
 mod pi_sessions;
@@ -1510,6 +1512,9 @@ struct SplitlaneApp {
     /// put back on its input line because of our key from one a person
     /// withdrew by hand and wants to keep.
     interrupts_asked: std::collections::HashMap<u64, std::time::Instant>,
+    /// What the orchestration journal last saw of each session's rail. See
+    /// `app::journal_watch`.
+    journal_seen: std::collections::HashMap<u64, app::journal_watch::Seen>,
     /// Which session a person has let drive which, and what is still being
     /// asked. In memory only; see `app::drive`.
     drive: app::drive::DriveBook,
@@ -3640,9 +3645,16 @@ fn main() {
     // diagnostics (GPU selection, IPC, session restore, …) and `RUST_LOG=debug`
     // adds the per-operation diff/git trace - matching the documented
     // "RUST_LOG=info cargo run # with logging" workflow.
+    //
+    // Two exceptions at `info`: orchestration and the session host. Their
+    // lines are few - one per session opened, attached or lost - and they
+    // are what a hand-off that went wrong is reconstructed from afterwards,
+    // when it is too late to run again with `RUST_LOG` set.
     let logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
-        "warn,wgpu_hal=off,naga=warn,gpui_macos::text_system=error,zbus=warn,tracing::span=warn",
+        "warn,wgpu_hal=off,naga=warn,gpui_macos::text_system=error,zbus=warn,tracing::span=warn,\
+         splitlane::app::orchestration=info,splitlane::terminal::host=info",
     ))
+    .target(env_logger::Target::Pipe(Box::new(StderrAndAppLog)))
     .build();
     let max_level = logger.filter();
     if log::set_boxed_logger(Box::new(Releveled(logger))).is_ok() {
@@ -3823,6 +3835,20 @@ fn main() {
         log::warn!("splitlane: Windows app identity setup failed: {err}");
     }
 
+    // Only the window's process keeps the files: a CLI call is over in a
+    // moment and says what it has to on its own standard error. Not before
+    // here, either: each is written from a thread of its own, and no thread
+    // may exist while the environment is still being changed above.
+    if let Some(path) = runtime_paths::app_log_path() {
+        match log_file::Appender::start(path, MAX_APP_LOG_BYTES) {
+            Ok(appender) => {
+                let _ = APP_LOG.set(appender);
+            }
+            Err(e) => log::warn!("app.log not started: {e}"),
+        }
+    }
+    orchestration_journal::start();
+
     application()
         .with_assets(assets::Assets)
         .run(|cx: &mut App| {
@@ -3982,6 +4008,33 @@ fn main() {
                 }
             }
         });
+}
+
+/// The size `app.log` is kept under; the file before it is kept as
+/// `app.log.1`.
+const MAX_APP_LOG_BYTES: u64 = 4 * 1024 * 1024;
+
+static APP_LOG: std::sync::OnceLock<log_file::Appender> = std::sync::OnceLock::new();
+
+/// Where the logger writes: standard error as always, and `app.log` once the
+/// window's process has started it. Launched from Finder or the Dock, standard
+/// error goes nowhere anybody reads.
+struct StderrAndAppLog;
+
+impl std::io::Write for StderrAndAppLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(file) = APP_LOG.get() {
+            file.append(buf.to_vec());
+        }
+        // A closed standard error must not cost the file its line.
+        let _ = std::io::stderr().write_all(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::stderr().flush();
+        Ok(())
+    }
 }
 
 /// The app's logger, with one upstream line put at the level it deserves.
