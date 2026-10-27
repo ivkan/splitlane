@@ -284,6 +284,14 @@ say "waiting for the permission prompt in 'tests'"
 wait_claude_status waiting 1 180 "$TESTS_SESSION" || die "the tests agent never reached 'waiting' in 180 s"
 mark waiting
 sleep 4   # the rail's pass (2 s) plus the announce movement (480 ms)
+# DEMO_HOLD=1 keeps the stage as it is here - one agent waiting, two at
+# work or done - until the hold file is removed, so a paired phone can be
+# pointed at it.
+if [[ -n "${DEMO_HOLD:-}" ]]; then
+  touch "$RUN_DIR/hold"
+  say "holding: stage $STAGE, socket $SOCK; rm $RUN_DIR/hold to go on"
+  while [[ -e "$RUN_DIR/hold" ]]; do sleep 1; done
+fi
 mark hero-dark
 sleep 4
 

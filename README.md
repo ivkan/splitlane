@@ -181,6 +181,18 @@ Settings → Phone → **Pair a phone**: scan the QR code from the phone, then
 type on the computer the six digits the phone shows, so a photo of the code
 is not enough to pair.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/images/phone-list-dark.png" />
+    <img src="assets/images/phone-list-light.png" alt="The phone's list for one computer: a line with the Claude plan limit, Active and All tabs, a Needs you section holding the session npm test failures with 'Claude needs your permission', and below it the Work group with the project ledger, one waiting and two idle." width="300" />
+  </picture>
+  &nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/images/phone-prompt-dark.png" />
+    <img src="assets/images/phone-prompt-light.png" alt="The session npm test failures on the phone: Claude Code's permission prompt for 'npm test 2>&amp;1 | tail -60' as its screen shows it, and its first choice, Yes, as a button." width="300" />
+  </picture>
+</p>
+
 - **The list is the rail's.** The same groups and projects, sessions under the
   names the rail gives them, and the ones opened by another session indented
   under it. It opens with **Needs you** - sessions waiting for an answer or
