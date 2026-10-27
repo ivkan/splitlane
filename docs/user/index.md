@@ -7,8 +7,10 @@ agent runs in a real terminal, exactly as it would in your own shell, with your
 own accounts. Splitlane is written in Rust on Zed's GPUI and runs on macOS,
 Linux and Windows.
 
-There are no release builds yet. Build it from source as described in
-[Installation](installation.md).
+Release builds for macOS (Apple Silicon) and Linux are on the
+[releases page](https://github.com/ivkan/splitlane/releases/latest); the
+[README](../../README.md#install) says which file to take. Windows and Intel
+Macs are built from source, as described in [Installation](installation.md).
 
 ## The model in one minute
 
@@ -169,7 +171,8 @@ Linux and Windows) ends the
 app and every process it started. So does Quit when the setting says stop, and
 so does a restart into an update on Windows; on macOS and Linux an update
 leaves the sessions running. Where sessions end, the conversation survives -
-the next launch reopens each session with `--resume` - but a turn that was
+the next launch resumes each session with its agent's own resume command
+(`claude --resume`, `codex resume` and so on) - but a turn that was
 executing does not, so each of these asks first whenever an agent is
 mid-turn or a command is running in a shell, and names them.
 
@@ -274,13 +277,23 @@ and Spring on the backend. A frontend server gets a chip in the status bar that
 opens it in the browser, and the project's context menu lists every detected
 port.
 
+## Your phone
+
+A paired phone lists the agent sessions as the rail does, shows a waiting
+agent's question and each session's last answer, and lets you reply, press
+the keys a prompt asks for, interrupt a turn or start a new session. It is a
+page at <https://splitlane.dev/app> added to the home screen; pair it in
+Settings → Phone → **Pair a phone**. See [Your phone](phone.md).
+
 ## Scripting and agents reading panes
 
 - **CLI and JSON-RPC.** The `splitlane` binary is also a command-line client for
   a running app over a local socket: `splitlane ls`, `read`, `send`, `wait`,
-  `watch`, `up` and `flow`. Anything that types into a pane is off until you
-  enable it. See [Scripting](scripting.md) and the
-  [reference](scripting/reference.md).
+  `watch`, `up` and `flow`. An agent in a pane may type into the sessions it
+  opened itself, and into one you opened once you allow it; a script outside
+  a pane may type into the sessions it opened with `splitlane add`. Typing
+  into any other pane is off until you enable it. See
+  [Scripting](scripting.md) and the [reference](scripting/reference.md).
 - **MCP bridge.** `splitlane mcp install` registers a read-only MCP server with
   the agents it finds, so one agent can list, read and search another pane's
   output. See [MCP bridge](../mcp-bridge.md).
@@ -288,7 +301,7 @@ port.
 ## Privacy and network access
 
 Splitlane has no account and no backend. The agents in your panes talk to their
-own providers directly. The app itself contacts the network in three cases:
+own providers directly. The app itself contacts the network in four cases:
 
 - **Telemetry** is off unless you set `"telemetry": { "enabled": true }` in
   `splitlane.json`; there is no prompt that turns it on. When enabled, events
@@ -299,7 +312,13 @@ own providers directly. The app itself contacts the network in three cases:
 - **Update checks** query the GitHub releases API for this repository. Turn
   them off with `"check_for_updates": false` or in Settings -> General.
 - **Claude plan limits** in the rail are read from Anthropic's usage endpoint
-  with the login your Claude Code CLI already stored on this machine.
+  with the login your Claude Code CLI already stored on this machine. Codex
+  limits are read from Codex's own session files and need no network.
+- **A paired phone** is reached through a relay at `relay.splitlane.dev`. The
+  app connects to it only while at least one phone is paired. Every message
+  is encrypted end to end between a key on the computer and a key on the
+  phone, so the relay sees only that a message passed, how long it was and
+  when. Neither side opens a port. See [Your phone](phone.md#how-it-is-connected).
 
 ## System requirements
 
