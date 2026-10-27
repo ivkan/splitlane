@@ -6,6 +6,14 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The diff pane shows a diff as soon as it is computed.** It used to wait
+  until every installed agent's sessions had been listed, to match them to
+  the branch; for an agent whose sessions are listed by running its CLI,
+  such as Gemini CLI, that held the pane on "Computing diff" for several
+  seconds. The sessions and their cost now arrive after the diff.
+
 ## [0.2.19] - 2026-10-26
 
 ### Added

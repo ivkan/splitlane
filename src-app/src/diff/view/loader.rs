@@ -131,13 +131,6 @@ impl DiffView {
                         mode.label(),
                         t1.elapsed()
                     );
-                    // Match local agent sessions to this worktree
-                    // in the SAME off-thread pass (no second async round-trip).
-                    // Enrichment only - a parse miss yields an empty Vec and the
-                    // diff is unaffected.
-                    let cwd = path.to_string_lossy();
-                    let attribution =
-                        crate::agent_sessions::attribution_for_column(&cwd, &bc);
                     Built::Loaded {
                         rows,
                         file_count: diff.files.len(),
@@ -148,7 +141,6 @@ impl DiffView {
                         row_caches,
                         theme_generation,
                         fingerprint: Box::new(fingerprint),
-                        attribution,
                     }
                 })
                 .await;
@@ -186,15 +178,11 @@ impl DiffView {
                                 row_caches,
                                 theme_generation,
                                 fingerprint,
-                                attribution,
                             } => {
                                 log::debug!("diff: col {i} ({branch}) LOADED ({file_count} files)");
                                 // Stamp the fingerprint these rows were
                                 // built against, for warm-resume revalidation.
                                 col.fingerprint = Some(*fingerprint);
-                                // Cache the matched sessions on the
-                                // column (re-fetched only on re-diff).
-                                col.attribution = attribution;
                                 col.loading_mode = None;
                                 col.loading_theme_generation = None;
                                 match rows {
@@ -239,6 +227,7 @@ impl DiffView {
                             view.body_menu = None;
                         }
                         view.schedule_mode_build(i, mode.other(), cx);
+                        view.load_attribution(i, generation, cx);
                         cx.notify();
                     });
                 });
@@ -248,6 +237,38 @@ impl DiffView {
         // Repaint now so any column set to `Failed` (empty base) above shows its
         // prompt immediately; loaded columns also repaint when their task applies.
         cx.notify();
+    }
+
+    /// Match the local agent sessions to a column whose diff has just landed.
+    ///
+    /// A pass of its own, after the rows are on screen: listing some agents'
+    /// sessions runs their CLI (`gemini --list-sessions` takes seconds), and
+    /// the diff waited on it when both shared one pass. Enrichment only - a
+    /// miss leaves the column without the cost line.
+    fn load_attribution(&mut self, i: usize, generation: u64, cx: &mut Context<Self>) {
+        let Some(col) = self.columns.get(i) else {
+            return;
+        };
+        let cwd = col.path.to_string_lossy().into_owned();
+        let branch = col.branch.clone();
+        cx.spawn(async move |this, cx| {
+            let sessions =
+                smol::unblock(move || crate::agent_sessions::attribution_for_column(&cwd, &branch))
+                    .await;
+            let _ = cx.update(|cx| {
+                this.update(cx, |view: &mut Self, cx| {
+                    let Some(col) = view.columns.get_mut(i) else {
+                        return;
+                    };
+                    if col.generation != generation || !col.visible {
+                        return;
+                    }
+                    col.attribution = sessions;
+                    cx.notify();
+                })
+            });
+        })
+        .detach();
     }
 
     pub(super) fn ensure_visible_mode_loaded(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
