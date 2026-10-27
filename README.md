@@ -18,7 +18,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/images/hero-light.png" />
-  <img src="assets/images/hero-dark.png" alt="Splitlane with three Claude Code sessions in one project. The rail on the left lists them under the project, in a group named Work; the right-hand pane shows a permission prompt, its header reads 'waiting for you', and the title bar reads '1 agent waiting'." width="100%" />
+  <img src="assets/images/hero-dark.png" alt="Splitlane with three Claude Code sessions in one project. The rail on the left lists them under the project, in a group named Work; the right-hand pane shows a permission prompt, its header reads 'waiting for you', and the title bar reads '1 waiting, 1 running'." width="100%" />
 </picture>
 <p align="center"><sub>Three agents in one project. One is working, one has finished, and one is asking to run <code>npm test</code> - the rail, its pane header and the title bar all say so.</sub></p>
 

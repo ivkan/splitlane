@@ -139,7 +139,18 @@ TESTS_SESSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))
 # A whitelist, not the caller's environment: a shell inside Splitlane carries
 # SPLITLANE_WORKSPACE_ID and agent-session markers that must not reach the
 # stage.
-PATH_DEMO="$(dirname "$CLAUDE_BIN"):$(dirname "$NODE_BIN"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+#
+# The agent and node come through a bin directory of their own, not the
+# directories they live in: those hold other agents' CLIs too (an npm-installed
+# `gemini` sits beside `node`), and the app runs each one it finds to list its
+# sessions, which holds up the diff pane by seconds.
+STAGE_BIN="$STAGE/bin"
+mkdir -p "$STAGE_BIN"
+ln -s "$CLAUDE_BIN" "$STAGE_BIN/claude"
+for tool in node npm npx; do
+  [[ -e "$(dirname "$NODE_BIN")/$tool" ]] && ln -s "$(dirname "$NODE_BIN")/$tool" "$STAGE_BIN/$tool"
+done
+PATH_DEMO="$STAGE_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 stage_env=(
   env -i
   HOME="$DEMO_HOME" TMPDIR="$STAGE/tmp/" PATH="$PATH_DEMO"
