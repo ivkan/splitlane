@@ -255,12 +255,8 @@ enum Built {
         /// Captured in the same off-thread pass as the diff, so a later
         /// `revalidate` compares against it without re-shelling at harvest time.
         /// Boxed to keep this (transient, immediately-consumed) builder variant
-        /// off the `large_enum_variant` threshold once `attribution` joined it.
+        /// off the `large_enum_variant` threshold.
         fingerprint: Box<super::git::ColumnFingerprint>,
-        /// Agent sessions matched to this column, computed in the
-        /// SAME off-thread pass (no second async round-trip) and applied onto the
-        /// `Column` when the diff lands.
-        attribution: Vec<SessionMeta>,
     },
 }
 
