@@ -9,6 +9,7 @@
     <a href="#install">Install</a> ·
     <a href="#how-it-knows">How it knows</a> ·
     <a href="#what-is-in-the-window">What is in the window</a> ·
+    <a href="#your-phone">Your phone</a> ·
     <a href="#next-to-its-neighbours">Neighbours</a> ·
     <a href="#faq">FAQ</a> ·
     <a href="#docs">Docs</a>
@@ -31,7 +32,9 @@ you - read from the agents themselves, not guessed from terminal activity.
 
 It is written in Rust on [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui),
 runs on macOS, Linux and Windows, and keeps everything local: the agents are
-the CLIs you already use, with your own accounts.
+the CLIs you already use, with your own accounts. The one exception is a phone
+you pair, which reaches the computer through a relay that forwards end-to-end
+encrypted messages it cannot read.
 
 > **Status: early.** Splitlane is used daily on macOS (Apple Silicon). Linux
 > (x86_64, aarch64) and Windows (x64) are built and tested in CI but have had
@@ -80,12 +83,27 @@ approval UI to keep in sync.
 - **Hand an answer over.** A session's last answer goes to another agent on
   screen from the pane's menu, onto its input line; you press Enter. `⌘⌥C`
   copies it instead.
-- **Diff.** A project's uncommitted changes, with a file list, a filter and a
-  revision picker, in a pane next to the agents that made them.
+- **A branch per session.** In a git repository each agent session you start
+  gets its own worktree and branch, so two agents never edit the same
+  checkout, plus ten ports for a dev server. Closing a session whose
+  branch holds work asks whether to keep the branch; deleting it saves a
+  snapshot for 30 days first. One switch per project turns this off. See
+  [Starting work](docs/user/index.md#starting-work).
+- **Diff.** A project's changes against its base branch, uncommitted and
+  untracked files included, with a file list, a filter and a revision picker,
+  in a pane next to the agents that made them.
 - **Files.** A tree of the project with git change marks (`⌘B`).
+- **History.** Past sessions of every open project, in the palette (`⌘K`,
+  then `Tab`), found by anything you wrote in a Claude Code or Codex session,
+  not only by its name.
 - **Limits.** Your Claude and Codex plan usage in the rail, with when it resets.
-- **Sessions survive a restart.** Claude Code sessions resume into the same
-  conversation.
+- **Sessions outlive the window.** On macOS and Linux the terminals run in a
+  separate process, the session host, so closing the window, an update or a
+  crash of the window leaves every agent working, and the next start shows
+  each one in its pane again. `Running` (`⌥⌘P`) lists every agent and every
+  command running in a shell and stops the ones you mark. Where a session does
+  end, its conversation resumes on the next launch; a turn that was running
+  does not. On Windows the sessions still live in the window's process.
 - **Notifications** when a session is waiting, has failed, or (optionally) has
   finished - only for sessions you cannot currently see.
 - **Presets.** A saved set of panes, each with its own directory and agent,
@@ -125,23 +143,67 @@ you can see.
   the count folds them away; folded, the row says what they are doing. Each
   one's pane says `opened by <name>`.
 - **Eight at most, one level deep.** A session that was opened by another
-  cannot open any.
+  cannot open any, and it works in its opener's worktree.
 - **A session you opened is yours.** When an agent sends to one, nothing is
   written and you are asked, in that agent's own pane: `plan wants to send
   messages to api`. Your answer holds for that pair of sessions until you quit.
   `Stop plan driving` takes it back, and an agent never closes a session you
   opened.
+- **An agent closes only what it opened.** Even then, a session in
+  the middle of a turn, or waiting for a person, closes only with
+  `--stop-turn`. One whose last answer went to you and is still unread
+  closes only with `--unread`, which an agent should pass only when you asked
+  for the session to be closed.
 - **A question meant for you reaches you.** No agent types into a session
   that is waiting for a person, and the notification says which session
   opened the one that is asking.
 - **What an agent typed says so.** Text one session sends another starts with
   `[Splitlane] Sent by the agent session "<name>", not typed by a person.`
+- **Each step is written down.** `orchestration.jsonl` in the cache directory
+  gets one JSON line per open, refusal, prompt handed over, turn started or
+  ended, wait for a person, exit and close. A prompt's length is
+  recorded, never its text. It is the file to attach when a session was
+  opened and never got its task; see
+  [Troubleshooting](docs/user/troubleshooting.md#log-files).
 
 Splitlane writes a skill that teaches Claude Code and Codex these commands
 each time it starts, so there is nothing to install first: ask an agent in a
 pane to open a session in Splitlane. Settings → Agents → Fleet skill turns
 that off. The commands and their exit codes are in
 [Scripting](docs/user/scripting.md#coordinating-agents-from-a-lead-agent).
+
+## Your phone
+
+A paired phone follows the agent sessions on the computer and answers them.
+There is no app to install from a store: it is a page at
+<https://splitlane.dev/app> that you add to the home screen. Pairing is
+Settings → Phone → **Pair a phone**: scan the QR code from the phone, then
+type on the computer the six digits the phone shows, so a photo of the code
+is not enough to pair.
+
+- **The list is the rail's.** The same groups and projects, sessions under the
+  names the rail gives them, and the ones opened by another session indented
+  under it. It opens with **Needs you** - sessions waiting for an answer or
+  failed - then **Active**, the projects where something is happening; **All**
+  is a tap away.
+- **A waiting agent's question, as its screen shows it.** A permission prompt
+  comes with its command, and each numbered choice is a button that presses
+  its digit. Otherwise you reply in text, press the keys a prompt asks for, or
+  interrupt the turn.
+- **Last answers in Markdown,** and your plan limits in a line over the list.
+- **Starting a session.** **+** picks a project, an agent and a first message,
+  and the session starts as one from the launcher would, on its own branch
+  where the project gives sessions one, in the rail rather than on the
+  computer's screen. At most four phone-started sessions run at once.
+
+Neither side opens a port. Both connect out to `relay.splitlane.dev`, and
+every message is encrypted end to end between a key on the computer and one
+on the phone; the relay sees only that a message passed, its length and
+when. A phone writes only into agent sessions, never into a plain shell, and
+**Can reply** in Settings → Phone makes one read-only. Each reply is recorded
+on the computer without its text. With the window closed the phone still
+reaches the sessions the session host keeps; interrupting and starting a
+session need the window. Details in [Your phone](docs/user/phone.md).
 
 ## Next to its neighbours
 
@@ -152,7 +214,7 @@ docs before relying on it.
 
 | | Where the agents run | How it learns an agent needs you | Platforms | License |
 |---|---|---|---|---|
-| Splitlane | Terminal panes in a desktop app | The agent's own session records for Claude Code and Codex, hooks for eight more; for the rest, only whether the process is alive | macOS, Linux; Windows from source | GPL-3.0-or-later |
+| Splitlane | Terminal panes in a desktop app, one git worktree per agent session | The agent's own session records for Claude Code and Codex, hooks for eight more; for the rest, only whether the process is alive | macOS, Linux; Windows from source | GPL-3.0-or-later |
 | [herdr](https://github.com/herdrdev/herdr) | Panes inside the terminal you already use | Rules matched against what the agent draws on screen; hooks or the agent's own reports for some agents | Linux, macOS, Windows | Apache-2.0 |
 | [cmux](https://github.com/manaflow-ai/cmux) | Terminal panes in a native macOS app | Terminal notification sequences, a `cmux notify` command and hooks it installs | macOS | GPL-3.0-or-later |
 | [Conductor](https://www.conductor.build) | Its own chat interface, one git worktree per workspace | Its documentation does not say | macOS | Closed source |
@@ -168,29 +230,33 @@ reports state for more agents than Splitlane does.
 Where the neighbours are ahead:
 
 - **herdr** keeps terminals running in a background server after you close it
-  or lose an SSH connection, and lists several SSH machines together. Splitlane
-  does neither. It is local only, and closing it stops every process it
-  started. A Claude Code conversation resumes on the next launch; a turn that
-  was running does not.
+  or lose an SSH connection, and lists several SSH machines together.
+  Splitlane's session host does the first half on macOS and Linux: closing the
+  window leaves the agents working. It is local only, though. There is no SSH,
+  no second machine, and on Windows closing Splitlane still ends what it
+  started.
 - **cmux** puts a scriptable browser next to the terminal. Splitlane has no
   browser.
 - **Conductor** builds the whole workflow on worktrees, with a setup script and
-  a run script for each workspace. Splitlane's `+ worktree` is thinner: a
-  branch, a checkout and one setup command.
+  a run script for each workspace. Splitlane also gives every agent session a
+  worktree and branch of its own, with one setup command and a range of
+  ports, and asks before closing a session whose branch holds work. It has no
+  run script.
 
 Where Splitlane goes a different way on purpose:
 
 - Agents run in ordinary terminals, the same as outside the app. Conductor
   puts them in its own chat interface and keeps its terminal mode experimental.
 - herdr and cmux both give agents an API that can send input to another pane.
-  In Splitlane the MCP bridge can only read, and the CLI commands that type
-  into a pane stay off until you turn them on.
+  In Splitlane the MCP bridge can only read. An agent types into the sessions
+  it opened itself, and into one you opened only after you allow it; typing
+  into any other pane stays off until you start Splitlane with it switched on.
 - The diff of what the agents changed and the project's file tree are in the
   same window.
 
 If you work inside a terminal or over SSH, herdr or plain tmux will fit better.
-If you want a worktree per task behind a chat interface on a Mac, that is
-Conductor. Splitlane is for a few agents in ordinary terminals on your own
+If you want agents behind a chat interface rather than in terminals, on a Mac,
+that is Conductor. Splitlane is for a few agents in ordinary terminals on your own
 machine, where the question is which one is waiting.
 
 ## Install
@@ -270,7 +336,8 @@ own accounts, running in ordinary terminals. Splitlane never sends a prompt on
 its own. An agent can send one to a session it opened itself, and to a session
 you opened only after you say it may. A script of yours can open a session
 with a task and write to the sessions it opened; into any other pane it
-types only when you start Splitlane with that switched on.
+types only when you start Splitlane with that switched on. A paired phone
+writes what you type on it, and only into agent sessions.
 
 **Can other agents read my terminals?**
 Only agents you register with the MCP bridge, and only to read. Output it hands
@@ -279,12 +346,18 @@ to an agent is marked as untrusted content.
 **Does it phone home?**
 Only if you opt in. Telemetry never includes terminal contents, paths or
 prompts, and `SPLITLANE_NO_TELEMETRY=1` turns it off regardless of settings.
+Its other connections: it asks GitHub for updates (`"check_for_updates": false`
+stops it), reads your Claude plan usage with the login Claude Code already
+stored, and, once you pair a phone, keeps a connection to the relay, which
+carries only encrypted messages.
 
 ## Docs
 
 - [User guide](docs/user/index.md) - installation, layouts, configuration, themes
 - [Scripting](docs/user/scripting.md) - the CLI, `splitlane up` and the JSON-RPC socket
+- [Your phone](docs/user/phone.md) - pairing, what a phone may do, how it is connected
 - [MCP bridge](docs/mcp-bridge.md) - letting agents read other panes
+- [Troubleshooting](docs/user/troubleshooting.md) - log files and what to put in an issue
 - [Windows notes](docs/WINDOWS.md) - support matrix and caveats
 - [Architecture](ARCHITECTURE.md) and [design decisions](docs/internals/design-decisions.md) - for contributors
 - [Changelog](CHANGELOG.md) - what changed in each release
