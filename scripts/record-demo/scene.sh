@@ -38,11 +38,16 @@ esac
 # about 50 columns each instead of 42, so the agents' TUIs wrap less. The
 # README shows the frame scaled down, where terminal text is texture at any
 # size; the rail and headers, which carry the point, do not follow this value.
+#
+# No session host: with one, the agents outlive the window the run kills at
+# the end, keep writing into the stage, and the stage - which holds a copy
+# of the access token - cannot be removed. Nothing on screen depends on it.
 cat >"$APP_SUPPORT/splitlane-dev/splitlane.json" <<EOF
 {
   "theme": "$APP_THEME",
   "font_size": ${DEMO_FONT_SIZE:-11},
-  "window_decorations": "client"
+  "window_decorations": "client",
+  "session_host": false
 }
 EOF
 # `window_state.rs` reads this path without the `-dev` suffix.
