@@ -63,6 +63,13 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.20" date="2026-10-28">
+      <description>
+        <p>The diff pane shows a diff as soon as it is computed, rather than
+        waiting for every installed agent's sessions to be listed first, which
+        could take several seconds with Gemini CLI installed.</p>
+      </description>
+    </release>
     <release version="0.2.19" date="2026-10-26">
       <description>
         <p>Each step of one agent session opening, driving or closing another

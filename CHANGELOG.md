@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-10-28
+
 ### Fixed
 
 - **The diff pane shows a diff as soon as it is computed.** It used to wait
