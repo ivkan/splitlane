@@ -4139,6 +4139,37 @@ impl SplitlaneApp {
                 if from_opener && let Some(thread_id) = write_target.thread_id {
                     self.note_opener_wrote(thread_id, cx);
                 }
+                // Every later turn of a session starts with a write like
+                // this one, and without it the journal could not tell who
+                // began a turn: the session that opened it, a script, a
+                // phone, or a person at the keyboard (no line at all). The
+                // text is never written, only its length.
+                if let Some(thread_id) = write_target.thread_id {
+                    use crate::app::orchestration::WriteLeave;
+                    let by = if phone.is_some() {
+                        "phone"
+                    } else {
+                        match leave {
+                            WriteLeave::Opener => "opener",
+                            WriteLeave::Driver => "driver",
+                            WriteLeave::Keyholder => "key",
+                            WriteLeave::LaunchVariable => "script",
+                        }
+                    };
+                    self.journal(
+                        "prompt",
+                        thread_id,
+                        serde_json::json!({
+                            "outcome": "sent",
+                            "via": "send",
+                            "by": by,
+                            "from": crate::app::orchestration::caller_thread(&who),
+                            "bytes": sent_length,
+                            "submitted": submit,
+                            "rail_status_at_send": rail_status_at_send,
+                        }),
+                    );
+                }
                 let submit_mode = if submit && typed && !text.is_empty() {
                     serde_json::Value::String("deferred_typed_cr".to_string())
                 } else if submit && paste && !text.is_empty() {

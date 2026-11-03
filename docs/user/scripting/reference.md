@@ -92,9 +92,9 @@ configuration files:
   row. The conversation stays in the agent's own history. A session in the
   middle of a turn is closed only with `--stop-turn`. A session that is
   asking something before its first prompt (`rail.source` is `terminal`) is
-  in no turn and closes without it. A session whose last answer went to a
-  person who has not read it yet is closed only with `--unread`; pass it when
-  the person asked for the session to be closed.
+  in no turn and closes without it. A session whose last answer a person has
+  not read yet closes like any other; `--unread` is still accepted and only
+  recorded in the orchestration journal.
 - `interrupt` stops the turn a session is in and leaves the session open. It
   writes the agent's own interrupt key, not `Ctrl-C`, and reports one of:
 
@@ -302,7 +302,7 @@ A call a rule refuses returns JSON-RPC error `-32004` with the reason under
 | `no_room` | A pane was required and there is none to give |
 | `other_project` | `close`: the target is in another project |
 | `turn_in_flight` | `close`: the target is in the middle of a turn or waiting for a person; pass `--stop-turn` to close it anyway |
-| `unseen_by_person` | `close`: the target finished a turn a person started and they have not looked at it. Pass `--unread` to close it anyway; `--stop-turn` does not lift this |
+| `unseen_by_person` | No longer returned. `close` used to refuse a session whose answer a person had not read; it closes now. The word stays reserved |
 | `no_interrupt` | `interrupt`: no interrupt key is known for the target's agent |
 | `person_declined` | A person was asked whether the caller may send messages to the target, and said no. They are not asked again until Splitlane restarts, unless they hand the session over from its row's menu |
 

@@ -202,11 +202,11 @@ session you opened cannot open sessions of its own; you cannot close, move
 or write into a session you did not open. A refusal is exit `8` with the
 reason in the message. Tell the person; do not retry.
 
-`close` is also refused with `unseen_by_person` when the person typed into
-the session and has not read its answer yet. Tell them the answer is
-waiting in that session. Only when the person has asked you to close it,
-close it with `splitlane close <name> --unread`, quoting their words in your
-reply.
+Closing a session you opened takes its row away, and with it the mark that
+tells the person an answer is waiting there. So before you close a session
+the person typed into, or one whose answer they may not have seen, tell them
+that answer in a line or two in your reply. The conversation itself stays in
+the agent's history and opens again from there.
 
 More sessions than panes:
 
