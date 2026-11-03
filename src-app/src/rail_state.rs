@@ -414,6 +414,9 @@ pub struct TurnEndWatch {
     /// here because the file is read only when it has grown, and a command
     /// that is still running adds nothing to it.
     pub background_shells: usize,
+    /// The file showed a compaction after its newest turn record when it was
+    /// last read. Kept for the same reason as the count above.
+    pub compacted_after_turn: bool,
 }
 
 impl TurnEndWatch {
@@ -484,6 +487,21 @@ impl TurnEndWatch {
         self.counted = Some(marker);
         self.pending = None;
         true
+    }
+
+    /// Whether a run that just ended was the CLI compacting the conversation
+    /// rather than a turn.
+    ///
+    /// Both halves are needed. The file must show a compaction with nothing
+    /// after it that opens a turn, and its newest turn end must be the one
+    /// already accounted for: a turn that ended and was then compacted still
+    /// moved the marker, and is still a run. Claude Code compacts an idle
+    /// session by itself about 54 minutes after its last turn, and its status
+    /// says `busy` for the minute that takes.
+    pub fn ended_on_compaction(&self) -> bool {
+        self.compacted_after_turn
+            && self.primed
+            && self.counted.as_deref() == self.current.as_ref().map(|end| end.marker.as_str())
     }
 }
 
@@ -755,6 +773,37 @@ mod tests {
         let after = t0 + Duration::from_secs(1);
         assert!(!late.unseen_turn_ended(ThreadStatus::Idle, after, CONFIRM));
         assert!(!late.unseen_turn_ended(ThreadStatus::Idle, after + CONFIRM * 2, CONFIRM));
+    }
+
+    /// A run that ended on a compaction, with the newest turn end still the
+    /// one already counted, was the CLI compacting and not a turn.
+    #[test]
+    fn a_run_that_only_compacted_is_told_apart() {
+        let t0 = Instant::now();
+        let mut watch = TurnEndWatch::default();
+        watch.observe(10, end("a"));
+        watch.settle(t0);
+        assert!(!watch.ended_on_compaction(), "no compaction in the file");
+
+        watch.compacted_after_turn = true;
+        watch.observe(30, end("a"));
+        assert!(watch.ended_on_compaction());
+
+        // A turn that ended and was then compacted moved the marker: that
+        // is still a run.
+        watch.observe(40, end("b"));
+        assert!(!watch.ended_on_compaction());
+    }
+
+    /// Before the first look nothing is known about what was counted, so no
+    /// run is taken for a compaction.
+    #[test]
+    fn an_unprimed_watch_does_not_call_a_run_a_compaction() {
+        let watch = TurnEndWatch {
+            compacted_after_turn: true,
+            ..TurnEndWatch::default()
+        };
+        assert!(!watch.ended_on_compaction());
     }
 
     /// A session with nothing on disk yet is primed by that first look, so

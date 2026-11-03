@@ -1292,6 +1292,10 @@ struct SplitlaneApp {
     /// Sessions started from paired phones: how often each phone started
     /// one, and those still waiting for their worktree.
     phone_starts: crate::app::phone_open::PhoneStarts,
+    /// Sessions picked from a pane's launcher that are waiting for their
+    /// worktree, and the pane they were picked in. The completion puts the
+    /// session there instead of where the ladder would.
+    launcher_worktree_panes: std::collections::HashMap<u64, gpui::WeakEntity<pane::Pane>>,
     /// Dismiss timer for the active toast - dropped on new toast to cancel the old timer.
     _toast_task: Option<gpui::Task<()>>,
     /// Last light/dark value applied to the Windows native backdrop.
