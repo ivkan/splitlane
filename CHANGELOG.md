@@ -6,6 +6,16 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A session picked in a new pane's launcher starts in that pane.** In a
+  project that gives each session its own branch, the session waits for its
+  worktree, and when it was ready it went where a session opened from the
+  rail would: onto the agent pane in front, pushing that session to the
+  rail, while the new pane stayed empty. It now goes into the pane it was
+  picked in, as long as that pane is still waiting; a pane filled or closed
+  meanwhile leaves it to the usual placement.
+
 ## [0.2.20] - 2026-10-28
 
 ### Fixed
