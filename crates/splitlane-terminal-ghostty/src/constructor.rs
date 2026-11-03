@@ -251,9 +251,13 @@ fn configure_safety_limits(terminal: sys::GhosttyTerminal) -> Result<()> {
             sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
             (&disabled as *const bool).cast::<c_void>(),
         ),
+        // Since Ghostty 1.4 this option takes a `GhosttyString*` naming the
+        // one directory temporary files may come from, and a null pointer is
+        // what disables the medium. Passing a `bool*` here made Ghostty read
+        // a pointer and a length from beyond that byte.
         (
             sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
-            (&disabled as *const bool).cast::<c_void>(),
+            std::ptr::null::<c_void>(),
         ),
         (
             sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
@@ -392,6 +396,52 @@ mod tests {
         remap: Some(tracked_remap),
         free: Some(tracked_free),
     };
+
+    #[test]
+    fn every_kitty_image_medium_and_the_image_store_start_disabled() {
+        let terminal = DisplayTerminal::new(WindowSize::new(80, 24, 8, 16).unwrap(), 1_000)
+            .expect("terminal must initialize");
+        let raw = terminal.terminal.raw();
+        let mut storage_limit = u64::MAX;
+        let mut file = true;
+        let mut shared_memory = true;
+        let mut temp_dir = sys::GhosttyString {
+            ptr: std::ptr::null(),
+            len: usize::MAX,
+        };
+        // SAFETY: `raw` is the live terminal owned by `terminal`, and each
+        // field selects the output type the v1.4.0 header documents for it.
+        unsafe {
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_STORAGE_LIMIT,
+                &mut storage_limit,
+            )
+            .expect("storage limit is readable");
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_FILE,
+                &mut file,
+            )
+            .expect("file medium is readable");
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+                &mut shared_memory,
+            )
+            .expect("shared-memory medium is readable");
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+                &mut temp_dir,
+            )
+            .expect("temporary-file medium is readable");
+        }
+        assert_eq!(storage_limit, 0);
+        assert!(!file);
+        assert!(!shared_memory);
+        assert_eq!(temp_dir.len, 0, "no temporary-file directory is allowed");
+    }
 
     #[test]
     fn configured_default_colors_answer_osc_queries() {
