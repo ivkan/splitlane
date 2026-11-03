@@ -708,6 +708,30 @@ pub(crate) fn may_arrange(
     }
 }
 
+/// Whether `caller` may take `target` out of its pane, `asked` saying the
+/// person asked for it.
+///
+/// Parking stops nothing: the session goes on running in the rail and the
+/// person can put it back, as after closing its pane by hand. So when the
+/// person asks a session to clear the screen of panes it did not open, the
+/// request is theirs to make about their own layout, and `asked` lets the
+/// session carry it out. Without it, a session parks only what it opened. A
+/// session never parks itself, and a caller outside a pane still goes by the
+/// launch variable.
+pub(crate) fn may_park(
+    caller: &Caller,
+    target: WriteTarget,
+    gates: LaunchGates,
+    asked: bool,
+) -> Result<(), Refusal> {
+    // The request lifts the ownership refusal and nothing else, so whatever
+    // else the arranging rule checks still holds.
+    match may_arrange(caller, target, gates) {
+        Err(Refusal::NotYours) if asked && matches!(caller, Caller::Pane(_)) => Ok(()),
+        decided => decided,
+    }
+}
+
 /// The session a call to move one names.
 struct ArrangedTarget {
     terminal: Entity<TerminalView>,
@@ -1416,9 +1440,32 @@ impl SplitlaneApp {
             Err(response) => return response,
         };
         let caller = self.caller_of(lineage, cx);
-        if let Err(refusal) = may_arrange(&caller, target, LaunchGates::read()) {
-            return self.refused(refusal, "surface.park", target.thread_id, &caller);
+        let asked = params
+            .get("asked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if let Err(refusal) = may_park(&caller, target, LaunchGates::read(), asked) {
+            let mut response = self.refused(refusal, "surface.park", target.thread_id, &caller);
+            // Name the way through, and when it is right to take it.
+            if refusal == Refusal::NotYours
+                && let Some(message) = response
+                    .get_mut(JSONRPC_ERROR_KEY)
+                    .and_then(|e| e.get_mut("message"))
+                && let Some(text) = message.as_str()
+            {
+                *message = serde_json::Value::String(format!(
+                    "{text}; only if the person asked in so many words for this \
+                     session to be taken off the screen, pass `asked` (`park --asked`)"
+                ));
+            }
+            return response;
         }
+        // Journal the request only where it counts: from a pane.
+        let asked = asked && matches!(caller, Caller::Pane(_));
+        let opened_by_caller = match &caller {
+            Caller::Pane(pane) => target.opened_by == Some(pane.thread_id),
+            Caller::Outside | Caller::Keyholder { .. } => false,
+        };
         let surface_id = terminal.entity_id().as_u64();
         let (Some(thread_id), Some((ws_idx, _))) = (target.thread_id, position) else {
             return JsonRpcError::invalid_params(
@@ -1436,7 +1483,11 @@ impl SplitlaneApp {
         self.journal(
             "park",
             thread_id,
-            serde_json::json!({ "was_in_pane": was_in_pane }),
+            serde_json::json!({
+                "was_in_pane": was_in_pane,
+                "asked": asked,
+                "opened_by_caller": opened_by_caller,
+            }),
         );
         serde_json::json!({ "parked": true, "surface_id": surface_id })
     }
@@ -3604,6 +3655,50 @@ mod tests {
             ..MINE
         };
         assert_eq!(may_arrange(&pane(false), waiting, NO_GATES), Ok(()));
+    }
+
+    #[test]
+    fn a_session_parks_what_it_did_not_open_only_when_asked() {
+        // Without the person's request, parking follows the arranging rule.
+        assert_eq!(
+            may_park(&pane(false), A_PERSONS, NO_GATES, false),
+            Err(Refusal::NotYours)
+        );
+        assert_eq!(may_park(&pane(false), MINE, NO_GATES, false), Ok(()));
+        // Asked, a session parks any session, a person's included.
+        assert_eq!(may_park(&pane(false), A_PERSONS, NO_GATES, true), Ok(()));
+        assert_eq!(may_park(&pane(false), MINE, NO_GATES, true), Ok(()));
+        // Never itself.
+        let itself = WriteTarget {
+            thread_id: Some(3),
+            opened_by: None,
+            waiting: false,
+            drive: Drive::NotOffered,
+        };
+        assert_eq!(
+            may_park(&pane(false), itself, NO_GATES, true),
+            Err(Refusal::Itself)
+        );
+        // A caller outside a pane still goes by the launch variable.
+        assert_eq!(
+            may_park(&Caller::Outside, A_PERSONS, NO_GATES, true),
+            Err(Refusal::NotFromAPane)
+        );
+        // A key holder is no pane either.
+        assert_eq!(
+            may_park(
+                &Caller::Keyholder { thread_id: 7 },
+                A_PERSONS,
+                NO_GATES,
+                true
+            ),
+            Err(Refusal::NotFromAPane)
+        );
+        // Showing is unchanged: it still moves only what the caller opened.
+        assert_eq!(
+            may_arrange(&pane(false), A_PERSONS, NO_GATES),
+            Err(Refusal::NotYours)
+        );
     }
 
     #[test]

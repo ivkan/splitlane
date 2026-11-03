@@ -1149,6 +1149,22 @@ candidates, and with no candidate the answer is a refusal. A person's layout
 is theirs; a session that could take a pane of theirs to show its own work
 would be deciding what they look at. Neither call moves the keyboard.
 
+**Unless the person asks: `park --asked`.** The rule above keeps a session
+from deciding what the person looks at. It does not cover the person
+deciding it: a person running a conductor asked it to clear the screen of
+the other panes, and the conductor could not, because most of them were not
+its own - the person had to close each pane by hand, which is the same
+action. Parking is the one arranging call that loses nothing: the session
+goes on running in the rail and the person can open it again. So
+`surface.park` takes `asked`, which says the person asked, and with it a
+session in a pane may park any session but itself, a person's included. The
+flag cannot prove the request was made; it keeps a session from doing this
+by accident, the skill says to pass it only on the person's word and to
+quote it, and the journal's `park` line records `asked` and
+`opened_by_caller` so a wrong one can be found afterwards. `show` keeps the
+rule as it was: putting a session into a pane takes a pane from something,
+and choosing what gives way is the person's layout again.
+
 "Longest without focus" needed state that was not there: the app remembered
 the focused pane and the one before it, which is an order over two. It now
 keeps a count per pane, written where the pair is (`track_pane_focus`).
