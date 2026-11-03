@@ -221,6 +221,44 @@ with no worker is an agent that died mid-command, which is exactly what the
 rail's no-false-claims invariant forbids claiming. This is version-specific:
 re-measure it on every CLI bump, with both shapes of the question.
 
+**Re-measured on 2.1.317, and it has moved.** A live session in a pty, with an
+`ask` rule on `Bash`: the `tool_use` record is on disk while the question is on
+screen, and the `tool_result` lands after the answer. The status file said
+`waiting` with `waitingFor: "permission prompt"` for the whole ask, as it did on
+2.1.247. So on this version the `Spawns` arm can see a `Bash` ask after all;
+nothing was changed for it, because the status file is asked first and answers
+correctly.
+
+**A compaction is not a turn.** Claude Code compacts an idle session by itself,
+about 54 minutes after its last turn ("Compacted while idle, before the prompt
+cache expired"; seen from 2.1.294, 176 times in this machine's transcripts),
+and its status file says `busy` for the 40 to 90 seconds that takes. It then
+writes a `compact_boundary` record and the summary, which is filed as a `user`
+record with a plain string. The reader took the summary for a person's prompt
+that nothing answered, so the pass counted every idle compaction as a turn that
+a person stopped: of the 49 turns the orchestration journal recorded as
+`interrupted` in one week, 40 were compactions, each 54 minutes after the
+previous turn's end. Now the summary is no turn record, the probe says when a
+compaction stands after the newest turn record (`compacted_after_turn`), and a
+run that ends there with the turn-end marker unchanged
+(`TurnEndWatch::ended_on_compaction`) is not counted, announced or marked
+unread. The row still says `running` for that minute, because the agent is
+working and the status file is right about it.
+
+**The CLI's records of its own requests cost the window its vote.** From
+2.1.297 a transcript carries `api-request`, `api-request-shape` and
+`api-request-blob` records. They hold nothing this reader asks, and they are
+routinely over the 64 KB line cap (`api-request-shape`: median 90 KB). An
+oversize line makes the window incomplete, which takes the file's vote away:
+31 of 297 tail windows written by 2.1.297 to 2.1.317 were incomplete for these
+records alone. An oversize line that **begins** with one of the three measured
+heads is now skipped whole; any other oversize line still makes the window
+incomplete. While fixing it, the rest of an oversize line turned out to be read
+as a line of its own and parsed - the thing deciding oversize on the bytes was
+meant to stop - and it is now read and dropped. The `agent_summary` call that
+2.1.3xx makes for background agents writes nothing to the transcript, so it
+cannot hold a turn open.
+
 **A background agent is the longest thing a session does, and call pairing
 cannot see it.** `Agent` returns `status: "async_launched"` in about 0.05 s (51
 launches measured in a local corpus), and the subagent runs for minutes
@@ -310,6 +348,21 @@ all three states, so nothing is inferred and there is no unknown word to guard
 against. The turn is dated from `task_started`, so its age is the whole turn's
 rather than the last record's. That is the honest reading when nothing in
 between says anything about it.
+
+Re-read at `rust-v0.166.0`: the three events keep their wire names and are
+still persisted in every history mode. Two things in that release are off by
+default and would change what is on disk if turned on: compression of rollouts
+older than seven days to `.jsonl.zst` (`local_thread_store_compression`) and
+the paginated history mode. **What has changed is the call.** Since 0.158 a
+command is a `custom_tool_call` named `exec`, whose `input` is a script calling
+`tools.exec_command({...})`, answered by a `custom_tool_call_output`; the
+reader pairs only `function_call`, so it sees no Codex call at all. Measured
+live on 0.166.0: an escalated command (`sandbox_permissions:"require_escalated"`
+inside the script) stood open on disk for the 18 seconds its approval was on
+screen, and Esc closed it with "aborted by user" and a `turn_aborted`. It is
+not read yet, on purpose: the `Spawns` arm decides on a worker under the pane,
+and Codex now runs its commands through a background server, so a worker's
+absence there has not been shown to mean the command has not started.
 
 **Codex is readable and Claude Code is not, and that asymmetry is structural.**
 `openai/codex` is the CLI's actual Rust source, under Apache-2.0.
@@ -470,7 +523,9 @@ Three things about the record are the protocol's and are kept:
 
 Codex has the protocol in its source and in no release as of 0.162.1, which
 printed no report over three turns. Its change reports `idle`, `working` and
-`blocked` without a reason and never `done`, and does not ask first.
+`blocked` without a reason and never `done`, and does not ask first. Codex
+0.166.0 does print it: `OSC 7501 ; state=idle:app=codex` at start, unasked, in
+a pty that answered nothing. The other states were not recorded.
 
 **Who owns `Thread::status`: the detector, with the hook as an accelerator.** A
 hook frame for a surface the detector reads does not write the status. It asks
