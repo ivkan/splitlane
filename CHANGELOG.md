@@ -6,6 +6,17 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A session can take other sessions off the screen when the person asks.**
+  `splitlane park <target> --asked` (`asked` on `surface.park`) parks any
+  session but the caller, including ones the person opened, when the person
+  has asked for the screen to be cleared. Parking stops nothing: the session
+  keeps running in the rail and can be opened again. Without the flag a
+  session still parks only the sessions it opened, and closing, sending to
+  and interrupting another's session are unchanged. The orchestration
+  journal's `park` line now records `asked` and `opened_by_caller`.
+
 ### Changed
 
 - **A session that opened another closes it even when you have not read its

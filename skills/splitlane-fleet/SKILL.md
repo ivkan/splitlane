@@ -257,7 +257,26 @@ about - a shell, a session in another project, or one you opened yourself,
 which you write into without asking. `"drive": "not_offered"` in `status
 --json` says the same thing and is what a session of your own shows: nobody
 is asked, send. You never close or move a session the person opened, whatever
-they answered.
+they answered - with one exception below.
+
+### Clearing the screen when the person asks
+
+When the person asks you in so many words to hide, put away or clear other
+panes - including ones they opened - you may take those sessions out of their
+panes:
+
+```bash
+splitlane park api --asked
+```
+
+`--asked` is the person's request, not yours: pass it only after they asked,
+and quote their words in your reply. Never pass it on your own initiative,
+to make room for your own work, or because a pane looks idle. Parking stops
+nothing - the session keeps running in the rail and the person can open it
+again - but it still changes what they look at. The flag lifts this one
+refusal and nothing else: you still do not close, send to, or interrupt a
+session you did not open. Without `--asked`, parking a session you did not
+open exits `8` with `not_yours`.
 
 ## 2. Read a session's state
 

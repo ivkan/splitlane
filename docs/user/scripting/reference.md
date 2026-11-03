@@ -85,6 +85,11 @@ configuration files:
   the pane and it shows a text cursor. Any other agent with no hook
   installed gets `no_agent`; open it without a prompt and use `send`.
 - `park` takes a session out of its pane and leaves it running in the rail.
+  From a pane it works on a session the caller opened; `--asked` (`asked`
+  on `surface.park`) says the person asked for the screen to be cleared and
+  lets the caller park any session but itself. Nothing else about the
+  session changes hands, and the journal's `park` line records `asked` and
+  `opened_by_caller`.
   `show` puts a session that has no pane into one: an empty pane, a new
   pane, or failing both the pane of another session the caller opened, the
   one that has gone longest without focus.
@@ -271,7 +276,7 @@ The environment variables are read from the Splitlane process.
 | `send`, `key`, `interrupt` (`surface.send_text`, `surface.send_keystroke`, `surface.interrupt`) | `SPLITLANE_IPC_SCRIPTING=1`. From a pane with nothing set: always when the target is a session the caller opened with `add`, and after a person said yes when it is an agent session they opened in the same project. From outside a pane with nothing set: for the session whose key is presented |
 | `add` (`surface.add_agent`) | From a pane: always. From outside a pane: always, from a directory of an open project, unless `script_sessions` is `false`; then `SPLITLANE_IPC_ORCHESTRATION=1`, and `SPLITLANE_IPC_SCRIPTING=1` to submit the prompt |
 | `close` | From a pane: for a session the caller opened. From outside a pane: for the session whose key is presented; otherwise `SPLITLANE_IPC_ORCHESTRATION=1` |
-| `park`, `show` | From a pane: for a session the caller opened. From outside a pane: `SPLITLANE_IPC_ORCHESTRATION=1` |
+| `park`, `show` | From a pane: for a session the caller opened; `park --asked` for any session but the caller. From outside a pane: `SPLITLANE_IPC_ORCHESTRATION=1` |
 | `app.dispatch_action`, `surface.send_answer` | `SPLITLANE_IPC_SCRIPTING=1` |
 | `up`, `surface.split`, `workspace.up` with `command`, `prompt`, `context` or `env` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
 | `flow run` | `SPLITLANE_IPC_ORCHESTRATION=1` or `SPLITLANE_IPC_SCRIPTING=1` |
