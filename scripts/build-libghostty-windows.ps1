@@ -620,15 +620,19 @@ function Invoke-NativeBuild {
 
     $oldGlobal = $env:ZIG_GLOBAL_CACHE_DIR
     $oldLocal = $env:ZIG_LOCAL_CACHE_DIR
+    $oldZigLibDir = $env:ZIG_LIB_DIR
     $oldEpoch = $env:SOURCE_DATE_EPOCH
     $oldNoColor = $env:NO_COLOR
     $env:ZIG_GLOBAL_CACHE_DIR = $globalCache
     $env:ZIG_LOCAL_CACHE_DIR = $localCache
+    # Zig 0.17 `zig build` no longer takes --zig-lib-dir; it reads the
+    # library directory from ZIG_LIB_DIR, and the seed only as --seed=<n>.
+    $env:ZIG_LIB_DIR = $ZigLibDir
     $env:SOURCE_DATE_EPOCH = $SourceDateEpoch
     $env:NO_COLOR = "1"
     Push-Location $buildSource
     try {
-        $zigOutput = @(& $ZigPath build --zig-lib-dir $ZigLibDir --verbose --seed $BuildSeed "-j$BuildJobs" -Demit-lib-vt=true -Dtarget=x86_64-windows-msvc "-Doptimize=$BuildMode" -Dsimd=true --prefix $zigPrefix 2>&1 | ForEach-Object { $_.ToString() })
+        $zigOutput = @(& $ZigPath build --verbose "--seed=$BuildSeed" "-j$BuildJobs" -Demit-lib-vt=true -Dtarget=x86_64-windows-msvc "-Doptimize=$BuildMode" -Dsimd=true --prefix $zigPrefix 2>&1 | ForEach-Object { $_.ToString() })
         $zigExitCode = $LASTEXITCODE
         if ($zigExitCode -ne 0) {
             throw "SIMD libghostty build failed with exit code $zigExitCode; raw reproducer is $buildRoot`n$($zigOutput -join "`n")"
@@ -638,6 +642,7 @@ function Invoke-NativeBuild {
         Pop-Location
         $env:ZIG_GLOBAL_CACHE_DIR = $oldGlobal
         $env:ZIG_LOCAL_CACHE_DIR = $oldLocal
+        $env:ZIG_LIB_DIR = $oldZigLibDir
         $env:SOURCE_DATE_EPOCH = $oldEpoch
         $env:NO_COLOR = $oldNoColor
     }
