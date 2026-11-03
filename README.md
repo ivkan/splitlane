@@ -151,9 +151,9 @@ you can see.
   opened.
 - **An agent closes only what it opened.** Even then, a session in
   the middle of a turn, or waiting for a person, closes only with
-  `--stop-turn`. One whose last answer went to you and is still unread
-  closes only with `--unread`, which an agent should pass only when you asked
-  for the session to be closed.
+  `--stop-turn`. If you typed into it and have not read its answer, the
+  agent tells you that answer when it closes the session; the conversation
+  stays in history either way.
 - **A question meant for you reaches you.** No agent types into a session
   that is waiting for a person, and the notification says which session
   opened the one that is asking.

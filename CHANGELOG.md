@@ -6,6 +6,17 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A session that opened another closes it even when you have not read its
+  answer.** It used to be refused with `unseen_by_person` unless it passed
+  `--unread`, and the sessions held that way stayed open for hours: often
+  the answer did not need reading, and switching to the session to clear
+  the mark was the only way out. The agent instructions now ask the opener
+  to tell you such an answer when it closes the session, and the
+  conversation stays in history. `--unread` is still accepted and changes
+  nothing.
+
 ## [0.2.20] - 2026-10-28
 
 ### Fixed
