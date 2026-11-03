@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.21] - 2026-11-04
+
 ### Added
 
 - **A session can take other sessions off the screen when the person asks.**
@@ -38,6 +40,15 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ### Fixed
 
+- **An agent that compacts its context while idle no longer looks
+  interrupted.** Claude Code compacts an idle session about 54 minutes
+  after its last turn, and that was read as a turn that started and was
+  cut short: the row's last turn moved, and a session that had opened it
+  was told it was interrupted. In a week of orchestration, most
+  "interrupted" ends were this. Request records that Claude Code writes
+  since 2.1.297, longer than a line the reader takes, no longer leave the
+  rail without word of the session either. Measured on Claude Code
+  2.1.317 and Codex 0.166.0.
 - **A session picked in a new pane's launcher starts in that pane.** In a
   project that gives each session its own branch, the session waits for its
   worktree, and when it was ready it went where a session opened from the
