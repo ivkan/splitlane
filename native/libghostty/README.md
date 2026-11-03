@@ -85,8 +85,12 @@ path is part of the hash contract; the build aborts if that path is unavailable
 or already occupied.
 
 The fat archive contains Ghostty's Zig objects, Zig `compiler_rt`, simdutf,
-and Highway. COFF directives record `RuntimeLibrary=MT_StaticRelease` and
-`/DEFAULTLIB:libcpmt.lib`. Consumers link `ntdll.lib` and `kernel32.lib`.
+and Highway. Zig 0.17 also nests the `ntdll.lib` and `kernel32.lib` import
+libraries in the emitted archive; the recipe drops those two, and consumers
+link them themselves. Zig 0.17 no longer stamps the C++ members with MSVC CRT
+directives, so the recipe refuses only a directive that selects a CRT model
+other than `MT_StaticRelease`, and the static smoke executable must import no
+dynamic C or C++ runtime.
 There is no `ghostty-vt.dll`; C consumers of the static header must define
 `GHOSTTY_STATIC`.
 

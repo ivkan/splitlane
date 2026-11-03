@@ -180,7 +180,8 @@ function Normalize-CoffArchive {
         [string]$Archive,
         [string]$Destination,
         [string]$LlvmObjcopy,
-        [string]$LlvmAr
+        [string]$LlvmAr,
+        [AllowEmptyCollection()][string[]]$BundledImportLibraries = @()
     )
 
     $work = Join-Path (Split-Path -Parent $Destination) "normalize"
@@ -212,10 +213,43 @@ function Normalize-CoffArchive {
         Pop-Location
     }
 
-    $sourcePaths = Sort-Ordinal @(Get-ChildItem -LiteralPath $work -File -Filter "*.obj" | ForEach-Object { $_.FullName })
+    $sourcePaths = Sort-Ordinal @($names | ForEach-Object { Join-Path $work $_ })
+    $missing = @($sourcePaths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+    if ($missing.Count -ne 0) {
+        throw "COFF extraction did not produce: $([string]::Join(', ', @($missing | ForEach-Object { Split-Path $_ -Leaf })))"
+    }
     $sources = @($sourcePaths | ForEach-Object { Get-Item -LiteralPath $_ })
-    if ($sources.Count -ne $names.Count) {
-        throw "COFF extraction produced $($sources.Count) objects, expected $($names.Count)"
+
+    # Zig 0.17 bundles the import libraries of the system DLLs it links into
+    # the emitted archive as nested archives. The consumer links those system
+    # libraries itself (`windows_system_libraries`), so they are dropped here;
+    # anything else that is not an x64 COFF object still fails below.
+    $importLibrarySet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($importLibrary in $BundledImportLibraries) {
+        $null = $importLibrarySet.Add($importLibrary)
+    }
+    $dropped = @($sources | Where-Object { $importLibrarySet.Contains($_.Name) })
+    foreach ($source in $dropped) {
+        $head = [byte[]]::new(8)
+        $stream = [IO.File]::OpenRead($source.FullName)
+        try {
+            $read = $stream.Read($head, 0, $head.Length)
+        }
+        finally {
+            $stream.Dispose()
+        }
+        $magic = if ($read -eq $head.Length) { [Text.Encoding]::ASCII.GetString($head) } else { "" }
+        if ($magic -ne "!<arch>`n") {
+            throw "$($source.Name) is named after a system library but is not an import library"
+        }
+        Remove-Item -LiteralPath $source.FullName -Force
+    }
+    if ($dropped.Count -ne 0) {
+        Write-Host "dropped bundled import libraries: $([string]::Join(', ', @($dropped | ForEach-Object { $_.Name })))"
+    }
+    $sources = @($sources | Where-Object { -not $importLibrarySet.Contains($_.Name) })
+    if ($sources.Count -eq 0) {
+        throw "COFF normalization left no object members in $Archive"
     }
     $members = @()
     foreach ($source in $sources) {
@@ -549,7 +583,7 @@ if ($LASTEXITCODE -ne 0 -or -not ($llvmVersionOutput -match "LLVM version $([reg
     throw "libghostty requires LLVM normalization tools $LlvmVersion"
 }
 
-if ($Normalization -ne "fixed-source-cache-prefix+zig-build-seed0-j1+llvm-objcopy-strip-debug+coff-timestamp-zero+llvm-ar-D+ordinal-order") {
+if ($Normalization -ne "fixed-source-cache-prefix+zig-build-seed0-j1+drop-bundled-import-libs+llvm-objcopy-strip-debug+coff-timestamp-zero+llvm-ar-D+ordinal-order") {
     throw "unsupported Windows archive normalization: $Normalization"
 }
 
@@ -663,7 +697,7 @@ function Invoke-NativeBuild {
     $includeDir = Join-Path $prepared "include"
     New-Item -ItemType Directory -Force -Path $libDir, $includeDir | Out-Null
     $archive = Join-Path $libDir "ghostty-vt-static.lib"
-    Normalize-CoffArchive $rawArchive $archive $llvmObjcopy $llvmAr
+    Normalize-CoffArchive $rawArchive $archive $llvmObjcopy $llvmAr @("ntdll.lib", "kernel32.lib")
     Copy-Item -LiteralPath (Join-Path $rawInclude "ghostty") -Destination $includeDir -Recurse -Force
     $bindingText = [IO.File]::ReadAllText($bindings).Replace("`r`n", "`n").Replace("`r", "`n")
     $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -712,13 +746,25 @@ function Invoke-NativeBuild {
         throw "archive for $Target contains a non-x64 COFF member: $archive"
     }
     $directives = @(& $llvmReadobj --coff-directives $archive)
-    if ($LASTEXITCODE -ne 0 -or -not ($directives -match 'RuntimeLibrary=MT_StaticRelease') -or -not ($directives -match 'DEFAULTLIB:libcpmt.lib')) {
-        throw "archive does not declare the reviewed MSVC static CRT model"
+    if ($LASTEXITCODE -ne 0) {
+        throw "cannot inspect COFF directives in $archive"
+    }
+    Write-Utf8Lines (Join-Path $buildRoot "coff-directives.txt") $directives
+    # Zig 0.17 no longer stamps the C++ members with MSVC `/FAILIFMISMATCH`
+    # and `/DEFAULTLIB` CRT directives, so their absence is not a failure.
+    # What is still refused is any directive that selects another CRT model;
+    # the static smoke link below then proves which runtime is actually used.
+    $foreignCrt = @($directives | Where-Object {
+        ($_ -match 'RuntimeLibrary=(\w+)' -and $matches[1] -ne 'MT_StaticRelease') -or
+        $_ -match '(?i)DEFAULTLIB:"?(?:msvcrtd?|msvcprtd?|vcruntimed?|ucrtd?|libcmtd|libcpmtd)\.lib'
+    })
+    if ($foreignCrt.Count -ne 0) {
+        throw "archive declares a CRT model other than the reviewed MSVC static release: $([string]::Join('; ', $foreignCrt))"
     }
 
     $smokeObject = Join-Path $buildRoot "windows-smoke.obj"
     $smokeExe = Join-Path $buildRoot "windows-smoke.exe"
-    $clOutput = @(& $clExe /nologo /W4 /WX /std:c11 /MT "/I$includeDir" "/Fo$smokeObject" $SmokeSource $archive ntdll.lib /link "/out:$smokeExe" 2>&1)
+    $clOutput = @(& $clExe /nologo /W4 /WX /std:c11 /MT "/I$includeDir" "/Fo$smokeObject" $SmokeSource $archive ntdll.lib kernel32.lib /link "/out:$smokeExe" 2>&1)
     $clExitCode = $LASTEXITCODE
     if ($clExitCode -ne 0) {
         throw "MSVC static smoke failed to link; reproducer is $buildRoot`n$($clOutput -join "`n")"
@@ -729,8 +775,21 @@ function Invoke-NativeBuild {
         throw "MSVC static smoke failed at runtime with exit code $smokeExitCode`n$($smokeOutput -join "`n")"
     }
     $dependencies = @(& $dumpbinExe /nologo /dependents $smokeExe)
-    if ($LASTEXITCODE -ne 0 -or $dependencies -match 'ghostty-vt\.dll') {
-        throw "MSVC static smoke has a forbidden ghostty-vt.dll dependency"
+    if ($LASTEXITCODE -ne 0) {
+        throw "cannot inspect the MSVC static smoke dependencies"
+    }
+    $imports = @($dependencies |
+        Select-String -Pattern '^\s+([A-Za-z0-9._-]+\.dll)\s*$' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value.ToLowerInvariant() } |
+        Select-Object -Unique)
+    $forbidden = @($imports | Where-Object {
+        $_ -match '^ghostty.*\.dll$' -or
+        $_ -match '^(?:vcruntime|msvcp|msvcr)[0-9]*d?\.dll$' -or
+        $_ -match '^ucrtbased?\.dll$' -or
+        $_ -match '^api-ms-win-crt-'
+    })
+    if ($forbidden.Count -ne 0) {
+        throw "MSVC static smoke imports a forbidden runtime: $([string]::Join(', ', $forbidden))"
     }
 
     $archiveSha = Get-Sha256 $archive
