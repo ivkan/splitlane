@@ -1220,6 +1220,23 @@ so the caller says it, the journal records each close made that way, and
 the agent instructions say to use it only on the person's word. The answer
 is not destroyed either way: the agent's own record keeps it.
 
+The refusal is gone, and an opener closes its own session whether or not the
+person has read the answer. A week of the orchestration journal showed what
+it cost: of 75 sessions opened by other sessions, two were refused with
+`unseen_by_person`; one stayed open for fifty hours, the other for five,
+until the opener passed `--unread`. Most closes came within a minute of the
+last turn. The person's own account matched: often the answer did not need
+reading, and the only way to clear the mark was to switch to the session. The
+mark protected an answer the agent's record keeps anyway, at the price of
+sessions left running out of attention. What it guarded is now the opener's
+to carry: the agent instructions ask it to tell the person, in its own reply,
+an answer they may not have seen before it closes the session. A session a
+person opened is still out of reach, and a turn in flight still takes
+`stop_turn`. The journal still records `unseen_by_person` with every close,
+so what this changed can be measured. `unread` is accepted and recorded and
+lifts nothing, and the word `unseen_by_person` stays reserved: programs were
+written against it, and it must not come back meaning something else.
+
 **What a session opened sits under it in the rail.** A session and the
 sessions it opened are one piece of work, and rows scattered through a
 project by age and by pin do not read as one. So they follow their opener,
@@ -1637,10 +1654,11 @@ own switch and is not counted.
 of its turn is told to the person like any session they started: nobody else
 is waiting for it in the app.
 
-**Its own session is its to close, unseen or not.** A session an agent
-opened is not closed over an answer a person has not looked at. A program
-that opens a session, reads the answer and closes it has taken the answer
-where the person asked for it to go.
+**Its own session is its to close, unseen or not.** A program that opens a
+session, reads the answer and closes it has taken the answer where the
+person asked for it to go. This was the exception while a session an agent
+opened was held over an answer a person had not looked at; that hold is
+gone too (see the close rules above), so the two now agree.
 
 **After a restart the key is what selects the session.** A session that was
 in the rail without a pane comes back as a row and nothing else: no terminal,

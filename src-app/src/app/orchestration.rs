@@ -271,7 +271,11 @@ pub(crate) enum Refusal {
     /// No key is known that stops a turn of the target's agent.
     NoInterrupt,
     /// The target finished a turn a person started, and the person has not
-    /// looked at it yet.
+    /// looked at it yet. No longer returned: an opener closes its own
+    /// session whether or not the person has read the answer. The word stays
+    /// reserved because programs were written against it, and a word that
+    /// comes back must not mean something else.
+    #[allow(dead_code)]
     UnseenByPerson,
     /// A person was asked whether the caller may write into the target, and
     /// said no.
@@ -345,9 +349,7 @@ impl Refusal {
                  and leaves the agent running"
                 .to_string(),
             Refusal::UnseenByPerson => "the target finished a turn a person started, and the \
-                 person has not looked at it yet; closing it would take the result away \
-                 from them. If the person asked for it to be closed, ask again with \
-                 --unread"
+                 person has not looked at it yet"
                 .to_string(),
             Refusal::PersonDeclined => "a person was asked whether the calling session may \
                  send messages to the target, and said no; they are not asked again until \
@@ -412,7 +414,7 @@ fn caller_word(caller: &Caller) -> &'static str {
 }
 
 /// The session a caller speaks as, if it is one.
-fn caller_thread(caller: &Caller) -> Option<u64> {
+pub(crate) fn caller_thread(caller: &Caller) -> Option<u64> {
     match caller {
         Caller::Pane(pane) => Some(pane.thread_id),
         Caller::Keyholder { thread_id } => Some(*thread_id),
@@ -828,12 +830,16 @@ pub(crate) fn closing_loses_a_turn(rail: &crate::rail_state::RailSnapshot) -> bo
 ///
 /// A session a person opened is never closed by a session, and nothing here
 /// lets one be: that is not a matter of asking.
+///
+/// An answer the person has not read does not hold a session the caller
+/// opened. Its agent keeps the conversation and history opens it again, and
+/// holding the row left finished sessions open for hours, while the person
+/// often had no need to read the answer at all.
 pub(crate) fn may_close(
     caller: &Caller,
     target: CloseTarget,
     gates: LaunchGates,
     stop_turn: bool,
-    unread: bool,
 ) -> Result<(), Refusal> {
     match caller {
         Caller::Pane(pane) => {
@@ -846,19 +852,10 @@ pub(crate) fn may_close(
             if target.opened_by != Some(pane.thread_id) {
                 return Err(Refusal::NotYours);
             }
-            // A person typed into a session this one opened, the answer
-            // came, and they have not seen it. The row's mark is the only
-            // thing telling them it is there, and it goes with the row.
-            // Saying the turn may be stopped does not lift this: no turn is
-            // what would be lost. Saying the result may go unread does: the
-            // person told the opener to close it.
-            if target.unseen_by_person && !unread {
-                return Err(Refusal::UnseenByPerson);
-            }
         }
-        // Its own session, and the unseen mark does not hold it back: a
-        // program that opens a session, reads the answer and closes it has
-        // taken the result where the person asked for it to go.
+        // Its own session: a program that opens a session, reads the answer
+        // and closes it has taken the result where the person asked for it
+        // to go.
         Caller::Keyholder { thread_id } if target.thread_id == *thread_id => {}
         Caller::Outside | Caller::Keyholder { .. } => {
             if !gates.orchestration {
@@ -1537,13 +1534,7 @@ impl SplitlaneApp {
                 .thread_by_id(thread_id)
                 .is_some_and(|thread| thread.finished_unseen.is_some()),
         };
-        if let Err(refusal) = may_close(
-            &caller,
-            close_target,
-            LaunchGates::read(),
-            stop_turn,
-            unread,
-        ) {
+        if let Err(refusal) = may_close(&caller, close_target, LaunchGates::read(), stop_turn) {
             return self.refused(refusal, METHOD, Some(thread_id), &caller);
         }
         let surface_id = terminal.entity_id().as_u64();
@@ -3023,20 +3014,20 @@ mod tests {
             unseen_by_person,
         };
         assert_eq!(
-            may_close(&holder, close(9, false, false), NO_GATES, false, false),
+            may_close(&holder, close(9, false, false), NO_GATES, false),
             Ok(())
         );
         // It read the answer where the person asked for it to go.
         assert_eq!(
-            may_close(&holder, close(9, false, true), NO_GATES, false, false),
+            may_close(&holder, close(9, false, true), NO_GATES, false),
             Ok(())
         );
         assert_eq!(
-            may_close(&holder, close(9, true, false), NO_GATES, false, false),
+            may_close(&holder, close(9, true, false), NO_GATES, false),
             Err(Refusal::TurnInFlight)
         );
         assert_eq!(
-            may_close(&holder, close(10, false, false), NO_GATES, false, false),
+            may_close(&holder, close(10, false, false), NO_GATES, false),
             Err(Refusal::NotFromAPane)
         );
     }
@@ -3851,10 +3842,7 @@ mod tests {
 
     #[test]
     fn a_session_closes_what_it_opened_once_its_turn_is_over() {
-        assert_eq!(
-            may_close(&pane(false), MINE_IDLE, NO_GATES, false, false),
-            Ok(())
-        );
+        assert_eq!(may_close(&pane(false), MINE_IDLE, NO_GATES, false), Ok(()));
     }
 
     #[test]
@@ -3866,7 +3854,7 @@ mod tests {
         };
         for stop_turn in [false, true] {
             assert_eq!(
-                may_close(&pane(false), itself, ALL_GATES, stop_turn, false),
+                may_close(&pane(false), itself, ALL_GATES, stop_turn),
                 Err(Refusal::Itself)
             );
         }
@@ -3879,7 +3867,7 @@ mod tests {
             ..MINE_IDLE
         };
         assert_eq!(
-            may_close(&pane(false), elsewhere, ALL_GATES, true, false),
+            may_close(&pane(false), elsewhere, ALL_GATES, true),
             Err(Refusal::OtherProject)
         );
     }
@@ -3900,7 +3888,7 @@ mod tests {
             for gates in [NO_GATES, ALL_GATES] {
                 for stop_turn in [false, true] {
                     assert_eq!(
-                        may_close(&pane(false), target, gates, stop_turn, false),
+                        may_close(&pane(false), target, gates, stop_turn),
                         Err(Refusal::NotYours)
                     );
                 }
@@ -3917,62 +3905,43 @@ mod tests {
             ..MINE_IDLE
         };
         assert_eq!(
-            may_close(&pane(false), busy, NO_GATES, false, false),
+            may_close(&pane(false), busy, NO_GATES, false),
             Err(Refusal::TurnInFlight)
         );
-        assert_eq!(may_close(&pane(false), busy, NO_GATES, true, false), Ok(()));
+        assert_eq!(may_close(&pane(false), busy, NO_GATES, true), Ok(()));
     }
 
-    /// The mark on the row is a person's unread result. Stopping the turn is
-    /// not what the caller would have to mean, so saying that changes nothing.
+    /// A person's unread answer does not hold a session the opener opened:
+    /// the agent keeps the conversation, and holding the row kept finished
+    /// sessions open for hours. Everything else still holds: a session a
+    /// person opened stays out of reach, and a turn in flight still takes
+    /// saying it may be stopped.
     #[test]
-    fn a_result_a_person_has_not_seen_is_not_closed_away() {
+    fn an_unread_answer_does_not_hold_the_openers_session() {
         let unseen = CloseTarget {
             unseen_by_person: true,
             ..MINE_IDLE
         };
-        for stop_turn in [false, true] {
-            assert_eq!(
-                may_close(&pane(false), unseen, NO_GATES, stop_turn, false),
-                Err(Refusal::UnseenByPerson)
-            );
-        }
+        assert_eq!(may_close(&pane(false), unseen, NO_GATES, false), Ok(()));
         // A person's own script, let in at launch, is the person's hand.
         assert_eq!(
-            may_close(&Caller::Outside, unseen, ALL_GATES, false, false),
+            may_close(&Caller::Outside, unseen, ALL_GATES, false),
             Ok(())
         );
-        // Not the caller's to close comes first: the word must not tell a
-        // session anything about one it has no business with.
         let anothers = CloseTarget {
             opened_by: Some(77),
             ..unseen
         };
         assert_eq!(
-            may_close(&pane(false), anothers, NO_GATES, false, false),
+            may_close(&pane(false), anothers, NO_GATES, false),
             Err(Refusal::NotYours)
-        );
-    }
-
-    /// The person may tell the opener to close it anyway. Saying so lifts
-    /// this refusal and no other: a session a person opened stays out of
-    /// reach, and a turn in flight still takes saying that too.
-    #[test]
-    fn a_result_left_unread_on_purpose_is_closed() {
-        let unseen = CloseTarget {
-            unseen_by_person: true,
-            ..MINE_IDLE
-        };
-        assert_eq!(
-            may_close(&pane(false), unseen, NO_GATES, false, true),
-            Ok(())
         );
         let persons = CloseTarget {
             opened_by: None,
             ..unseen
         };
         assert_eq!(
-            may_close(&pane(false), persons, ALL_GATES, true, true),
+            may_close(&pane(false), persons, ALL_GATES, true),
             Err(Refusal::NotYours)
         );
         let busy = CloseTarget {
@@ -3980,10 +3949,10 @@ mod tests {
             ..unseen
         };
         assert_eq!(
-            may_close(&pane(false), busy, NO_GATES, false, true),
+            may_close(&pane(false), busy, NO_GATES, false),
             Err(Refusal::TurnInFlight)
         );
-        assert_eq!(may_close(&pane(false), busy, NO_GATES, true, true), Ok(()));
+        assert_eq!(may_close(&pane(false), busy, NO_GATES, true), Ok(()));
     }
 
     #[test]
@@ -3993,11 +3962,11 @@ mod tests {
             ..MINE_IDLE
         };
         assert_eq!(
-            may_close(&Caller::Outside, persons, NO_GATES, false, false),
+            may_close(&Caller::Outside, persons, NO_GATES, false),
             Err(Refusal::NotFromAPane)
         );
         assert_eq!(
-            may_close(&Caller::Outside, persons, ALL_GATES, false, false),
+            may_close(&Caller::Outside, persons, ALL_GATES, false),
             Ok(())
         );
         let busy = CloseTarget {
@@ -4005,7 +3974,7 @@ mod tests {
             ..persons
         };
         assert_eq!(
-            may_close(&Caller::Outside, busy, ALL_GATES, false, false),
+            may_close(&Caller::Outside, busy, ALL_GATES, false),
             Err(Refusal::TurnInFlight)
         );
     }

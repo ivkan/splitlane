@@ -256,6 +256,16 @@ pub(crate) struct TranscriptProbe {
     /// counted, so this is a floor; zero for an agent whose reader does not
     /// look for it.
     pub(crate) background_shells: usize,
+    /// The CLI compacted the conversation after the newest record that has an
+    /// opinion about the turn, and nothing has opened a turn since.
+    ///
+    /// Not a state signal: [`classify`] does not look at it. It is what lets
+    /// the pass tell a compaction from a turn. Claude Code compacts an idle
+    /// session on its own, about 54 minutes after the last turn (measured on
+    /// 2.1.294 to 2.1.317), and its status file says `busy` for the 40 to 90
+    /// seconds that takes. Without this the pass counted that span as a run.
+    /// `false` for an agent whose reader does not look for it.
+    pub(crate) compacted_after_turn: bool,
 }
 
 impl TranscriptProbe {
@@ -828,6 +838,7 @@ mod tests {
             last_turn_end: None,
             unanswered_prompt: None,
             background_shells: 0,
+            compacted_after_turn: false,
         }
     }
 

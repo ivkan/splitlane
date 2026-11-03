@@ -170,6 +170,7 @@ impl SplitlaneApp {
             // The project closed while git ran. Its close tore down what it
             // owned, and this was not among it yet.
             self.phone_starts.take_awaiting(thread_id);
+            self.launcher_worktree_panes.remove(&thread_id);
             if let Ok(made) = made {
                 cx.background_executor()
                     .spawn(async move {
@@ -234,6 +235,7 @@ impl SplitlaneApp {
             // The session was closed while git ran: its worktree goes the way
             // a closed session's does.
             self.phone_starts.take_awaiting(thread_id);
+            self.launcher_worktree_panes.remove(&thread_id);
             self.save_session(cx);
             self.spawn_session_worktree_release(container_id, made, cx);
             return None;
@@ -252,7 +254,21 @@ impl SplitlaneApp {
         Some(made)
     }
 
+    /// Put a session that waited for its worktree on screen. A session picked
+    /// in a pane's launcher goes into that pane while it still shows the
+    /// launcher; anything else - or a pane that has since been filled, closed
+    /// or moved to another project - goes where the ladder says.
     fn select_session(&mut self, ws_idx: usize, thread_id: u64, cx: &mut Context<Self>) {
+        if let Some(pane) = self
+            .launcher_worktree_panes
+            .remove(&thread_id)
+            .and_then(|pane| pane.upgrade())
+            && pane.read(cx).showing_launcher()
+            && self.workspace_index_of_pane(&pane, cx) == Some(ws_idx)
+        {
+            self.fill_pane_with_session(&pane, ws_idx, thread_id, cx);
+            return;
+        }
         if let Some(thread_idx) = self.thread_index_by_id(ws_idx, thread_id) {
             let _ = self.select_thread(ws_idx, thread_idx, cx);
         }

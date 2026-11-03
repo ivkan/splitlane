@@ -388,9 +388,9 @@ enum Commands {
         /// the turn is what would be lost.
         #[arg(long)]
         stop_turn: bool,
-        /// Close it even though a person has not read its last answer. Pass
-        /// this only when the person asked for the session to be closed;
-        /// without it such a session is refused (exit 8).
+        /// Accepted and recorded in the orchestration journal, and changes
+        /// nothing: a session is closed whether or not a person has read its
+        /// last answer. Kept so scripts that pass it keep working.
         #[arg(long)]
         unread: bool,
         /// Emit `{closed, surface_id, thread_id}` as JSON.

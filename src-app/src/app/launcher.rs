@@ -431,8 +431,13 @@ impl SplitlaneApp {
                         }
                     };
                 // Its terminal starts once its worktree is made, and the
-                // completion puts it on screen then.
+                // completion puts it on screen then - in this pane, which is
+                // remembered here, because by then the ladder would pick
+                // whichever agent pane it ranks first and the session would
+                // take that one's place while this pane stayed empty.
                 if self.give_session_own_worktree(ws_idx, thread_id, cx) {
+                    self.launcher_worktree_panes
+                        .insert(thread_id, pane.downgrade());
                     pane.update(cx, |pane, cx| {
                         pane.set_launching(false, cx);
                         pane.clear_launcher_query(cx);
@@ -539,6 +544,17 @@ impl SplitlaneApp {
                 }
             }
         };
+        self.fill_pane_with_session(pane, ws_idx, thread_id, cx);
+    }
+
+    /// Mount the session `thread_id` in `pane` and focus it there.
+    pub(crate) fn fill_pane_with_session(
+        &mut self,
+        pane: &Entity<Pane>,
+        ws_idx: usize,
+        thread_id: u64,
+        cx: &mut Context<Self>,
+    ) {
         // Both of these run after a surface may already have been created, so
         // neither may return in silence: the process would be alive, the pane
         // would still show the launcher, and `enter` would look like it did
