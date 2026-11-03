@@ -6,6 +6,26 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **The Linux terminal engine moves to Ghostty 1.4.0.** The pinned
+  libghostty-vt archive moves from a Ghostty development build of May 2026
+  to the `v1.4.0` tag, built with Zig 0.17.0. That closes
+  GHSA-w9q4-5jvv-mcv4: clearing the screen (`CSI 2 J` or `CSI 22 J`) at a
+  marked shell prompt while the cursor carried a style or a hyperlink could
+  corrupt the terminal's memory, and plain program output was enough to
+  trigger it. A session host started by an older Splitlane keeps running
+  the older engine for the sessions it already holds; `splitlane host stop`
+  after they finish, or a restart of the computer, starts the new one.
+
+### Fixed
+
+- **Scrollback on Linux keeps the number of lines it is set to.** The
+  setting was passed to libghostty as a byte budget, so 10,000 lines kept
+  about 1,200. It is now a line limit, as on the Alacritty backend; Ghostty
+  trims history by whole pages, so the count lands slightly under the
+  setting.
+
 ## [0.2.20] - 2026-10-28
 
 ### Fixed

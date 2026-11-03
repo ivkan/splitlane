@@ -38,13 +38,10 @@ impl DisplayTerminal {
         }
         crate::abi::validate()?;
         let mut callbacks = Box::new(CallbackState::new(size));
-        let options = sys::GhosttyTerminalOptions {
-            cols: size.cols,
-            rows: size.rows,
-            max_scrollback,
-        };
         let mut raw_terminal = std::ptr::null_mut();
-        let result = unsafe { sys::ghostty_terminal_new(allocator, &mut raw_terminal, options) };
+        let result = unsafe {
+            sys::ghostty_terminal_new(allocator, &mut raw_terminal, size.cols, size.rows)
+        };
         check("terminal_new", result)?;
         if raw_terminal.is_null() {
             return Err(GhosttyError::AbiMismatch(
@@ -57,6 +54,7 @@ impl DisplayTerminal {
         let terminal = unsafe { OwnedHandle::from_raw(raw_terminal, sys::ghostty_terminal_free) };
         callbacks::install(terminal.raw(), (&mut *callbacks) as *mut CallbackState)?;
         configure_safety_limits(terminal.raw())?;
+        configure_scrollback(terminal.raw(), max_scrollback)?;
 
         // SAFETY: each constructor writes the named handle type using the
         // selected allocator, and each paired function is that type's exact
@@ -166,7 +164,10 @@ impl DisplayTerminal {
     /// process that owns it and so may have been told only some of the
     /// colors, or none yet. A color given as `None` is forgotten, and a
     /// query for it is left unanswered rather than answered with a default
-    /// the application would take for the real theme.
+    /// the application would take for the real theme. The one exception is
+    /// Ghostty's own: since 1.4 a cursor color that was not given is
+    /// answered with the foreground, which is the color the cursor is drawn
+    /// in, so it stays unanswered only while the foreground is unknown too.
     pub fn set_known_default_colors(
         &mut self,
         foreground: Option<Rgb>,
@@ -207,6 +208,33 @@ impl DisplayTerminal {
             .set_colors(foreground, background, cursor);
         Ok(())
     }
+}
+
+/// Bound history by lines, the unit the setting is given in. Ghostty's own
+/// default is a byte budget so small that a 10,000-line setting kept about
+/// 1,200 lines, while the Alacritty backend keeps the number asked for. The
+/// byte budget is lifted so that the line count alone decides; the line
+/// count is already capped by `MAX_SCROLLBACK_ROWS`.
+fn configure_scrollback(terminal: sys::GhosttyTerminal, max_lines: usize) -> Result<()> {
+    // SAFETY: `terminal` is a live handle; a null value clears the byte limit.
+    let result = unsafe {
+        sys::ghostty_terminal_set(
+            terminal,
+            sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+            std::ptr::null(),
+        )
+    };
+    check("terminal_set_scrollback_bytes", result)?;
+    // SAFETY: `terminal` is a live handle, and this option reads one `usize`
+    // from `max_lines`, which outlives the call.
+    let result = unsafe {
+        sys::ghostty_terminal_set(
+            terminal,
+            sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+            (&max_lines as *const usize).cast::<c_void>(),
+        )
+    };
+    check("terminal_set_scrollback_lines", result)
 }
 
 fn configure_safety_limits(terminal: sys::GhosttyTerminal) -> Result<()> {

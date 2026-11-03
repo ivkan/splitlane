@@ -454,6 +454,57 @@ fn shrinking_wrapped_output_with_prompt_redraw_preserves_the_viewport() {
 }
 
 #[test]
+fn shrinking_both_axes_with_history_keeps_the_screen() {
+    let mut terminal = terminal(100, 30);
+    for index in 0..200 {
+        terminal
+            .feed(format!("line {index:04} {}\r\n", "y".repeat(60)).as_bytes())
+            .unwrap();
+    }
+    let (before_non_blank, before_history) = visible_non_blank(&mut terminal);
+    assert!(before_history > 100, "fixture needs real scrollback");
+
+    terminal
+        .resize(WindowSize::new(80, 24, 8, 16).unwrap())
+        .unwrap();
+
+    let (after_non_blank, after_history) = visible_non_blank(&mut terminal);
+    assert!(
+        after_non_blank > 1_000,
+        "shrink emptied the screen: before={before_non_blank}, after={after_non_blank}, history={before_history} -> {after_history}",
+    );
+    assert!(
+        after_history >= before_history,
+        "shrink dropped history: {before_history} -> {after_history}",
+    );
+}
+
+#[test]
+fn history_holds_the_number_of_lines_it_is_given() {
+    // The Alacritty backend keeps the number of lines asked for; Ghostty
+    // before 1.4 read the same number as a byte budget and kept about an
+    // eighth of it. Ghostty prunes history by whole pages, so the count
+    // lands near the limit rather than on it (9,665 of 10,000 on 1.4.0).
+    let mut terminal = terminal(80, 24);
+    for index in 0..12_000 {
+        terminal
+            .feed(format!("history line {index:05}\r\n").as_bytes())
+            .unwrap();
+    }
+    let snapshot = terminal.snapshot().unwrap();
+    assert!(
+        snapshot.history_size >= 9_000,
+        "kept {} lines of the 10,000 asked for",
+        snapshot.history_size
+    );
+    assert!(
+        snapshot.history_size < 12_000,
+        "the line limit did not apply: {} lines kept",
+        snapshot.history_size
+    );
+}
+
+#[test]
 fn restore_neutralizes_live_control_sequences() {
     let mut terminal = terminal(40, 4);
     terminal

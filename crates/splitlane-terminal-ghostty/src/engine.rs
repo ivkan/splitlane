@@ -144,11 +144,20 @@ impl DisplayTerminal {
     }
 
     fn mode(&self, dec_mode: u16) -> Result<bool> {
-        let mut value = false;
-        let result =
-            unsafe { sys::ghostty_terminal_mode_get(self.terminal.raw(), dec_mode, &mut value) };
-        check("terminal_mode_get", result)?;
-        Ok(value)
+        let mut query = sys::GhosttyTerminalModeConfig {
+            mode: dec_mode,
+            value: false,
+        };
+        // SAFETY: `self.terminal` owns a live terminal handle, and the mode
+        // selector reads `mode` from and writes `value` into this struct.
+        unsafe {
+            get_terminal(
+                self.terminal.raw(),
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MODE,
+                &mut query,
+            )?;
+        }
+        Ok(query.value)
     }
 
     fn kitty_keyboard_flags(&self) -> Result<u8> {

@@ -8,7 +8,8 @@ use crate::{GhosttyError, Result};
 type TerminalNewFn = unsafe extern "C" fn(
     *const sys::GhosttyAllocator,
     *mut sys::GhosttyTerminal,
-    sys::GhosttyTerminalOptions,
+    u16,
+    u16,
 ) -> sys::GhosttyResult;
 type TerminalResizeFn =
     unsafe extern "C" fn(sys::GhosttyTerminal, u16, u16, u32, u32) -> sys::GhosttyResult;
@@ -58,7 +59,12 @@ pub(crate) fn validate() -> Result<()> {
     };
     let layouts: serde_json::Value = serde_json::from_str(json)
         .map_err(|error| GhosttyError::AbiMismatch(format!("invalid layout JSON: {error}")))?;
-    crate::abi_layout::validate(&layouts)
+    // Since Ghostty 1.4 the layouts sit under `types`, next to a description
+    // of the ABI they were measured on.
+    let types = layouts
+        .get("types")
+        .ok_or_else(|| GhosttyError::AbiMismatch("layout JSON has no `types` object".into()))?;
+    crate::abi_layout::validate(types)
 }
 
 fn validate_discriminants() -> Result<()> {

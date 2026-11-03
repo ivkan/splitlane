@@ -9,6 +9,16 @@ const MAX_CALLBACK_BYTES: usize = 64 * 1024;
 const MAX_METADATA_BYTES: usize = 4096;
 const EMPTY_RESPONSE: &[u8] = b"";
 
+/// Ghostty 1.4 answers `OSC 4 ; n ; ?` from its built-in palette, which is
+/// not the theme a pane is drawn in: the window never hands its palette to
+/// the engine. A program that reads the palette to fit its colours to the
+/// terminal would fit them to the wrong one, so the question stays
+/// unanswered, as it was before 1.4. One `OSC 4` is answered with one
+/// write that holds only palette entries, so the whole write is the report.
+fn is_palette_report(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x1b]4;")
+}
+
 pub(crate) unsafe extern "C" fn write_pty(
     _: sys::GhosttyTerminal,
     userdata: *mut c_void,
@@ -28,6 +38,9 @@ pub(crate) unsafe extern "C" fn write_pty(
             } else {
                 std::slice::from_raw_parts(data, len).to_vec()
             };
+            if is_palette_report(&bytes) {
+                return;
+            }
             state.push(BackendEvent::WritePty(bytes));
         });
     }

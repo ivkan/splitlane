@@ -5,8 +5,8 @@ libghostty-vt inputs. Cargo never fetches Ghostty, runs bindgen, invokes Zig,
 or mutates an artifact. Reviewed archives live under `prebuilt/<rust-target>/`,
 so a standard checkout only verifies and links repository content.
 
-The pinned source is Ghostty
-`ae52f97dcac558735cfa916ea3965f247e5c6e9e` built with Zig 0.15.2 in
+The pinned source is Ghostty `v1.4.0`
+(`83fb95624b0439ee660c2679b43b38c8b63769cd`) built with Zig 0.17.0 in
 `ReleaseFast`. `bindings.rs` is pregenerated from the pinned C header. Its
 normalized UTF-8 checksum is verified both in the workspace and in every
 prepared artifact. Regenerate bindings only from that exact header, then
@@ -28,6 +28,16 @@ Zig cache paths are removed from ELF debug data with `eu-strip`, then members
 are repacked with deterministic `ar` mode.
 
 ## Windows x64 MSVC archive
+
+**Not yet moved to Ghostty v1.4.0.** The archive and metadata under
+`prebuilt/x86_64-pc-windows-msvc/` are still the ones built from
+`ae52f97dcac558735cfa916ea3965f247e5c6e9e` with Zig 0.15.2, and the recipe
+below describes that build. The formatter patch it applies no longer applies
+to v1.4.0, and the patch existed to bound a Zig 0.15.2 code generation
+problem that has to be re-examined on Zig 0.17.0 before the patch is dropped
+or rewritten. Until the archive is rebuilt on a Windows runner and the
+`windows_*` fields of `manifest.toml` are refreshed, a Windows build stops
+at the build script's provenance check.
 
 The production Windows input is the SIMD-enabled static archive
 `prebuilt/x86_64-pc-windows-msvc/lib/ghostty-vt-static.lib`. Rebuild it from a
