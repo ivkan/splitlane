@@ -644,6 +644,9 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
     // opinion about the turn. Any later such record - an answer, a tool
     // result, an interrupt - means the prompt was taken up, and clears it.
     let mut unanswered_prompt: Option<String> = None;
+    // A compaction after the newest record with an opinion about the turn.
+    // See `TranscriptProbe::compacted_after_turn`.
+    let mut compacted_after_turn = false;
     // Background commands started and not yet reported finished, by task id.
     // Kept apart from `open`: a command left running is not a call in flight,
     // and nothing here may make the rule read it as work.
@@ -690,6 +693,15 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
         let terminated = raw.last() == Some(&b'\n');
         if !terminated {
             if read as u64 == MAX_LINE_BYTES {
+                let whole = drain_rest_of_line(&mut reader);
+                if whole && is_api_request_record(&raw) {
+                    // A record the CLI wrote about its own request: it says
+                    // nothing this reader asks, and it is still the session
+                    // writing, which is what a parsed one of these counts as.
+                    index += 1;
+                    last_message = Some(index);
+                    continue;
+                }
                 incomplete = true;
             }
             continue;
@@ -830,7 +842,11 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
         // content is not an array - and a person's prompt is routinely written
         // as a bare string, so the guard skips the single most important record
         // there is for this question.
+        if is_compaction_boundary(&value) {
+            compacted_after_turn = true;
+        }
         if let Some(open_now) = turn_signal(&value, text) {
+            compacted_after_turn = false;
             turn_open = open_now;
             turn_at = open_now.then_some(secs).flatten();
             // "Stopped by a person" is about the newest turn. Once another
@@ -961,7 +977,78 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
         last_turn_end,
         unanswered_prompt,
         background_shells: background_shells.len(),
+        compacted_after_turn,
     })
+}
+
+/// Whether a record is the CLI marking that it compacted the conversation.
+///
+/// The boundary is written once the compaction is done, before the summary
+/// (measured over 187 compactions, 2.1.294 to 2.1.317), and it is written for
+/// all three ways a compaction starts: the context filling up mid-turn, the
+/// person's `/compact`, and the session sitting idle. Only the last two can
+/// stand with no turn record after them.
+fn is_compaction_boundary(value: &serde_json::Value) -> bool {
+    value.get("type").and_then(|v| v.as_str()) == Some("system")
+        && value.get("subtype").and_then(|v| v.as_str()) == Some("compact_boundary")
+        && value.get("isSidechain").and_then(|v| v.as_bool()) != Some(true)
+}
+
+/// Record types Claude Code writes about its own requests to the API, which
+/// this reader has no use for: no turn, no call, no cost and no notification
+/// of its own. They start appearing in 2.1.297.
+///
+/// They are the one oversize record that does not hide anything. Every
+/// `api-request-shape` is over the per-line cap (median 90 KB) and the other
+/// two often are, and an oversize record makes the window incomplete, which
+/// takes the file's vote away. Over this machine's transcripts written by
+/// 2.1.297 to 2.1.317, 31 of 297 tail windows were incomplete for these
+/// records alone.
+///
+/// Matched on how the line **begins**, which the CLI writes, and never on
+/// anything later in it, which can be text an agent wrote. Each word was
+/// measured; one the CLI adds later is not on this list and still makes the
+/// window incomplete, which is the safe direction.
+const API_REQUEST_RECORD_HEADS: [&[u8]; 3] = [
+    br#"{"type":"api-request","#,
+    br#"{"type":"api-request-shape","#,
+    br#"{"type":"api-request-blob","#,
+];
+
+/// Whether an oversize line is one of the [`API_REQUEST_RECORD_HEADS`].
+fn is_api_request_record(head: &[u8]) -> bool {
+    API_REQUEST_RECORD_HEADS
+        .iter()
+        .any(|prefix| head.starts_with(prefix))
+}
+
+/// Read and drop the rest of a line whose first [`MAX_LINE_BYTES`] were
+/// already taken, in bounded chunks.
+///
+/// Without this, the rest of an oversize line was read as the next line, and
+/// its end carries a newline: it was handed to the parser, which is exactly
+/// what deciding oversize on the bytes was meant to stop. Usually it failed
+/// to parse; a cut that landed on a `{` inside agent-written text could have
+/// parsed as a record that was never written.
+///
+/// `false` when the file ends first or the read fails: the line is still
+/// being written, or cannot be read past.
+fn drain_rest_of_line(reader: &mut impl std::io::BufRead) -> bool {
+    loop {
+        let chunk = match reader.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(_) => return false,
+        };
+        if chunk.is_empty() {
+            return false;
+        }
+        if let Some(newline) = chunk.iter().position(|&b| b == b'\n') {
+            reader.consume(newline + 1);
+            return true;
+        }
+        let consumed = chunk.len();
+        reader.consume(consumed);
+    }
 }
 
 /// What one record says about whether the turn is still running.
@@ -991,8 +1078,18 @@ pub fn probe_state_from_tail(path: &Path, now_secs: i64) -> Option<TranscriptPro
 /// A **synthetic-model** record is the CLI speaking rather than the agent
 /// answering, which is the same reason the transcript's own answer reader skips
 /// it.
+///
+/// A third is the **compaction summary**. It is filed as a `user` record with
+/// a plain string, so it read as a person's prompt. Claude Code compacts an
+/// idle session on its own about 54 minutes after its last turn, and nothing
+/// follows the summary until the person comes back: the summary was the
+/// newest record with an opinion, a prompt nothing answered, and the pass
+/// counted every such compaction as a turn somebody stopped. Of 49 turns the
+/// orchestration journal recorded as interrupted in one week, 40 were these.
 fn turn_signal(value: &serde_json::Value, raw_line: &str) -> Option<bool> {
-    if value.get("isSidechain").and_then(|v| v.as_bool()) == Some(true) {
+    if value.get("isSidechain").and_then(|v| v.as_bool()) == Some(true)
+        || value.get("isCompactSummary").and_then(|v| v.as_bool()) == Some(true)
+    {
         return None;
     }
     let message = value.get("message");
@@ -3519,6 +3616,166 @@ mod tests {
             probe.incomplete,
             "a capped read leaves a fragment, and the probe has to admit it"
         );
+    }
+
+    /// The CLI's record of its own API request is over the cap as a matter of
+    /// course (an `api-request-shape` runs to 90 KB), and it carries nothing
+    /// this reader asks. It must not cost the window its vote.
+    #[test]
+    fn an_oversize_api_request_record_leaves_the_window_whole() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("40"));
+        let huge = "x".repeat((MAX_LINE_BYTES as usize) + 4096);
+        for kind in ["api-request", "api-request-shape", "api-request-blob"] {
+            let probe = probe_lines(
+                &[
+                    &format!(
+                        r#"{{"type":"{kind}","sessionId":"s","timestamp":"{}","params":"{huge}"}}"#,
+                        at("10")
+                    ),
+                    &format!(
+                        r#"{{"type":"assistant","timestamp":"{}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"Read","input":{{}}}}],"stop_reason":"tool_use"}}}}"#,
+                        at("12")
+                    ),
+                ],
+                now,
+            );
+            assert!(!probe.incomplete, "{kind}");
+            assert_eq!(
+                probe.open_calls.len(),
+                1,
+                "{kind}: the call after it is read"
+            );
+        }
+    }
+
+    /// Only how the line begins decides it, and only the measured words. A
+    /// tool result that quotes such a record is still a tool result.
+    #[test]
+    fn an_oversize_record_that_merely_mentions_an_api_request_is_still_a_gap() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("40"));
+        let huge = "x".repeat((MAX_LINE_BYTES as usize) + 4096);
+        for line in [
+            format!(
+                r#"{{"type":"user","timestamp":"{}","message":{{"role":"user","content":"{{\"type\":\"api-request\" {huge}"}}}}"#,
+                at("12")
+            ),
+            format!(
+                r#"{{"type":"api-request-something","timestamp":"{}","params":"{huge}"}}"#,
+                at("12")
+            ),
+        ] {
+            let probe = probe_lines(&[&line], now);
+            assert!(probe.incomplete, "{}", &line[..40]);
+        }
+    }
+
+    /// The rest of an oversize line is never parsed. It ends in a newline, so
+    /// it used to be read as a line of its own - and a cut landing on a `{`
+    /// inside agent-written text parses as a record nobody wrote.
+    #[test]
+    fn the_rest_of_an_oversize_line_is_not_read_as_a_record() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("40"));
+        let forged = format!(
+            r#"{{"type":"assistant","timestamp":"{}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"forged","name":"Write","input":{{}}}}],"stop_reason":"tool_use"}}}}"#,
+            at("30")
+        );
+        let head = r#"{"type":"user","timestamp":"2026-08-25T10:00:12.000Z","message":{"role":"user","content":""#;
+        let pad = "x".repeat(MAX_LINE_BYTES as usize - head.len());
+        // The cap falls exactly where the forged record begins.
+        let line = format!("{head}{pad}{forged}");
+        let probe = probe_lines(&[&line], now);
+        assert!(probe.incomplete);
+        assert!(
+            probe.open_calls.is_empty(),
+            "a record cut out of a prompt opened a call: {:?}",
+            probe.open_calls
+        );
+        assert!(probe.open_turn.is_none());
+    }
+
+    /// The records Claude Code writes when it compacts an idle session, in the
+    /// order it writes them (measured on 2.1.300 and 2.1.317): the boundary,
+    /// the summary filed as a `user` record with a plain string, then the
+    /// environment attachments and a notice. The turn before it ended, and
+    /// nothing here starts another.
+    fn idle_compaction_lines() -> Vec<String> {
+        vec![
+            assistant_record("answer-uuid", "end_turn", false, "claude-opus-5-5"),
+            format!(
+                r#"{{"parentUuid":null,"logicalParentUuid":"answer-uuid","isSidechain":false,"type":"system","subtype":"compact_boundary","content":"Conversation compacted","isMeta":false,"timestamp":"{}","uuid":"b1","level":"info","compactMetadata":{{"trigger":"auto","preTokens":551342,"durationMs":39867}}}}"#,
+                at("44")
+            ),
+            format!(
+                r#"{{"parentUuid":"b1","isSidechain":false,"type":"user","message":{{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}},"isVisibleInTranscriptOnly":true,"isCompactSummary":true,"uuid":"summary-uuid","timestamp":"{}"}}"#,
+                at("44")
+            ),
+            format!(
+                r#"{{"parentUuid":"summary-uuid","isSidechain":false,"attachment":{{"type":"environment"}},"type":"attachment","uuid":"a1","timestamp":"{}"}}"#,
+                at("44")
+            ),
+            format!(
+                r#"{{"parentUuid":"a1","isSidechain":false,"type":"system","subtype":"informational","content":"Compacted while idle, before the prompt cache expired","isMeta":false,"timestamp":"{}","uuid":"i1","level":"notice"}}"#,
+                at("45")
+            ),
+        ]
+    }
+
+    /// The summary is the CLI's record, not a person's prompt. Read as one, it
+    /// was a prompt nothing answered, and the pass counted every idle
+    /// compaction as a turn somebody had stopped.
+    #[test]
+    fn an_idle_compaction_opens_no_turn_and_leaves_the_last_answer_standing() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        let lines = idle_compaction_lines();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let probe = probe_lines(&refs, now);
+        assert!(probe.open_turn.is_none(), "{:?}", probe.open_turn);
+        assert_eq!(probe.unanswered_prompt, None);
+        assert_eq!(
+            probe.last_turn_end.as_ref().map(|end| end.marker.as_str()),
+            Some("answer-uuid")
+        );
+        assert!(
+            !probe
+                .last_turn_end
+                .as_ref()
+                .is_some_and(|end| end.interrupted)
+        );
+        assert!(probe.compacted_after_turn);
+    }
+
+    /// A prompt after the compaction is a turn again, and the flag goes.
+    #[test]
+    fn a_prompt_after_a_compaction_is_a_turn() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        let mut lines = idle_compaction_lines();
+        lines.push(format!(
+            r#"{{"isSidechain":false,"type":"user","message":{{"role":"user","content":"carry on"}},"uuid":"prompt-uuid","timestamp":"{}"}}"#,
+            at("48")
+        ));
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let probe = probe_lines(&refs, now);
+        assert!(!probe.compacted_after_turn);
+        assert!(probe.open_turn.is_some());
+        assert_eq!(probe.unanswered_prompt.as_deref(), Some("prompt-uuid"));
+    }
+
+    /// A compaction in the middle of a turn - the context filled up - is
+    /// followed by the agent carrying on, which is what clears the flag.
+    #[test]
+    fn a_compaction_inside_a_turn_does_not_stand() {
+        let now = crate::agent_sessions::last_activity_secs_from_iso(&at("50"));
+        let mut lines = idle_compaction_lines();
+        lines.push(assistant_record(
+            "next-uuid",
+            "tool_use",
+            false,
+            "claude-opus-5-5",
+        ));
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let probe = probe_lines(&refs, now);
+        assert!(!probe.compacted_after_turn);
+        assert!(probe.open_turn.is_some());
     }
 
     /// A probe that lands while the agent is writing its next record must not

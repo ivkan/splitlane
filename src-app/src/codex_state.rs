@@ -541,6 +541,9 @@ fn probe_from_text(text: &str, truncated_head: bool, now: i64) -> TranscriptProb
         // turn, and whether its rollout records the two ends has not been
         // measured.
         background_shells: 0,
+        // Not looked for: Codex states each turn with its own events, so a
+        // compaction between turns cannot be read as one.
+        compacted_after_turn: false,
     }
 }
 

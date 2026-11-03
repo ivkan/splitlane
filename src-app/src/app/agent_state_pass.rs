@@ -224,6 +224,8 @@ struct TailRead {
     end: Option<crate::rail_state::TurnEnd>,
     /// Background commands started and not yet reported finished.
     background_shells: usize,
+    /// A compaction stands after the newest turn record.
+    compacted_after_turn: bool,
 }
 
 /// The agent's own turn-end marker, read out of turn for a surface whose state
@@ -247,6 +249,7 @@ fn read_turn_end(
             len: 0,
             end: None,
             background_shells: 0,
+            compacted_after_turn: false,
         });
     };
     if known_len == Some(len) {
@@ -278,6 +281,7 @@ fn read_turn_end(
         len,
         end,
         background_shells: probe.background_shells,
+        compacted_after_turn: probe.compacted_after_turn,
     })
 }
 
@@ -784,6 +788,7 @@ impl SplitlaneApp {
                     let watch = self.turn_ends.entry(reading.thread_id).or_default();
                     if let Some(tail) = reading.turn_end.clone() {
                         watch.background_shells = tail.background_shells;
+                        watch.compacted_after_turn = tail.compacted_after_turn;
                         watch.observe(tail.len, tail.end);
                     }
                     // Asked of what the source read, not of `reading_state`: a
@@ -842,6 +847,23 @@ impl SplitlaneApp {
                                 ..run
                             }
                         });
+                    // **A compaction is not a turn.** Claude Code compacts an
+                    // idle session by itself, about 54 minutes after its last
+                    // turn, and says `busy` for the minute that takes. The
+                    // pass saw a run, and it ended on no turn record of its
+                    // own: nothing to announce, count or mark unread, and the
+                    // answer standing from the turn before is still the
+                    // newest one. Asked once, here, for both the announcement
+                    // and the count below.
+                    let compaction_run = ended.is_some() && watch.ended_on_compaction();
+                    if compaction_run {
+                        log::debug!(
+                            target: TRACE,
+                            "#{} ran while the agent compacted its conversation; not a turn",
+                            reading.thread_id,
+                        );
+                    }
+                    let ended = ended.filter(|_| !compaction_run);
                     // A turn that ended with a background command alive is
                     // held instead of announced: the agent may be waiting on
                     // that command and about to carry on. A turn a person
@@ -927,8 +949,9 @@ impl SplitlaneApp {
                     // one that only the byte counter speaks for has no turn
                     // boundary to count: its `running` is withdrawn by output
                     // stopping, which says nothing about a turn.
-                    let left_run =
-                        was_in_run && !self.running_since.contains_key(&reading.thread_id);
+                    let left_run = was_in_run
+                        && !compaction_run
+                        && !self.running_since.contains_key(&reading.thread_id);
                     let file_says_failed = watch.current.as_ref().is_some_and(|end| end.failed);
                     if left_run
                         && let Some(asked) = self.interrupts_asked.remove(&reading.thread_id)
@@ -2237,6 +2260,7 @@ fn read_states(mut targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateR
                     len,
                     end: probe.last_turn_end.clone(),
                     background_shells: probe.background_shells,
+                    compacted_after_turn: probe.compacted_after_turn,
                 }),
                 // The transcript counts commands; only the status file says
                 // any is alive, and it did not answer for this surface.
