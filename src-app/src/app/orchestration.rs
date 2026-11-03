@@ -414,7 +414,7 @@ fn caller_word(caller: &Caller) -> &'static str {
 }
 
 /// The session a caller speaks as, if it is one.
-fn caller_thread(caller: &Caller) -> Option<u64> {
+pub(crate) fn caller_thread(caller: &Caller) -> Option<u64> {
     match caller {
         Caller::Pane(pane) => Some(pane.thread_id),
         Caller::Keyholder { thread_id } => Some(*thread_id),

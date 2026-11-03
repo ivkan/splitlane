@@ -21,7 +21,13 @@ use crate::terminal::view::TerminalView;
 /// grow before the journal calls it stalled. Long enough for a slow tool
 /// call or a long think, which write nothing until they end; short enough
 /// that a hung session is on record well before somebody gives up on it.
-pub(crate) const STALL_AFTER: Duration = Duration::from_secs(5 * 60);
+///
+/// Five minutes was too short: over a week of the journal, 111 of 121
+/// stalls at five minutes ended in a finished turn, half of them within a
+/// little over five minutes of the stall - long tool calls, subagents, and
+/// an opener waiting on a session it opened, none of which writes to the
+/// transcript until it returns.
+pub(crate) const STALL_AFTER: Duration = Duration::from_secs(15 * 60);
 
 /// What the journal last saw of one session.
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +36,10 @@ pub(crate) struct Seen {
     runs_ended: u64,
     pane_exit: Option<i32>,
     transcript_len: Option<u64>,
+    /// `runs_ended` when the last turn was journaled as starting. While it
+    /// still stands there, no run has ended since, and working again is the
+    /// same turn going on.
+    started_at_runs: Option<u64>,
     /// Since when the transcript has stood at `transcript_len` during a turn.
     still_since: Instant,
     stall_reported: bool,
@@ -50,6 +60,10 @@ pub(crate) struct Facts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Event {
     TurnStart,
+    /// Working again with no run ended since the turn started: the person
+    /// answered a question asked in the middle of it, or the rail lost the
+    /// turn for a moment. The same turn, so not a start.
+    TurnResumed,
     TurnEnd {
         outcome: Option<&'static str>,
         runs_ended: u64,
@@ -73,8 +87,14 @@ pub(crate) fn step(previous: Option<Seen>, now: Facts, at: Instant) -> (Seen, Ve
     let became = |status: ThreadStatus| {
         now.status == status && previous.is_none_or(|seen| seen.status != status)
     };
+    let mut started_at_runs = previous.and_then(|seen| seen.started_at_runs);
     if became(ThreadStatus::Thinking) {
-        events.push(Event::TurnStart);
+        if previous.is_some() && started_at_runs == Some(now.runs_ended) {
+            events.push(Event::TurnResumed);
+        } else {
+            events.push(Event::TurnStart);
+            started_at_runs = Some(now.runs_ended);
+        }
     }
     if let Some(seen) = previous
         && now.runs_ended > seen.runs_ended
@@ -119,6 +139,7 @@ pub(crate) fn step(previous: Option<Seen>, now: Facts, at: Instant) -> (Seen, Ve
             runs_ended: now.runs_ended,
             pane_exit: now.pane_exit,
             transcript_len: now.transcript_len,
+            started_at_runs,
             still_since,
             stall_reported,
         },
@@ -161,6 +182,7 @@ impl SplitlaneApp {
             for event in events {
                 let (name, fields) = match event {
                     Event::TurnStart => ("turn_start", serde_json::json!({})),
+                    Event::TurnResumed => ("turn_resumed", serde_json::json!({})),
                     Event::TurnEnd {
                         outcome,
                         runs_ended,
@@ -238,6 +260,57 @@ mod tests {
                 runs_ended: 1
             }]
         );
+    }
+
+    /// A question in the middle of a turn, answered: the same turn goes on.
+    /// Journaled as a start it counted one turn two or three times.
+    #[test]
+    fn working_again_after_a_question_in_the_turn_is_not_a_new_turn() {
+        let t0 = Instant::now();
+        let (seen, _) = step(None, facts(ThreadStatus::Idle, 2, None), t0);
+        let (seen, events) = step(Some(seen), facts(ThreadStatus::Thinking, 2, None), t0);
+        assert_eq!(events, vec![Event::TurnStart]);
+        let (seen, events) = step(
+            Some(seen),
+            facts(ThreadStatus::WaitingForInput, 2, None),
+            t0,
+        );
+        assert_eq!(events, vec![Event::Waiting]);
+        let (seen, events) = step(Some(seen), facts(ThreadStatus::Thinking, 2, None), t0);
+        assert_eq!(events, vec![Event::TurnResumed]);
+        let (_, events) = step(Some(seen), facts(ThreadStatus::Idle, 3, None), t0);
+        assert_eq!(
+            events,
+            vec![Event::TurnEnd {
+                outcome: Some("finished"),
+                runs_ended: 3
+            }]
+        );
+    }
+
+    /// A turn that ended on a question, and the person's answer: that is a
+    /// run ended and a new one begun.
+    #[test]
+    fn a_turn_after_one_that_ended_is_a_new_turn() {
+        let t0 = Instant::now();
+        let (seen, _) = step(None, facts(ThreadStatus::Thinking, 0, None), t0);
+        let (seen, events) = step(
+            Some(seen),
+            facts(ThreadStatus::WaitingForInput, 1, None),
+            t0,
+        );
+        assert_eq!(
+            events,
+            vec![
+                Event::TurnEnd {
+                    outcome: Some("finished"),
+                    runs_ended: 1
+                },
+                Event::Waiting
+            ]
+        );
+        let (_, events) = step(Some(seen), facts(ThreadStatus::Thinking, 1, None), t0);
+        assert_eq!(events, vec![Event::TurnStart]);
     }
 
     #[test]

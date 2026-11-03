@@ -16,6 +16,14 @@ Notable changes to Splitlane are recorded here. The format follows
   to tell you such an answer when it closes the session, and the
   conversation stays in history. `--unread` is still accepted and changes
   nothing.
+- **The orchestration journal tells turns apart and says who wrote.** A
+  turn that stopped for a question and went on after the answer was
+  journaled as starting again, which counted one turn two or three times;
+  going on is now `turn_resumed`. Text sent into a session after its first
+  prompt is journaled as `prompt` with `via: "send"` and who sent it, so
+  the journal shows who began each turn. A turn is called stalled after
+  fifteen minutes with no growth in its transcript, not five: at five, most
+  of them were long tool calls that went on to finish.
 
 ## [0.2.20] - 2026-10-28
 
