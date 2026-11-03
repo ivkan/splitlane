@@ -58,18 +58,6 @@ fn main() -> BuildResult<()> {
     };
     let action = corrective_action(spec.platform, &target);
 
-    if spec.platform == NativePlatform::Windows {
-        let source_patch = workspace.join(manifest_value(&manifest, "windows_source_patch_path")?);
-        require_file(&source_patch, &target, &action)?;
-        verify_text_hash(
-            &source_patch,
-            manifest_value(&manifest, "windows_source_patch_sha256")?,
-            &target,
-            &action,
-        )?;
-        println!("cargo:rerun-if-changed={}", source_patch.display());
-    }
-
     let canonical_bindings = workspace.join(manifest_value(&manifest, "bindings_path")?);
     verify_text_hash(
         &canonical_bindings,
@@ -139,8 +127,8 @@ fn main() -> BuildResult<()> {
     //
     // They change only when the prebuilt is rebuilt - and then they change
     // because `build-info.txt` changed, not the other way round.
-    let canonical_cache = format!("{canonical_source}/.paneflow-zig-cache");
-    let canonical_prefix = format!("{canonical_source}/.paneflow-zig-output");
+    let canonical_cache = format!("{canonical_source}/.splitlane-zig-cache");
+    let canonical_prefix = format!("{canonical_source}/.splitlane-zig-output");
     let mut expected_info = vec![
         ("source_sha", manifest_value(&manifest, "source_sha")?),
         ("zig_version", manifest_value(&manifest, "zig_version")?),
@@ -176,26 +164,6 @@ fn main() -> BuildResult<()> {
             (
                 "zig_executable_sha256",
                 manifest_value(&manifest, "windows_zig_executable_sha256")?,
-            ),
-            (
-                "source_patch_path",
-                manifest_value(&manifest, "windows_source_patch_path")?,
-            ),
-            (
-                "source_patch_sha256",
-                manifest_value(&manifest, "windows_source_patch_sha256")?,
-            ),
-            (
-                "source_patch_target",
-                manifest_value(&manifest, "windows_source_patch_target")?,
-            ),
-            (
-                "source_patch_input_sha256",
-                manifest_value(&manifest, "windows_source_patch_input_sha256")?,
-            ),
-            (
-                "source_patch_output_sha256",
-                manifest_value(&manifest, "windows_source_patch_output_sha256")?,
             ),
             (
                 "zig_image_base",
