@@ -14,6 +14,11 @@ use super::{Link, store, surface};
 const TICK: Duration = Duration::from_secs(5);
 /// How often a quiet connection is pinged.
 const KEEP_ALIVE: Duration = Duration::from_secs(30);
+/// How long the relay has to answer a ping before the connection is taken
+/// for dead. Cloudflare answers within a round trip; this leaves room for a
+/// slow network and still has a dead connection noticed within a minute of
+/// going quiet.
+const PONG_WAIT: Duration = Duration::from_secs(20);
 /// Wait before joining the room again after the connection dropped, and
 /// the longest it grows to.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
@@ -26,6 +31,62 @@ enum State {
     /// Salts exchanged; the phone's confirmation has not arrived.
     Confirming(Channel),
     Open(Channel),
+}
+
+/// Whether a connection still reaches the relay.
+///
+/// A write alone cannot tell: it only hands bytes to the kernel. After the
+/// computer sleeps, or the network under it changes, the far end of the TCP
+/// connection may be gone while this end still shows it established, and
+/// writes keep succeeding until the kernel gives up retrying - or never
+/// fail, if something on the way keeps acknowledging. Meanwhile the phone's
+/// frames go to a socket nobody reads. So a ping has to be answered: when
+/// nothing at all comes back within [`PONG_WAIT`], the bridge joins again,
+/// and the relay drops the old socket when it does.
+struct Liveness {
+    last_sent: Instant,
+    /// When the oldest unanswered ping went out.
+    ping_out: Option<Instant>,
+}
+
+#[derive(Debug, PartialEq)]
+enum Due {
+    Nothing,
+    Ping,
+    Dead,
+}
+
+impl Liveness {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_sent: now,
+            ping_out: None,
+        }
+    }
+
+    fn sent(&mut self, now: Instant) {
+        self.last_sent = now;
+    }
+
+    fn pinged(&mut self, now: Instant) {
+        self.last_sent = now;
+        self.ping_out.get_or_insert(now);
+    }
+
+    /// Anything arrived: a frame, junk or a pong all came over this
+    /// connection, after any ping still waiting.
+    fn heard(&mut self) {
+        self.ping_out = None;
+    }
+
+    fn due(&self, now: Instant) -> Due {
+        match self.ping_out {
+            Some(at) if now.saturating_duration_since(at) >= PONG_WAIT => Due::Dead,
+            Some(_) => Due::Nothing,
+            None if now.saturating_duration_since(self.last_sent) >= KEEP_ALIVE => Due::Ping,
+            None => Due::Nothing,
+        }
+    }
 }
 
 /// What the bridge answers a request with.
@@ -43,29 +104,37 @@ pub(crate) fn serve_connection(
     answer: &mut Answerer<'_>,
 ) -> io::Result<()> {
     let mut state = State::Idle;
-    let mut last_sent = Instant::now();
+    let mut liveness = Liveness::new(Instant::now());
     loop {
         let received = link.receive(TICK)?;
         if !paired() {
             return Ok(());
         }
-        let frame = match received {
-            Received::Frame(frame) => frame,
-            Received::Junk => continue,
-            Received::Quiet => {
-                if last_sent.elapsed() >= KEEP_ALIVE {
-                    link.keep_alive()?;
-                    last_sent = Instant::now();
-                }
-                continue;
+        if !matches!(received, Received::Quiet) {
+            liveness.heard();
+        }
+        match liveness.due(Instant::now()) {
+            Due::Dead => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("no answer to a ping within {}s", PONG_WAIT.as_secs()),
+                ));
             }
+            Due::Ping => {
+                link.keep_alive()?;
+                liveness.pinged(Instant::now());
+            }
+            Due::Nothing => {}
+        }
+        let Received::Frame(frame) = received else {
+            continue;
         };
         state = match (frame, state) {
             // A hello always starts over: the phone connected again.
             (Frame::Hello(phone_salt), _) => {
                 let handshake = Handshake::start(Role::Machine);
                 link.send(&Frame::Hello(handshake.salt()))?;
-                last_sent = Instant::now();
+                liveness.sent(Instant::now());
                 State::Confirming(handshake.finish(key, phone, room, phone_salt))
             }
             (Frame::Sealed(sealed), State::Confirming(mut channel)) => {
@@ -75,7 +144,7 @@ pub(crate) fn serve_connection(
                 {
                     Ok(Ok(Message::Confirm)) => {
                         send(link, &mut channel, &Message::Confirm)?;
-                        last_sent = Instant::now();
+                        liveness.sent(Instant::now());
                         State::Open(channel)
                     }
                     // Not the same keys, or not the protocol: drop the
@@ -102,7 +171,7 @@ pub(crate) fn serve_connection(
                             },
                         };
                         send(link, &mut channel, &reply)?;
-                        last_sent = Instant::now();
+                        liveness.sent(Instant::now());
                         State::Open(channel)
                     }
                     // Anything else the phone may say is for the pairing
@@ -210,6 +279,10 @@ fn serve_forever(
         }
     };
     let mut retry = RETRY_FIRST;
+    // Failed joins in a row. Only the first is logged at `info`: a computer
+    // offline for a night would otherwise write a line a minute.
+    let mut failures = 0u32;
+    let mut joined_before = false;
     loop {
         if current().is_none() {
             log::info!("{name}: removed; the bridge leaves its room");
@@ -218,6 +291,13 @@ fn serve_forever(
         match RelaySocket::connect(relay, room, key) {
             Ok(mut socket) => {
                 retry = RETRY_FIRST;
+                if joined_before {
+                    log::info!("{name}: joined the room again");
+                } else {
+                    log::info!("{name}: joined the room on the relay");
+                }
+                joined_before = true;
+                failures = 0;
                 let mut paired = || current().is_some();
                 let mut answer = |method: &str, params: &Value| {
                     let device = current().ok_or("this phone is no longer paired")?;
@@ -235,7 +315,14 @@ fn serve_forever(
                     Err(_) => log::error!("{name}: answering a request panicked; joining again"),
                 }
             }
-            Err(e) => log::info!("{name}: cannot reach the relay ({e})"),
+            Err(e) => {
+                failures += 1;
+                if failures == 1 {
+                    log::info!("{name}: cannot reach the relay ({e}); retrying");
+                } else {
+                    log::debug!("{name}: cannot reach the relay, attempt {failures} ({e})");
+                }
+            }
         }
         std::thread::sleep(retry);
         retry = (retry * 2).min(RETRY_MAX);
@@ -447,5 +534,51 @@ mod tests {
             phone.link.receive(Duration::from_millis(50)),
             Ok(Received::Quiet) | Err(_)
         ));
+    }
+
+    #[test]
+    fn a_quiet_connection_is_pinged_and_given_up_without_an_answer() {
+        let start = Instant::now();
+        let mut liveness = Liveness::new(start);
+        assert_eq!(liveness.due(start + KEEP_ALIVE / 2), Due::Nothing);
+        let ping_at = start + KEEP_ALIVE;
+        assert_eq!(liveness.due(ping_at), Due::Ping);
+        liveness.pinged(ping_at);
+        assert_eq!(
+            liveness.due(ping_at + PONG_WAIT - Duration::from_secs(1)),
+            Due::Nothing,
+            "the relay still has time to answer"
+        );
+        assert_eq!(liveness.due(ping_at + PONG_WAIT), Due::Dead);
+    }
+
+    #[test]
+    fn anything_heard_after_a_ping_answers_it() {
+        let start = Instant::now();
+        let mut liveness = Liveness::new(start);
+        liveness.pinged(start);
+        liveness.heard();
+        assert_eq!(liveness.due(start + PONG_WAIT), Due::Nothing);
+        assert_eq!(liveness.due(start + KEEP_ALIVE), Due::Ping);
+    }
+
+    #[test]
+    fn a_frame_sent_does_not_answer_a_ping() {
+        // Writes succeed on a connection whose far end is gone, so sending
+        // proves nothing; only something arriving does.
+        let start = Instant::now();
+        let mut liveness = Liveness::new(start);
+        liveness.pinged(start);
+        liveness.sent(start + Duration::from_secs(5));
+        assert_eq!(liveness.due(start + PONG_WAIT), Due::Dead);
+    }
+
+    #[test]
+    fn a_second_ping_does_not_push_the_deadline_back() {
+        let start = Instant::now();
+        let mut liveness = Liveness::new(start);
+        liveness.pinged(start);
+        liveness.pinged(start + Duration::from_secs(10));
+        assert_eq!(liveness.due(start + PONG_WAIT), Due::Dead);
     }
 }

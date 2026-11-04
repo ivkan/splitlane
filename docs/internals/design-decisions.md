@@ -1906,6 +1906,53 @@ place it behaved unlike theirs.
   and never the message, as every write from a phone is.
 
 
+## The bridge gives up a relay connection that does not answer
+
+**The phone bridge pings the relay when its connection has been quiet for
+30 seconds, and joins the room again when 20 seconds pass with nothing
+coming back.** Reported from live use: after five days and the computer
+sleeping and waking, the phone no longer reached the computer, while the
+bridge's connection to the relay still showed as established. A restart
+fixed it.
+
+- **A write proves nothing.** The bridge used to ping without looking for
+  the answer, so a dead connection was noticed only when a write failed. A
+  write hands bytes to the kernel; after a sleep or a network change the far
+  end of a TCP connection can be gone while this end still shows it
+  established, and writes keep succeeding until the kernel gives up retrying,
+  or never fail if something on the way keeps acknowledging them. The phone's
+  frames meanwhile go to a socket nobody reads, and the relay tells the phone
+  nothing: it forwards to whatever machine socket the room holds.
+- **The pong is the relay's answer, and costs nothing.** The relay is a
+  Durable Object that holds its sockets with the hibernation API. Cloudflare
+  answers a WebSocket ping for the room itself, without waking the object or
+  calling its handlers, so a pong says the connection reaches the place that
+  holds the room's sockets, with no change to the relay and no billed time.
+  Any frame that arrives counts the same as a pong.
+- **Joining again is the repair.** A machine that joins a room closes the
+  machine socket the room held, so a bridge that gives up a connection
+  leaves nothing behind for the phone to be sent to.
+- **Sleep needs nothing of its own.** The timers run on the monotonic clock.
+  Where it stops while the computer sleeps (macOS, Linux), the first ping
+  after waking comes within the usual 30 seconds; where it runs on, waking
+  finds a ping due at once, or a ping that went out before the sleep
+  unanswered, and the bridge joins again. Either way a dead connection is
+  let go within a minute of waking.
+- **One write or one join cannot hold the bridge.** A write waits at most
+  15 seconds; a connection whose far end stopped reading would otherwise keep
+  the bridge in a write for as long as the kernel retried. Joining has the
+  same limit for the TCP connection to each address and for each read and
+  write of the TLS and WebSocket handshakes, so a relay address that
+  swallows packets, or a server that accepts and never answers, costs one
+  failed join and a retry, not the bridge.
+- **What it logs.** Each join, each drop with its reason, and the first of a
+  run of failed joins, at `info`; not each ping.
+
+**What would re-open it.** A phone that cannot reach a computer whose bridge
+gets its pongs - then the room's machine socket is not the bridge's, and
+the check has to go through the room object itself (an auto-response, or a
+frame the object answers).
+
 ## Orchestration leaves a journal, and the window a log file
 
 **Every step of a hand-off between sessions is a line in
@@ -1951,14 +1998,19 @@ are in the cache directory, beside the session host's `host.log`.
 - **Why a log file too.** Started from Finder, the Dock or a desktop entry,
   the app's standard error goes nowhere anybody reads, and a warning written
   there is gone. `app.log` takes the same lines as standard error. By default
-  that is warnings and errors, plus `info` for orchestration and the session
-  host: their lines are few, one per session opened, attached or lost, and
-  they are what is looked for afterwards, when it is too late to start again
-  with `RUST_LOG` set. `RUST_LOG` still replaces the whole filter.
-- **Only the window's process writes them.** A CLI call is over in a moment
-  and has its own standard error. And the writers start after the process
-  environment has been settled, because a thread may not exist while it is
-  being changed.
+  that is warnings and errors, plus `info` for orchestration, the session
+  host and the phone link: their lines are few, one per session opened,
+  attached or lost, one per relay connection made or dropped, and they are
+  what is looked for afterwards, when it is too late to start again with
+  `RUST_LOG` set. `RUST_LOG` still replaces the whole filter.
+- **Only the window's process keeps them, and the phone bridge adds to
+  `app.log`.** A CLI call is over in a moment and has its own standard
+  error. And the writers start after the process environment has been
+  settled, because a thread may not exist while it is being changed. The
+  bridge is a process of its own whose standard error goes nowhere; until
+  it wrote to `app.log`, a phone that stopped reaching the computer left not
+  one line behind. It opens the file for each line rather than keeping it,
+  so a file the window has just moved aside is not written to after.
 
 **What would re-open it.** A journal that grows past what its two files keep
 between the failure and the person looking at it - then the cap, not the
