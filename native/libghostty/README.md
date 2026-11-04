@@ -22,10 +22,16 @@ SPLITLANE_GHOSTTY_SOURCE_DIR=/path/to/ghostty scripts/build-libghostty-linux.sh
 
 Outputs are written below `target/libghostty/<rust-target>/`. Cargo uses one
 only when `SPLITLANE_LIBGHOSTTY_DIR` explicitly selects it; otherwise it uses
-the repository artifact. `--verify-reproducible` builds from two clean Zig
-caches and compares the normalized archive, header, bindings, and build info.
-Zig cache paths are removed from ELF debug data with `eu-strip`, then members
-are repacked with deterministic `ar` mode.
+the repository artifact. Each build runs `zig build --seed=0 -j1` from an
+empty cache at fixed cache and prefix paths, pinned to one CPU with
+`taskset`, with `SOURCE_DATE_EPOCH` set to the pinned commit's time: with a
+random seed and one job per core, clean Zig 0.17 builds on CI runners produced
+same-sized objects with different bytes, and `-j1` alone still left the
+compiler's own threads numbering anonymous symbols in the order they finished.
+`--verify-reproducible` builds every target twice that way, one build after
+the other, and compares the normalized archive, header, bindings, and build
+info. Zig cache paths are removed from ELF debug data with `eu-strip`, then
+members are repacked with deterministic `ar` mode.
 
 ## Windows x64 MSVC archive
 

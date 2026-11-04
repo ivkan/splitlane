@@ -11,8 +11,8 @@ Pinned Ghostty source:
 
 Reviewed archive fingerprints:
 
-- `x86_64-unknown-linux-gnu`: `dc6a602b8cd44eec1c3359c0fd7eb9dd6bae7c5b167cce4bb1890dcb20586906`
-- `aarch64-unknown-linux-gnu`: `63c1ab808680a8badda76c4c727462114c9ca9231ff148a8b70d61eb79d2db5e`
+- `x86_64-unknown-linux-gnu`: `0ddbfbe65e50f78b607c8579eec1f8460cc0325f8f96f97122624f1af93ff352`
+- `aarch64-unknown-linux-gnu`: `e0785699148612d9443c5584f9b5f390450dcd56420dde74c8c3ad2ba4897d91`
 - `x86_64-pc-windows-msvc`: `69d3676b4dce995c72b60c9a5b1b0a260e2c1778f623dab82835aa484dd04ac3`
 
 ## Artifact member inventory
