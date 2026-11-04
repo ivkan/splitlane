@@ -100,6 +100,16 @@ impl RotatingFile {
     }
 }
 
+/// Append `bytes` to `path` from a process that does not keep the file:
+/// opened for this write alone, so a file the keeping process has just moved
+/// aside is not written to after it. For a process that logs a few lines an
+/// hour beside the one that keeps the file, as the phone bridge does.
+pub(crate) fn append_once(path: &Path, bytes: &[u8]) {
+    if let Some((mut file, _)) = open_append(path) {
+        let _ = file.write_all(bytes);
+    }
+}
+
 /// `app.log` -> `app.log.1`.
 pub(crate) fn rotated(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
@@ -125,6 +135,18 @@ fn open_append(path: &Path) -> Option<(std::fs::File, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_appended_once_lands_after_what_is_there() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("app.log");
+        append_once(&path, b"first\n");
+        append_once(&path, b"second\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "first\nsecond\n"
+        );
+    }
 
     #[test]
     fn a_file_past_its_cap_is_moved_aside_once_and_begun_again() {
