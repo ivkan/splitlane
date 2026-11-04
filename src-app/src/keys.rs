@@ -306,6 +306,55 @@ pub fn to_esc_str(
     None
 }
 
+/// The bytes a keystroke named like `"ctrl-c"`, `"escape"` or `"1"` types
+/// into a terminal, for a key pressed by name over IPC rather than on the
+/// keyboard.
+///
+/// A parsed name carries no typed character, so a plain `1` or `y` - the
+/// keys that answer an agent's numbered menu or yes/no question - typed
+/// nothing and was reported as sent; the character is filled in as the
+/// keyboard would. A name that still types nothing is an error, never a
+/// silent success.
+///
+/// Refuses any keystroke whose resolved bytes carry CR/LF (`enter`,
+/// `ctrl-m`, `ctrl-j`, ...). The IPC-level CR/LF check only sees the
+/// keystroke's *name*, so without this guard `splitlane key <t> enter` would
+/// submit a pre-filled prompt and bypass the human-in-loop invariant -
+/// submission stays exclusive to `surface.send_text` with `submit=true`.
+pub fn keystroke_input(
+    keystroke_str: &str,
+    mode: &Modes,
+    option_as_meta: bool,
+) -> Result<Vec<u8>, String> {
+    let parsed = Keystroke::parse(keystroke_str).map_err(|e| format!("{e}"))?;
+    // Shift on a key with no case types a symbol that depends on the
+    // keyboard layout (`shift-2` is `@` or `"`); guessing would type the
+    // wrong character and report it sent.
+    if parsed.modifiers.shift
+        && parsed.key.chars().count() == 1
+        && !parsed.key.chars().all(char::is_alphabetic)
+    {
+        return Err(format!(
+            "keystroke '{keystroke_str}' depends on the keyboard layout; send the character itself"
+        ));
+    }
+    let keystroke = parsed.with_simulated_ime();
+    let typed = match to_esc_str(&keystroke, mode, option_as_meta) {
+        Some(seq) => seq.into_owned(),
+        None => keystroke
+            .key_char
+            .clone()
+            .ok_or_else(|| format!("keystroke '{keystroke_str}' types nothing"))?,
+    };
+    if typed.contains('\r') || typed.contains('\n') {
+        return Err(format!(
+            "keystroke '{keystroke_str}' would submit (CR/LF); use \
+             surface.send_text with submit=true (`splitlane send --submit`) instead"
+        ));
+    }
+    Ok(typed.into_bytes())
+}
+
 /// Map a keystroke together with the delivery policy required by the mapping.
 ///
 /// Most entries are protocol fallbacks because a stateful backend can encode
@@ -328,6 +377,56 @@ pub(crate) fn terminal_key_sequence(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_named_printable_key_types_its_character() {
+        let mode = Modes::empty();
+        for key in ["1", "2", "9", "0", "y", "n"] {
+            assert_eq!(
+                super::keystroke_input(key, &mode, false).as_deref(),
+                Ok(key.as_bytes()),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            super::keystroke_input("shift-y", &mode, false).as_deref(),
+            Ok(&b"Y"[..])
+        );
+        assert_eq!(
+            super::keystroke_input("space", &mode, false).as_deref(),
+            Ok(&b" "[..])
+        );
+    }
+
+    #[test]
+    fn named_special_keys_keep_their_sequences() {
+        let mode = Modes::empty();
+        assert_eq!(
+            super::keystroke_input("escape", &mode, false).as_deref(),
+            Ok(&b"\x1b"[..])
+        );
+        assert_eq!(
+            super::keystroke_input("down", &mode, false).as_deref(),
+            Ok(&b"\x1b[B"[..])
+        );
+        assert_eq!(
+            super::keystroke_input("ctrl-c", &mode, false).as_deref(),
+            Ok(&b"\x03"[..])
+        );
+    }
+
+    #[test]
+    fn a_key_that_would_submit_or_types_nothing_is_refused() {
+        let mode = Modes::empty();
+        for key in ["enter", "ctrl-m", "ctrl-j"] {
+            let refused = super::keystroke_input(key, &mode, false).unwrap_err();
+            assert!(refused.contains("would submit"), "{key}: {refused}");
+        }
+        let refused = super::keystroke_input("ctrl-1", &mode, false).unwrap_err();
+        assert!(refused.contains("types nothing"), "{refused}");
+        let refused = super::keystroke_input("shift-2", &mode, false).unwrap_err();
+        assert!(refused.contains("keyboard layout"), "{refused}");
+    }
+
     use super::*;
 
     #[test]
