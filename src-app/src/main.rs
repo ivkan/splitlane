@@ -3650,13 +3650,15 @@ fn main() {
     // adds the per-operation diff/git trace - matching the documented
     // "RUST_LOG=info cargo run # with logging" workflow.
     //
-    // Two exceptions at `info`: orchestration and the session host. Their
-    // lines are few - one per session opened, attached or lost - and they
-    // are what a hand-off that went wrong is reconstructed from afterwards,
-    // when it is too late to run again with `RUST_LOG` set.
+    // Three exceptions at `info`: orchestration, the session host and the
+    // phone link. Their lines are few - one per session opened, attached or
+    // lost, one per bridge started or relay connection dropped - and they
+    // are what a hand-off or a phone that went wrong is reconstructed from
+    // afterwards, when it is too late to run again with `RUST_LOG` set. The
+    // bridge's own process logs the same way (`remote::spawn`).
     let logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
         "warn,wgpu_hal=off,naga=warn,gpui_macos::text_system=error,zbus=warn,tracing::span=warn,\
-         splitlane::app::orchestration=info,splitlane::terminal::host=info",
+         splitlane::app::orchestration=info,splitlane::terminal::host=info,splitlane::remote=info",
     ))
     .target(env_logger::Target::Pipe(Box::new(StderrAndAppLog)))
     .build();

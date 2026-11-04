@@ -80,3 +80,22 @@ function squeeze(lines) {
   while (out.length && !out[out.length - 1].trim()) out.pop();
   return out;
 }
+
+/// What Send does with `text` in the reply field while `prompt` (from
+/// `screenPrompt`, or null) is on the open session's screen:
+/// `{ params, done }` to send, or `{ refuse }` to say why nothing is sent.
+///
+/// An empty field under a menu confirms its highlighted choice - the Enter a
+/// person at the computer would press after picking one - rather than doing
+/// nothing; with no menu there is nothing an empty reply could mean.
+export function sendStep(text, prompt) {
+  if (String(text ?? "").trim()) return { params: { text, submit: true }, done: "Sent." };
+  const chosen = prompt?.choices?.find((c) => c.chosen);
+  if (prompt?.choices?.length) {
+    return {
+      params: { text: "", submit: true },
+      done: chosen ? `Pressed Enter on ${chosen.key}. ${chosen.label}` : "Pressed Enter.",
+    };
+  }
+  return { refuse: "Type a reply first." };
+}

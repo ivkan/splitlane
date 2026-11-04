@@ -12,7 +12,7 @@ import { startScan } from "./scan.js";
 import * as store from "./store.js";
 import { PAGE_VERSION } from "./version.js";
 import { parse as parseMarkdown, render as renderMarkdown } from "./markdown.js";
-import { screenPrompt } from "./prompt.js";
+import { screenPrompt, sendStep } from "./prompt.js";
 
 const app = document.getElementById("app");
 const POLL_MS = 4000;
@@ -1409,9 +1409,13 @@ function renderSession(computer, surface) {
     }
   };
   const send = async () => {
-    const text = draft.value;
-    if (!text.trim()) return;
-    if (await write("send", { text, submit: true }, "Sent.")) {
+    const prompt = state.prompt?.surface === surface ? state.prompt : null;
+    const step = sendStep(draft.value, prompt);
+    if (step.refuse) {
+      say(step.refuse, true);
+      return;
+    }
+    if ((await write("send", step.params, step.done)) && step.params.text) {
       draft.value = "";
       state.drafts.delete(draftKey);
     }

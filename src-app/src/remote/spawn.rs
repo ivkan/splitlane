@@ -190,6 +190,7 @@ fn rand_bytes(out: &mut [u8]) {
 /// Body of the bridge the window started: read the token, follow the pipe
 /// for the window's end, and serve.
 pub(crate) fn run_spawned_bridge() -> i32 {
+    install_logger();
     let stdin = std::io::stdin();
     let mut token = String::new();
     if stdin.lock().read_line(&mut token).unwrap_or(0) == 0 {
@@ -224,6 +225,43 @@ pub(crate) fn run_spawned_bridge() -> i32 {
             log::warn!("phone bridge: {message}");
             1
         }
+    }
+}
+
+/// The filter the bridge logs with unless `RUST_LOG` says otherwise: its
+/// joins, drops and rejoins, a few lines a day, are what a phone that
+/// stopped reaching the computer is worked out from afterwards.
+const BRIDGE_LOG_FILTER: &str = "warn,splitlane::remote=info";
+
+/// Send the bridge's log to `app.log`, beside the window's. The bridge runs
+/// before `main` sets up the app's logger, and its standard error goes
+/// nowhere, so without this not even its warnings were kept.
+fn install_logger() {
+    let Some(path) = crate::runtime_paths::app_log_path() else {
+        return;
+    };
+    let logger = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(BRIDGE_LOG_FILTER),
+    )
+    .target(env_logger::Target::Pipe(Box::new(AppLogLine(path))))
+    .build();
+    let max_level = logger.filter();
+    if log::set_boxed_logger(Box::new(logger)).is_ok() {
+        log::set_max_level(max_level);
+    }
+}
+
+/// One log record per write, appended to `app.log` and the file let go.
+struct AppLogLine(std::path::PathBuf);
+
+impl Write for AppLogLine {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        crate::log_file::append_once(&self.0, buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

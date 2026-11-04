@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { screenPrompt } from "../public/app/prompt.js";
+import { screenPrompt, sendStep } from "../public/app/prompt.js";
 
 const permission = [
   "⏺ I'll run the release check.",
@@ -47,4 +47,23 @@ test("a numbered list in an answer above the prompt is not a menu", () => {
 
 test("an empty screen is nothing to show", () => {
   assert.deepEqual(screenPrompt(""), { lines: [], choices: [] });
+});
+
+test("Send with an empty field confirms the highlighted choice of a menu on screen", () => {
+  const prompt = screenPrompt(permission);
+  assert.ok(prompt.choices.length);
+  const step = sendStep("  ", prompt);
+  assert.deepEqual(step.params, { text: "", submit: true });
+  assert.match(step.done, /^Pressed Enter on 1\. Yes/);
+});
+
+test("Send with text sends it, menu or not", () => {
+  const prompt = screenPrompt(permission);
+  assert.deepEqual(sendStep("2", prompt).params, { text: "2", submit: true });
+  assert.deepEqual(sendStep("fix it", null).params, { text: "fix it", submit: true });
+});
+
+test("Send with an empty field and no menu says so instead of doing nothing", () => {
+  assert.ok(sendStep("", null).refuse);
+  assert.ok(sendStep("", { lines: ["Done."], choices: [] }).refuse);
 });

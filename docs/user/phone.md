@@ -48,7 +48,8 @@ the phone's own camera app can open the code's link directly.
   remembers. At the foot of a session, **Next** goes to the next one that
   needs you. A session waiting on a question shows it as its screen does -
   a permission prompt with its command - and each numbered choice as a
-  button.
+  button that presses its digit. Where the digit only moves the highlight,
+  **Send** with an empty reply confirms the highlighted choice.
 
   A shell with a command running in it - a build, a server - is listed after
   its project's sessions with how long it has run, and counts as active, as

@@ -26,6 +26,24 @@ Notable changes to Splitlane are recorded here. The format follows
   trims history by whole pages, so the count lands slightly under the
   setting.
 
+- **A phone reaches the computer again after the computer sleeps.** The
+  phone bridge now waits for the relay to answer its ping and joins the
+  room again when 20 seconds pass without an answer. Before, it noticed a
+  dead connection only when a write failed, so after a sleep it could keep a
+  connection the relay no longer delivered to, and the phone stayed out
+  until Splitlane was restarted. The bridge also writes to `app.log` now:
+  each connection to the relay, each drop with its reason, and each join
+  after one.
+
+- **Answering a waiting agent's menu from the phone works.** A key pressed by
+  name - a choice's digit on the phone, its 1, 2, 3, Y and N keys, or
+  `splitlane key <target> 1` - typed nothing into a pane open in the window
+  and was still reported as sent; it now types its character, and a key that
+  types nothing is an error. The phone's Enter key, refused by the window,
+  now confirms the highlighted choice, and Send with an empty reply under a
+  menu does the same instead of doing nothing; with no menu on screen it
+  says to type a reply first.
+
 ## [0.2.21] - 2026-11-04
 
 ### Added

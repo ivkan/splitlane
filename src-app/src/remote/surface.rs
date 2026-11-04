@@ -169,8 +169,19 @@ fn write(
             if !PHONE_KEYS.contains(&key) {
                 return Err(format!("a phone may not press `{key}`"));
             }
-            call["keystroke"] = json!(key);
-            ("surface.send_keystroke", key.len())
+            // The window presses no Enter by name: submitting goes through
+            // `send_text` with `submit`, so a script's key cannot submit a
+            // line it did not write. Enter is what a person's phone presses
+            // to confirm a menu's highlighted choice, so it is sent as that.
+            // The session host presses it by name, and is left to.
+            if key == "enter" && window_open {
+                call["text"] = json!("");
+                call["submit"] = json!(true);
+                ("surface.send_text", 0)
+            } else {
+                call["keystroke"] = json!(key);
+                ("surface.send_keystroke", key.len())
+            }
         }
         _ => ("surface.interrupt", 0),
     };
@@ -466,6 +477,23 @@ mod tests {
         assert_eq!(calls[0].1[crate::remote::spawn::DEVICE_PARAM], "Pixel");
         assert_eq!(calls[1].0, "surface.send_keystroke");
         assert_eq!(calls[2].0, "surface.interrupt");
+    }
+
+    #[test]
+    fn enter_from_a_phone_submits_through_the_window_and_is_a_key_to_the_host() {
+        let enter = json!({ "surface_id": 7, "keystroke": "enter" });
+        let surface = Recording::default();
+        ask(&surface, "key", enter.clone(), Some("t")).unwrap();
+        answer(&surface, "key", &enter, &phone(true), Some("t"), false).unwrap();
+        let calls = surface.0.into_inner();
+        // The window refuses Enter by name; a bare submit is its Enter.
+        assert_eq!(calls[0].0, "surface.send_text");
+        assert_eq!(calls[0].1["text"], "");
+        assert_eq!(calls[0].1["submit"], true);
+        assert_eq!(calls[0].1.get("keystroke"), None);
+        // The session host presses it by name.
+        assert_eq!(calls[1].0, "surface.send_keystroke");
+        assert_eq!(calls[1].1["keystroke"], "enter");
     }
 
     #[test]
