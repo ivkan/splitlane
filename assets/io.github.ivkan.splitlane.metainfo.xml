@@ -63,6 +63,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.21" date="2026-11-04">
+      <description>
+        <p>A session picked in a new pane starts in that pane. An agent that
+        compacts its context while idle no longer looks interrupted. A session
+        that opened another may close it even before its answer is read, and
+        may take other sessions off the screen when asked to.</p>
+      </description>
+    </release>
     <release version="0.2.20" date="2026-10-28">
       <description>
         <p>The diff pane shows a diff as soon as it is computed, rather than

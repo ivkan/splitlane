@@ -26,6 +26,57 @@ Notable changes to Splitlane are recorded here. The format follows
   trims history by whole pages, so the count lands slightly under the
   setting.
 
+## [0.2.21] - 2026-11-04
+
+### Added
+
+- **A session can take other sessions off the screen when the person asks.**
+  `splitlane park <target> --asked` (`asked` on `surface.park`) parks any
+  session but the caller, including ones the person opened, when the person
+  has asked for the screen to be cleared. Parking stops nothing: the session
+  keeps running in the rail and can be opened again. Without the flag a
+  session still parks only the sessions it opened, and closing, sending to
+  and interrupting another's session are unchanged. The orchestration
+  journal's `park` line now records `asked` and `opened_by_caller`.
+
+### Changed
+
+- **A session that opened another closes it even when you have not read its
+  answer.** It used to be refused with `unseen_by_person` unless it passed
+  `--unread`, and the sessions held that way stayed open for hours: often
+  the answer did not need reading, and switching to the session to clear
+  the mark was the only way out. The agent instructions now ask the opener
+  to tell you such an answer when it closes the session, and the
+  conversation stays in history. `--unread` is still accepted and changes
+  nothing.
+- **The orchestration journal tells turns apart and says who wrote.** A
+  turn that stopped for a question and went on after the answer was
+  journaled as starting again, which counted one turn two or three times;
+  going on is now `turn_resumed`. Text sent into a session after its first
+  prompt is journaled as `prompt` with `via: "send"` and who sent it, so
+  the journal shows who began each turn. A turn is called stalled after
+  fifteen minutes with no growth in its transcript, not five: at five, most
+  of them were long tool calls that went on to finish.
+
+### Fixed
+
+- **An agent that compacts its context while idle no longer looks
+  interrupted.** Claude Code compacts an idle session about 54 minutes
+  after its last turn, and that was read as a turn that started and was
+  cut short: the row's last turn moved, and a session that had opened it
+  was told it was interrupted. In a week of orchestration, most
+  "interrupted" ends were this. Request records that Claude Code writes
+  since 2.1.297, longer than a line the reader takes, no longer leave the
+  rail without word of the session either. Measured on Claude Code
+  2.1.317 and Codex 0.166.0.
+- **A session picked in a new pane's launcher starts in that pane.** In a
+  project that gives each session its own branch, the session waits for its
+  worktree, and when it was ready it went where a session opened from the
+  rail would: onto the agent pane in front, pushing that session to the
+  rail, while the new pane stayed empty. It now goes into the pane it was
+  picked in, as long as that pane is still waiting; a pane filled or closed
+  meanwhile leaves it to the usual placement.
+
 ## [0.2.20] - 2026-10-28
 
 ### Fixed

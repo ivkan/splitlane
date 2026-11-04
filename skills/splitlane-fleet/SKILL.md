@@ -202,11 +202,11 @@ session you opened cannot open sessions of its own; you cannot close, move
 or write into a session you did not open. A refusal is exit `8` with the
 reason in the message. Tell the person; do not retry.
 
-`close` is also refused with `unseen_by_person` when the person typed into
-the session and has not read its answer yet. Tell them the answer is
-waiting in that session. Only when the person has asked you to close it,
-close it with `splitlane close <name> --unread`, quoting their words in your
-reply.
+Closing a session you opened takes its row away, and with it the mark that
+tells the person an answer is waiting there. So before you close a session
+the person typed into, or one whose answer they may not have seen, tell them
+that answer in a line or two in your reply. The conversation itself stays in
+the agent's history and opens again from there.
 
 More sessions than panes:
 
@@ -257,7 +257,26 @@ about - a shell, a session in another project, or one you opened yourself,
 which you write into without asking. `"drive": "not_offered"` in `status
 --json` says the same thing and is what a session of your own shows: nobody
 is asked, send. You never close or move a session the person opened, whatever
-they answered.
+they answered - with one exception below.
+
+### Clearing the screen when the person asks
+
+When the person asks you in so many words to hide, put away or clear other
+panes - including ones they opened - you may take those sessions out of their
+panes:
+
+```bash
+splitlane park api --asked
+```
+
+`--asked` is the person's request, not yours: pass it only after they asked,
+and quote their words in your reply. Never pass it on your own initiative,
+to make room for your own work, or because a pane looks idle. Parking stops
+nothing - the session keeps running in the rail and the person can open it
+again - but it still changes what they look at. The flag lifts this one
+refusal and nothing else: you still do not close, send to, or interrupt a
+session you did not open. Without `--asked`, parking a session you did not
+open exits `8` with `not_yours`.
 
 ## 2. Read a session's state
 

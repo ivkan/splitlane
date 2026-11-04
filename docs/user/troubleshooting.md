@@ -247,11 +247,21 @@ A build from source (`cargo run`) uses `splitlane-dev` in place of
   libghostty.
 - `orchestration.jsonl` - one JSON object per line for each step of a
   session opening, driving or closing another: opens and refusals, what
-  became of a first prompt, turns starting and ending, waits for you, exits,
-  worktrees that could not be made, and turns that have said they are
-  working for five minutes while their transcript did not grow. Every line
-  has `at_unix`, `event`, `thread_id`, `opener`, `agent` and `session_id`.
-  The text of a prompt is never written, only its length.
+  became of a first prompt and of every later text sent to a session
+  (`prompt` with `via: "send"` and `by`: `opener`, `driver`, `script`,
+  `key` or `phone`; text you type yourself is not journaled), turns
+  starting and ending, waits for you, exits, worktrees that could not be
+  made, and turns that have said they are working for fifteen minutes while
+  their transcript did not grow. Every line has `at_unix`, `event`,
+  `thread_id`, `opener`, `agent` and `session_id`. The text of a prompt is
+  never written, only its length.
+
+  A turn that stops to ask you something and goes on after your answer is
+  one turn: it starts once (`turn_start`), and going on is `turn_resumed`,
+  not a second start. `runs_ended` on `turn_end` counts the turns a session
+  has ended since Splitlane last started it, not over its whole life: after
+  a restart it begins again, so it does not identify a turn across
+  restarts.
 
 Each file is kept under a few megabytes: when it fills, it is renamed to
 `<name>.1`, replacing the older one, and a new file is begun. Attach the

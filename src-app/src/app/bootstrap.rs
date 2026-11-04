@@ -1195,6 +1195,7 @@ impl SplitlaneApp {
             toast: None,
             toast_queue: std::collections::VecDeque::new(),
             phone_starts: Default::default(),
+            launcher_worktree_panes: Default::default(),
             _toast_task: None,
             #[cfg(target_os = "windows")]
             windows_backdrop_light: None,

@@ -261,15 +261,22 @@ fn add_summary(result: &Value) -> String {
     format!("{surface}\t{agent} opened {place}; runs_ended {runs_ended}{prompt}{key}")
 }
 
-/// `splitlane park <target> [--json]`: take a session out of its pane. It
-/// keeps running and keeps its row in the rail.
-pub fn park(client: &impl IpcTransport, target: &str, json: bool) -> Result<i32, CliError> {
+/// `splitlane park <target> [--asked] [--json]`: take a session out of its
+/// pane. It keeps running and keeps its row in the rail. `asked` says the
+/// person asked for it, which lets a session park one it did not open.
+pub fn park(
+    client: &impl IpcTransport,
+    target: &str,
+    asked: bool,
+    json: bool,
+) -> Result<i32, CliError> {
     let surface_id = resolve_target(client, target)?;
-    let result = super::reject_legacy_error(
-        client
-            .call("surface.park", json!({ "surface_id": surface_id }))
-            .map_err(call_error)?,
-    )?;
+    let mut params = json!({ "surface_id": surface_id });
+    if asked {
+        params["asked"] = json!(true);
+    }
+    let result =
+        super::reject_legacy_error(client.call("surface.park", params).map_err(call_error)?)?;
     if json {
         super::print_json(&result)?;
     } else {
@@ -701,12 +708,24 @@ mod tests {
     }
 
     #[test]
+    fn park_asked_carries_the_persons_request() {
+        let fake = Listed {
+            calls: RefCell::new(Vec::new()),
+            reply: Ok(json!({ "parked": true, "surface_id": 18 })),
+        };
+        assert_eq!(park(&fake, "plan", true, false).expect("ok"), EXIT_OK);
+        let calls = fake.calls.borrow();
+        assert_eq!(calls[0].0, "surface.park");
+        assert_eq!(calls[0].1, json!({ "surface_id": 18, "asked": true }));
+    }
+
+    #[test]
     fn park_names_the_surface_it_resolved() {
         let fake = Listed {
             calls: RefCell::new(Vec::new()),
             reply: Ok(json!({ "parked": true, "surface_id": 12 })),
         };
-        assert_eq!(park(&fake, "api-docs", true).expect("ok"), EXIT_OK);
+        assert_eq!(park(&fake, "api-docs", false, true).expect("ok"), EXIT_OK);
         let calls = fake.calls.borrow();
         assert_eq!(calls[0].0, "surface.park");
         assert_eq!(calls[0].1, json!({ "surface_id": 12 }));
@@ -742,7 +761,7 @@ mod tests {
         };
         let err = show(&fake, "api-docs", None, None, false).expect_err("refused");
         assert_eq!(err.code, EXIT_REFUSED);
-        let err = park(&fake, "nothing-by-this-name", false).expect_err("no target");
+        let err = park(&fake, "nothing-by-this-name", false, false).expect_err("no target");
         assert_eq!(err.code, crate::cli::EXIT_TARGET);
     }
 

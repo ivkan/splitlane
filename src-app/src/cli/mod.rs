@@ -119,7 +119,7 @@ Scripting commands (each takes --help):
   send             Write text into a session
   key              Send a named keystroke
   interrupt        Stop a session's turn
-  park             Take a session you opened out of its pane
+  park             Take a session out of its pane (yours, or any when asked)
   show             Give a session you opened a pane
   close            Close a session you opened
   focus            Give a pane the keyboard focus
@@ -341,10 +341,14 @@ enum Commands {
     /// the rail, as when its pane is closed by hand.
     ///
     /// For a session the caller opened with `add`; anything else is refused
-    /// (exit 8).
+    /// (exit 8) unless `--asked` says the person asked for it.
     Park {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
+        /// The person asked for this session to be taken off the screen. Lets
+        /// a session park one it did not open; pass it only on their word.
+        #[arg(long)]
+        asked: bool,
         /// Emit `{parked, surface_id}` as JSON.
         #[arg(long)]
         json: bool,
@@ -384,9 +388,9 @@ enum Commands {
         /// the turn is what would be lost.
         #[arg(long)]
         stop_turn: bool,
-        /// Close it even though a person has not read its last answer. Pass
-        /// this only when the person asked for the session to be closed;
-        /// without it such a session is refused (exit 8).
+        /// Accepted and recorded in the orchestration journal, and changes
+        /// nothing: a session is closed whether or not a person has read its
+        /// last answer. Kept so scripts that pass it keep working.
         #[arg(long)]
         unread: bool,
         /// Emit `{closed, surface_id, thread_id}` as JSON.
@@ -953,7 +957,11 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
                 opened_as,
             },
         ),
-        Commands::Park { target, json } => session_cmds::park(client, &target, json),
+        Commands::Park {
+            target,
+            asked,
+            json,
+        } => session_cmds::park(client, &target, asked, json),
         Commands::Close {
             target,
             stop_turn,
