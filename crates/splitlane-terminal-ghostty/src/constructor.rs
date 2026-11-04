@@ -38,13 +38,10 @@ impl DisplayTerminal {
         }
         crate::abi::validate()?;
         let mut callbacks = Box::new(CallbackState::new(size));
-        let options = sys::GhosttyTerminalOptions {
-            cols: size.cols,
-            rows: size.rows,
-            max_scrollback,
-        };
         let mut raw_terminal = std::ptr::null_mut();
-        let result = unsafe { sys::ghostty_terminal_new(allocator, &mut raw_terminal, options) };
+        let result = unsafe {
+            sys::ghostty_terminal_new(allocator, &mut raw_terminal, size.cols, size.rows)
+        };
         check("terminal_new", result)?;
         if raw_terminal.is_null() {
             return Err(GhosttyError::AbiMismatch(
@@ -57,6 +54,7 @@ impl DisplayTerminal {
         let terminal = unsafe { OwnedHandle::from_raw(raw_terminal, sys::ghostty_terminal_free) };
         callbacks::install(terminal.raw(), (&mut *callbacks) as *mut CallbackState)?;
         configure_safety_limits(terminal.raw())?;
+        configure_scrollback(terminal.raw(), max_scrollback)?;
 
         // SAFETY: each constructor writes the named handle type using the
         // selected allocator, and each paired function is that type's exact
@@ -166,7 +164,10 @@ impl DisplayTerminal {
     /// process that owns it and so may have been told only some of the
     /// colors, or none yet. A color given as `None` is forgotten, and a
     /// query for it is left unanswered rather than answered with a default
-    /// the application would take for the real theme.
+    /// the application would take for the real theme. The one exception is
+    /// Ghostty's own: since 1.4 a cursor color that was not given is
+    /// answered with the foreground, which is the color the cursor is drawn
+    /// in, so it stays unanswered only while the foreground is unknown too.
     pub fn set_known_default_colors(
         &mut self,
         foreground: Option<Rgb>,
@@ -209,6 +210,33 @@ impl DisplayTerminal {
     }
 }
 
+/// Bound history by lines, the unit the setting is given in. Ghostty's own
+/// default is a byte budget so small that a 10,000-line setting kept about
+/// 1,200 lines, while the Alacritty backend keeps the number asked for. The
+/// byte budget is lifted so that the line count alone decides; the line
+/// count is already capped by `MAX_SCROLLBACK_ROWS`.
+fn configure_scrollback(terminal: sys::GhosttyTerminal, max_lines: usize) -> Result<()> {
+    // SAFETY: `terminal` is a live handle; a null value clears the byte limit.
+    let result = unsafe {
+        sys::ghostty_terminal_set(
+            terminal,
+            sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+            std::ptr::null(),
+        )
+    };
+    check("terminal_set_scrollback_bytes", result)?;
+    // SAFETY: `terminal` is a live handle, and this option reads one `usize`
+    // from `max_lines`, which outlives the call.
+    let result = unsafe {
+        sys::ghostty_terminal_set(
+            terminal,
+            sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+            (&max_lines as *const usize).cast::<c_void>(),
+        )
+    };
+    check("terminal_set_scrollback_lines", result)
+}
+
 fn configure_safety_limits(terminal: sys::GhosttyTerminal) -> Result<()> {
     let zero = 0u64;
     let disabled = false;
@@ -223,9 +251,13 @@ fn configure_safety_limits(terminal: sys::GhosttyTerminal) -> Result<()> {
             sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
             (&disabled as *const bool).cast::<c_void>(),
         ),
+        // Since Ghostty 1.4 this option takes a `GhosttyString*` naming the
+        // one directory temporary files may come from, and a null pointer is
+        // what disables the medium. Passing a `bool*` here made Ghostty read
+        // a pointer and a length from beyond that byte.
         (
             sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
-            (&disabled as *const bool).cast::<c_void>(),
+            std::ptr::null::<c_void>(),
         ),
         (
             sys::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
@@ -364,6 +396,52 @@ mod tests {
         remap: Some(tracked_remap),
         free: Some(tracked_free),
     };
+
+    #[test]
+    fn every_kitty_image_medium_and_the_image_store_start_disabled() {
+        let terminal = DisplayTerminal::new(WindowSize::new(80, 24, 8, 16).unwrap(), 1_000)
+            .expect("terminal must initialize");
+        let raw = terminal.terminal.raw();
+        let mut storage_limit = u64::MAX;
+        let mut file = true;
+        let mut shared_memory = true;
+        let mut temp_dir = sys::GhosttyString {
+            ptr: std::ptr::null(),
+            len: usize::MAX,
+        };
+        // SAFETY: `raw` is the live terminal owned by `terminal`, and each
+        // field selects the output type the v1.4.0 header documents for it.
+        unsafe {
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_STORAGE_LIMIT,
+                &mut storage_limit,
+            )
+            .expect("storage limit is readable");
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_FILE,
+                &mut file,
+            )
+            .expect("file medium is readable");
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+                &mut shared_memory,
+            )
+            .expect("shared-memory medium is readable");
+            crate::engine::get_terminal(
+                raw,
+                sys::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+                &mut temp_dir,
+            )
+            .expect("temporary-file medium is readable");
+        }
+        assert_eq!(storage_limit, 0);
+        assert!(!file);
+        assert!(!shared_memory);
+        assert_eq!(temp_dir.len, 0, "no temporary-file directory is allowed");
+    }
 
     #[test]
     fn configured_default_colors_answer_osc_queries() {

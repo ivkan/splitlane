@@ -54,6 +54,7 @@ ACTUAL_SHA="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
   exit 1
 }
 SOURCE_STATUS="$(git -C "$SOURCE_DIR" status --porcelain --untracked-files=all)"
+SOURCE_DATE_EPOCH="$(git -C "$SOURCE_DIR" log -1 --format=%ct HEAD)"
 [[ -z "$SOURCE_STATUS" ]] || {
   echo "Ghostty source must be a clean checkout of $SOURCE_SHA" >&2
   printf '%s\n' "$SOURCE_STATUS" >&2
@@ -71,6 +72,7 @@ ACTUAL_ZIG="$(zig version)"
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
 command -v nm >/dev/null || { echo "nm is required to verify exported symbols" >&2; exit 1; }
 command -v ar >/dev/null || { echo "ar is required to normalize release archives" >&2; exit 1; }
+command -v taskset >/dev/null || { echo "taskset from util-linux is required to build on one CPU" >&2; exit 1; }
 command -v eu-strip >/dev/null || { echo "eu-strip from elfutils is required to normalize release archives" >&2; exit 1; }
 
 ACTUAL_HEADER_SHA256="$(sha256sum "$SOURCE_DIR/$HEADER_PATH" | awk '{print $1}')"
@@ -160,24 +162,49 @@ report_archive_difference() {
 build_one() {
   local rust_target="$1"
   local output="$2"
-  local cache="$3"
   local target
   target="$(zig_target "$rust_target")"
-  rm -rf "$output" "$cache"
-  mkdir -p "$output" "$cache"
+  # Both builds of a target run at the same fixed paths, one after the
+  # other, from an empty cache. Zig 0.17 lets the build runner and the
+  # compiler pick a random seed and run as many jobs as there are cores,
+  # and the ReleaseFast objects then differ between clean builds on CI
+  # runners (same size, different bytes in compiler_rt.o and the vt
+  # zig-compilation unit). A fixed seed, one job, fixed cache and prefix
+  # paths and the source commit's time make the build a function of its
+  # inputs; --verify-reproducible is what proves it.
+  #
+  # `-j1` limits the build runner, not the compiler: Zig still sizes its
+  # own thread pool from the CPUs it may run on, and the numbers in its
+  # `__anon_N` symbol names follow the order those threads finish in. On
+  # a six-core aarch64 machine two builds with `-j1` gave compiler_rt.o
+  # objects with the same size and different symbol names; pinned to one
+  # CPU, two builds gave the same bytes.
+  local cpu
+  cpu="$(awk '/^Cpus_allowed_list:/ {print $2}' /proc/self/status | cut -d, -f1 | cut -d- -f1)"
+  [[ -n "$cpu" ]] || { echo "cannot read the CPUs this build may run on" >&2; return 1; }
+  local work="$ROOT/target/libghostty-build/$rust_target"
+  local prefix="$work/out"
+  local cache="$work/cache"
+  rm -rf "$work" "$output"
+  mkdir -p "$cache" "$(dirname "$output")"
   (
     cd "$SOURCE_DIR"
-    ZIG_GLOBAL_CACHE_DIR="$cache/global" ZIG_LOCAL_CACHE_DIR="$cache/local" zig build \
+    SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+      ZIG_GLOBAL_CACHE_DIR="$cache/global" ZIG_LOCAL_CACHE_DIR="$cache/local" \
+      taskset -c "$cpu" zig build \
+      --seed=0 -j1 \
       -Demit-lib-vt=true \
       -Dtarget="$target" \
       -Doptimize="$BUILD_MODE" \
-      --prefix "$output"
+      --prefix "$prefix"
   )
+  mv "$prefix" "$output"
+  rm -rf "$work"
   local archive="$output/lib/libghostty-vt.a"
   [[ -f "$archive" ]] || { echo "missing static archive: $archive" >&2; return 1; }
   [[ -f "$output/$HEADER_PATH" ]] || { echo "missing installed header: $output/$HEADER_PATH" >&2; return 1; }
   case "$ARCHIVE_NORMALIZATION" in
-    elfutils-strip-debug+ar-D) normalize_archive "$archive" ;;
+    fixed-cache-prefix+zig-build-seed0-j1-one-cpu+elfutils-strip-debug+ar-D) normalize_archive "$archive" ;;
     *) echo "unsupported archive normalization: $ARCHIVE_NORMALIZATION" >&2; return 1 ;;
   esac
   nm -g --defined-only "$archive" | grep -E "[[:space:]]${BUILD_INFO_SYMBOL}$" >/dev/null || {
@@ -203,14 +230,12 @@ build_one() {
 
 for rust_target in "${TARGETS[@]}"; do
   output="$ROOT/target/libghostty/$rust_target"
-  cache="$ROOT/target/libghostty-cache/$rust_target"
-  build_one "$rust_target" "$output" "$cache"
+  build_one "$rust_target" "$output"
 
   if ((VERIFY_REPRODUCIBLE)); then
-    second_output="$(mktemp -d)"
-    second_cache="$(mktemp -d)"
-    trap 'rm -rf "$second_output" "$second_cache"' EXIT
-    build_one "$rust_target" "$second_output" "$second_cache"
+    second_output="$(mktemp -d)/$rust_target"
+    trap 'rm -rf "$(dirname "$second_output")"' EXIT
+    build_one "$rust_target" "$second_output"
     cmp "$output/lib/libghostty-vt.a" "$second_output/lib/libghostty-vt.a" || {
       report_archive_difference "$output/lib/libghostty-vt.a" "$second_output/lib/libghostty-vt.a"
       exit 1
@@ -218,7 +243,7 @@ for rust_target in "${TARGETS[@]}"; do
     cmp "$output/$HEADER_PATH" "$second_output/$HEADER_PATH"
     cmp "$output/bindings.rs" "$second_output/bindings.rs"
     cmp "$output/build-info.txt" "$second_output/build-info.txt"
-    rm -rf "$second_output" "$second_cache"
+    rm -rf "$(dirname "$second_output")"
     trap - EXIT
   fi
 

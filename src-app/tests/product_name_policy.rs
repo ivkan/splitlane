@@ -116,15 +116,6 @@ const ALLOWED_LITERALS_BY_PATH: &[(&str, &str)] = &[
     // then have to spell a repository name the script exists to keep out of
     // the published tree.
     ("scripts/publish-public.sh", "paneflow"),
-    // The libghostty Windows reproducibility triangle. The committed prebuilt
-    // was built under the former name, and its `build-info.txt` records the
-    // directories it used. The build script reconstructs those paths to check
-    // the record field by field, and the producer script writes them - so
-    // producer, record and consumer must name the same directory or the
-    // Windows leg refuses to link. They move together the day the prebuilt is
-    // rebuilt, and not before.
-    ("crates/splitlane-libghostty-sys/build.rs", "paneflow-zig"),
-    ("scripts/build-libghostty-windows.ps1", "paneflow"),
 ];
 
 /// The script that draws the publication boundary. Present in the working

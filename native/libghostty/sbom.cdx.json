@@ -1,32 +1,32 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.6",
-  "serialNumber": "urn:uuid:4d5095de-df50-4d58-bda5-7102569eca0a",
+  "serialNumber": "urn:uuid:9cab38cf-73e5-5157-84f8-ff5c23f9d897",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-07-19T00:00:00Z",
+    "timestamp": "2026-10-27T15:51:48Z",
     "authors": [
       {
-        "name": "Strivex"
+        "name": "Splitlane"
       }
     ],
     "component": {
       "type": "application",
-      "bom-ref": "paneflow-libghostty-windows",
-      "name": "Paneflow libghostty Windows integration",
-      "version": "0.1.0-dev+ae52f97dc",
+      "bom-ref": "splitlane-libghostty-windows",
+      "name": "Splitlane libghostty Windows integration",
+      "version": "0.1.0-dev+83fb9562",
       "properties": [
         {
-          "name": "paneflow:rust-target",
+          "name": "splitlane:rust-target",
           "value": "x86_64-pc-windows-msvc"
         },
         {
-          "name": "paneflow:linkage",
+          "name": "splitlane:linkage",
           "value": "static"
         },
         {
-          "name": "paneflow:zig-version",
-          "value": "0.15.2"
+          "name": "splitlane:zig-version",
+          "value": "0.17.0"
         }
       ]
     }
@@ -34,41 +34,45 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "libghostty-vt@ae52f97dcac558735cfa916ea3965f247e5c6e9e",
+      "bom-ref": "libghostty-vt@83fb95624b0439ee660c2679b43b38c8b63769cd",
       "name": "libghostty-vt",
-      "version": "0.1.0-dev+ae52f97dc",
-      "purl": "pkg:github/ghostty-org/ghostty@ae52f97dcac558735cfa916ea3965f247e5c6e9e",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "69d3676b4dce995c72b60c9a5b1b0a260e2c1778f623dab82835aa484dd04ac3"
-        }
-      ],
+      "version": "0.1.0-dev+83fb9562",
       "licenses": [
         {
           "expression": "MIT"
         }
       ],
+      "purl": "pkg:github/ghostty-org/ghostty@83fb95624b0439ee660c2679b43b38c8b63769cd",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "95fa652d4ca7d323f1b3edcfb984172ed95e2f380cd61127511b6de9191eee5b"
+        }
+      ],
       "properties": [
         {
-          "name": "paneflow:source-repository",
+          "name": "splitlane:source-repository",
           "value": "https://github.com/ghostty-org/ghostty.git"
         },
         {
-          "name": "paneflow:optimization",
+          "name": "splitlane:source-tag",
+          "value": "v1.4.0"
+        },
+        {
+          "name": "splitlane:optimization",
           "value": "ReleaseFast"
         },
         {
-          "name": "paneflow:simd",
+          "name": "splitlane:simd",
           "value": "upstream-default"
         }
       ]
     },
     {
       "type": "framework",
-      "bom-ref": "zig-runtime@0.15.2",
+      "bom-ref": "zig-compiler-runtime@0.17.0",
       "name": "Zig compiler runtime",
-      "version": "0.15.2",
+      "version": "0.17.0",
       "licenses": [
         {
           "expression": "MIT"
@@ -77,9 +81,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "uucode@54d650cf37948552f0c3d8168903e5e8a16901b8",
+      "bom-ref": "uucode@0.2.0@ea62149739404a73c202b48a33bf6dd2af4bd9b0",
       "name": "uucode",
-      "version": "0.2.0+54d650cf",
+      "version": "0.2.0@ea62149739404a73c202b48a33bf6dd2af4bd9b0",
       "licenses": [
         {
           "expression": "MIT"
@@ -88,9 +92,9 @@
     },
     {
       "type": "data",
-      "bom-ref": "unicode-character-database@17.0.0",
+      "bom-ref": "unicode-character-database@18.0.0",
       "name": "Unicode Character Database",
-      "version": "17.0.0",
+      "version": "18.0.0",
       "licenses": [
         {
           "expression": "Unicode-3.0"
@@ -99,7 +103,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "bjoern-hoehmann-utf8-dfa@uucode-0.2.0",
+      "bom-ref": "bjoern-hoehrmann-utf-8-dfa@uucode-0.2.0-bundled",
       "name": "Bjoern Hoehrmann UTF-8 DFA",
       "version": "uucode-0.2.0-bundled",
       "licenses": [
@@ -110,9 +114,9 @@
     },
     {
       "type": "data",
-      "bom-ref": "xorg-rgb@f4fdceb8edc4d706e26fb6340d1c9dee8cbec78e",
+      "bom-ref": "x-org-rgb-data@rgb-1.1.1@f4fdceb8edc4d706e26fb6340d1c9dee8cbec78e",
       "name": "X.Org rgb data",
-      "version": "rgb-1.1.1+f4fdceb8",
+      "version": "rgb-1.1.1@f4fdceb8edc4d706e26fb6340d1c9dee8cbec78e",
       "licenses": [
         {
           "expression": "MIT"
@@ -143,9 +147,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "highway@66486a10623fa0d72fe91260f96c892e41aceb06",
+      "bom-ref": "highway@1.2.0@66486a10623fa0d72fe91260f96c892e41aceb06",
       "name": "highway",
-      "version": "1.2.0+66486a10",
+      "version": "1.2.0@66486a10623fa0d72fe91260f96c892e41aceb06",
       "licenses": [
         {
           "expression": "Apache-2.0 OR BSD-3-Clause"
@@ -153,10 +157,21 @@
       ]
     },
     {
+      "type": "library",
+      "bom-ref": "wuffs@0.4.0-alpha.9+3837.20240914@7411f488fe2e2c205c3d3b3d28638b7356522930",
+      "name": "wuffs",
+      "version": "0.4.0-alpha.9+3837.20240914@7411f488fe2e2c205c3d3b3d28638b7356522930",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ]
+    },
+    {
       "type": "framework",
-      "bom-ref": "llvm-libcxx-headers@zig-0.15.2",
+      "bom-ref": "llvm-libc-headers@zig-0.17.0-bundled",
       "name": "LLVM libc++ headers",
-      "version": "zig-0.15.2-bundled",
+      "version": "zig-0.17.0-bundled",
       "licenses": [
         {
           "expression": "Apache-2.0 WITH LLVM-exception"
@@ -166,18 +181,19 @@
   ],
   "dependencies": [
     {
-      "ref": "paneflow-libghostty-windows",
+      "ref": "splitlane-libghostty-windows",
       "dependsOn": [
-        "libghostty-vt@ae52f97dcac558735cfa916ea3965f247e5c6e9e",
-        "zig-runtime@0.15.2",
-        "uucode@54d650cf37948552f0c3d8168903e5e8a16901b8",
-        "unicode-character-database@17.0.0",
-        "bjoern-hoehmann-utf8-dfa@uucode-0.2.0",
-        "xorg-rgb@f4fdceb8edc4d706e26fb6340d1c9dee8cbec78e",
+        "libghostty-vt@83fb95624b0439ee660c2679b43b38c8b63769cd",
+        "zig-compiler-runtime@0.17.0",
+        "uucode@0.2.0@ea62149739404a73c202b48a33bf6dd2af4bd9b0",
+        "unicode-character-database@18.0.0",
+        "bjoern-hoehrmann-utf-8-dfa@uucode-0.2.0-bundled",
+        "x-org-rgb-data@rgb-1.1.1@f4fdceb8edc4d706e26fb6340d1c9dee8cbec78e",
         "foot-kitty-keymap@c13495e26ef7c239b330dccf1afef44430b15543",
         "simdutf@9.0.0",
-        "highway@66486a10623fa0d72fe91260f96c892e41aceb06",
-        "llvm-libcxx-headers@zig-0.15.2"
+        "highway@1.2.0@66486a10623fa0d72fe91260f96c892e41aceb06",
+        "wuffs@0.4.0-alpha.9+3837.20240914@7411f488fe2e2c205c3d3b3d28638b7356522930",
+        "llvm-libc-headers@zig-0.17.0-bundled"
       ]
     }
   ]

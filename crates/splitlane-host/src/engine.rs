@@ -599,13 +599,18 @@ mod ghostty_tests {
             "^[0n^[?62;22;52c^[0n"
         );
 
-        // What a pane does not answer is not answered here: a mode that is
-        // not a private one, a paste from the clipboard, an enquiry, and
-        // the settings and capabilities asked for by name.
-        assert_eq!(ask(&mut engine, b"\x1b[4$p"), "");
+        // An ANSI mode is answered as a private one is: Ghostty 1.4 reports
+        // insert mode (4) as reset where earlier versions said nothing.
+        assert_eq!(ask(&mut engine, b"\x1b[4$p"), "^[4;2$y");
+
+        // The graphic rendition asked for by name is answered too, since
+        // Ghostty 1.4.
+        assert_eq!(ask(&mut engine, b"\x1bP$qm\x1b\\"), "^P1$r0m^\\");
+
+        // What a pane does not answer is not answered here: a paste from
+        // the clipboard, an enquiry, and the capabilities asked for by name.
         assert_eq!(ask(&mut engine, b"\x1b]52;c;?\x07"), "");
         assert_eq!(ask(&mut engine, b"\x05"), "");
-        assert_eq!(ask(&mut engine, b"\x1bP$qm\x1b\\"), "");
         assert_eq!(ask(&mut engine, b"\x1bP+q544e\x1b\\"), "");
         // And what is for a window is no answer to the program.
         assert_eq!(
@@ -662,10 +667,12 @@ mod ghostty_tests {
             cell_width: Some(9),
             cell_height: Some(18),
         });
-        // Each answer ends the way its question did.
+        // Each answer ends the way its question did. A cursor colour that was
+        // not given is the foreground's, as Ghostty 1.4 draws it, and a
+        // pane on the same engine answers the same.
         assert_eq!(
             ask(&mut engine, questions),
-            "^]10;rgb:d0d0/d1d1/d2d2\x07^]11;rgb:1212/3434/5656^\\^[4;432;720t^[6;18;9t"
+            "^]10;rgb:d0d0/d1d1/d2d2\x07^]11;rgb:1212/3434/5656^\\^]12;rgb:d0d0/d1d1/d2d2\x07^[4;432;720t^[6;18;9t"
         );
         // An indexed colour is not answered for even when it was given: a
         // pane, which has the whole palette, does not answer either.
@@ -701,7 +708,9 @@ mod ghostty_tests {
             ..Facts::default()
         };
         engine.set_facts(&cell);
-        assert_eq!(ask(&mut engine, b"\x1b[?2048h"), "");
+        // Turning the reports on reports the size at once (Ghostty 1.4, as
+        // the in-band resize protocol asks).
+        assert_eq!(ask(&mut engine, b"\x1b[?2048h"), "^[48;24;80;432;720t");
         // The report waits for the next output, as it does in a pane.
         engine.resize(100, 30, None);
         assert_eq!(ask(&mut engine, b""), "^[48;30;100;540;900t");

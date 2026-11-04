@@ -69,6 +69,7 @@ for component in \
   'foot kitty keymap' \
   simdutf \
   Highway \
+  wuffs \
   'LLVM libc++ headers'; do
   grep -Fq "$component" "$NOTICE" || {
     echo "native notice is missing $component" >&2
