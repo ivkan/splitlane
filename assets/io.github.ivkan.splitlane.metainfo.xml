@@ -63,6 +63,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.22" date="2026-11-04">
+      <description>
+        <p>The terminal engine on Linux and Windows moves to Ghostty 1.4.0,
+        which closes a memory corruption triggered by clearing the screen at a
+        marked shell prompt. Scrollback on Linux and Windows keeps the number
+        of lines it is set to. A phone can answer a waiting agent's menu, and
+        reaches the computer again after the computer sleeps.</p>
+      </description>
+    </release>
     <release version="0.2.21" date="2026-11-04">
       <description>
         <p>A session picked in a new pane starts in that pane. An agent that

@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-11-04
+
 ### Security
 
 - **The terminal engine on Linux and Windows moves to Ghostty 1.4.0.** The pinned
