@@ -162,7 +162,26 @@ while true; do
 done
 
 # --- Staple ---------------------------------------------------------------
-xcrun stapler staple "$DMG"
+# `stapler` fetches the ticket from Apple's CloudKit, and that request can
+# drop: on the macos-15 runners it failed with NSURLErrorDomain -1005 ("The
+# network connection was lost", error 68) twice in a row, after the
+# submission was Accepted. The ticket was there; the connection was not. So
+# the staple is retried with a growing wait before the release is failed.
+staple_with_retry() {
+    local target="$1" attempt delay
+    for attempt in 1 2 3 4 5; do
+        if xcrun stapler staple "$target"; then
+            return 0
+        fi
+        [ "$attempt" -lt 5 ] || break
+        delay=$((attempt * 20))
+        echo "::warning::stapler staple failed (attempt $attempt of 5); retrying in ${delay}s"
+        sleep "$delay"
+    done
+    echo "::error::stapler staple failed 5 times for $target"
+    return 1
+}
+staple_with_retry "$DMG"
 xcrun stapler validate "$DMG"
 
 # --- Gatekeeper -----------------------------------------------------------
