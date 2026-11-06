@@ -67,7 +67,7 @@ jobs:
   #                       so adding new workspace members requires no
   #                       workflow update.
   #
-  # Gating posture: the macos-14 / windows-2022
+  # Gating posture: the macos-15 / windows-2022
   # runners are 14× / 2× pricier than ubuntu-latest and contribute
   # most of CI wall-clock. The path filter short-circuits them on
   # docs-only / non-workflow .github/** PRs.
@@ -631,34 +631,34 @@ jobs:
   # on every PR so a regression in platform-gated code is caught at the PR
   # gate rather than at release cut.
   #
-  # Runner: macos-14 (Apple Silicon M1, 3 vCPU / 7 GB, Xcode + CLT preinstalled).
-  # Fallback: if a PR consistently exceeds 20 min wall time on macos-14,
-  # swap to `macos-14-xlarge` (6 vCPU, paid tier) and note the rationale
+  # Runner: macos-15 (Apple Silicon M1, 3 vCPU / 7 GB, Xcode + CLT preinstalled).
+  # Fallback: if a PR consistently exceeds 20 min wall time on macos-15,
+  # swap to `macos-15-xlarge` (6 vCPU, paid tier) and note the rationale
   # in the PR description.
   macos_check:
     name: macOS aarch64 smoke build
     # Only run when Rust-relevant files change. `needs: orchestrate`
     # waits for the cheap filter job (runs on ubuntu-latest, ~seconds) and
-    # short-circuits the 14× pricier macos-14 runner on docs-only /
+    # short-circuits the 14× pricier macos-15 runner on docs-only /
     # non-workflow .github/** PRs.
     needs: orchestrate
     if: >-
       needs.orchestrate.outputs.rust == 'true' ||
       needs.orchestrate.outputs.ci == 'true' ||
       needs.orchestrate.outputs.release_packaging == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 
       # Fail fast if the runner image drifts away from a full Xcode
-      # install. The macos-14 hosted image ships Xcode 15+ with the Metal
+      # install. The macos-15 hosted image ships Xcode 16+ with the Metal
       # toolchain preinstalled, so under normal conditions every check here
       # succeeds silently; the value is turning an otherwise cryptic mid-compile
       # "Metal.h: no such file" error into a clearly labelled preflight failure
       # that points at the runner configuration rather than the Rust source.
       #
-      # The same step is expected to be ported to release.yml's macos-14 matrix
+      # The same step is expected to be ported to release.yml's macos-15 matrix
       # leg - keep this block in sync across workflows.
       - name: Verify Xcode CLT + Metal toolchain
         run: |
@@ -666,7 +666,7 @@ jobs:
 
           CLT_PATH="$(xcode-select -p 2>/dev/null || true)"
           if [ -z "$CLT_PATH" ] || [ ! -d "$CLT_PATH" ]; then
-            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH'). GitHub macos-14 runners should ship Xcode preinstalled - this indicates a runner image drift or a misconfigured self-hosted runner."
+            echo "::error::Xcode Command Line Tools not found (xcode-select -p returned '$CLT_PATH'). GitHub macos-15 runners should ship Xcode preinstalled - this indicates a runner image drift or a misconfigured self-hosted runner."
             exit 1
           fi
           echo "Xcode CLT path: $CLT_PATH"
@@ -782,7 +782,7 @@ jobs:
   #     alone passes this trivially when rendering works; failure
   #     means we're staring at a black screen or empty cells).
   #
-  # Runner: macos-14 hosts a real macOS user session with WindowServer
+  # Runner: macos-15 hosts a real macOS user session with WindowServer
   # access - GUI apps launch and render normally, exactly the pattern
   # used by Electron / Flutter / native-Cocoa CI setups.
   # ───────────────────────────────────────────────────────────────────────
@@ -794,12 +794,12 @@ jobs:
     # ride in on edits to the rendering paths declared by the `changes`
     # job. A pure config-file or non-render Rust PR cannot regress
     # macOS Core Text empty-text rendering, so spending 10-15 min on a
-    # macos-14 runner on every such PR is wasted spend.
+    # macos-15 runner on every such PR is wasted spend.
     if: >-
       needs.orchestrate.outputs.rendering == 'true' ||
       needs.orchestrate.outputs.ci == 'true' ||
       needs.orchestrate.outputs.release_packaging == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
@@ -885,7 +885,7 @@ jobs:
           echo "── Resolved font ──"
           if grep "font: resolved family=" splitlane.log; then
             if grep -q "font: resolved family='JetBrains Mono'" splitlane.log; then
-              echo "::warning::Embedded JetBrains Mono fallback was selected - Core Text did not surface a system mono family (Menlo / Monaco / Courier). The fallback is the safety net working as designed, but persistent selection on macos-14 indicates a Core Text drift worth investigating."
+              echo "::warning::Embedded JetBrains Mono fallback was selected - Core Text did not surface a system mono family (Menlo / Monaco / Courier). The fallback is the safety net working as designed, but persistent selection on macos-15 indicates a Core Text drift worth investigating."
             fi
           else
             echo "::error::No 'font: resolved family=' line in app log. The app likely crashed before first render - splitlane.log + screenshot.png artifacts will pin down the exact failure."
