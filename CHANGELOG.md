@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.23] - 2026-11-06
+
 ### Changed
 
 - **`wait --settled` says when a background command is what kept it.** When

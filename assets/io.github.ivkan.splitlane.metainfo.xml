@@ -63,6 +63,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.23" date="2026-11-06">
+      <description>
+        <p>A script that waits for an agent's turn with --settled is told when
+        the agent is idle and only a background command of its own is still
+        running, instead of a plain timeout, so it no longer waits forever on
+        a command that never ends.</p>
+      </description>
+    </release>
     <release version="0.2.22" date="2026-11-04">
       <description>
         <p>The terminal engine on Linux and Windows moves to Ghostty 1.4.0,
