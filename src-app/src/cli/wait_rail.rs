@@ -22,7 +22,7 @@ use super::selector::{resolve_all, resolve_target};
 use super::wait_cmd::MatchMode;
 use super::{
     CliError, EXIT_AGENT_FAILED, EXIT_INTERRUPTED, EXIT_NEEDS_PERSON, EXIT_NO_TURN_SIGNAL, EXIT_OK,
-    EXIT_RUNTIME, EXIT_TIMEOUT,
+    EXIT_RUNTIME, EXIT_TIMEOUT, EXIT_UNSETTLED,
 };
 
 /// How often `surface.status` is asked when no event wakes the loop sooner.
@@ -139,6 +139,9 @@ enum Outcome {
     NoTurnSignal,
     /// A source that could report a turn ending stopped speaking mid-wait.
     Degraded,
+    /// `--settled`: the turn ended and the agent is idle, but a background
+    /// command of its own was still alive when the time ran out.
+    Unsettled,
     Timeout,
 }
 
@@ -155,6 +158,7 @@ impl Outcome {
             Outcome::NoRail => "no_rail",
             Outcome::NoTurnSignal => "no_turn_signal",
             Outcome::Degraded => "degraded",
+            Outcome::Unsettled => "unsettled",
             Outcome::Timeout => "timeout",
         }
     }
@@ -167,23 +171,27 @@ impl Outcome {
             Outcome::Failed => EXIT_AGENT_FAILED,
             Outcome::Closed | Outcome::NoTurn => EXIT_RUNTIME,
             Outcome::NoRail | Outcome::NoTurnSignal | Outcome::Degraded => EXIT_NO_TURN_SIGNAL,
+            Outcome::Unsettled => EXIT_UNSETTLED,
             Outcome::Timeout => EXIT_TIMEOUT,
         }
     }
 
     /// Worst first, for the exit code of a wait over several surfaces: a
     /// failure outranks a question, which outranks a surface that could not be
-    /// waited on, which outranks running out of time. A stopped turn comes
-    /// last of the ones that are not success: every other outcome asks for
-    /// something to be done first, and each surface's own word is in the
-    /// report either way.
+    /// waited on, which outranks running out of time. A turn held open by a
+    /// background command comes after a surface still at work: that one is
+    /// the reason to wait longer, and waiting longer is no use for this one.
+    /// A stopped turn comes last of the ones that are not success: every
+    /// other outcome asks for something to be done first, and each surface's
+    /// own word is in the report either way.
     fn severity(&self) -> u8 {
         match self {
-            Outcome::Failed => 6,
-            Outcome::Waiting => 5,
-            Outcome::NoRail | Outcome::NoTurnSignal | Outcome::Degraded => 4,
-            Outcome::Closed | Outcome::NoTurn => 3,
-            Outcome::Timeout => 2,
+            Outcome::Failed => 7,
+            Outcome::Waiting => 6,
+            Outcome::NoRail | Outcome::NoTurnSignal | Outcome::Degraded => 5,
+            Outcome::Closed | Outcome::NoTurn => 4,
+            Outcome::Timeout => 3,
+            Outcome::Unsettled => 2,
             Outcome::Interrupted => 1,
             Outcome::Finished | Outcome::Matched => 0,
         }
@@ -207,6 +215,10 @@ struct Track {
     saw_turn_signal: bool,
     /// The last rail read, kept for the report.
     last: Option<Rail>,
+    /// At the last read the turn had ended and only `--settled` kept the wait
+    /// open, for a background command still alive. Running out of time in
+    /// that state is `Unsettled`, not `Timeout`.
+    held_by_shells: bool,
 }
 
 /// Decide one target's `--until turn-end` wait from one observation.
@@ -243,6 +255,7 @@ fn decide_turn_end(
         Observation::Rail(rail) => rail,
     };
     track.last = Some(rail.clone());
+    track.held_by_shells = false;
     let explicit = options.after.is_some();
     let baseline = *track
         .baseline
@@ -259,6 +272,7 @@ fn decide_turn_end(
         // Nothing says whether this one will ever end, so a session that
         // left a dev server behind is waited on until the timeout.
         if options.settled && rail.background_shells > 0 {
+            track.held_by_shells = true;
             return Step::Continue;
         }
         return Step::Done(match rail.last_outcome.as_deref() {
@@ -375,13 +389,22 @@ impl Session {
     /// Close the wait: whatever is still undecided ran out of time.
     fn report(mut self) -> (Value, i32) {
         let any = self.options.mode == MatchMode::Any;
+        let out_of_time = |track: &Track| {
+            if track.held_by_shells {
+                Outcome::Unsettled
+            } else {
+                Outcome::Timeout
+            }
+        };
         if !any {
             for target in &mut self.targets {
-                target.outcome.get_or_insert(Outcome::Timeout);
+                if target.outcome.is_none() {
+                    target.outcome = Some(out_of_time(&target.track));
+                }
             }
         } else if self.targets.iter().all(|t| t.outcome.is_none()) {
             for target in &mut self.targets {
-                target.outcome = Some(Outcome::Timeout);
+                target.outcome = Some(out_of_time(&target.track));
             }
         }
         let decided: Vec<&Target> = self
@@ -573,6 +596,11 @@ fn finish((report, code): (Value, i32)) -> Result<i32, CliError> {
         }
         Some("interrupted") => eprintln!(
             "splitlane: the turn was stopped before it finished; there is no answer to read."
+        ),
+        Some("unsettled") => eprintln!(
+            "splitlane: the turn ended, but a background command the agent started was still \
+             running when the time ran out. Waiting again will not change that if the command \
+             never ends: read the answer with `answer`, and ask the session about the command."
         ),
         _ => {}
     }
@@ -1135,6 +1163,65 @@ mod tests {
         let (report, code) = poll(&fake, vec![1], opts);
         assert_eq!(code, EXIT_TIMEOUT);
         assert_eq!(report["outcome"], "timeout");
+    }
+
+    fn with_shells(word: &str, runs_ended: u64, shells: u64) -> Option<Value> {
+        let mut value = status(word, "T1", runs_ended)?;
+        value["rail"]["background_shells"] = json!(shells);
+        Some(value)
+    }
+
+    /// The case that made `unsettled` its own word: the agent's turn ended
+    /// beside a command that never ends, and a caller that took the plain
+    /// timeout for "still at work" waited again, and again, all night.
+    #[test]
+    fn settled_that_runs_out_of_time_beside_a_live_command_is_unsettled() {
+        let mut opts = options(Some(1));
+        opts.settled = true;
+        opts.timeout = Duration::from_secs(2);
+        let fake = FakeRail::new(vec![(
+            1,
+            vec![with_shells("running", 1, 1), with_shells("idle", 2, 1)],
+        )]);
+        let (report, code) = poll(&fake, vec![1], opts);
+        assert_eq!(code, EXIT_UNSETTLED);
+        assert_eq!(report["outcome"], "unsettled");
+        assert_eq!(report["targets"][0]["status"], "idle");
+        assert_eq!(report["targets"][0]["background_shells"], 1);
+    }
+
+    /// A session that picked up again after its command is at work, and
+    /// running out of time there is a plain timeout.
+    #[test]
+    fn settled_that_runs_out_of_time_while_the_agent_works_is_a_timeout() {
+        let mut opts = options(Some(1));
+        opts.settled = true;
+        opts.timeout = Duration::from_secs(2);
+        let fake = FakeRail::new(vec![(
+            1,
+            vec![with_shells("idle", 2, 1), with_shells("running", 2, 0)],
+        )]);
+        let (report, code) = poll(&fake, vec![1], opts);
+        assert_eq!(code, EXIT_TIMEOUT);
+        assert_eq!(report["outcome"], "timeout");
+    }
+
+    /// Under `--all` a surface still at work outranks one held by a command:
+    /// the first is the reason to wait longer.
+    #[test]
+    fn a_surface_at_work_outranks_an_unsettled_one() {
+        let mut opts = options(Some(0));
+        opts.settled = true;
+        opts.mode = MatchMode::All;
+        opts.timeout = Duration::from_secs(1);
+        let fake = FakeRail::new(vec![
+            (1, vec![with_shells("idle", 1, 1)]),
+            (2, vec![status("running", "T1", 0)]),
+        ]);
+        let (report, code) = poll(&fake, vec![1, 2], opts);
+        assert_eq!(code, EXIT_TIMEOUT);
+        assert_eq!(report["targets"][0]["outcome"], "unsettled");
+        assert_eq!(report["targets"][1]["outcome"], "timeout");
     }
 
     #[test]

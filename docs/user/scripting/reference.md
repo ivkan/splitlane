@@ -161,6 +161,7 @@ configuration files:
   | The status is `waiting` | `waiting`, with the question in `message` when known | `5` |
   | The tier is `T3` | `no_turn_signal` after `--start-grace`, or `degraded` at once if the surface was on a higher tier earlier in this wait | `7` |
   | No baseline was given, no turn was seen in flight, and `--start-grace` has passed | `no_turn` | `1` |
+  | `--timeout` passed with `--settled`, the turn ended and `background_shells` above `0` | `unsettled` | `11` |
   | `--timeout` passed | `timeout` | `4` |
 
   The baseline is `--after N`; without it, `rail.runs_ended` as it is when
@@ -183,7 +184,10 @@ configuration files:
   `--settled` waits those out too: it returns once a run past the baseline
   has ended and the session is `idle` with `background_shells` at `0`. A
   command that never ends, such as a dev server, cannot be told from one
-  that will, so `--settled` waits on it until `--timeout`. Claude Code only;
+  that will, so `--settled` waits on it until `--timeout` and then exits
+  `11` with `unsettled`, not `4`: the agent is idle, and a wait started again
+  would end the same way. Read the answer and ask the session about the
+  command rather than retrying on `11`. Claude Code only;
   for every other agent `background_shells` is `0` and the flag changes
   nothing.
 
@@ -193,7 +197,7 @@ configuration files:
   Prints `{outcome, targets: [{surface_id, outcome, status, tier, runs_ended,
   last_outcome, background_shells, message}]}`. With `--all` every surface the selector matches
   is waited on until it reaches an outcome of its own, and the exit code is
-  the worst one: `6`, then `5`, `7`, `1`, `4`, `0`. With `--any` the first
+  the worst one: `6`, then `5`, `7`, `1`, `4`, `11`, `10`, `0`. With `--any` the first
   surface to reach an outcome ends the wait and is the only one listed.
 - `wait --state WORDS` returns when `rail.status` is one of the
   comma-separated words (`starting`, `running`, `waiting`, `idle`, `failed`),
@@ -263,6 +267,7 @@ No match, or several matches where one is required, exits with code `3`.
 | `8` | A rule refused the call and nothing was done. The message names the reason; see [Refusals](#refusals). Repeating the call gets the same answer |
 | `9` | The target is a session a person opened, and the person is being asked whether the caller may send it messages. Nothing was written; `wait --until allowed` waits for the answer |
 | `10` | `wait --until turn-end`: the turn was stopped before it finished. The agent is idle and takes the next prompt; there is no answer to read |
+| `11` | `wait --until turn-end --settled`: the turn ended, and a background command the agent started was still running when `--timeout` passed. The agent is idle; waiting again does not help if the command never ends |
 | `130` | `wait --idle` interrupted with `Ctrl-C` |
 
 ## Gates

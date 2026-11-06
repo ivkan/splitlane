@@ -365,6 +365,14 @@ fn opening_a_session_keeps_its_published_names() {
         "`wait --until turn-end` names a stopped turn `interrupted`"
     );
     assert!(
+        cli.contains("pub const EXIT_UNSETTLED: i32 = 11;"),
+        "a settled wait held by a background command is exit code 11"
+    );
+    assert!(
+        read("src-app/src/cli/wait_rail.rs").contains("Outcome::Unsettled => \"unsettled\","),
+        "`wait --settled` names a turn held by a background command `unsettled`"
+    );
+    assert!(
         handler.matches("value[\"driven_by\"]").count() >= 2,
         "`surface.list` and `surface.status` both say which session drives one"
     );

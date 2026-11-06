@@ -128,8 +128,8 @@ person has - `6` when the run failed, `7` when the agent gives no turn
 signal (use `--idle --pattern` from section 4), `10` when the turn was
 stopped before it finished - a person pressed Esc there, or it was
 interrupted: there is no answer to read, so say so and ask what the session
-should do next rather than sending the task again - and `4` on timeout: wait
-again, do not send the task again.
+should do next rather than sending the task again - `4` on timeout: wait
+again, do not send the task again - and, only with `--settled` (below), `11`.
 
 It also prints where the session stands as it returns, so there is nothing
 to ask afterwards:
@@ -195,6 +195,15 @@ splitlane wait --match reviewer --until turn-end --after "$n" --settled --timeou
 
 Do not use `--settled` on a session you asked to start a server: that
 command never ends and the wait runs to its timeout.
+
+Exit `11` (`unsettled`) means the turn ended and the timeout came while a
+command of the session's own was still running. The session is idle, and
+waiting again ends the same way if that command never ends - a dev server,
+or a loop polling for a file or a line that is not coming. **Do not wait
+again on `11`.** Read the answer: it usually says whether the work is done.
+If it is, carry on with your task. If it is not clear, ask the session what
+its background command is and whether it is still needed, and tell the
+person if it is stuck. A loop that retries on `4` must not retry on `11`.
 
 Limits the app enforces, so do not try around them: eight sessions open at
 a time, counting the ones whose work is finished until you close them; a
