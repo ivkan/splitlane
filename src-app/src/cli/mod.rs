@@ -63,6 +63,14 @@ pub const EXIT_ASKED_PERSON: i32 = 9;
 /// read and a stopped turn left none; not a failure either, since the agent
 /// is idle and takes the next prompt.
 pub const EXIT_INTERRUPTED: i32 = 10;
+/// `wait --until turn-end --settled`: the turn ended, and the timeout came
+/// while a background command the agent started was still alive. Not
+/// `EXIT_TIMEOUT`, which says the agent is still at work and a longer wait is
+/// the answer: here the agent is idle, and a command that never ends (a
+/// polling loop on a file that never appears, a dev server) holds the wait
+/// for as long as any caller is willing to wait. The caller reads the answer
+/// and decides about the command instead of waiting again.
+pub const EXIT_UNSETTLED: i32 = 11;
 
 /// The verbs this CLI owns. `main.rs` gates the whole CLI dispatch (and the
 /// manual `--help`/`--version` scans) on membership here so the GUI launch
@@ -541,7 +549,9 @@ enum Commands {
         /// agent left running, and the turn that follows it. Without this a
         /// turn that ended is the end, even when the agent said it would
         /// carry on after its tests. A command that never ends (a dev
-        /// server) is waited on until `--timeout`.
+        /// server) is waited on until `--timeout`, and the wait then exits 11
+        /// (`unsettled`) rather than 4: the agent is idle, and waiting again
+        /// will not end it.
         #[arg(long, requires = "until")]
         settled: bool,
         /// With `--until turn-end`: seconds a surface is given to start a turn

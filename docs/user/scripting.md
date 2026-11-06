@@ -171,7 +171,9 @@ esac
   has ended its turn, and starts another by itself when they finish. Add
   `--settled` to wait through that: it returns when the session is idle with
   no background command of its own left running. A session that left a dev
-  server running never settles, and the wait ends on `--timeout`.
+  server running never settles: the wait ends on `--timeout` and exits `11`
+  (`unsettled`) instead of `4`. Do not loop on `11` - read the answer and
+  find out what the command is.
 - Exit `7` means nothing reporting for that surface can say a turn ended.
   That is every agent without a hook, and any agent before its first hook
   frame. `wait` refuses there, because the only thing left to read would be

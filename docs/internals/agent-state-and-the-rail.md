@@ -1149,7 +1149,13 @@ the turn, and `rail.background_shells` says how many commands the session
 left running. A caller that knows it handed over work with tests in it asks
 for `--settled`, which returns only when a run has ended and the session is
 idle with that number at zero. The cost is on the caller that asks: with a
-command that never ends, `--settled` ends on its timeout. The `surface.rail`
+command that never ends, `--settled` ends on its timeout. That timeout is
+reported as `unsettled` (exit 11), not `timeout` (exit 4). A lead session
+waited on a worker with `--settled` in a loop that retried on exit 4; the
+worker had ended its turn beside two polling loops waiting for a line its
+check never wrote, and the lead waited all night, because a plain timeout
+reads as "still at work" and the right answer to that is to wait again. The
+`surface.rail`
 event is sent when the number changes, because a caller waiting to settle is
 watching for exactly that and the status word does not move.
 

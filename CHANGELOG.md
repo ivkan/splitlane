@@ -6,6 +6,14 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`wait --settled` says when a background command is what kept it.** When
+  the agent's turn has ended and the timeout comes while a command it started
+  is still running, the wait now exits `11` with outcome `unsettled` instead
+  of `4` and `timeout`. A script that waits again on a timeout no longer
+  waits forever on a command that never ends.
+
 ## [0.2.22] - 2026-11-04
 
 ### Security
