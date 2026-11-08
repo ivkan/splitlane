@@ -222,14 +222,16 @@ session need the window. Details in [Your phone](docs/user/phone.md).
 Several tools put coding agents side by side, and three of them come up often
 next to this one. Everything said about them here is taken from each project's
 own documentation as of October 2026. All three change quickly, so check their
-docs before relying on it.
+docs before relying on it. One change since then: on 4 November 2026 Conductor
+[announced](https://www.conductor.build/announcement) that it is joining Meta
+and stopped taking new users.
 
 | | Where the agents run | How it learns an agent needs you | Platforms | License |
 |---|---|---|---|---|
 | Splitlane | Terminal panes in a desktop app, one git worktree per agent session | The agent's own session records for Claude Code and Codex, hooks for eight more; for the rest, only whether the process is alive | macOS, Linux; Windows from source | GPL-3.0-or-later |
 | [herdr](https://github.com/herdrdev/herdr) | Panes inside the terminal you already use | Rules matched against what the agent draws on screen; hooks or the agent's own reports for some agents | Linux, macOS, Windows | Apache-2.0 |
 | [cmux](https://github.com/manaflow-ai/cmux) | Terminal panes in a native macOS app | Terminal notification sequences, a `cmux notify` command and hooks it installs | macOS | GPL-3.0-or-later |
-| [Conductor](https://www.conductor.build) | Its own chat interface, one git worktree per workspace | Its documentation does not say | macOS | Closed source |
+| [Conductor](https://www.conductor.build) | Its own chat interface, one git worktree per workspace | Its documentation does not say | macOS; no new sign-ups since November 2026 | Closed source |
 
 The third column is the one Splitlane was built around. A permission prompt and
 an idle prompt can look alike on screen, and an agent's interface changes from
@@ -267,8 +269,10 @@ Where Splitlane goes a different way on purpose:
   same window.
 
 If you work inside a terminal or over SSH, herdr or plain tmux will fit better.
-If you want agents behind a chat interface rather than in terminals, on a Mac,
-that is Conductor. Splitlane is for a few agents in ordinary terminals on your own
+If you already use Conductor, it keeps working for now: the local app gets new
+models and critical fixes until early 2027, and Conductor Cloud goes read-only
+on 13 November and shuts down on 20 November 2026. New users can no longer
+download it. Splitlane is for a few agents in ordinary terminals on your own
 machine, where the question is which one is waiting.
 
 ## Install
