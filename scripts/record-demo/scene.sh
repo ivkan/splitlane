@@ -4,6 +4,13 @@
 # make the choreography land the same way every run.
 #
 #   scene.sh <stage-dir>
+#   DEMO_SCENE=fleet scene.sh <stage-dir>
+#
+# DEMO_SCENE picks what is seeded: `main` (default) three agents in a row;
+# `fleet` one lead session, named plan, with the fleet skill and leave to run
+# `splitlane`; `host` the main row, with the session host on, so the
+# sessions outlive the window. DEMO_CODEX=1 makes the middle agent of `main`
+# and `host` Codex.
 #
 # Nothing here reads or writes the real home directory. (`record.sh` hands
 # Claude's access token to the stage - never its refresh token.)
@@ -18,6 +25,13 @@ STAGE="${1:?usage: scene.sh <stage-dir>}"
 mkdir -p "$STAGE"
 STAGE="$(cd "$STAGE" && pwd -P)"
 
+SCENE="${DEMO_SCENE:-main}"
+case "$SCENE" in
+  main | fleet | host) ;;
+  *) echo "scene.sh: DEMO_SCENE must be main, fleet or host" >&2; exit 2 ;;
+esac
+DEMO_CODEX="${DEMO_CODEX:-0}"
+[[ "$SCENE" == fleet ]] && DEMO_CODEX=0
 DEMO_HOME="$STAGE/home"
 REPO="$DEMO_HOME/code/ledger"
 mkdir -p "$DEMO_HOME" "$STAGE/tmp" "$REPO"
@@ -39,31 +53,52 @@ esac
 # README shows the frame scaled down, where terminal text is texture at any
 # size; the rail and headers, which carry the point, do not follow this value.
 #
-# No session host: with one, the agents outlive the window the run kills at
-# the end, keep writing into the stage, and the stage - which holds a copy
-# of the access token - cannot be removed. Nothing on screen depends on it.
+# No session host, except in the scene about it: with one, the agents
+# outlive the window the run kills at the end, keep writing into the stage,
+# and the stage - which holds a copy of the access token - cannot be removed
+# until the host is stopped too. lib.sh stops the stage's host on the way
+# out; the other scenes do not need one. In the host scene, closing the
+# window keeps the sessions (`on_quit`), which is what the scene shows.
+if [[ "$SCENE" == host ]]; then
+  HOST_SETTINGS='"session_host": true,
+  "on_quit": "keep"'
+else
+  HOST_SETTINGS='"session_host": false'
+fi
 cat >"$APP_SUPPORT/splitlane-dev/splitlane.json" <<EOF
 {
   "theme": "$APP_THEME",
   "font_size": ${DEMO_FONT_SIZE:-11},
   "window_decorations": "client",
-  "session_host": false
+  $HOST_SETTINGS
 }
 EOF
 # `window_state.rs` reads this path without the `-dev` suffix.
-WINDOW_W="${DEMO_WINDOW_W:-1440}"
+# The fleet scene fills the site's wide frame (1920:988), so its window is
+# wider and lower: a lead pane beside a grid of four.
+if [[ "$SCENE" == fleet ]]; then
+  WINDOW_W="${DEMO_WINDOW_W:-1600}"
+else
+  WINDOW_W="${DEMO_WINDOW_W:-1440}"
+fi
 # 1000 rather than 900: at 900 an agent's transcript overflowed its pane by a
 # couple of rows, and Claude Code redraws its welcome header wrongly when it is
 # scrolled that little - a black band where the mascot's eyes should be.
-WINDOW_H="${DEMO_WINDOW_H:-1000}"
+if [[ "$SCENE" == fleet ]]; then
+  WINDOW_H="${DEMO_WINDOW_H:-824}"
+else
+  WINDOW_H="${DEMO_WINDOW_H:-1000}"
+fi
 printf '{ "width": %s, "height": %s }\n' "$WINDOW_W" "$WINDOW_H" \
   >"$APP_SUPPORT/splitlane/window-state.json"
 
-# --- The restored session: one project, three Claude Code surfaces in a row --
-# Three of one agent, not a mix: a second vendor needs its own paid account on
-# the recording machine, and a pane showing that account's billing error is not
-# a demo. The rail's point - which of several sessions wants you - is the same.
-# Agent surfaces are what the rail lists and the state detector reads. They are
+# --- The restored session: one project, three agent surfaces in a row ---------
+# Claude Code on both sides; the middle one is Codex with DEMO_CODEX=1, to
+# show the rail is not one vendor's. Codex needs its own account on the
+# recording machine (lib.sh hands it over), and a pane showing that account's
+# billing error is not a demo - so DEMO_CODEX=0 keeps three Claude Code.
+# The fleet scene seeds one Claude Code surface, `plan`, which opens the rest
+# itself. Agent surfaces are what the rail lists and the state detector reads. They are
 # seeded as a restored session because nothing else opens one without a key
 # press: `splitlane up` types the agent's command into a shell pane, which the
 # app rightly treats as a shell. Each Claude surface gets a fresh session id and
@@ -71,25 +106,35 @@ printf '{ "width": %s, "height": %s }\n' "$WINDOW_W" "$WINDOW_H" \
 seed_session() {
   local cache="$DEMO_HOME/Library/Caches/splitlane-dev"
   mkdir -p "$cache"
-  python3 - "$cache/session-dev.json" "$REPO" <<'PY'
+  python3 - "$cache/session-dev.json" "$REPO" "$SCENE" "$DEMO_CODEX" <<'PY'
 import json, os, sys, time, uuid
-path, repo = sys.argv[1], sys.argv[2]
+path, repo, scene, codex = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 now = int(time.time() * 1000)
 
-def agent(surface_id, slot, title, tag, session_id):
+def agent(surface_id, slot, title, tag, session_id, named=False):
+    binding = {"agent": tag, "thread_kind": "terminal", "terminal_agent": tag,
+               "pinned": False, "title_user_set": named}
+    # Claude Code takes the id it is given (`--session-id`); Codex mints its
+    # own, and the app binds it when Codex reports it.
+    if session_id:
+        binding["session_id"] = session_id
     return {
         "id": surface_id, "kind": "agent",
         "placement": {"type": "slot", "index": slot},
         "title": title, "cwd": repo, "created_at": now - slot * 1000,
-        "agent": {"agent": tag, "thread_kind": "terminal", "terminal_agent": tag,
-                  "session_id": session_id, "pinned": False, "title_user_set": False},
+        "agent": binding,
     }
 
-surfaces = [
-    agent(2, 0, "Claude Code", "claude_code", str(uuid.uuid4())),
-    agent(3, 1, "Claude Code", "claude_code", str(uuid.uuid4())),
-    agent(4, 2, "Claude Code", "claude_code", str(uuid.uuid4())),
-]
+if scene == "fleet":
+    surfaces = [agent(2, 0, "plan", "claude_code", str(uuid.uuid4()), named=True)]
+else:
+    middle = (agent(3, 1, "Codex", "codex", None) if codex
+              else agent(3, 1, "Claude Code", "claude_code", str(uuid.uuid4())))
+    surfaces = [
+        agent(2, 0, "Claude Code", "claude_code", str(uuid.uuid4())),
+        middle,
+        agent(4, 2, "Claude Code", "claude_code", str(uuid.uuid4())),
+    ]
 leaf = lambda s: {"type": "pane", "surfaces": [{"surface_type": "agent", "surface_id": s["id"]}]}
 
 # A few more projects, so the rail shows groups: `ledger` with two others
@@ -265,14 +310,46 @@ cat >"$DEMO_HOME/.claude.json" <<EOF
 EOF
 # `defaultMode` is spelled out because newer Claude Code starts in auto mode,
 # which runs `npm test` without asking - and the prompt is the scene.
-cat >"$DEMO_HOME/.claude/settings.json" <<'EOF'
+#
+# The fleet scene's lead opens and runs sessions with `splitlane`, so that
+# one command is allowed; every session it opens shares these settings, and
+# the one told to run `npm test` still stops to ask.
+ALLOW='"Read", "Edit", "Write", "Glob", "Grep"'
+[[ "$SCENE" == fleet ]] && ALLOW="$ALLOW, \"Bash(splitlane:*)\""
+cat >"$DEMO_HOME/.claude/settings.json" <<EOF
 {
   "permissions": {
     "defaultMode": "default",
-    "allow": ["Read", "Edit", "Write", "Glob", "Grep"]
+    "allow": [$ALLOW]
   }
 }
 EOF
+
+# The fleet skill teaches the lead the `splitlane` commands. A release
+# writes it at every start; a debug build never does, so the stage gets the
+# repository's copy.
+if [[ "$SCENE" == fleet ]]; then
+  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  mkdir -p "$DEMO_HOME/.claude/skills/splitlane-fleet"
+  cp "$ROOT/skills/splitlane-fleet/SKILL.md" "$DEMO_HOME/.claude/skills/splitlane-fleet/SKILL.md"
+fi
+
+# --- Codex: folder trusted, never asks, works inside its sandbox -------------
+# The middle agent only reads a file, which Codex does by running a command;
+# `never` with the workspace-write sandbox runs that without a prompt, so
+# the one "waiting for you" on screen stays Claude Code's. lib.sh puts the
+# sign-in beside this file.
+if [[ "$DEMO_CODEX" == 1 ]]; then
+  mkdir -p "$DEMO_HOME/.codex"
+  cat >"$DEMO_HOME/.codex/config.toml" <<EOF
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+check_for_update_on_startup = false
+
+[projects."$REPO"]
+trust_level = "trusted"
+EOF
+fi
 
 seed_session
 
