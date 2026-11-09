@@ -197,11 +197,15 @@ fn read_devices(dir: &Path) -> io::Result<Vec<Device>> {
 }
 
 /// The one-time changes made to the files here, each recorded under its
-/// own name once it has run, so that it never runs again. Fields this
-/// version does not know are kept by serde's default of ignoring them on
-/// read; a later version adds its migrations beside these.
+/// own name once it has run, so that it never runs again. A later version
+/// adds its migrations beside these.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Migrations {
+    /// Records this version does not know, written back as they were read:
+    /// an older build that rewrites the file (dismissing the note) must not
+    /// drop a newer one's record, or that migration would run again.
+    #[serde(flatten)]
+    others: serde_json::Map<String, serde_json::Value>,
     /// The phone's page moved from splitlane.dev/app to app.splitlane.dev.
     /// A browser keeps a page's storage per origin, so every phone paired
     /// before had to pair again anyway; its old key stays behind in
@@ -755,5 +759,21 @@ mod tests {
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].public, early.public);
         assert!(kept[0].paired_at_unix >= now() - 60);
+    }
+
+    #[test]
+    fn a_later_versions_records_survive_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        paired_before_the_move(dir.path(), "Pixel");
+        assert_eq!(devices(dir.path()).unwrap(), Vec::new());
+        let path = dir.path().join(MIGRATIONS_FILE);
+        let mut written: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        written["a_later_migration"] = serde_json::json!({ "at_unix": 1 });
+        fs::write(&path, serde_json::to_vec(&written).unwrap()).unwrap();
+        dismiss_revocation_notice(dir.path()).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(after["a_later_migration"]["at_unix"], 1);
+        assert_eq!(after["revoke_pairings_before_page_move"]["noticed"], true);
     }
 }
