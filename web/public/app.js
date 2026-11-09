@@ -1782,13 +1782,17 @@ async function start() {
   // `?moved`. A browser keeps data per origin, so a phone paired there
   // arrives with nothing paired, and the reason has to be said: nothing can
   // carry the keys across without handing them to another origin.
-  if (new URLSearchParams(location.search).has("moved")) {
-    state.notice =
-      "Splitlane's phone page moved here from splitlane.dev/app. A phone paired on the old page has to pair again: add this page to the home screen, pair it, then remove the old icon, and remove the old phone on the computer in Settings → Phone.";
-    history.replaceState(null, "", location.pathname + location.hash);
-  }
+  const moved = new URLSearchParams(location.search).has("moved");
+  if (moved) history.replaceState(null, "", location.pathname + location.hash);
   try {
     state.computers = await store.computers();
+    // A phone already paired here that came in by the old icon needs only
+    // to drop the icon, not to be told to pair again.
+    if (moved) {
+      state.notice = state.computers.length
+        ? "Splitlane's phone page is now at app.splitlane.dev. Remove the old icon from the home screen and keep this one."
+        : "Splitlane's phone page moved here from splitlane.dev/app. A phone paired on the old page has to pair again: add this page to the home screen, pair it, then remove the old icon, and remove the old phone on the computer in Settings → Phone.";
+    }
   } catch (error) {
     state.computers = [];
     state.notice = `This browser does not let the page keep data (${error?.name ?? "error"}), so it cannot stay paired. Private browsing is the usual reason.`;
