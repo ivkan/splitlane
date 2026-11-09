@@ -364,7 +364,11 @@ fn read_migrations(dir: &Path) -> io::Result<Migrations> {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("{}: {e}", dir.join(MIGRATIONS_FILE).display()),
+                format!(
+                    "{}: {e}. It records the phones revoked when the phone page moved; \
+                     removing it unpairs every phone, which then has to be paired again",
+                    dir.join(MIGRATIONS_FILE).display()
+                ),
             )
         }),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Migrations::default()),
