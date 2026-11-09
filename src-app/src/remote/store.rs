@@ -126,8 +126,13 @@ pub(crate) fn add_device(dir: &Path, mut device: Device) -> io::Result<()> {
         all.retain(|kept| kept.public != device.public);
         all.push(device);
     })?;
-    // Pairing again is what the note about the revoked phones asks for.
-    dismiss_revocation_notice(dir)
+    // Pairing again is what the note about the revoked phones asks for. The
+    // phone is paired whatever happens here: a note left up is no reason to
+    // report a pairing that worked as failed.
+    if let Err(e) = dismiss_revocation_notice(dir) {
+        log::warn!("paired, but the note about revoked phones stays: {e}");
+    }
+    Ok(())
 }
 
 /// Read the paired phones, change them and write them back, one change at a
