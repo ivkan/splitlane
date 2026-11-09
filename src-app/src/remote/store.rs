@@ -336,6 +336,10 @@ fn revoke(dir: &Path, mut migrations: Migrations, before: &[Device]) -> io::Resu
         }
     }
     if !before.is_empty() {
+        // The record's name on disk before devices.json changes: after a
+        // power cut, the file could otherwise be found emptied with no
+        // record of why.
+        sync_dir(dir)?;
         let mut kept = read_devices(dir)?;
         kept.retain(|device| !migrations.is_revoked(&device.public));
         save_devices(dir, &kept)?;
@@ -445,6 +449,20 @@ fn write_partial(dir: &Path, path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     io::Write::write_all(&mut file, bytes)?;
     file.sync_all()?;
     Ok(partial)
+}
+
+/// Make the names last written in `dir` durable. Windows has no handle on
+/// a directory to flush; NTFS journals a rename itself.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(dir)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
 }
 
 fn create_private_dir(dir: &Path) -> io::Result<()> {
