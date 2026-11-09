@@ -282,7 +282,7 @@ port.
 A paired phone lists the agent sessions as the rail does, shows a waiting
 agent's question and each session's last answer, and lets you reply, press
 the keys a prompt asks for, interrupt a turn or start a new session. It is a
-page at <https://splitlane.dev/app> added to the home screen; pair it in
+page at <https://app.splitlane.dev> added to the home screen; pair it in
 Settings → Phone → **Pair a phone**. See [Your phone](phone.md).
 
 ## Scripting and agents reading panes

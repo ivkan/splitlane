@@ -6,6 +6,18 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The phone's page moves to <https://app.splitlane.dev>.** The page keeps
+  the key that lets a phone answer agent sessions, so it now has an address
+  of its own, where nothing but its own files is ever served. Pairing codes
+  show the new address. Codes from older builds, which show
+  `splitlane.dev/app`, still work: that address leads to the new page with
+  the pairing link intact. A phone paired on the old address has to pair
+  again, because a browser keeps a page's data apart for each address: add
+  the new page to the home screen, pair it, and remove the old entry in
+  Settings → Phone. See [Your phone](docs/user/phone.md).
+
 ## [0.2.23] - 2026-11-06
 
 ### Changed
