@@ -11,7 +11,8 @@ interrupt a turn. It can also start a new session. The phone needs no app. It is
 1. **Add the page to the phone's home screen.** Open
    <https://app.splitlane.dev> on the phone; the page walks you through it.
    On an iPhone: Share, then Add to Home Screen; this works in Safari and in
-   Chrome alike, where Share is at the right of the address bar. On Android:
+   Chrome alike. In Safari on iOS 26, Share sits in the menu behind the ≡ or ⋯
+   button beside the address; in Chrome it is at the right of the address bar. On Android:
    Install, or the browser's menu, then Install app. On an iPhone this comes
    first: the home-screen app keeps its own data, apart from the browser's,
    and it is the one that will be able to show notifications.

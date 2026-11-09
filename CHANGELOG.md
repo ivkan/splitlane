@@ -6,6 +6,12 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The phone's page finds Share on iOS 26.** Safari there keeps Share in the
+  menu behind the button beside the address, not in the toolbar; the steps for
+  adding the page to the home screen now say so.
+
 ## [0.3.0] - 2026-11-09
 
 ### Changed
