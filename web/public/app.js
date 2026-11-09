@@ -1791,7 +1791,7 @@ async function start() {
     if (moved) {
       state.notice = state.computers.length
         ? "Splitlane's phone page is now at app.splitlane.dev. Remove the old icon from the home screen and keep this one."
-        : "Splitlane's phone page moved here from splitlane.dev/app. A phone paired on the old page has to pair again: add this page to the home screen, pair it, then remove the old icon, and remove the old phone on the computer in Settings → Phone.";
+        : "Splitlane's phone page moved here from splitlane.dev/app. A phone paired on the old page has to pair again: add this page to the home screen, pair it, then remove the old icon. Splitlane on the computer stops answering the old pairing once it is updated.";
     }
   } catch (error) {
     state.computers = [];
