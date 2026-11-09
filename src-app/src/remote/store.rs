@@ -248,19 +248,42 @@ static MIGRATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// written before the first phone is added (`add_device` comes through
 /// here), so a phone paired by this version is never taken for one paired
 /// before it.
-///
-/// The record of the revoked keys is written before the phones are taken
-/// out of `devices.json`: a stop between the two leaves them refused by
-/// [`devices`] rather than served.
 fn migrated(dir: &Path) -> io::Result<Migrations> {
     let _one_at_a_time = MIGRATING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut migrations = read_migrations(dir)?;
+    let migrations = read_migrations(dir)?;
     if migrations.revoke_pairings_before_page_move.is_some() || !dir.is_dir() {
         return Ok(migrations);
     }
     let before = read_devices(dir)?;
+    revoke(dir, migrations, &before)
+}
+
+/// Revoke the phones in `before`, as read just now, unless another process
+/// got there first.
+///
+/// The window, the session host, the bridge and `splitlane remote` are
+/// separate processes and may all start at once on the first run of this
+/// version. Only one of them records the revocation: the record is put in
+/// place with a link that fails when the file exists, as the machine's key
+/// is. Another that read `devices.json` earlier - perhaps before a phone was
+/// paired by the one that won - takes the winner's record and touches
+/// nothing.
+///
+/// The record of the revoked keys is in place before the phones are taken
+/// out of `devices.json`, so a stop between the two leaves them refused by
+/// [`devices`] rather than served. And only those keys are taken out, read
+/// again at that moment: a phone added meanwhile stays.
+fn revoke(dir: &Path, mut migrations: Migrations, before: &[Device]) -> io::Result<Migrations> {
+    let path = dir.join(MIGRATIONS_FILE);
+    if path.exists() {
+        let current = read_migrations(dir)?;
+        if current.revoke_pairings_before_page_move.is_some() {
+            return Ok(current);
+        }
+        migrations = current;
+    }
     migrations.revoke_pairings_before_page_move = Some(Revocation {
         by_version: env!("CARGO_PKG_VERSION").to_string(),
         at_unix: super::now_unix(),
@@ -273,9 +296,25 @@ fn migrated(dir: &Path) -> io::Result<Migrations> {
             .collect(),
         noticed: before.is_empty(),
     });
-    write_migrations(dir, &migrations)?;
+    if path.exists() {
+        // A record without this migration in it, read just now: one this
+        // version did not write, so no other process of it is writing one.
+        write_migrations(dir, &migrations)?;
+    } else {
+        let bytes = serde_json::to_vec_pretty(&migrations).map_err(io::Error::other)?;
+        let partial = write_partial(dir, &path, &bytes)?;
+        let placed = fs::hard_link(&partial, &path);
+        let _ = fs::remove_file(&partial);
+        match placed {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return read_migrations(dir),
+            Err(e) => return Err(e),
+        }
+    }
     if !before.is_empty() {
-        save_devices(dir, &[])?;
+        let mut kept = read_devices(dir)?;
+        kept.retain(|device| !migrations.is_revoked(&device.public));
+        save_devices(dir, &kept)?;
         log::info!(
             "revoked {} phone(s) paired before the phone page moved to app.splitlane.dev",
             before.len()
@@ -642,5 +681,31 @@ mod tests {
         fs::write(dir.path().join(MIGRATIONS_FILE), b"{not json").unwrap();
         assert!(devices(dir.path()).is_err());
         assert_eq!(read_devices(dir.path()).unwrap(), vec![phone]);
+    }
+
+    #[test]
+    fn a_process_that_read_late_neither_revokes_nor_removes_a_new_phone() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = paired_before_the_move(dir.path(), "Pixel");
+        // One process reads the phones on its first start and stalls before
+        // recording anything.
+        let stale = read_devices(dir.path()).unwrap();
+        assert_eq!(stale, vec![old.clone()]);
+        // Another runs the migration, and a phone is paired through it.
+        let new = Device::new(
+            RoomId::random(),
+            "Pixel",
+            &DeviceKey::generate().public(),
+            1,
+        );
+        add_device(dir.path(), new.clone()).unwrap();
+        // The first one resumes with what it read: it finds the record in
+        // place and takes it.
+        let taken = revoke(dir.path(), Migrations::default(), &[new.clone()]).unwrap();
+        assert!(taken.is_revoked(&old.public));
+        assert!(!taken.is_revoked(&new.public));
+        let kept = devices(dir.path()).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].public, new.public);
     }
 }
