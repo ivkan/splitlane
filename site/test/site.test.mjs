@@ -97,7 +97,7 @@ function loads(file, text) {
   const found = [];
   const add = (url) => found.push(url.trim());
   if (file.endsWith(".html")) {
-    for (const [, url] of text.matchAll(/\s(?:src|poster|data)="([^"]*)"/g)) add(url);
+    for (const [, url] of text.matchAll(/\s(?:src|poster|data|data-poster-dark)="([^"]*)"/g)) add(url);
     for (const [, set] of text.matchAll(/\ssrcset="([^"]*)"/g))
       for (const part of set.split(",")) add(part.trim().split(/\s+/)[0]);
     for (const [tag] of text.matchAll(/<link\b[^>]*>/g)) {

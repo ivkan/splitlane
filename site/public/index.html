@@ -63,7 +63,7 @@
     </div>
     <p class="trust"><span>Rust on GPUI</span><span>No account</span><span>Telemetry only if you opt in</span><span>GPL-3.0-or-later</span></p>
 
-    <figure class="media r-desktop hero-shot">
+    <figure class="media r-desktop hero-shot" data-video-slot="hero">
       <picture>
         <source media="(prefers-color-scheme: dark)" type="image/webp"
           srcset="/img/hero-dark-960.webp 960w, /img/hero-dark-1440.webp 1440w, /img/hero-dark-1920.webp 1920w"
@@ -94,9 +94,7 @@
       <li><span class="dot failed"></span>failed</li>
     </ul>
 
-    <!-- Video slot: a D9 recording of an agent stopping on a question
-         replaces this picture as a <video> of the same 1.44:1 frame. -->
-    <figure class="media r-desktop section-media detail">
+    <figure class="media r-desktop section-media detail" data-video-slot="state">
       <picture>
         <source media="(prefers-color-scheme: dark)" type="image/webp" srcset="/img/state-dark-960.webp">
         <img src="/img/state-light-960.webp" width="960" height="667" loading="lazy" decoding="async"
@@ -133,7 +131,7 @@
       <p>A project's panes are a row, a column, or a grid of four. You answer an agent in its own terminal; there is no second approval UI to keep in sync.</p>
     </div>
 
-    <figure class="media r-desktop section-media">
+    <figure class="media r-desktop section-media" data-video-slot="grid">
       <picture>
         <source media="(prefers-color-scheme: dark)" type="image/webp"
           srcset="/img/grid-diff-dark-960.webp 960w, /img/grid-diff-dark-1440.webp 1440w, /img/grid-diff-dark-1920.webp 1920w"
@@ -184,7 +182,7 @@
       <p>An agent in a pane can hand other sessions a task, wait for their turn to end, read the answer and close them. Each of those sessions is a row in the rail with a status you can see, and a question meant for you still reaches you.</p>
     </div>
 
-    <figure class="media r-wide section-media">
+    <figure class="media r-wide section-media" data-video-slot="fleet">
       <picture>
         <img src="/img/orchestration-dark-1440.webp"
           srcset="/img/orchestration-dark-960.webp 960w, /img/orchestration-dark-1440.webp 1440w, /img/orchestration-dark-1920.webp 1920w"
@@ -220,9 +218,7 @@
       <p>On macOS and Linux the terminals run in a separate process, the session host. Closing the window, an update or a crash of the window leaves every agent working, and the next start shows each one in its pane again.</p>
       <p><code>Running</code> (<kbd>⌥⌘P</kbd>) lists every agent and every command running in a shell, and stops the ones you mark.</p>
     </div>
-    <!-- Video slot: a <figure class="media r-desktop"> with the session-host
-         clip replaces this panel when it is recorded. -->
-    <div class="panel">
+    <div class="panel" data-video-slot="host">
       <h3>Keeps running</h3>
       <ul>
         <li><span class="dot running"></span>When you close the window</li>
