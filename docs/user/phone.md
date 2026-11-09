@@ -96,14 +96,17 @@ Splitlane 0.2.14 or older.
 
 ### The page moved to app.splitlane.dev
 
-The page used to be at `splitlane.dev/app`, and that address now leads to
-<https://app.splitlane.dev>. Pairing links from older Splitlane builds still
-work: they open the new page ready to pair.
+The page used to be at `splitlane.dev/app`; that address is to lead to
+<https://app.splitlane.dev>. Pairing links from older Splitlane builds keep
+working: they open the old page until then and the new one after, ready to
+pair.
 
 A phone paired on the old address is not paired on the new one. The browser
 keeps the page's data, its key among it, apart for each address, and
-nothing carries it across. Opening the old page leads to the new one and
-asks the browser to clear the data left at the old address.
+nothing carries it across. Once the old address leads to the new one,
+opening the old page does so and asks the browser to clear the data left
+there. Until then the old page may still open, but a computer on this
+version no longer answers it.
 
 The old key is not trusted either. The first time Splitlane on the computer
 starts at the version that moved the page, it stops answering every phone

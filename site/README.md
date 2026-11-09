@@ -56,5 +56,7 @@ node --test
 npx wrangler@4.145.0 deploy
 ```
 
-Only after the page is live on `app.splitlane.dev`: until then the redirect
-leads nowhere.
+Only after the page is live on `app.splitlane.dev` (until then the redirect
+leads nowhere) and after the desktop release that revokes pairings made
+before the move: until a computer runs that release it still answers the old
+keys, and the old page keeps working for it.

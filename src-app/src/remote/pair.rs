@@ -17,7 +17,7 @@ pub(crate) const OFFER_TTL_SECS: u64 = 300;
 /// few enough to try them all; three is enough for typos.
 pub(crate) const CODE_ATTEMPTS: usize = 3;
 /// Where a phone opens the link. Builds before this one carry
-/// `https://splitlane.dev/app`, which now redirects here with the link's
+/// `https://splitlane.dev/app`, which is to redirect here with the link's
 /// fragment intact (see `site/`).
 pub(crate) const PAGE: &str = "https://app.splitlane.dev/";
 

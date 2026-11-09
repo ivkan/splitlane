@@ -12,8 +12,8 @@ Notable changes to Splitlane are recorded here. The format follows
   the key that lets a phone answer agent sessions, so it now has an address
   of its own, where nothing but its own files is ever served. Pairing codes
   show the new address. Codes from older builds, which show
-  `splitlane.dev/app`, still work: that address leads to the new page with
-  the pairing link intact. See [Your phone](docs/user/phone.md).
+  `splitlane.dev/app`, keep working: that address is to lead to the new
+  page, with the pairing link intact. See [Your phone](docs/user/phone.md).
 
 ### Security
 
