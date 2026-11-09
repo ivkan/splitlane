@@ -1,16 +1,22 @@
-# splitlane.dev. For now this Worker only sends the phone page's old address
-# on to app.splitlane.dev, where the page lives on an origin of its own;
-# everything else is a 404 until the site is built.
+# splitlane.dev: the site, and the phone page's old address sent on to
+# app.splitlane.dev, where the page lives on an origin of its own.
 #
-# The site goes beside it: add an [assets] block with its files, a binding
-# named ASSETS and
-#   run_worker_first = true
-# so that every request passes through src/index.js: the redirect answers
-# /app whatever the site's files are, and every other response gets the
-# site's Content Security Policy, which no file can loosen. That policy
-# allows no third-party script for now; src/index.js says why.
+# The site's files are in public/ and are served through src/index.js
+# (run_worker_first), never around it: the redirect answers /app whatever
+# the files are, and every response gets the site's Content Security
+# Policy, which no file can loosen. That policy allows no third-party
+# script; src/index.js says why.
 name = "splitlane-site"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 workers_dev = false
 routes = [{ pattern = "splitlane.dev", custom_domain = true }]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+# /compare/ serves compare/index.html, and /compare redirects to it.
+html_handling = "auto-trailing-slash"
+# A path with no file gets public/404.html with status 404.
+not_found_handling = "404-page"
