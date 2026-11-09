@@ -756,7 +756,12 @@ mod tests {
         add_device(dir.path(), new.clone()).unwrap();
         // The first one resumes with what it read: it finds the record in
         // place and takes it.
-        let taken = revoke(dir.path(), Migrations::default(), &[new.clone()]).unwrap();
+        let taken = revoke(
+            dir.path(),
+            Migrations::default(),
+            std::slice::from_ref(&new),
+        )
+        .unwrap();
         assert!(taken.is_revoked(&old.public));
         assert!(!taken.is_revoked(&new.public));
         let kept = devices(dir.path()).unwrap();
