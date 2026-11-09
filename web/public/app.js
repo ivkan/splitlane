@@ -641,7 +641,7 @@ function installSteps() {
   const share = IOS_CHROME
     ? "Tap the Share button (the square with an arrow) at the right of Chrome's address bar, or open the ⋯ menu and choose Share."
     : IOS_SAFARI
-      ? "Tap the Share button (the square with an arrow) in Safari's toolbar."
+      ? "Tap the Share button (the square with an arrow) in Safari's toolbar. If it is not there, as in iOS 26, tap the ≡ or ⋯ button beside the address and choose Share."
       : "Open the browser's Share menu.";
   const steps = IOS
     ? [
