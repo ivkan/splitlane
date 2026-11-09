@@ -30,6 +30,8 @@ pub(crate) use window_pair::{PairStep, WindowPairing};
 
 /// A paired phone, as the Phone page lists it.
 pub(crate) use store::Device as PairedPhone;
+/// A phone revoked when the page moved, as the Phone page names it.
+pub(crate) use store::RevokedPhone;
 
 fn store_dir() -> Result<std::path::PathBuf, String> {
     store::dir().ok_or_else(|| "cannot work out where Splitlane keeps its files".to_string())
@@ -45,6 +47,18 @@ pub(crate) fn paired_phones() -> Result<Vec<PairedPhone>, String> {
 /// phone, which can no longer be answered, has to be paired again.
 pub(crate) fn remove_phone(room: &str) -> Result<(), String> {
     store::remove_device(&store_dir()?, room).map_err(|e| e.to_string())
+}
+
+/// The phones revoked when the phone page moved to app.splitlane.dev,
+/// while the Phone page has yet to say so. Reads a file: not on the main
+/// thread.
+pub(crate) fn revoked_phones_notice() -> Result<Vec<RevokedPhone>, String> {
+    store::revocation_notice(&store_dir()?).map_err(|e| e.to_string())
+}
+
+/// The Phone page has said why the revoked phones are gone.
+pub(crate) fn dismiss_revoked_phones_notice() -> Result<(), String> {
+    store::dismiss_revocation_notice(&store_dir()?).map_err(|e| e.to_string())
 }
 
 /// Let the phone paired in `room` reply, or only read.
