@@ -6,6 +6,8 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-09
+
 ### Changed
 
 - **The phone's page moves to <https://app.splitlane.dev>.** The page keeps

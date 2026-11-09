@@ -63,6 +63,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.3.0" date="2026-11-09">
+      <description>
+        <p>The phone's page moves to app.splitlane.dev, an address of its own.
+        Phones paired before this version are unpaired on first start and
+        have to be paired again from the new page; Settings, Phone says so
+        once.</p>
+      </description>
+    </release>
     <release version="0.2.23" date="2026-11-06">
       <description>
         <p>A script that waits for an agent's turn with --settled is told when
