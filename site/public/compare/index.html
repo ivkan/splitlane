@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splitlane compared with herdr, cmux and Conductor</title>
+<meta name="description" content="How Splitlane, herdr, cmux and Conductor run coding agents side by side, how each learns that an agent needs you, and where each one is ahead.">
+<link rel="canonical" href="https://splitlane.dev/compare/">
+<meta name="theme-color" content="#fbfbfa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0e10" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Splitlane">
+<meta property="og:url" content="https://splitlane.dev/compare/">
+<meta property="og:title" content="Splitlane compared with herdr, cmux and Conductor">
+<meta property="og:description" content="How Splitlane, herdr, cmux and Conductor run coding agents side by side, how each learns that an agent needs you, and where each one is ahead.">
+<meta property="og:image" content="https://splitlane.dev/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Splitlane with several coding agents side by side.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Splitlane compared with herdr, cmux and Conductor">
+<meta name="twitter:description" content="How Splitlane, herdr, cmux and Conductor run coding agents side by side, how each learns that an agent needs you, and where each one is ahead.">
+<meta name="twitter:image" content="https://splitlane.dev/social-preview.png">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="alternate" type="application/rss+xml" title="Splitlane blog" href="/blog/feed.xml">
+<link rel="preload" href="/fonts/geist-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/css/site.css">
+<script src="/js/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/img/logo-64.png" width="28" height="28" alt=""> Splitlane</a>
+    <nav class="nav" aria-label="Main">
+      <a class="wide" href="/#how">How it knows</a>
+      <a class="wide" href="/#phone">Phone</a>
+      <a href="/compare/" aria-current="page">Compare</a>
+      <a href="/blog/">Blog</a>
+      <a class="wide" href="https://github.com/ivkan/splitlane/blob/main/docs/user/index.md">Docs</a>
+      <a href="https://github.com/ivkan/splitlane">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<section class="page" aria-labelledby="title">
+  <div class="wrap">
+    <div class="prose">
+      <h1 id="title">Splitlane next to its neighbours</h1>
+      <p class="lede">Several tools put coding agents side by side, and three of them come up often next to this one. Everything said about them here is taken from each project's own documentation as of October 2026. All three change quickly, so check their docs before relying on it.</p>
+      <p>One change since then: on 4 November 2026 Conductor <a href="https://www.conductor.build/announcement">announced</a> that it is joining Meta and stopped taking new users.</p>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr><th scope="col">Tool</th><th scope="col">Where the agents run</th><th scope="col">How it learns an agent needs you</th><th scope="col">Platforms</th><th scope="col">License</th></tr>
+      </thead>
+      <tbody>
+        <tr class="ours"><th scope="row">Splitlane</th><td data-label="Where the agents run">Terminal panes in a desktop app, one git worktree per agent session</td><td data-label="How it learns an agent needs you">The agent's own session records for Claude Code and Codex, hooks for eight more; for the rest, only whether the process is alive</td><td data-label="Platforms">macOS, Linux; Windows from source</td><td data-label="License">GPL-3.0-or-later</td></tr>
+        <tr><th scope="row"><a href="https://github.com/herdrdev/herdr">herdr</a></th><td data-label="Where the agents run">Panes inside the terminal you already use</td><td data-label="How it learns an agent needs you">Rules matched against what the agent draws on screen; hooks or the agent's own reports for some agents</td><td data-label="Platforms">Linux, macOS, Windows</td><td data-label="License">Apache-2.0</td></tr>
+        <tr><th scope="row"><a href="https://github.com/manaflow-ai/cmux">cmux</a></th><td data-label="Where the agents run">Terminal panes in a native macOS app</td><td data-label="How it learns an agent needs you">Terminal notification sequences, a <code>cmux notify</code> command and hooks it installs</td><td data-label="Platforms">macOS</td><td data-label="License">GPL-3.0-or-later</td></tr>
+        <tr><th scope="row"><a href="https://www.conductor.build">Conductor</a></th><td data-label="Where the agents run">Its own chat interface, one git worktree per workspace</td><td data-label="How it learns an agent needs you">Its documentation does not say</td><td data-label="Platforms">macOS; no new sign-ups since November 2026</td><td data-label="License">Closed source</td></tr>
+      </tbody>
+    </table>
+
+    <div class="prose">
+      <h2>The column it was built around</h2>
+      <p>The third column is the one Splitlane was built around. A permission prompt and an idle prompt can look alike on screen, and an agent's interface changes from one release to the next. Claude Code and Codex each keep a record of their own session, so Splitlane reads that record and the process tree under the pane, and leaves the screen out of it.</p>
+      <p>Here's the catch: that works for exactly two agents, and each has to be checked again when its record format changes. herdr reports state for more agents than Splitlane does.</p>
+
+      <h2>Where the neighbours are ahead</h2>
+      <ul>
+        <li><strong>herdr</strong> keeps terminals running in a background server after you close it or lose an SSH connection, and lists several SSH machines together. Splitlane's session host does the first half on macOS and Linux: closing the window leaves the agents working. It is local only, though. There is no SSH, no second machine, and on Windows closing Splitlane still ends what it started.</li>
+        <li><strong>cmux</strong> puts a scriptable browser next to the terminal. Splitlane has no browser.</li>
+        <li><strong>Conductor</strong> builds the whole workflow on worktrees, with a setup script and a run script for each workspace. Splitlane also gives every agent session a worktree and branch of its own, with one setup command and a range of ports, and asks before closing a session whose branch holds work. It has no run script.</li>
+      </ul>
+
+      <h2>Where Splitlane goes a different way on purpose</h2>
+      <ul>
+        <li>Agents run in ordinary terminals, the same as outside the app. Conductor puts them in its own chat interface and keeps its terminal mode experimental.</li>
+        <li>herdr and cmux both give agents an API that can send input to another pane. In Splitlane the MCP bridge can only read. An agent types into the sessions it opened itself, and into one you opened only after you allow it; typing into any other pane stays off until you start Splitlane with it switched on.</li>
+        <li>The diff of what the agents changed and the project's file tree are in the same window.</li>
+      </ul>
+
+      <h2>Which one fits</h2>
+      <p>If you work inside a terminal or over SSH, herdr or plain tmux will fit better. If you already use Conductor, it keeps working for now: the local app gets new models and critical fixes until early 2027, and Conductor Cloud goes read-only on 13 November and shuts down on 20 November 2026. New users can no longer download it.</p>
+      <p>Splitlane is for a few agents in ordinary terminals on your own machine, where the question is which one is waiting.</p>
+    </div>
+
+    <div class="cta cta-left">
+      <a class="button" href="https://github.com/ivkan/splitlane/releases/latest">Download for macOS</a>
+      <a class="button quiet" href="/#install">All platforms</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/img/logo-64.png" width="28" height="28" alt=""> Splitlane</a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/ivkan/splitlane/blob/main/docs/user/index.md">Docs</a>
+      <a href="https://github.com/ivkan/splitlane/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="/compare/">Compare</a>
+      <a href="/blog/">Blog</a>
+      <a href="/blog/feed.xml">RSS</a>
+      <a href="https://app.splitlane.dev">Phone page</a>
+      <a href="https://github.com/ivkan/splitlane">GitHub</a>
+    </nav>
+    <p class="legal">Splitlane is free software under the <a href="https://github.com/ivkan/splitlane/blob/main/LICENSE">GPL-3.0-or-later</a>. Product names shown are trademarks of their owners, used only to identify those tools; Splitlane is not affiliated with or endorsed by them.</p>
+  </div>
+</footer>
+</body>
+</html>

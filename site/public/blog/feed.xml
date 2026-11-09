@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Splitlane blog</title>
+    <link>https://splitlane.dev/blog/</link>
+    <atom:link href="https://splitlane.dev/blog/feed.xml" rel="self" type="application/rss+xml"/>
+    <description>Notes on running several coding agents at once, and on how Splitlane is built.</description>
+    <language>en</language>
+    <!-- Each post is an <item> with <title>, <link>, <guid isPermaLink="true">,
+         <pubDate> (RFC 822) and <description>, newest first. -->
+  </channel>
+</rss>
