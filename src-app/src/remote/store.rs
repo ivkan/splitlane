@@ -108,8 +108,14 @@ pub(crate) fn machine_key(dir: &Path) -> io::Result<DeviceKey> {
 /// A key revoked by a migration is refused: it is a phone's key from before
 /// the page moved, which may still sit in storage the page no longer
 /// controls.
-pub(crate) fn add_device(dir: &Path, device: Device) -> io::Result<()> {
-    if migrated(dir)?.is_revoked(&device.public) {
+pub(crate) fn add_device(dir: &Path, mut device: Device) -> io::Result<()> {
+    let migrations = migrated(dir)?;
+    // A phone paired now is never older than the revocation, even with a
+    // clock set back since: see `Migrations::refuses`.
+    if let Some(revocation) = &migrations.revoke_pairings_before_page_move {
+        device.paired_at_unix = device.paired_at_unix.max(revocation.at_unix);
+    }
+    if migrations.refuses(&device) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "this phone's key was revoked when the phone page moved; open app.splitlane.dev on \
@@ -177,7 +183,7 @@ pub(crate) fn set_reply(dir: &Path, room: &str, reply: bool) -> io::Result<()> {
 pub(crate) fn devices(dir: &Path) -> io::Result<Vec<Device>> {
     let migrations = migrated(dir)?;
     let mut all = read_devices(dir)?;
-    all.retain(|device| !migrations.is_revoked(&device.public));
+    all.retain(|device| !migrations.refuses(device));
     Ok(all)
 }
 
@@ -226,6 +232,20 @@ pub(crate) struct RevokedPhone {
 }
 
 impl Migrations {
+    /// Whether `device` is one this computer must not answer: a key the
+    /// revocation took, or a record paired before it ran. The second covers
+    /// a `devices.json` put back from a backup, or one that was not where
+    /// the revocation looked: whatever was paired before the page moved is
+    /// refused, whether or not its key was seen. Every phone this version
+    /// pairs is dated no earlier than the revocation (`add_device`).
+    fn refuses(&self, device: &Device) -> bool {
+        self.is_revoked(&device.public)
+            || self
+                .revoke_pairings_before_page_move
+                .as_ref()
+                .is_some_and(|revocation| device.paired_at_unix < revocation.at_unix)
+    }
+
     fn is_revoked(&self, public: &str) -> bool {
         self.revoke_pairings_before_page_move
             .as_ref()
@@ -447,6 +467,10 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn now() -> u64 {
+        super::super::now_unix()
+    }
+
     #[test]
     fn the_key_is_made_once_and_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -536,10 +560,10 @@ mod tests {
         let phone = DeviceKey::generate().public();
         add_device(
             dir.path(),
-            Device::new(RoomId::random(), "Pixel", &phone, 1),
+            Device::new(RoomId::random(), "Pixel", &phone, now()),
         )
         .unwrap();
-        let again = Device::new(RoomId::random(), "Pixel", &phone, 2);
+        let again = Device::new(RoomId::random(), "Pixel", &phone, now() + 1);
         add_device(dir.path(), again.clone()).unwrap();
         assert_eq!(devices(dir.path()).unwrap(), vec![again]);
     }
@@ -594,7 +618,7 @@ mod tests {
             RoomId::random(),
             "Pixel",
             &DeviceKey::generate().public(),
-            1,
+            now(),
         );
         add_device(dir.path(), new.clone()).unwrap();
         for _ in 0..3 {
@@ -637,7 +661,7 @@ mod tests {
             RoomId::random(),
             "Pixel",
             &DeviceKey::generate().public(),
-            1,
+            now(),
         );
         add_device(&remote, phone.clone()).unwrap();
         assert!(remote.join(MIGRATIONS_FILE).exists());
@@ -661,7 +685,7 @@ mod tests {
             RoomId::random(),
             "Pixel",
             &DeviceKey::generate().public(),
-            1,
+            now(),
         );
         add_device(dir.path(), new).unwrap();
         assert_eq!(revocation_notice(dir.path()).unwrap(), Vec::new());
@@ -675,7 +699,7 @@ mod tests {
             RoomId::random(),
             "Pixel",
             &DeviceKey::generate().public(),
-            1,
+            now(),
         );
         add_device(dir.path(), phone.clone()).unwrap();
         fs::write(dir.path().join(MIGRATIONS_FILE), b"{not json").unwrap();
@@ -696,7 +720,7 @@ mod tests {
             RoomId::random(),
             "Pixel",
             &DeviceKey::generate().public(),
-            1,
+            now(),
         );
         add_device(dir.path(), new.clone()).unwrap();
         // The first one resumes with what it read: it finds the record in
@@ -707,5 +731,29 @@ mod tests {
         let kept = devices(dir.path()).unwrap();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].public, new.public);
+    }
+
+    #[test]
+    fn a_record_from_before_the_move_is_refused_even_with_an_unseen_key() {
+        let dir = tempfile::tempdir().unwrap();
+        // The revocation runs with nothing paired.
+        assert_eq!(devices(dir.path()).unwrap(), Vec::new());
+        // Then a devices.json from before the move comes back, with a key
+        // the revocation never saw.
+        let restored = paired_before_the_move(dir.path(), "Pixel");
+        assert_eq!(devices(dir.path()).unwrap(), Vec::new());
+        assert_eq!(device_paired_as(dir.path(), &restored).unwrap(), None);
+        // A phone paired now, even dated earlier by a clock set back, stays.
+        let early = Device::new(
+            RoomId::random(),
+            "iPhone",
+            &DeviceKey::generate().public(),
+            5,
+        );
+        add_device(dir.path(), early.clone()).unwrap();
+        let kept = devices(dir.path()).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].public, early.public);
+        assert!(kept[0].paired_at_unix >= now() - 60);
     }
 }
