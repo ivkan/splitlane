@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import worker, { PAGE, SITE_CSP } from "../src/index.js";
+import worker from "../src/index.js";
+import { PAGE, SITE_CSP } from "../src/site.js";
 
 const get = (path) => worker.fetch(new Request(`https://splitlane.dev${path}`), {});
 
