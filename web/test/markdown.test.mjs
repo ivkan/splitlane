@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { inline, parse, render } from "../public/app/markdown.js";
+import { inline, parse, render } from "../public/markdown.js";
 
 test("emphasis, code and links read as such", () => {
   assert.deepEqual(inline("**Bold** and *it* and `x*y`"), [

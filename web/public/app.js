@@ -629,8 +629,8 @@ function openOnPhone() {
     h("h2", {}, "Splitlane on your phone"),
     h("p", {}, "This page is for your phone. Follow the agent sessions on your computer from it, and answer them."),
     h("p", { class: "muted" }, "Scan this with the phone's camera to open it there:"),
-    h("img", { class: "qr", src: "open-on-phone.svg", alt: "QR code of splitlane.dev/app", width: "200", height: "200" }),
-    h("p", { class: "muted" }, "splitlane.dev/app"),
+    h("img", { class: "qr", src: "open-on-phone.svg", alt: "QR code of app.splitlane.dev", width: "200", height: "200" }),
+    h("p", { class: "muted" }, "app.splitlane.dev"),
   );
 }
 
@@ -764,7 +764,7 @@ function renderScan() {
 /// For a page added to the home screen, which a camera's link does not open:
 /// the link the computer shows can be pasted instead.
 function pasteBox() {
-  const input = h("input", { placeholder: "https://splitlane.dev/app#pair=…", autocomplete: "off", "aria-label": "Pairing link" });
+  const input = h("input", { placeholder: "https://app.splitlane.dev/#pair=…", autocomplete: "off", "aria-label": "Pairing link" });
   const go = () => {
     const offer = parseLink(input.value.trim());
     if (!offer) {
@@ -1778,8 +1778,21 @@ async function start() {
     state.badLink = !state.offer;
     history.replaceState(null, "", location.pathname + location.search);
   }
+  // The page used to be at splitlane.dev/app, which now sends here with
+  // `?moved`. A browser keeps data per origin, so a phone paired there
+  // arrives with nothing paired, and the reason has to be said: nothing can
+  // carry the keys across without handing them to another origin.
+  const moved = new URLSearchParams(location.search).has("moved");
+  if (moved) history.replaceState(null, "", location.pathname + location.hash);
   try {
     state.computers = await store.computers();
+    // A phone already paired here that came in by the old icon needs only
+    // to drop the icon, not to be told to pair again.
+    if (moved) {
+      state.notice = state.computers.length
+        ? "Splitlane's phone page is now at app.splitlane.dev. Remove the old icon from the home screen and keep this one."
+        : "Splitlane's phone page moved here from splitlane.dev/app. A phone paired on the old page has to pair again: add this page to the home screen, pair it, then remove the old icon. Splitlane on the computer stops answering the old pairing once it is updated.";
+    }
   } catch (error) {
     state.computers = [];
     state.notice = `This browser does not let the page keep data (${error?.name ?? "error"}), so it cannot stay paired. Private browsing is the usual reason.`;

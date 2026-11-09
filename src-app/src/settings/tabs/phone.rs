@@ -18,7 +18,7 @@ use gpui::{
     div, fill, point, px, size,
 };
 
-use crate::remote::{PairStep, PairedPhone, WindowPairing};
+use crate::remote::{PairStep, PairedPhone, RevokedPhone, WindowPairing};
 use crate::settings::components::{
     SETTING_ROW_MAX_WIDTH, secondary_button, setting_action_row, setting_note, setting_toggle_row,
 };
@@ -35,6 +35,9 @@ const QR_QUIET_MODULES: usize = 4;
 pub(crate) struct PhonePage {
     /// `None` until the first read returns.
     phones: Option<Result<Vec<PairedPhone>, String>>,
+    /// Phones this computer stopped answering when the phone page moved, as
+    /// long as the note saying so has not been dismissed.
+    revoked: Vec<RevokedPhone>,
     pairing: Option<WindowPairing>,
     /// Counts pairings started, so the steps of one cancelled meanwhile are
     /// told from the current one's.
@@ -57,6 +60,7 @@ impl PhonePage {
         cx.observe(&code_input, |_, _, cx| cx.notify()).detach();
         let mut page = Self {
             phones: None,
+            revoked: Vec::new(),
             pairing: None,
             pairing_number: 0,
             step: None,
@@ -72,9 +76,15 @@ impl PhonePage {
     /// Read the paired phones again, off the main thread.
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            // The list first: reading it is what runs the revocation the
+            // note is about.
             let phones = smol::unblock(crate::remote::paired_phones).await;
+            let revoked = smol::unblock(crate::remote::revoked_phones_notice).await;
             let _ = this.update(cx, |this, cx| {
                 this.phones = Some(phones);
+                // A note that cannot be read is no reason to show an error
+                // above the phones; the list says what is wrong with them.
+                this.revoked = revoked.unwrap_or_default();
                 cx.notify();
             });
         })
@@ -159,6 +169,50 @@ impl PhonePage {
         if let Some(pairing) = &self.pairing {
             pairing.submit(code);
         }
+    }
+
+    fn dismiss_revoked(&mut self, cx: &mut Context<Self>) {
+        self.revoked.clear();
+        self.change(cx, crate::remote::dismiss_revoked_phones_notice);
+    }
+
+    /// Why phones paired before are gone: the page moved, the browser kept
+    /// their keys behind on the old address, and this computer stopped
+    /// answering those keys.
+    fn render_revoked(&self, ui: crate::theme::UiColors, cx: &mut Context<Self>) -> AnyElement {
+        let names = self
+            .revoked
+            .iter()
+            .map(|phone| phone.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        div()
+            .flex()
+            .flex_col()
+            .items_start()
+            .max_w(px(SETTING_ROW_MAX_WIDTH))
+            .pb(tok::space::XL)
+            .gap(tok::space::MD)
+            .child(
+                div()
+                    .text_size(tok::text::CAPTION)
+                    .text_color(ui.text)
+                    .child(SharedString::from(format!(
+                        "Pair your phone again. The phone page moved from splitlane.dev/app to \
+                         app.splitlane.dev, and a browser keeps a page's data apart for each \
+                         address, so the pairing stayed behind on the old one. This computer no \
+                         longer answers phones paired before the move ({names}), so nothing left \
+                         there can reach it. Open app.splitlane.dev on the phone, add it to the \
+                         home screen, pair it below, and remove the old icon."
+                    ))),
+            )
+            .child(secondary_button(
+                "phone-revoked-dismiss",
+                "Got it",
+                ui,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_revoked(cx)),
+            ))
+            .into_any_element()
     }
 
     fn set_reply(&mut self, room: String, reply: bool, cx: &mut Context<Self>) {
@@ -407,10 +461,13 @@ impl Render for PhonePage {
         let mut page = div().flex().flex_col().child(setting_note(
             ui,
             "A paired phone sees your agent sessions and can answer them. First open \
-             splitlane.dev/app on the phone and add it to the home screen; then pair it \
+             app.splitlane.dev on the phone and add it to the home screen; then pair it \
              here. It reaches this computer through relay.splitlane.dev, encrypted between \
              the two: the relay forwards it unread.",
         ));
+        if !self.revoked.is_empty() {
+            page = page.child(self.render_revoked(ui, cx));
+        }
         match &self.phones {
             None => {}
             Some(Err(e)) => {
@@ -526,7 +583,7 @@ mod tests {
             1_800_000_000,
             300,
         )
-        .to_link("https://splitlane.dev/app");
+        .to_link("https://app.splitlane.dev/");
         let code = QrModules::of(&link).expect("a QR code");
         assert_eq!(code.dark.len(), code.width * code.width);
         // Version 10 at the default error correction is 57 modules a side;

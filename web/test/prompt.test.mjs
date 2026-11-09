@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { screenPrompt, sendStep } from "../public/app/prompt.js";
+import { screenPrompt, sendStep } from "../public/prompt.js";
 
 const permission = [
   "⏺ I'll run the release check.",

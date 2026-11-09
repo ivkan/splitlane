@@ -4,12 +4,12 @@ A paired phone lists the agent sessions on your computer, shows each one's
 state, its question when it is waiting for you and its last answer, and lets
 you answer it: type a reply, press one of the keys a prompt asks for, or
 interrupt a turn. It can also start a new session. The phone needs no app. It is a page at
-<https://splitlane.dev/app>, which you can add to the home screen.
+<https://app.splitlane.dev>, which you can add to the home screen.
 
 ## Pairing
 
 1. **Add the page to the phone's home screen.** Open
-   <https://splitlane.dev/app> on the phone; the page walks you through it.
+   <https://app.splitlane.dev> on the phone; the page walks you through it.
    On an iPhone: Share, then Add to Home Screen; this works in Safari and in
    Chrome alike, where Share is at the right of the address bar. On Android:
    Install, or the browser's menu, then Install app. On an iPhone this comes
@@ -81,7 +81,7 @@ window.
 ## Updates
 
 The page updates itself: each time it opens with a network, it loads the
-current version from <https://splitlane.dev/app>. On an iPhone, an app left
+current version from <https://app.splitlane.dev>. On an iPhone, an app left
 in the background comes back as it was, without loading anything; close it
 (swipe it up in the app switcher) and open it again to be sure. A page that
 is open when a newer one comes out says so at the top - *A new version of
@@ -93,6 +93,30 @@ The foot of a computer's screen says which versions are talking, for example
 page's alone. The computer's version changes when Splitlane on it updates,
 the page's when the page does. A computer that names no version runs
 Splitlane 0.2.14 or older.
+
+### The page moved to app.splitlane.dev
+
+The page used to be at `splitlane.dev/app`; that address is to lead to
+<https://app.splitlane.dev>. Pairing links from older Splitlane builds keep
+working: they open the old page until then and the new one after, ready to
+pair.
+
+A phone paired on the old address is not paired on the new one. The browser
+keeps the page's data, its key among it, apart for each address, and
+nothing carries it across. Once the old address leads to the new one,
+opening the old page does so and asks the browser to clear the data left
+there. Until then the old page may still open, but a computer on this
+version no longer answers it.
+
+The old key is not trusted either. The first time Splitlane on the computer
+starts at the version that moved the page, it stops answering every phone
+paired before, and refuses their keys from then on: whatever a browser kept
+at the old address opens nothing. Settings → Phone says so once and names
+the phones. To carry on:
+
+1. Open <https://app.splitlane.dev> on the phone and add it to the home
+   screen; remove the old icon.
+2. Pair it again in Settings → Phone → **Pair a phone**.
 
 ## How it is connected
 

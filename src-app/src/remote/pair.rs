@@ -16,8 +16,10 @@ pub(crate) const OFFER_TTL_SECS: u64 = 300;
 /// Codes a person may type before the offer is dropped. A million codes is
 /// few enough to try them all; three is enough for typos.
 pub(crate) const CODE_ATTEMPTS: usize = 3;
-/// Where a phone opens the link.
-pub(crate) const PAGE: &str = "https://splitlane.dev/app";
+/// Where a phone opens the link. Builds before this one carry
+/// `https://splitlane.dev/app`, which is to redirect here with the link's
+/// fragment intact (see `site/`).
+pub(crate) const PAGE: &str = "https://app.splitlane.dev/";
 
 /// How a pairing ended without a phone.
 #[derive(Debug, PartialEq, Eq)]

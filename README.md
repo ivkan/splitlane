@@ -176,7 +176,7 @@ that off. The commands and their exit codes are in
 
 A paired phone follows the agent sessions on the computer and answers them.
 There is no app to install from a store: it is a page at
-<https://splitlane.dev/app> that you add to the home screen. Pairing is
+<https://app.splitlane.dev> that you add to the home screen. Pairing is
 Settings → Phone → **Pair a phone**: scan the QR code from the phone, then
 type on the computer the six digits the phone shows, so a photo of the code
 is not enough to pair.

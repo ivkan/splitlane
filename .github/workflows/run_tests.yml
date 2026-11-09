@@ -128,6 +128,7 @@ jobs:
             # change to either runs it.
             web:
               - 'web/**'
+              - 'site/**'
               - 'crates/splitlane-remote/**'
             security:
               - '**/Cargo.toml'
@@ -347,7 +348,7 @@ jobs:
         run: node --test test/relay.test.mjs
 
   web_tests:
-    name: Phone page (protocol)
+    name: Phone page (protocol, redirect)
     needs: orchestrate
     if: >-
       needs.orchestrate.outputs.web == 'true' ||
@@ -363,6 +364,11 @@ jobs:
 
       - name: Test
         working-directory: web
+        run: node --test
+
+      # The redirect that keeps the page's old address working.
+      - name: Test the site's redirect
+        working-directory: site
         run: node --test
 
   run_tests_linux:
