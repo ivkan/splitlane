@@ -103,13 +103,17 @@ work: they open the new page ready to pair.
 A phone paired on the old address is not paired on the new one. The browser
 keeps the page's data, its key among it, apart for each address, and
 nothing carries it across. Opening the old page leads to the new one and
-asks the browser to clear the data left at the old address. To carry on:
+asks the browser to clear the data left at the old address.
+
+The old key is not trusted either. The first time Splitlane on the computer
+starts at the version that moved the page, it stops answering every phone
+paired before, and refuses their keys from then on: whatever a browser kept
+at the old address opens nothing. Settings → Phone says so once and names
+the phones. To carry on:
 
 1. Open <https://app.splitlane.dev> on the phone and add it to the home
    screen; remove the old icon.
 2. Pair it again in Settings → Phone → **Pair a phone**.
-3. **Remove** the old entry for the phone in the same list, so that its old
-   key is refused.
 
 ## How it is connected
 

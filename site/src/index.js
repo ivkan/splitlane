@@ -46,16 +46,17 @@ export function redirect(request) {
 // that no file of the site can loosen it on its own: scripts, styles, media
 // and connections from this origin only, nothing inline, nothing framed.
 //
-// Why so strict on a marketing site: a phone paired on the old page keeps
+// Why so strict on a marketing site. A phone paired on the old page keeps
 // its keys in this origin's storage until it opens /app again and its
-// browser honours Clear-Site-Data (Safari does not). On Android an installed
-// page shares that storage with Chrome, so any script running on
-// splitlane.dev could use those keys - not copy them, they are not
-// exportable - to reach the computer as that phone, until the phone is
-// removed on the computer. Third-party script (analytics, embeds, a CDN)
-// belongs here only after pairings from the old page are gone; loosening
-// this is a change to this file, with that reason in front of whoever
-// makes it.
+// browser honours Clear-Site-Data (Safari does not); on Android an
+// installed page shares that storage with Chrome. Splitlane on the computer
+// revokes every key paired before the move on its first start at that
+// version, so those keys open nothing on an updated computer - but a
+// computer not yet updated still answers them. Beyond that, the policy
+// stands on its own: this origin was the page's, people have its address on
+// their phones and in old pairing codes, and the site has no need to run
+// anyone else's code. Loosening it is a change to this file, with this
+// reason in front of whoever makes it.
 export const SITE_CSP =
   "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 

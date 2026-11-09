@@ -30,14 +30,18 @@ Policy.
 
 That policy (`SITE_CSP` in `src/index.js`) is strict on purpose: scripts,
 styles and media from `splitlane.dev` only, nothing inline, no third-party
-script. A phone paired on the old page keeps its keys in this origin's
-storage until it opens `/app` again and its browser honours
-`Clear-Site-Data`, which Safari does not. On Android an installed page shares
-that storage with Chrome, so a script running on `splitlane.dev` could use
-those keys - not copy them, they cannot be exported - to reach the computer
-as that phone, until the phone is removed in Settings → Phone. Analytics,
-embeds or a script CDN can come once pairings from the old page are gone.
-The Worker sets the header itself, so a `_headers` file cannot override it.
+script. It is policy, not a stopgap.
+
+The keys a phone paired on the old page left in this origin's storage are
+dead once the computer updates: the release that moved the page revokes
+every pairing made before it on its first start. They stay in storage until
+the phone opens `/app` again and its browser honours `Clear-Site-Data`
+(Safari does not), and on Android an installed page shares that storage with
+Chrome, so a computer not yet updated would still answer a script that used
+them. Beyond that, this origin was the page's: people have its address on
+their phones and in old pairing codes, and the site has no need to run
+anyone else's code. The Worker sets the header itself, so a `_headers` file
+cannot override it.
 
 ## Test
 
