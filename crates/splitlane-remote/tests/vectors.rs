@@ -72,7 +72,7 @@ fn compute() -> String {
         "{{\n  \"machine_public\": \"{}\",\n  \"phone_public\": \"{}\",\n  \"link\": \"{}\",\n  \"pairing_mac\": \"{}\",\n  \"code\": \"{}\",\n  \"machine_first_frame\": \"{}\"\n}}\n",
         hex(f.machine.public().as_bytes()),
         hex(f.phone.public().as_bytes()),
-        f.offer.to_link("https://splitlane.dev/app"),
+        f.offer.to_link("https://app.splitlane.dev/"),
         hex(&pairing_mac(&f.offer, &f.phone.public(), "Pixel")),
         confirmation_code(&f.machine, &f.phone.public(), &f.offer),
         hex(&frame),

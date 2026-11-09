@@ -407,7 +407,7 @@ impl Render for PhonePage {
         let mut page = div().flex().flex_col().child(setting_note(
             ui,
             "A paired phone sees your agent sessions and can answer them. First open \
-             splitlane.dev/app on the phone and add it to the home screen; then pair it \
+             app.splitlane.dev on the phone and add it to the home screen; then pair it \
              here. It reaches this computer through relay.splitlane.dev, encrypted between \
              the two: the relay forwards it unread.",
         ));
@@ -526,7 +526,7 @@ mod tests {
             1_800_000_000,
             300,
         )
-        .to_link("https://splitlane.dev/app");
+        .to_link("https://app.splitlane.dev/");
         let code = QrModules::of(&link).expect("a QR code");
         assert_eq!(code.dark.len(), code.width * code.width);
         // Version 10 at the default error correction is 57 modules a side;

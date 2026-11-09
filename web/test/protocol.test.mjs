@@ -53,10 +53,18 @@ test("the link reads as the computer wrote it", () => {
   assert.ok(!expired(offer, 1800000299));
 });
 
+test("a link to the page's old address still reads", () => {
+  // Builds from before the move print the old address; pasted into the
+  // page, the offer is the same.
+  const old = v.link.replace("https://app.splitlane.dev/#", "https://splitlane.dev/app#");
+  assert.notEqual(old, v.link);
+  assert.deepEqual(parseLink(old), parseLink(v.link));
+});
+
 test("what is not a pairing link is refused", () => {
   const good = v.link;
   for (const bad of [
-    "https://splitlane.dev/app",
+    "https://app.splitlane.dev/",
     good.replace("#pair=1.", "#pair=2."),
     good.replace("#pair=", "#pear="),
     good + ".1",

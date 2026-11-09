@@ -240,8 +240,15 @@ mod tests {
     #[test]
     fn an_offer_survives_its_link() {
         let (_, offer) = offer();
+        let link = offer.to_link("https://app.splitlane.dev/");
+        assert!(link.starts_with("https://app.splitlane.dev/#pair=1."));
+        assert_eq!(Offer::from_link(&link), Ok(offer));
+    }
+
+    #[test]
+    fn a_link_to_the_pages_old_address_still_reads() {
+        let (_, offer) = offer();
         let link = offer.to_link("https://splitlane.dev/app");
-        assert!(link.starts_with("https://splitlane.dev/app#pair=1."));
         assert_eq!(Offer::from_link(&link), Ok(offer));
     }
 
@@ -259,10 +266,10 @@ mod tests {
     #[test]
     fn a_link_that_is_not_an_offer_is_refused() {
         let (_, offer) = offer();
-        let link = offer.to_link("https://splitlane.dev/app");
+        let link = offer.to_link("https://app.splitlane.dev/");
         for bad in [
-            "https://splitlane.dev/app",
-            "https://splitlane.dev/app#pair=",
+            "https://app.splitlane.dev/",
+            "https://app.splitlane.dev/#pair=",
             link.split_once('#').unwrap().1,
             &link.replace("#pair=1.", "#pair=2."),
             &link.replace("#pair=1.", "#pair=1.x."),
