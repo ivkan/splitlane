@@ -42,11 +42,37 @@ export function redirect(request) {
   });
 }
 
+// Every other response on splitlane.dev carries this policy, set here so
+// that no file of the site can loosen it on its own: scripts, styles, media
+// and connections from this origin only, nothing inline, nothing framed.
+//
+// Why so strict on a marketing site: a phone paired on the old page keeps
+// its keys in this origin's storage until it opens /app again and its
+// browser honours Clear-Site-Data (Safari does not). On Android an installed
+// page shares that storage with Chrome, so any script running on
+// splitlane.dev could use those keys - not copy them, they are not
+// exportable - to reach the computer as that phone, until the phone is
+// removed on the computer. Third-party script (analytics, embeds, a CDN)
+// belongs here only after pairings from the old page are gone; loosening
+// this is a change to this file, with that reason in front of whoever
+// makes it.
+export const SITE_CSP =
+  "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+function withSiteHeaders(response) {
+  const out = new Response(response.body, response);
+  out.headers.set("Content-Security-Policy", SITE_CSP);
+  out.headers.set("X-Content-Type-Options", "nosniff");
+  return out;
+}
+
 export default {
   async fetch(request, env) {
     const moved = redirect(request);
     if (moved) return moved;
-    if (env?.ASSETS) return env.ASSETS.fetch(request);
-    return new Response("Not found\n", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    if (env?.ASSETS) return withSiteHeaders(await env.ASSETS.fetch(request));
+    return withSiteHeaders(
+      new Response("Not found\n", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } }),
+    );
   },
 };

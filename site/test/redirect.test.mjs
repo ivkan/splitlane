@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import worker, { PAGE } from "../src/index.js";
+import worker, { PAGE, SITE_CSP } from "../src/index.js";
 
 const get = (path) => worker.fetch(new Request(`https://splitlane.dev${path}`), {});
 
@@ -57,4 +57,21 @@ test("everything else is left to the site", async () => {
     ASSETS: { fetch: async () => new Response("site", { status: 200 }) },
   });
   assert.equal(await served.text(), "site");
+});
+
+test("the site's responses carry the strict policy, whatever its files say", async () => {
+  const notFound = await get("/");
+  assert.equal(notFound.headers.get("Content-Security-Policy"), SITE_CSP);
+  const served = await worker.fetch(new Request("https://splitlane.dev/"), {
+    ASSETS: {
+      fetch: async () =>
+        new Response("site", { headers: { "Content-Security-Policy": "script-src *", "Content-Type": "text/html" } }),
+    },
+  });
+  assert.equal(served.headers.get("Content-Security-Policy"), SITE_CSP);
+  assert.equal(served.headers.get("Content-Type"), "text/html");
+  assert.equal(served.headers.get("X-Content-Type-Options"), "nosniff");
+  // No script from anywhere but the site, and none inline.
+  assert.match(SITE_CSP, /default-src 'self'/);
+  assert.doesNotMatch(SITE_CSP, /unsafe-inline|unsafe-eval|\*|https?:/);
 });

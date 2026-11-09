@@ -2,11 +2,13 @@
 # on to app.splitlane.dev, where the page lives on an origin of its own;
 # everything else is a 404 until the site is built.
 #
-# The site goes beside it: add an [assets] block with its files and keep
-#   run_worker_first = ["/app", "/app/*"]
-# in it, so that the redirect in src/index.js answers those paths whatever
-# the site's files are. The site may run any script it likes; the page and
-# its key are on another origin.
+# The site goes beside it: add an [assets] block with its files, a binding
+# named ASSETS and
+#   run_worker_first = true
+# so that every request passes through src/index.js: the redirect answers
+# /app whatever the site's files are, and every other response gets the
+# site's Content Security Policy, which no file can loosen. That policy
+# allows no third-party script for now; src/index.js says why.
 name = "splitlane-site"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
