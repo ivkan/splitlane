@@ -21,7 +21,7 @@ import {
   pairingMac,
   parseLink,
   sharedSecret,
-} from "../public/app/protocol.js";
+} from "../public/protocol.js";
 
 const v = JSON.parse(readFileSync(new URL("../../crates/splitlane-remote/tests/vectors.json", import.meta.url), "utf8"));
 const unhex = (s) => new Uint8Array(Buffer.from(s, "hex"));
