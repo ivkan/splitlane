@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Running 4 to 7 Claude Code sessions at once (14 at peak)</title>
+<meta name="description" content="Two Claude Code sessions in two projects are already enough for me to lose the one that is waiting. What I tried, what I dropped, and the rules I keep.">
+<link rel="canonical" href="https://splitlane.dev/blog/running-claude-code-sessions-at-once/">
+<meta name="theme-color" content="#fbfbfa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0e10" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Splitlane">
+<meta property="og:url" content="https://splitlane.dev/blog/running-claude-code-sessions-at-once/">
+<meta property="og:title" content="Running 4 to 7 Claude Code sessions at once (14 at peak)">
+<meta property="og:description" content="Two Claude Code sessions in two projects are already enough for me to lose the one that is waiting. What I tried, what I dropped, and the rules I keep.">
+<meta property="og:image" content="https://splitlane.dev/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Splitlane with several coding agents side by side.">
+<meta property="article:published_time" content="2026-11-11">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Running 4 to 7 Claude Code sessions at once (14 at peak)">
+<meta name="twitter:description" content="Two Claude Code sessions in two projects are already enough for me to lose the one that is waiting. What I tried, what I dropped, and the rules I keep.">
+<meta name="twitter:image" content="https://splitlane.dev/social-preview.png">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="alternate" type="application/rss+xml" title="Splitlane blog" href="/blog/feed.xml">
+<link rel="preload" href="/fonts/geist-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/css/site.css">
+<script src="/js/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/img/logo-64.png" width="28" height="28" alt=""> Splitlane</a>
+    <nav class="nav" aria-label="Main">
+      <a class="wide" href="/#how">How it knows</a>
+      <a class="wide" href="/#phone">Phone</a>
+      <a href="/compare/">Compare</a>
+      <a href="/blog/" aria-current="page">Blog</a>
+      <a class="wide" href="https://github.com/ivkan/splitlane/blob/main/docs/user/index.md">Docs</a>
+      <a href="https://github.com/ivkan/splitlane">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<article class="page post" aria-labelledby="title">
+  <div class="wrap">
+    <div class="prose">
+      <p class="post-meta"><a href="/blog/">Blog</a> · <time datetime="2026-11-11">11 November 2026</time></p>
+      <h1 id="title">Running 4 to 7 Claude Code sessions at once (14 at peak)</h1>
+
+      <p>On 8 November a <code>ps</code> snapshot on my Mac showed 14 Claude Code sessions running. That was a peak. A normal day is 4 to 7.</p>
+      <p>I have 3-4 work projects and about as many personal ones. Any task that changes code or researches something goes to an agent. You don't need 14 sessions for this to get messy, though. Two sessions in two different projects are already enough for me to start losing track of the one that is waiting.</p>
+
+      <h2 id="where-the-time-goes">Where the time goes</h2>
+      <p>Claude Code stops for three reasons: a permission prompt, a question, or a finished turn. All three mean the same thing: nothing moves until I look.</p>
+      <p>The finished turn is the sneaky one. A finished agent looks done, so it feels like nothing is owed. But nobody has read the result yet, and the session has no next task. An unread result costs the same as a waiting prompt.</p>
+      <p>Two people on r/ClaudeCode describe the same thing:</p>
+      <figure class="quote">
+        <blockquote>
+          <p>"I usually have 5 to 10 sessions going and kept losing the one that was waiting on me, so I ended up writing my own terminal."</p>
+        </blockquote>
+        <figcaption>u/Excellent-Issue-5956, <a rel="nofollow" href="https://reddit.com/r/ClaudeCode/comments/1x3cbnd/whats_your_terminal_setup_for_claude_code_on_macos/">r/ClaudeCode</a></figcaption>
+      </figure>
+      <figure class="quote">
+        <blockquote>
+          <p>"what broke wasn't the code, it was me forgetting which session finished an hour ago and has been waiting on me since"</p>
+        </blockquote>
+        <figcaption>u/Sea_Pear_6832, <a rel="nofollow" href="https://reddit.com/r/ClaudeCode/comments/1xeg8xs/anyone_else_transitioning_to_100_agentic_workflow/">r/ClaudeCode</a></figcaption>
+      </figure>
+
+      <h2 id="one-checkout-two-agents">One checkout, two agents</h2>
+      <p>It has happened to me: two agents in one checkout, and a commit on the wrong branch. Now every session gets its own git worktree and its own branch. Without tooling, a new session means something like this:</p>
+      <pre class="code"><code>git worktree add ../myrepo.worktrees/fix-auth -b fix-auth
+cp .env ../myrepo.worktrees/fix-auth/
+cd ../myrepo.worktrees/fix-auth &amp;&amp; claude</code></pre>
+      <p>git does not put untracked files like <code>.env</code> into a new worktree, so without the <code>cp</code> line the agent starts in a checkout that cannot run the app. Two dev servers from two worktrees also want two different ports.</p>
+
+      <h2 id="what-i-tried-first">What I tried first</h2>
+      <p><strong>Terminal tabs.</strong> Inconvenient, and the UI doesn't help. To get what I needed I had to stack several programs on top of the terminal, and I still couldn't see plan limits, files, or projects grouped together.</p>
+      <p><strong>Tools built on tmux.</strong> I tried several and stopped using them for the same reasons. In some of them the text output broke (rendering glitches). tmux itself shows you the panes, but it can't tell you which agent is blocked on a question. Tools built on it guess from the screen (<code>capture-pane</code> and pattern matching), and a permission prompt and an idle prompt can look alike, while the agent's interface changes from one release to the next.</p>
+      <p><strong>VS Code with the Claude Code extension.</strong> This was my main tool for a year. I dropped it for two reasons. Every project is a separate window, so I couldn't see several sessions at once. And the memory: with 2-4 projects open, each VS Code window took 1-2 GB. When I was building a game in UE5, 32 GB of RAM was not enough.</p>
+
+      <h2 id="the-rules-i-keep">The rules I keep</h2>
+      <p>They hold no matter what you run the agents in.</p>
+      <ol>
+        <li><strong>One session, one worktree, one branch.</strong> Quick tasks too.</li>
+        <li><strong>Unread counts as waiting.</strong> A finished turn counts as waiting until someone has read the result.</li>
+        <li><strong>Only a status you can trace.</strong> Is a <code>running</code> label worth anything if you don't know where it comes from? No. It sends you back to the pane, and then it saved you nothing.</li>
+        <li><strong>Closed is not lost.</strong> A closed session resumes later, so closing one doesn't cost the conversation.</li>
+      </ol>
+
+      <h2 id="what-i-built-for-it">What I built for it</h2>
+      <p>I wanted one app that does this without a pile of extensions: easy control, plan limits in view, and as little of the machine as possible. <a href="https://splitlane.dev">Splitlane</a> is a desktop app where each agent runs in a real terminal pane and the app shows which session is waiting for you (full disclosure: my project, free, GPL-3.0-or-later).</p>
+    </div>
+
+    <figure class="post-media">
+      <div class="media r-desktop">
+        <video data-autoplay muted loop playsinline controls preload="none"
+          width="1280" height="888"
+          poster="/video/hero-light-poster.webp" data-poster-dark="/video/hero-dark-poster.webp"
+          aria-label="Splitlane with three agent sessions in one project, two Claude Code and one Codex. They start on their tasks; the right-hand one stops on a permission prompt to run npm test, and its pane header, its row in the rail and the title bar all change to say it is waiting for you.">
+          <source media="(prefers-color-scheme: dark)" src="/video/hero-dark.mp4" type="video/mp4">
+          <source src="/video/hero-light.mp4" type="video/mp4">
+        </video>
+      </div>
+      <figcaption class="caption">Three agents in one project. One is working, one has finished, and one is asking to run <code>npm test</code>. The rail, its pane header and the title bar all say so.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <p>Because of rule 3, the status source matters most. As of November 2026, for Claude Code and Codex it is read from the agent's own records and the process tree under the pane, not from what the terminal shows. The trade-off: that covers two agents only, and every change to their record format means checking again. Eight more agents report through hooks.</p>
+      <ul>
+        <li><code>⌥⇥</code> jumps to the next session waiting for me. A finished run I haven't looked at stays marked until its pane is on screen.</li>
+        <li>Every new agent session in a git repository gets its own worktree, branch, <code>.env</code> copy and ten ports in <code>SPLITLANE_PORT</code>.</li>
+        <li>A paired phone shows the same list with a <strong>Needs you</strong> section on top and can answer a permission prompt. I use it when I'm away from the desk.</li>
+      </ul>
+      <p>Plan usage and the sessions that don't fit the pane grid sit in the sidebar. I haven't measured its memory against VS Code, so there is no number here.</p>
+
+      <h2 id="what-doesnt-work-yet">What doesn't work yet</h2>
+      <ul>
+        <li>The last six agents (Copilot, Kiro, Factory, Antigravity, Openclaw, Amp) have no status beyond "process is alive", so their row can say <code>running</code> while the agent is waiting for you.</li>
+        <li>Local only, no SSH. On a remote box, tmux or herdr will fit better.</li>
+        <li>Release builds are macOS (Apple Silicon) and Linux; Windows builds only from source. I use it daily on macOS; Linux has had far less hands-on use.</li>
+      </ul>
+      <p>If you keep several agents running some other way, I'd like to hear how you notice the one that's waiting.</p>
+    </div>
+
+    <div class="cta cta-left">
+      <a class="button" href="https://github.com/ivkan/splitlane/releases/latest">Download for macOS</a>
+      <a class="button quiet" href="/#install">All platforms</a>
+    </div>
+  </div>
+</article>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/img/logo-64.png" width="28" height="28" alt=""> Splitlane</a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/ivkan/splitlane/blob/main/docs/user/index.md">Docs</a>
+      <a href="https://github.com/ivkan/splitlane/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="/compare/">Compare</a>
+      <a href="/blog/">Blog</a>
+      <a href="/blog/feed.xml">RSS</a>
+      <a href="https://app.splitlane.dev">Phone page</a>
+      <a href="https://github.com/ivkan/splitlane">GitHub</a>
+    </nav>
+    <p class="legal">Splitlane is free software under the <a href="https://github.com/ivkan/splitlane/blob/main/LICENSE">GPL-3.0-or-later</a>. Product names shown are trademarks of their owners, used only to identify those tools; Splitlane is not affiliated with or endorsed by them.</p>
+  </div>
+</footer>
+</body>
+</html>

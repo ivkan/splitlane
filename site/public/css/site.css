@@ -725,6 +725,109 @@ h2 {
 .prose li::marker {
   color: var(--muted);
 }
+.prose ol {
+  margin-top: 16px;
+  padding-left: 24px;
+}
+.prose ol li::marker {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Blog: the list of posts, and a post */
+
+.post-meta {
+  font-size: 14px;
+  color: var(--muted);
+}
+.post-meta a {
+  text-decoration: none;
+}
+.post-meta a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.posts {
+  max-width: 44em;
+  margin: 56px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.posts li + li {
+  margin-top: 40px;
+}
+.posts h2 {
+  margin-top: 8px;
+  font-size: clamp(24px, 2.8vw, 30px);
+}
+.posts h2 a {
+  text-decoration: none;
+}
+.posts h2 a:hover {
+  text-decoration: underline;
+}
+.posts h2 + p {
+  margin-top: 10px;
+  color: var(--muted);
+}
+.posts-follow {
+  max-width: 44em;
+  margin-top: 56px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  font-size: 15px;
+  color: var(--muted);
+}
+.post h1 {
+  margin-top: 16px;
+  font-size: clamp(34px, 5vw, 52px);
+}
+.post h1 + p {
+  margin-top: 40px;
+}
+.quote {
+  margin: 24px 0 0;
+  padding: 4px 0 4px 20px;
+  border-left: 3px solid var(--line-strong);
+}
+.quote blockquote {
+  margin: 0;
+  font-size: 18px;
+  font-style: italic;
+}
+.quote figcaption {
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.quote + p {
+  margin-top: 24px;
+}
+pre.code {
+  margin: 20px 0 0;
+  padding: 18px 20px;
+  overflow-x: auto;
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 1px var(--line);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+  tab-size: 2;
+}
+.post-media {
+  max-width: 960px;
+  margin: 40px 0 0;
+}
+@media (max-width: 720px) {
+  pre.code {
+    padding: 14px 16px;
+    font-size: 12.5px;
+  }
+}
+.post-media .caption {
+  margin: 14px 0 0;
+  text-align: left;
+}
 .empty {
   margin-top: 56px;
   padding: 40px;
