@@ -96,6 +96,30 @@ for (const post of POSTS) {
   });
 }
 
+// Width and height from a PNG's IHDR chunk.
+const pngSize = (buffer) => {
+  assert.equal(buffer.subarray(1, 4).toString("latin1"), "PNG");
+  return [buffer.readUInt32BE(16), buffer.readUInt32BE(20)];
+};
+
+test("each post has its own 1280x640 social preview, and its meta says so", () => {
+  for (const post of POSTS) {
+    const path = `/blog/${post.slug}/`;
+    const page = read(path + "index.html");
+    const image = `${ORIGIN}${path}preview.png`;
+    const file = join(root, path, "preview.png");
+    assert.ok(existsSync(file), `${post.slug}: run tools/post-preview.sh`);
+    assert.deepEqual(pngSize(readFileSync(file)), [1280, 640], post.slug);
+    assert.equal(meta(page, "property", "og:image"), image, post.slug);
+    assert.equal(meta(page, "name", "twitter:image"), image, post.slug);
+    assert.equal(meta(page, "property", "og:image:width"), "1280", post.slug);
+    assert.equal(meta(page, "property", "og:image:height"), "640", post.slug);
+    const alt = meta(page, "property", "og:image:alt") ?? "";
+    assert.ok(alt.length >= 30 && !alt.startsWith("Splitlane with several"), `${post.slug}: og:image:alt is the post's own`);
+    assert.equal(meta(page, "name", "twitter:image:alt"), alt, post.slug);
+  }
+});
+
 test("a post's video has its clips and posters on disk", () => {
   for (const post of POSTS) {
     const page = read(`/blog/${post.slug}/index.html`);
