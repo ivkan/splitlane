@@ -41,7 +41,7 @@ export const SLOTS = {
   fleet: {
     frame: "media r-wide section-media",
     label:
-      "A Claude Code session named plan opens four sessions in Splitlane and hands each a task. They appear under it in the rail and in a two-by-two grid, each pane saying who opened it; one stops on a permission prompt and says it is waiting for you.",
+      "A Claude Code session named plan opens three sessions in Splitlane and hands each a task. They appear under it in the rail and in panes beside it, each pane saying who opened it, and the one with no room left waits in the rail; the one told to run the tests stops on a permission prompt and says it is waiting for you.",
   },
   host: {
     frame: "media r-desktop",
