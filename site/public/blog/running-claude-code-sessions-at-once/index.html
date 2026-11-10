@@ -85,7 +85,7 @@ cd ../myrepo.worktrees/fix-auth &amp;&amp; claude</code></pre>
       <h2 id="what-i-tried-first">What I tried first</h2>
       <p><strong>Terminal tabs.</strong> Inconvenient, and the UI doesn't help. To get what I needed I had to stack several programs on top of the terminal, and I still couldn't see plan limits, files, or projects grouped together.</p>
       <p><strong>Tools built on tmux.</strong> I tried several and stopped using them for the same reasons. In some of them the text output broke (rendering glitches). tmux itself shows you the panes, but it can't tell you which agent is blocked on a question. Tools built on it guess from the screen (<code>capture-pane</code> and pattern matching), and a permission prompt and an idle prompt can look alike, while the agent's interface changes from one release to the next.</p>
-      <p><strong>VS Code with the Claude Code extension.</strong> This was my main tool for a year. I dropped it for two reasons. Every project is a separate window, so I couldn't see several sessions at once. And the memory: with 2-4 projects open, each VS Code window took 1-2 GB. When I was building a game in UE5, 32 GB of RAM was not enough.</p>
+      <p><strong>Cursor with the Claude Code extension.</strong> This was my main tool for a year. I dropped it for two reasons. Every project is a separate window, so I couldn't see several sessions at once. And the memory: with 2-4 projects open, each Cursor window took 1-2 GB. When I was building a game in UE5, 32 GB of RAM was not enough.</p>
 
       <h2 id="the-rules-i-keep">The rules I keep</h2>
       <p>They hold no matter what you run the agents in.</p>
@@ -120,7 +120,7 @@ cd ../myrepo.worktrees/fix-auth &amp;&amp; claude</code></pre>
         <li>Every new agent session in a git repository gets its own worktree, branch, <code>.env</code> copy and ten ports in <code>SPLITLANE_PORT</code>.</li>
         <li>A paired phone shows the same list with a <strong>Needs you</strong> section on top and can answer a permission prompt. I use it when I'm away from the desk.</li>
       </ul>
-      <p>Plan usage and the sessions that don't fit the pane grid sit in the sidebar. I haven't measured its memory against VS Code, so there is no number here.</p>
+      <p>Plan usage and the sessions that don't fit the pane grid sit in the sidebar. I haven't measured its memory against Cursor, so there is no number here.</p>
 
       <h2 id="what-doesnt-work-yet">What doesn't work yet</h2>
       <ul>
