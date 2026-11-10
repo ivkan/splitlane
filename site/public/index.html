@@ -179,15 +179,15 @@
     </div>
 
     <figure class="media r-wide section-media" data-video-slot="fleet">
-      <video data-autoplay muted loop playsinline controls preload="none"
-        width="1280" height="658"
-        poster="/video/fleet-light-poster.webp" data-poster-dark="/video/fleet-dark-poster.webp"
-        aria-label="A Claude Code session named plan opens three sessions in Splitlane and hands each a task. They appear under it in the rail and in panes beside it, each pane saying who opened it, and the one with no room left waits in the rail; the one told to run the tests stops on a permission prompt and says it is waiting for you.">
-        <source media="(prefers-color-scheme: dark)" src="/video/fleet-dark.mp4" type="video/mp4">
-        <source src="/video/fleet-light.mp4" type="video/mp4">
-      </video>
+      <picture>
+        <img src="/img/orchestration-dark-1440.webp"
+          srcset="/img/orchestration-dark-960.webp 960w, /img/orchestration-dark-1440.webp 1440w, /img/orchestration-dark-1920.webp 1920w"
+          sizes="(min-width: 1248px) 1200px, calc(100vw - 32px)"
+          width="1920" height="988" loading="lazy" decoding="async"
+          alt="Splitlane with one project in a two-by-two grid. In the rail a session named plan carries the count 4, and a bracket in the margin joins it to the four sessions it opened: tests, api-docs, lint and fixtures. The api-docs pane shows a permission prompt and its header reads 'waiting for you'.">
+      </picture>
     </figure>
-    <p class="caption">One session and the three it opened: one waiting for you, two at work, one of them in the rail for want of room.</p>
+    <p class="caption">One session and the four it opened. One is working, one is waiting for you.</p>
 
     <ul class="facts">
       <li>
