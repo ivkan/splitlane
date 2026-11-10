@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Run the README demo choreography against a clean debug build, and write a
-# timeline the post-processing step cuts the screen recording by.
+# Run the main demo choreography against a clean debug build, and write a
+# timeline the post-processing step cuts the screen recording by. It is the
+# source of the README's stills and clip and of three of the site's clips:
+# hero (an agent stops on a question), state (the same, as a detail) and
+# grid (the row becomes a grid with the diff). Two more scenes have scripts
+# of their own: record-fleet.sh (one agent opening four sessions) and
+# record-host.sh (the window closes and opens again, the sessions still
+# there). The shared parts are in lib.sh.
 #
 #   scripts/record-demo/record.sh              # you record the screen (Cmd-Shift-5)
 #   scripts/record-demo/record.sh --rehearse   # same run, no recording prompt
@@ -9,6 +15,11 @@
 #
 # Then:
 #   scripts/record-demo/process.sh <recording.mov> <run-dir>
+#
+# What can be checked without a window, a sign-in or a screen recording -
+# the stage of each scene, the cuts on a synthetic recording, the clean-up -
+# is checked by:
+#   python3 -I scripts/record-demo/test_pipeline.py
 #
 # macOS only. What it needs, and why:
 #
@@ -25,9 +36,13 @@
 #                     your real plan usage is in the frames - record when the
 #                     session window is fresh, or an orange "nearly out"
 #                     outshouts "waiting for you".
-#     hide            CLAUDE_CODE_OAUTH_TOKEN in the environment and no file:
-#                     the footer finds no account and is not drawn. Claude
-#                     Code's banner then reads "Claude API".
+#     hide            CLAUDE_CODE_OAUTH_TOKEN in the environment and no file.
+#                     The footer finds no account, but `claude` is on PATH,
+#                     so it is drawn as "Claude limit · not signed in ·
+#                     sign in" (limits_footer_has_something_to_say: a CLI
+#                     user who has not signed in keeps the panel). True, and
+#                     it reads as broken in a hero shot. Claude Code's
+#                     banner then reads "Claude API".
 #   The prompts are short; a run is a few turns of your plan's usage.
 # - No Screen Recording or Accessibility permission for this script: every step
 #   goes through the app's own IPC socket, and window bounds are readable
@@ -35,239 +50,57 @@
 #   --capture, by ffmpeg, which then needs Screen Recording for the app the
 #   script runs from. It writes recording.mov into the run dir.
 #
+# - With DEMO_CODEX=1 (the default) the middle pane is Codex, not Claude Code,
+#   signed in the way your own Codex is (see lib.sh: an API key is copied, a
+#   ChatGPT sign-in is not). DEMO_CODEX=0 records three Claude Code panes.
+#
 # Every state on screen is one the app reaches by itself. The "waiting for
 # you" in the hero is Claude Code's real permission prompt for `npm test`,
 # because the stage allows file edits and deliberately does not allow Bash.
 
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
-BIN="$ROOT/target/debug/splitlane"
-REHEARSE=0
-CAPTURE=0
-case "${1:-}" in
-  --rehearse) REHEARSE=1 ;;
-  --capture) CAPTURE=1 ;;
-esac
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+demo_init main "${1:-}"
 
-say() { printf '\033[1m>> %s\033[0m\n' "$*" >&2; }
-die() { printf 'record-demo: %s\n' "$*" >&2; exit 1; }
+# The third surface's Claude session id, from the seeded session, before the
+# app rewrites the file.
+TESTS_SESSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["projects"][0]["surfaces"][2]["agent"]["session_id"])' "$SESSION_SEED")"
+CLAUDE_PANES=$(( DEMO_CODEX == 1 ? 2 : 3 ))
 
-[[ "$(uname -s)" == "Darwin" ]] || die "macOS only"
-[[ -x "$BIN" ]] || die "no debug build at $BIN - run: cargo build -p splitlane-app"
-security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 \
-  || die "no Claude Code Keychain entry - sign Claude Code in first"
-CLAUDE_BIN="$(command -v claude)" || die "claude not on PATH"
-NODE_BIN="$(command -v node)" || die "node not on PATH (the demo repo's tests use it)"
-
-# Short, because the IPC socket path has to fit in sun_path.
-STAGE="$(mktemp -d /tmp/sl-demo.XXXXXX)"
-STAGE="$(cd "$STAGE" && pwd -P)"
-RUN_DIR="$ROOT/target/record-demo/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$RUN_DIR"
-TIMELINE="$RUN_DIR/timeline.jsonl"
-APP_PID=""
-CAPTURE_PID=""
-CAPTURE_FIFO="$RUN_DIR/capture.ctl"
-
-# ffmpeg stops cleanly - finishing the file - on a `q` on its stdin; a signal
-# can leave the recording without its index.
-stop_capture() {
-  [[ -n "$CAPTURE_PID" ]] || return 0
-  printf 'q' >&7 2>/dev/null || true
-  exec 7>&- 2>/dev/null || true
-  wait "$CAPTURE_PID" 2>/dev/null || true
-  CAPTURE_PID=""
-  rm -f "$CAPTURE_FIFO"
-}
-
-cleanup() {
-  stop_capture
-  [[ -n "$APP_PID" ]] && kill "$APP_PID" 2>/dev/null || true
-  # The agents' own processes can still be writing into the stage for a moment
-  # after the app is gone, and the stage holds credential copies.
-  for _ in 1 2 3 4 5; do
-    sleep 1
-    rm -rf "$STAGE" 2>/dev/null && break
-  done
-  # An exiting agent can recreate its working directory after the first pass.
-  sleep 2
-  rm -rf "$STAGE" 2>/dev/null
-  [[ -e "$STAGE" ]] && printf 'record-demo: could not remove %s - delete it by hand\n' "$STAGE" >&2
-  return 0
-}
-trap cleanup EXIT
-
-mark() {
-  local now
-  now="$(python3 -c 'import time; print(int(time.time() * 1000))')"
-  printf '{"mark":"%s","t":%s}\n' "$1" "$now" >>"$TIMELINE"
-  say "mark: $1"
-}
-
-say "staging scene in $STAGE"
-REPO="$("$HERE/scene.sh" "$STAGE")"
-DEMO_HOME="$STAGE/home"
-DEMO_LIMITS="${DEMO_LIMITS:-show}"
-[[ "$DEMO_LIMITS" == show || "$DEMO_LIMITS" == hide ]] || die "DEMO_LIMITS must be show or hide"
-mkdir -p "$DEMO_HOME/.claude"
-CLAUDE_TOKEN="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null |
-  python3 -c '
-import json, os, sys, time
-entry = json.loads(sys.stdin.read())
-oauth = entry["claudeAiOauth"]
-left = (oauth["expiresAt"] / 1000 - time.time()) / 60
-if left < 60:
-    sys.exit(f"Claude access token has {left:.0f} min left; run any claude command to refresh it, then retry")
-if sys.argv[1] == "show":
-    # The refresh token stays in the Keychain: without it nothing here can
-    # rotate the login.
-    oauth.pop("refreshToken", None)
-    oauth.pop("refreshTokenExpiresAt", None)
-    fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(fd, json.dumps(entry).encode())
-    os.close(fd)
-else:
-    print(oauth["accessToken"])
-' "$DEMO_LIMITS" "$DEMO_HOME/.claude/.credentials.json")" || die "could not read the Claude access token"
-SOCK="$STAGE/tmp/splitlane-dev/splitlane-dev.sock"
-# The third surface's session id, from the seeded session, before the app
-# rewrites the file.
-TESTS_SESSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["projects"][0]["surfaces"][2]["agent"]["session_id"])' "$DEMO_HOME/Library/Caches/splitlane-dev/session-dev.json")"
-
-# A whitelist, not the caller's environment: a shell inside Splitlane carries
-# SPLITLANE_WORKSPACE_ID and agent-session markers that must not reach the
-# stage.
-#
-# The agent and node come through a bin directory of their own, not the
-# directories they live in: those hold other agents' CLIs too (an npm-installed
-# `gemini` sits beside `node`), and the app runs each one it finds to list its
-# sessions, which holds up the diff pane by seconds.
-STAGE_BIN="$STAGE/bin"
-mkdir -p "$STAGE_BIN"
-ln -s "$CLAUDE_BIN" "$STAGE_BIN/claude"
-for tool in node npm npx; do
-  [[ -e "$(dirname "$NODE_BIN")/$tool" ]] && ln -s "$(dirname "$NODE_BIN")/$tool" "$STAGE_BIN/$tool"
-done
-PATH_DEMO="$STAGE_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-stage_env=(
-  env -i
-  HOME="$DEMO_HOME" TMPDIR="$STAGE/tmp/" PATH="$PATH_DEMO"
-  USER="$USER" LOGNAME="$USER" SHELL=/bin/zsh LANG=en_US.UTF-8
-  SPLITLANE_IPC_SCRIPTING=1
-  # The detector's own account of every surface, so a run can be checked
-  # against what the rail was actually told (app.log in the run dir).
-  RUST_LOG="info,splitlane::agent_state=debug"
-)
-[[ "$DEMO_LIMITS" == hide ]] && stage_env+=(CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN")
-cli() { "${stage_env[@]}" "$BIN" "$@"; }
-rpc() { python3 "$HERE/rpc.py" "$SOCK" "$@"; }
-focus() { rpc surface.focus "{\"surface_id\": ${SURFACES[$1]}}" >/dev/null; }
-
-# Waits on the same fact the app's detector reads first: the status Claude Code
-# writes for its own process. The rail is two seconds behind it at most.
-# With a session id, only that surface's file counts.
-wait_claude_status() {
-  local want="$1" count="$2" timeout="$3" session="${4:-}"
-  python3 - "$DEMO_HOME/.claude/sessions" "$REPO" "$want" "$count" "$timeout" "$session" <<'PY'
-import glob, json, sys, time
-root, repo, want, count, timeout, session = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), float(sys.argv[5]), sys.argv[6]
-deadline = time.time() + timeout
-while time.time() < deadline:
-    hits = 0
-    for path in glob.glob(f"{root}/*.json"):
-        try:
-            data = json.load(open(path))
-        except Exception:
-            continue
-        if session and data.get("sessionId") != session:
-            continue
-        if data.get("cwd") == repo and data.get("status") == want:
-            hits += 1
-    if hits >= count:
-        sys.exit(0)
-    time.sleep(0.5)
-sys.exit(1)
-PY
-}
-
-if [[ $CAPTURE -eq 1 ]]; then
-  command -v ffmpeg >/dev/null || die "--capture needs ffmpeg"
-  say "recording the main display into $RUN_DIR/recording.mov"
-  mkfifo "$CAPTURE_FIFO"
-  # The creation time is stamped when the file starts, to the microsecond;
-  # sync.py lines the timeline up against it.
-  ffmpeg -hide_banner -loglevel error -f avfoundation -capture_cursor 0 \
-    -framerate 30 -pixel_format nv12 -i "Capture screen 0:none" \
-    -c:v h264_videotoolbox -b:v 40M -metadata creation_time=now \
-    -y "$RUN_DIR/recording.mov" <"$CAPTURE_FIFO" >"$RUN_DIR/capture.log" 2>&1 &
-  CAPTURE_PID=$!
-  exec 7>"$CAPTURE_FIFO"
-  sleep 2
-  kill -0 "$CAPTURE_PID" 2>/dev/null || die "ffmpeg did not start recording (see $RUN_DIR/capture.log)"
-elif [[ $REHEARSE -eq 0 ]]; then
-  cat >&2 <<'EOF'
-
-  Start the screen recording now: Cmd-Shift-5, "Record Entire Screen", Record.
-  The demo window opens in the centre of the screen, 1440x1000, and is brought
-  to the front. Do not click anything until the script says "done" - the
-  assets are cut by screen rectangle, so whatever covers the window is in them.
-
-  Press Enter once the recording is running.
-EOF
-  read -r _
-fi
-
-mark start
-say "launching the debug build"
-(cd "$REPO" && exec "${stage_env[@]}" "$BIN") >"$RUN_DIR/app.log" 2>&1 &
-APP_PID=$!
-for _ in $(seq 1 60); do [[ -S "$SOCK" ]] && break; sleep 0.5; done
-[[ -S "$SOCK" ]] || die "the app never opened its socket (see $RUN_DIR/app.log)"
-sleep 2
-# In front of everything else, the installed app included: the cut is by screen
-# rectangle, so anything overlapping the window ends up in the assets.
-swift "$HERE/window-bounds.swift" activate "$APP_PID" || say "could not bring the demo window to the front"
-# The screen recording draws the pointer; the corner is outside the window.
-swift "$HERE/window-bounds.swift" park-pointer || say "could not move the pointer out of the frame"
-sleep 1
-
-read -r WX WY WW WH < <(swift "$HERE/window-bounds.swift" "$APP_PID") || die "no window for pid $APP_PID"
-read -r DW DH DS < <(swift "$HERE/window-bounds.swift" display)
-cat >"$RUN_DIR/geometry.json" <<EOF
-{ "theme": "${DEMO_THEME:-dark}",
-  "window": { "x": $WX, "y": $WY, "width": $WW, "height": $WH },
-  "display": { "width": $DW, "height": $DH, "scale": $DS } }
-EOF
+demo_start_recording
+demo_launch
 mark app-ready
 sleep 2
 
 say "three agents in one project, restored as agent surfaces"
 # Surface ids in slot order. The list comes back in layout order; the ids are
 # written down once so every later step addresses the same pane.
-for _ in $(seq 1 60); do
-  rpc surface.list >"$RUN_DIR/surfaces.json" 2>/dev/null \
-    && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["pane_count"] == 3 else 1)' "$RUN_DIR/surfaces.json" \
-    && break
-  sleep 0.5
-done
-SURFACES=()
-while read -r sid; do SURFACES+=("$sid"); done < <(python3 -c 'import json,sys; [print(s["surface_id"]) for s in json.load(open(sys.argv[1]))["surfaces"][:3]]' "$RUN_DIR/surfaces.json")
-[[ ${#SURFACES[@]} -eq 3 ]] || die "expected three surfaces, got ${#SURFACES[@]}"
+wait_surfaces 3 30 || die "expected three surfaces, got ${#SURFACES[@]}"
 mark agents-up
 
 for sid in "${SURFACES[@]}"; do
   cli wait --match "$sid" --idle --for 2000 --timeout 60 >/dev/null || die "surface $sid never settled"
 done
 mark agents-ready
+if [[ "$DEMO_CODEX" == 1 ]]; then
+  check_codex_hooks_trusted || die "Codex is on its hook review screen, not at work (see scene.sh)"
+  check_codex_model "${SURFACES[1]}" 30 || die "the Codex pane does not show $DEMO_CODEX_MODEL - not running on the model the stage asked for"
+fi
 sleep 1
 
 cli send "${SURFACES[0]}" --submit \
   "Add a --json flag to \`ledger export\` that prints the entries as a JSON array. Edit the code only; do not run any commands." >/dev/null
 sleep 1.5
-cli send "${SURFACES[1]}" --submit \
-  "Read src/parse.js and explain in two sentences what it does. Do not run any commands." >/dev/null
+# Codex reads a file by running a command, which its stage settings let it
+# do in its sandbox without asking; Claude Code reads it with a tool.
+if [[ "$DEMO_CODEX" == 1 ]]; then
+  cli send "${SURFACES[1]}" --submit \
+    "Read src/parse.js and explain in two sentences what it does. Do not change any files." >/dev/null
+else
+  cli send "${SURFACES[1]}" --submit \
+    "Read src/parse.js and explain in two sentences what it does. Do not run any commands." >/dev/null
+fi
 sleep 1.5
 cli send "${SURFACES[2]}" --submit \
   "Run npm test and tell me which test fails and why. Do not change any files." >/dev/null
@@ -309,22 +142,37 @@ cli send "${SURFACES[2]}" "1" >/dev/null
 mark answered
 
 say "waiting for all three to finish"
-wait_claude_status idle 3 240 || say "the three sessions did not all reach idle in time; continuing"
+wait_claude_status idle "$CLAUDE_PANES" 240 || say "the Claude Code sessions did not all reach idle in time; continuing"
+if [[ "$DEMO_CODEX" == 1 ]]; then
+  cli wait --match "${SURFACES[1]}" --idle --for 2000 --timeout 120 >/dev/null \
+    || say "the Codex session did not settle in time; continuing"
+fi
 sleep 4
 mark all-idle
 
-say "sending the parse.js explanation to the agent on the left"
+# send_answer reads the source session's transcript. A Codex pane restored
+# without a session id has none Splitlane can read, so with Codex in the middle
+# the answer comes from the test run on the right instead.
+if [[ "$DEMO_CODEX" == 1 ]]; then ANSWER_FROM=2; else ANSWER_FROM=1; fi
+say "sending an answer from pane $ANSWER_FROM to the agent on the left"
 # The menu first, as a person would open it; then the entry, which closes it.
 # The answer lands on the left agent's input line and is not submitted.
-focus 1
+focus "$ANSWER_FROM"
 sleep 1.5
 mark answer-menu
 rpc app.dispatch_action '{"action": "open_agents_thread_menu"}' >/dev/null
 sleep 2.5
 mark answer-send
-rpc surface.send_answer "{\"surface_id\": ${SURFACES[1]}, \"to_surface_id\": ${SURFACES[0]}}" >/dev/null
+rpc surface.send_answer "{\"surface_id\": ${SURFACES[$ANSWER_FROM]}, \"to_surface_id\": ${SURFACES[0]}}" >/dev/null
 sleep 4
 mark answer-sent
+
+# Two follow-ups to the test run, so its row has a few messages to list when
+# it is hovered at the end. Both answer from reading alone; the first runs
+# while the grid is on screen.
+say "a follow-up to the test run"
+cli send "${SURFACES[2]}" --submit \
+  "Which line in src/format.js makes that test fail? Do not run any commands." >/dev/null
 
 say "layout: the row becomes a grid, and a fourth pane opens holding the diff"
 focus 0
@@ -350,23 +198,25 @@ mark palette
 sleep 3.5
 rpc app.dispatch_action '{"action": "open_command_palette"}' >/dev/null
 sleep 1.5
+mark tour-end
+
+wait_claude_status idle 1 120 "$TESTS_SESSION" || say "the test run's first follow-up did not finish in time; continuing"
+cli send "${SURFACES[2]}" --submit \
+  "Suggest a one-line fix. Do not change any files." >/dev/null
+sleep 2
+wait_claude_status idle 1 120 "$TESTS_SESSION" || say "the test run's second follow-up did not finish in time; continuing"
+sleep 3
+
+say "hovering the test run's row: the messages written in it"
+hover_rail_session "${SURFACES[2]}" || die "could not hover the test run's row"
+mark history
+sleep 5
+mark history-end
+# Off the row, still inside the window, so the tooltip closes; then out of frame.
+hover_window_point 700 600 || true
+sleep 1.5
+swift "$HERE/window-bounds.swift" park-pointer || true
 mark end
 sleep 2   # a tail for the cut, before the window closes
 
-git -C "$REPO" diff --stat >"$RUN_DIR/repo-diff.txt" 2>&1 || true
-if [[ $CAPTURE -eq 1 ]]; then
-  stop_capture
-  say "done - run dir: $RUN_DIR; next:"
-  printf '\n    scripts/record-demo/process.sh %s/recording.mov %s\n\n' "$RUN_DIR" "$RUN_DIR" >&2
-else
-  say "done - run dir: $RUN_DIR"
-  if [[ $REHEARSE -eq 0 ]]; then
-    cat >&2 <<EOF
-
-  Stop the recording now (the stop button in the menu bar), then:
-
-    scripts/record-demo/process.sh <path-to-recording.mov> $RUN_DIR
-
-EOF
-  fi
-fi
+demo_finish

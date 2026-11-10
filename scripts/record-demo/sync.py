@@ -43,11 +43,29 @@ cue = {name: round(value, 2) for name, value in marks.items() if value >= 0}
 cue["_window"] = {"width": crop[0], "height": crop[1]}
 print(f"MARKS_JSON={shlex.quote(json.dumps(cue))}")
 print(f"THEME={geo.get('theme', 'dark')}")
-for name in ["agents-ready", "waiting", "hero-dark", "answered", "all-idle", "grid", "end"]:
+scene = geo.get("scene", "main")
+print(f"SCENE={scene}")
+# The marks each scene's cut needs; a run missing one cannot be cut.
+NEEDED = {
+    "main": ["agents-ready", "prompts-sent", "waiting", "hero-dark", "jump", "answered",
+             "all-idle", "answer-sent", "grid", "files", "tour-end", "history", "history-end", "end"],
+    "fleet": ["agents-ready", "prompt-sent", "all-opened", "waiting", "fleet-hold", "end"],
+    "host": ["agents-ready", "prompts-sent", "close", "closed", "reopen", "sessions-back", "end"],
+}
+for name in NEEDED.get(scene, []):
+    if name not in marks:
+        sys.exit(f"the timeline has no mark {name}; the {scene} run did not finish")
+for name in NEEDED.get(scene, []):
     print(f"T_{name.replace('-', '_').upper()}={t(name)}")
-# Stills: inside each hold, not on its edge.
-print(f"S_HERO_DARK={float(t('hero-dark')) + 1.5:.2f}")
-print(f"S_GRID={float(t('grid')) + 1.5:.2f}")
 # The creation stamp is whole seconds, so a cut on `end` can reach the frame
 # where the window is already gone; stop short of it.
 print(f"T_CLIP_END={float(t('end')) - 1.5:.2f}")
+# Stills: inside each hold, not on its edge.
+if scene == "main":
+    print(f"S_HERO_DARK={float(t('hero-dark')) + 1.5:.2f}")
+    print(f"S_GRID={float(t('grid')) + 1.5:.2f}")
+    # The tooltip opens after a short dwell and fills in as it reads.
+    print(f"S_HISTORY={float(t('history')) + 3.5:.2f}")
+    print(f"T_HISTORY_FROM={max(float(t('history')) - 1.5, 0):.2f}")
+if scene == "fleet":
+    print(f"S_FLEET={float(t('fleet-hold')) + 2:.2f}")

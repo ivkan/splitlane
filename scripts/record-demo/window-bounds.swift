@@ -26,6 +26,27 @@ if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "park-pointer" 
     exit(CGWarpMouseCursorPosition(corner) == .success ? 0 : 1)
 }
 
+// hover <x> <y>: the pointer moves there as a person's would, two short
+// steps ending on the point, so the app sees mouse-moved events and starts
+// its hover and tooltip. Unlike the rest of this file, posting input events
+// needs the Accessibility (PostEvent) permission for the app the script runs
+// from. The caller keeps the point inside the demo window, in front.
+if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "hover",
+   let x = Double(CommandLine.arguments[2]), let y = Double(CommandLine.arguments[3]) {
+    guard CGPreflightPostEventAccess() else {
+        FileHandle.standardError.write("hover: no permission to post input events (Accessibility)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    for (dx, dy) in [(-6.0, -2.0), (-3.0, -1.0), (0.0, 0.0)] {
+        let point = CGPoint(x: x + dx, y: y + dy)
+        CGWarpMouseCursorPosition(point)
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        usleep(60_000)
+    }
+    exit(0)
+}
+
 guard CommandLine.arguments.count == 2 else {
     FileHandle.standardError.write("usage: window-bounds.swift <pid>|display\n".data(using: .utf8)!)
     exit(2)

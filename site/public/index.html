@@ -63,17 +63,14 @@
     </div>
     <p class="trust"><span>Rust on GPUI</span><span>No account</span><span>Telemetry only if you opt in</span><span>GPL-3.0-or-later</span></p>
 
-    <figure class="media r-desktop hero-shot">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" type="image/webp"
-          srcset="/img/hero-dark-960.webp 960w, /img/hero-dark-1440.webp 1440w, /img/hero-dark-1920.webp 1920w"
-          sizes="(min-width: 1248px) 1200px, calc(100vw - 32px)">
-        <img src="/img/hero-light-1440.webp"
-          srcset="/img/hero-light-960.webp 960w, /img/hero-light-1440.webp 1440w, /img/hero-light-1920.webp 1920w"
-          sizes="(min-width: 1248px) 1200px, calc(100vw - 32px)"
-          width="1920" height="1334" fetchpriority="high"
-          alt="Splitlane with three Claude Code sessions in one project. The rail on the left lists them under the project, in a group named Work; the right-hand pane shows a permission prompt, its header reads 'waiting for you', and the title bar reads '1 waiting, 1 running'.">
-      </picture>
+    <figure class="media r-desktop hero-shot" data-video-slot="hero">
+      <video data-autoplay muted loop playsinline controls preload="none"
+        width="1280" height="888"
+        poster="/video/hero-light-poster.webp" data-poster-dark="/video/hero-dark-poster.webp"
+        aria-label="Splitlane with three agent sessions in one project, two Claude Code and one Codex. They start on their tasks; the right-hand one stops on a permission prompt to run npm test, and its pane header, its row in the rail and the title bar all change to say it is waiting for you.">
+        <source media="(prefers-color-scheme: dark)" src="/video/hero-dark.mp4" type="video/mp4">
+        <source src="/video/hero-light.mp4" type="video/mp4">
+      </video>
     </figure>
     <p class="caption">Three agents in one project. One is working, one has finished, and one is asking to run <code>npm test</code>. The rail, its pane header and the title bar all say so.</p>
   </div>
@@ -94,14 +91,14 @@
       <li><span class="dot failed"></span>failed</li>
     </ul>
 
-    <!-- Video slot: a D9 recording of an agent stopping on a question
-         replaces this picture as a <video> of the same 1.44:1 frame. -->
-    <figure class="media r-desktop section-media detail">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" type="image/webp" srcset="/img/state-dark-960.webp">
-        <img src="/img/state-light-960.webp" width="960" height="667" loading="lazy" decoding="async"
-          alt="A detail of the Splitlane window: the title bar reads '1 waiting, 1 running', a pane on the left is marked idle, and the pane on the right, running npm test, has a header that reads 'waiting for you'.">
-      </picture>
+    <figure class="media r-desktop section-media detail" data-video-slot="state">
+      <video data-autoplay muted loop playsinline controls preload="none"
+        width="1280" height="888"
+        poster="/video/state-light-poster.webp" data-poster-dark="/video/state-dark-poster.webp"
+        aria-label="A detail of the Splitlane window: an agent pane stops on a permission prompt, its header changes to 'waiting for you', and the title bar's count changes with it.">
+        <source media="(prefers-color-scheme: dark)" src="/video/state-dark.mp4" type="video/mp4">
+        <source src="/video/state-light.mp4" type="video/mp4">
+      </video>
     </figure>
     <p class="caption">The title bar counts who is waiting; the pane that needs you says so in its header.</p>
 
@@ -133,17 +130,14 @@
       <p>A project's panes are a row, a column, or a grid of four. You answer an agent in its own terminal; there is no second approval UI to keep in sync.</p>
     </div>
 
-    <figure class="media r-desktop section-media">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" type="image/webp"
-          srcset="/img/grid-diff-dark-960.webp 960w, /img/grid-diff-dark-1440.webp 1440w, /img/grid-diff-dark-1920.webp 1920w"
-          sizes="(min-width: 1248px) 1200px, calc(100vw - 32px)">
-        <img src="/img/grid-diff-light-1440.webp"
-          srcset="/img/grid-diff-light-960.webp 960w, /img/grid-diff-light-1440.webp 1440w, /img/grid-diff-light-1920.webp 1920w"
-          sizes="(min-width: 1248px) 1200px, calc(100vw - 32px)"
-          width="1920" height="1334" loading="lazy" decoding="async"
-          alt="Splitlane in a two-by-two grid: three agent panes and the project's diff with its changed-files column.">
-      </picture>
+    <figure class="media r-desktop section-media" data-video-slot="grid">
+      <video data-autoplay muted loop playsinline controls preload="none"
+        width="1280" height="888"
+        poster="/video/grid-light-poster.webp" data-poster-dark="/video/grid-dark-poster.webp"
+        aria-label="Splitlane's row of three agent panes becomes a two-by-two grid, and the fourth pane opens on the project's diff with its changed-files column.">
+        <source media="(prefers-color-scheme: dark)" src="/video/grid-dark.mp4" type="video/mp4">
+        <source src="/video/grid-light.mp4" type="video/mp4">
+      </video>
     </figure>
     <p class="caption">The same project as a grid of four: the three agents and the diff of what they changed.</p>
 
@@ -184,7 +178,7 @@
       <p>An agent in a pane can hand other sessions a task, wait for their turn to end, read the answer and close them. Each of those sessions is a row in the rail with a status you can see, and a question meant for you still reaches you.</p>
     </div>
 
-    <figure class="media r-wide section-media">
+    <figure class="media r-wide section-media" data-video-slot="fleet">
       <picture>
         <img src="/img/orchestration-dark-1440.webp"
           srcset="/img/orchestration-dark-960.webp 960w, /img/orchestration-dark-1440.webp 1440w, /img/orchestration-dark-1920.webp 1920w"
@@ -218,23 +212,17 @@
       <p class="label"><span class="dot running"></span> Sessions outlive the window</p>
       <h2 id="host-title">Close the window. The agents keep working.</h2>
       <p>On macOS and Linux the terminals run in a separate process, the session host. Closing the window, an update or a crash of the window leaves every agent working, and the next start shows each one in its pane again.</p>
+      <p>Where a session does end, its conversation resumes on the next launch; a turn that was running does not. On Windows the sessions still live in the window's process.</p>
       <p><code>Running</code> (<kbd>⌥⌘P</kbd>) lists every agent and every command running in a shell, and stops the ones you mark.</p>
     </div>
-    <!-- Video slot: a <figure class="media r-desktop"> with the session-host
-         clip replaces this panel when it is recorded. -->
-    <div class="panel">
-      <h3>Keeps running</h3>
-      <ul>
-        <li><span class="dot running"></span>When you close the window</li>
-        <li><span class="dot running"></span>Through an update of Splitlane</li>
-        <li><span class="dot running"></span>Through a crash of the window</li>
-      </ul>
-      <h3>Good to know</h3>
-      <ul>
-        <li><span class="dot"></span>Where a session does end, its conversation resumes on the next launch; a turn that was running does not.</li>
-        <li><span class="dot"></span>On Windows the sessions still live in the window's process.</li>
-      </ul>
-    </div>
+    <figure class="media r-desktop" data-video-slot="host">
+      <video data-autoplay muted loop playsinline controls preload="none"
+        width="1280" height="888"
+        poster="/video/host-dark-poster.webp"
+        aria-label="Three agents at work in Splitlane. The window closes; a moment later Splitlane opens again and every session is in its pane, still working.">
+        <source src="/video/host-dark.mp4" type="video/mp4">
+      </video>
+    </figure>
   </div>
 </section>
 

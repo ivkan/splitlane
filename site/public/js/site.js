@@ -22,6 +22,12 @@ for (const button of document.querySelectorAll("button[data-copy]")) {
 // Product videos play while they are on screen, muted, and only for people
 // who have not asked for less motion; the rest see the poster and controls.
 const still = window.matchMedia("(prefers-reduced-motion: reduce)");
+// A video with a clip per theme has a poster per theme too; <source media>
+// picks the clip, and the poster attribute holds the light one.
+const dark = window.matchMedia("(prefers-color-scheme: dark)");
+for (const video of document.querySelectorAll("video[data-poster-dark]")) {
+  if (dark.matches) video.poster = video.dataset.posterDark;
+}
 const videos = document.querySelectorAll("video[data-autoplay]");
 if (videos.length && "IntersectionObserver" in window) {
   const seen = new IntersectionObserver(
