@@ -175,7 +175,11 @@ test("every indexable page has its meta, and is in the sitemap", () => {
     assert.ok((meta("name", "description") ?? "").length >= 50, `${file}: description`);
     assert.ok(page.includes(`<link rel="canonical" href="${url}">`), `${file}: canonical`);
     assert.equal(meta("property", "og:url"), url, file);
-    assert.equal(meta("property", "og:image"), `${ORIGIN}/social-preview.png`, file);
+    // The site's preview, or a page's own one next to it (a blog post's).
+    const image = meta("property", "og:image") ?? "";
+    assert.ok(image === `${ORIGIN}/social-preview.png` || image === `${url}preview.png`, `${file}: og:image ${image}`);
+    assert.ok(isFile(image.slice(ORIGIN.length)), `${file}: ${image}`);
+    assert.equal(meta("name", "twitter:image"), image, file);
     assert.equal(meta("name", "twitter:card"), "summary_large_image", file);
     assert.match(page, /<link rel="icon" href="\/favicon\.ico"/, file);
     assert.match(page, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/, file);

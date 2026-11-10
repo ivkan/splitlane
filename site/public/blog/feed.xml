@@ -8,5 +8,12 @@
     <language>en</language>
     <!-- Each post is an <item> with <title>, <link>, <guid isPermaLink="true">,
          <pubDate> (RFC 822) and <description>, newest first. -->
+    <item>
+      <title>Running 4 to 7 Claude Code sessions at once (14 at peak)</title>
+      <link>https://splitlane.dev/blog/running-claude-code-sessions-at-once/</link>
+      <guid isPermaLink="true">https://splitlane.dev/blog/running-claude-code-sessions-at-once/</guid>
+      <pubDate>Tue, 10 Nov 2026 00:00:00 GMT</pubDate>
+      <description>Two Claude Code sessions in two projects are already enough for me to lose the one that is waiting. What I tried, what I dropped, and the rules I keep.</description>
+    </item>
   </channel>
 </rss>
