@@ -19,6 +19,7 @@ without opening a window, signing an agent in or recording the screen.
 Needs ffmpeg, ffprobe and magick, as process.sh does; shellcheck is used
 when it is installed.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -26,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 from datetime import datetime, timezone
 
@@ -158,6 +160,17 @@ class Scene(unittest.TestCase):
         self.assertIn(f'[projects."{repo}"]\ntrust_level = "trusted"', config)
         self.assertIn('approval_policy = "never"', config)
         self.assertIn('sandbox_mode = "workspace-write"', config)
+        # The five hooks Splitlane's shim installs are trusted up front, with
+        # the hash Codex 0.158 itself wrote for such a hook after "Trust all"
+        # (one recorded case: a SessionStart hook `/bin/echo hi`, timeout 5).
+        state = tomllib.loads(config)["hooks"]["state"]
+        self.assertEqual(sorted(k.rsplit(":", 3)[1] for k in state),
+                         ["post_tool_use", "pre_tool_use", "session_start", "stop", "user_prompt_submit"])
+        self.assertTrue(all(k.startswith(f"{repo}/.codex/hooks.json:") and k.endswith(":0:0") for k in state))
+        identity = {"event_name": "session_start",
+                    "hooks": [{"type": "command", "command": "/bin/echo hi", "timeout": 5, "async": False}]}
+        self.assertEqual(hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                         "b6d0c924fb913e6930ed38a1e6f4f573fbb2fddfcf5faed999af78a783a105f0")
         # The sign-in is lib.sh's to place, never scene.sh's.
         self.assertFalse(os.path.exists(os.path.join(home, ".codex", "auth.json")))
 

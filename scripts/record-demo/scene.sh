@@ -334,6 +334,40 @@ if [[ "$SCENE" == fleet ]]; then
   cp "$ROOT/skills/splitlane-fleet/SKILL.md" "$DEMO_HOME/.claude/skills/splitlane-fleet/SKILL.md"
 fi
 
+# Codex (0.158) runs a project's hooks only once they are trusted, and asks
+# about every new one: a full-screen "Hooks need review" at start, which
+# would hold the pane on that screen and leave the rail saying "waiting for
+# you" for the wrong reason. A person answers it once ("Trust all") and Codex
+# writes one `trusted_hash` per hook into config.toml; this writes the same
+# lines up front, for the five hooks Splitlane's shim puts into the
+# project's `.codex/hooks.json` when the pane starts.
+#
+# What the shim writes, per event: one group with no matcher and one handler,
+# `<bin dir>/splitlane-ai-hook <Event>` with a 5 s timeout, where the bin dir
+# is the one the app extracts its helpers into under the stage's cache
+# (`ai_hooks::extract`, one directory per release version). What Codex
+# hashes (codex-rs/hooks/src/engine/discovery.rs, `hook_hash`): the hook's
+# event key, its matcher (none for Stop and UserPromptSubmit) and the
+# normalized handler, as JSON with sorted keys and no spaces, sha256. Checked
+# against what Codex 0.158 itself wrote after "Trust all". record.sh compares
+# these with the hooks.json the shim actually wrote, once Codex is up.
+codex_trust_splitlane_hooks() {
+  local root version
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$root/Cargo.toml")"
+  python3 - "$REPO" "$DEMO_HOME/Library/Caches/splitlane-dev/bin/$version/splitlane-ai-hook" <<'PY'
+import hashlib, json, sys
+repo, hook = sys.argv[1], sys.argv[2]
+print("\n[hooks.state]")
+for event, key in [("SessionStart", "session_start"), ("UserPromptSubmit", "user_prompt_submit"),
+                   ("PreToolUse", "pre_tool_use"), ("PostToolUse", "post_tool_use"), ("Stop", "stop")]:
+    identity = {"event_name": key,
+                "hooks": [{"type": "command", "command": f"{hook} {event}", "timeout": 5, "async": False}]}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    print(f'\n[hooks.state."{repo}/.codex/hooks.json:{key}:0:0"]\ntrusted_hash = "sha256:{digest}"')
+PY
+}
+
 # --- Codex: folder trusted, never asks, works inside its sandbox -------------
 # The middle agent only reads a file, which Codex does by running a command;
 # `never` with the workspace-write sandbox runs that without a prompt, so
@@ -349,6 +383,7 @@ check_for_update_on_startup = false
 [projects."$REPO"]
 trust_level = "trusted"
 EOF
+  codex_trust_splitlane_hooks >>"$DEMO_HOME/.codex/config.toml"
 fi
 
 seed_session

@@ -36,9 +36,13 @@
 #                     your real plan usage is in the frames - record when the
 #                     session window is fresh, or an orange "nearly out"
 #                     outshouts "waiting for you".
-#     hide            CLAUDE_CODE_OAUTH_TOKEN in the environment and no file:
-#                     the footer finds no account and is not drawn. Claude
-#                     Code's banner then reads "Claude API".
+#     hide            CLAUDE_CODE_OAUTH_TOKEN in the environment and no file.
+#                     The footer finds no account, but `claude` is on PATH,
+#                     so it is drawn as "Claude limit · not signed in ·
+#                     sign in" (limits_footer_has_something_to_say: a CLI
+#                     user who has not signed in keeps the panel). True, and
+#                     it reads as broken in a hero shot. Claude Code's
+#                     banner then reads "Claude API".
 #   The prompts are short; a run is a few turns of your plan's usage.
 # - No Screen Recording or Accessibility permission for this script: every step
 #   goes through the app's own IPC socket, and window bounds are readable
@@ -79,6 +83,9 @@ for sid in "${SURFACES[@]}"; do
   cli wait --match "$sid" --idle --for 2000 --timeout 60 >/dev/null || die "surface $sid never settled"
 done
 mark agents-ready
+if [[ "$DEMO_CODEX" == 1 ]]; then
+  check_codex_hooks_trusted || die "Codex is on its hook review screen, not at work (see scene.sh)"
+fi
 sleep 1
 
 cli send "${SURFACES[0]}" --submit \
@@ -142,16 +149,20 @@ fi
 sleep 4
 mark all-idle
 
-say "sending the parse.js explanation to the agent on the left"
+# send_answer reads the source session's transcript. A Codex pane restored
+# without a session id has none Splitlane can read, so with Codex in the middle
+# the answer comes from the test run on the right instead.
+if [[ "$DEMO_CODEX" == 1 ]]; then ANSWER_FROM=2; else ANSWER_FROM=1; fi
+say "sending an answer from pane $ANSWER_FROM to the agent on the left"
 # The menu first, as a person would open it; then the entry, which closes it.
 # The answer lands on the left agent's input line and is not submitted.
-focus 1
+focus "$ANSWER_FROM"
 sleep 1.5
 mark answer-menu
 rpc app.dispatch_action '{"action": "open_agents_thread_menu"}' >/dev/null
 sleep 2.5
 mark answer-send
-rpc surface.send_answer "{\"surface_id\": ${SURFACES[1]}, \"to_surface_id\": ${SURFACES[0]}}" >/dev/null
+rpc surface.send_answer "{\"surface_id\": ${SURFACES[$ANSWER_FROM]}, \"to_surface_id\": ${SURFACES[0]}}" >/dev/null
 sleep 4
 mark answer-sent
 

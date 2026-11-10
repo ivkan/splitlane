@@ -34,6 +34,9 @@ for sid in "${SURFACES[@]}"; do
   cli wait --match "$sid" --idle --for 2000 --timeout 60 >/dev/null || die "surface $sid never settled"
 done
 mark agents-ready
+if [[ "$DEMO_CODEX" == 1 ]]; then
+  check_codex_hooks_trusted || die "Codex is on its hook review screen, not at work (see scene.sh)"
+fi
 sleep 1
 
 cli send "${SURFACES[0]}" --submit \

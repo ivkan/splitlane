@@ -26,6 +26,11 @@ if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "park-pointer" 
     exit(CGWarpMouseCursorPosition(corner) == .success ? 0 : 1)
 }
 
+if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "pointer",
+   let x = Double(CommandLine.arguments[2]), let y = Double(CommandLine.arguments[3]) {
+    exit(CGWarpMouseCursorPosition(CGPoint(x: x, y: y)) == .success ? 0 : 1)
+}
+
 guard CommandLine.arguments.count == 2 else {
     FileHandle.standardError.write("usage: window-bounds.swift <pid>|display\n".data(using: .utf8)!)
     exit(2)

@@ -278,6 +278,37 @@ sys.exit(1)
 PY
 }
 
+# Whether every hook in the stage repo's `.codex/hooks.json` - written by the
+# shim when the Codex pane started - is one scene.sh trusted in advance. A
+# miss means Codex is showing its "Hooks need review" screen instead of
+# working; the hash is the one in scene.sh's `codex_trust_splitlane_hooks`.
+check_codex_hooks_trusted() {
+  python3 - "$REPO/.codex/hooks.json" "$DEMO_HOME/.codex/config.toml" <<'PY'
+import hashlib, json, re, sys, tomllib
+hooks_path, config_path = sys.argv[1], sys.argv[2]
+try:
+    hooks = json.load(open(hooks_path))["hooks"]
+except (OSError, ValueError, KeyError) as err:
+    sys.exit(f"no Codex hooks.json to check ({err})")
+state = tomllib.load(open(config_path, "rb")).get("hooks", {}).get("state", {})
+no_matcher = {"stop", "user_prompt_submit"}
+missing = []
+for event, groups in hooks.items():
+    key = re.sub(r"(?<!^)([A-Z])", r"_\1", event).lower()
+    for gi, group in enumerate(groups):
+        for hi, handler in enumerate(group.get("hooks", [])):
+            identity = {"event_name": key, "hooks": [{"type": "command", "command": handler["command"],
+                        "timeout": handler.get("timeout", 600), "async": handler.get("async", False)}]}
+            if group.get("matcher") is not None and key not in no_matcher:
+                identity["matcher"] = group["matcher"]
+            want = "sha256:" + hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if state.get(f"{hooks_path}:{key}:{gi}:{hi}", {}).get("trusted_hash") != want:
+                missing.append(f"{key}:{gi}:{hi} ({handler['command']})")
+if missing:
+    sys.exit("Codex hooks not trusted in advance: " + ", ".join(missing))
+PY
+}
+
 # Writes the surface list into the run dir and the first <n> ids, in layout
 # order, into SURFACES, once the active project has <n> panes holding them.
 wait_surfaces() {
