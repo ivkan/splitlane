@@ -22,7 +22,7 @@ export const POSTS = [
     title: "Running 4 to 7 Claude Code sessions at once (14 at peak)",
     description:
       "Two Claude Code sessions in two projects are already enough for me to lose the one that is waiting. What I tried, what I dropped, and the rules I keep.",
-    published: "2026-11-11",
+    published: "2026-11-10",
   },
 ];
 
