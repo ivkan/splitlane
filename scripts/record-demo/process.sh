@@ -15,6 +15,9 @@
 #   state.mp4         the same clip, its top right quarter: the title bar's
 #                     count and the waiting pane, for "How it knows"
 #   grid.mp4          the row becomes a grid with the diff
+#   history-<theme>.png  history.mp4
+#                     the pointer on the test run's row in the rail, and
+#                     the tooltip listing what was written in that session
 #   and, for the dark run only:
 #   social-preview.png                        1280x640, from the hero
 #   demo.mp4                                  the clip for a README <video>
@@ -129,6 +132,8 @@ clip hero.mp4 null "$T_AGENTS_READY:$T_PROMPTS_SENT:1" "$T_PROMPTS_SENT:$T_WAITI
 ffmpeg -v error -y -i "$OUT/hero.mp4" -vf "crop=iw/2:ih/2:iw/2:0,format=yuv420p" -an \
   -c:v libx264 -preset slow -crf 18 -movflags +faststart "$OUT/state.mp4"
 clip grid.mp4 null "$T_ANSWER_SENT:$T_FILES:1"
+still "history-$THEME.png" "$S_HISTORY"
+clip history.mp4 null "$T_HISTORY_FROM:$T_HISTORY_END:1"
 
 if [[ "$THEME" != "dark" ]]; then
   list_assets
@@ -149,14 +154,15 @@ magick -size 1280x640 "xc:$GROUND" \
   -annotate +56+360 $'Coding agents side by side,\nand a rail that tells you\nwhich one is waiting for you.' \
   "$OUT/social-preview.png"
 
-# The clip: from the moment the agents are ready to the grid, with the prompts going out played at
+# The clip: from the moment the agents are ready to the end of the tour (the
+# follow-ups and the hover after it have clips of their own), with the prompts going out played at
 # 2x and the wait for the agents to finish at 4x.
 ffmpeg -v error -y -i "$MOV" -filter_complex "
   [0:v]crop=$CROP,split=4[a][b][c][d];
   [a]trim=$T_AGENTS_READY:$T_WAITING,setpts=(PTS-STARTPTS)/2[s1];
   [b]trim=$T_WAITING:$T_ANSWERED,setpts=PTS-STARTPTS[s2];
   [c]trim=$T_ANSWERED:$T_ALL_IDLE,setpts=(PTS-STARTPTS)/4[s3];
-  [d]trim=$T_ALL_IDLE:$T_CLIP_END,setpts=PTS-STARTPTS[s4];
+  [d]trim=$T_ALL_IDLE:$T_TOUR_END,setpts=PTS-STARTPTS[s4];
   [s1][s2][s3][s4]concat=n=4:v=1:a=0,fps=30,scale=1920:-2:flags=lanczos,format=yuv420p[v]" \
   -map "[v]" -an -c:v libx264 -preset slow -crf 24 -movflags +faststart "$OUT/demo.mp4"
 

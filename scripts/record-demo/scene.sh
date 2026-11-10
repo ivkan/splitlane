@@ -372,10 +372,13 @@ PY
 # The middle agent only reads a file, which Codex does by running a command;
 # `never` with the workspace-write sandbox runs that without a prompt, so
 # the one "waiting for you" on screen stays Claude Code's. lib.sh puts the
-# sign-in beside this file.
+# sign-in beside this file. The model is the cheapest one, here and on the
+# command line (lib.sh's wrapper): the account's default is an expensive one.
 if [[ "$DEMO_CODEX" == 1 ]]; then
   mkdir -p "$DEMO_HOME/.codex"
   cat >"$DEMO_HOME/.codex/config.toml" <<EOF
+model = "${DEMO_CODEX_MODEL:-gpt-6-luna}"
+model_reasoning_effort = "low"
 approval_policy = "never"
 sandbox_mode = "workspace-write"
 check_for_update_on_startup = false

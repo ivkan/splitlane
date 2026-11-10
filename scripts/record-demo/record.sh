@@ -85,6 +85,7 @@ done
 mark agents-ready
 if [[ "$DEMO_CODEX" == 1 ]]; then
   check_codex_hooks_trusted || die "Codex is on its hook review screen, not at work (see scene.sh)"
+  check_codex_model "${SURFACES[1]}" 30 || die "the Codex pane does not show $DEMO_CODEX_MODEL - not running on the model the stage asked for"
 fi
 sleep 1
 
@@ -166,6 +167,13 @@ rpc surface.send_answer "{\"surface_id\": ${SURFACES[$ANSWER_FROM]}, \"to_surfac
 sleep 4
 mark answer-sent
 
+# Two follow-ups to the test run, so its row has a few messages to list when
+# it is hovered at the end. Both answer from reading alone; the first runs
+# while the grid is on screen.
+say "a follow-up to the test run"
+cli send "${SURFACES[2]}" --submit \
+  "Which line in src/format.js makes that test fail? Do not run any commands." >/dev/null
+
 say "layout: the row becomes a grid, and a fourth pane opens holding the diff"
 focus 0
 sleep 1.5
@@ -190,6 +198,24 @@ mark palette
 sleep 3.5
 rpc app.dispatch_action '{"action": "open_command_palette"}' >/dev/null
 sleep 1.5
+mark tour-end
+
+wait_claude_status idle 1 120 "$TESTS_SESSION" || say "the test run's first follow-up did not finish in time; continuing"
+cli send "${SURFACES[2]}" --submit \
+  "Suggest a one-line fix. Do not change any files." >/dev/null
+sleep 2
+wait_claude_status idle 1 120 "$TESTS_SESSION" || say "the test run's second follow-up did not finish in time; continuing"
+sleep 3
+
+say "hovering the test run's row: the messages written in it"
+hover_rail_session "${SURFACES[2]}" || die "could not hover the test run's row"
+mark history
+sleep 5
+mark history-end
+# Off the row, still inside the window, so the tooltip closes; then out of frame.
+hover_window_point 700 600 || true
+sleep 1.5
+swift "$HERE/window-bounds.swift" park-pointer || true
 mark end
 sleep 2   # a tail for the cut, before the window closes
 

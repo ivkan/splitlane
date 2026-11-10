@@ -36,6 +36,7 @@ done
 mark agents-ready
 if [[ "$DEMO_CODEX" == 1 ]]; then
   check_codex_hooks_trusted || die "Codex is on its hook review screen, not at work (see scene.sh)"
+  check_codex_model "${SURFACES[1]}" 30 || die "the Codex pane does not show $DEMO_CODEX_MODEL - not running on the model the stage asked for"
 fi
 sleep 1
 

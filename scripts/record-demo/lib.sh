@@ -132,6 +132,8 @@ demo_init() {
   # One Codex pane in the main and host scenes shows the rail is not one
   # vendor's. DEMO_CODEX=0 records three Claude Code panes instead.
   DEMO_CODEX="${DEMO_CODEX:-1}"
+  DEMO_CODEX_MODEL="${DEMO_CODEX_MODEL:-gpt-6-luna}"
+  export DEMO_CODEX_MODEL
   [[ "$SCENE" == fleet ]] && DEMO_CODEX=0
   if [[ "$DEMO_CODEX" == 1 ]]; then
     CODEX_BIN="$(command -v codex)" || die "codex not on PATH (or run with DEMO_CODEX=0)"
@@ -172,7 +174,22 @@ demo_init() {
   mkdir -p "$STAGE_BIN"
   ln -s "$CLAUDE_BIN" "$STAGE_BIN/claude"
   ln -s "$BIN" "$STAGE_BIN/splitlane"
-  [[ "$DEMO_CODEX" == 1 ]] && ln -s "$CODEX_BIN" "$STAGE_BIN/codex"
+  # Codex runs on the cheapest model, named on every launch. The account's
+  # default model is an expensive one, and a pane that fell back to it would
+  # spend real money on a demo; scene.sh writes the same model into the
+  # stage's config.toml as a second line of defence, and the scenes check the
+  # pane's own status line before going on. Subcommands (`codex app-server`
+  # and the like) get no flags.
+  if [[ "$DEMO_CODEX" == 1 ]]; then
+    cat >"$STAGE_BIN/codex" <<EOF
+#!/bin/sh
+case "\${1:-}" in
+  "" | -* | resume | fork) exec "$CODEX_BIN" -m "$DEMO_CODEX_MODEL" -c model_reasoning_effort=low "\$@" ;;
+  *) exec "$CODEX_BIN" "\$@" ;;
+esac
+EOF
+    chmod 755 "$STAGE_BIN/codex"
+  fi
   local tool
   for tool in node npm npx; do
     [[ -e "$(dirname "$NODE_BIN")/$tool" ]] && ln -s "$(dirname "$NODE_BIN")/$tool" "$STAGE_BIN/$tool"
@@ -307,6 +324,53 @@ for event, groups in hooks.items():
 if missing:
     sys.exit("Codex hooks not trusted in advance: " + ", ".join(missing))
 PY
+}
+
+# Whether the Codex pane's status line names the model the stage asked for -
+# the proof that neither the wrapper nor config.toml was bypassed. Waits up
+# to <timeout> seconds for the line to be drawn.
+check_codex_model() {
+  local surface="$1" timeout="${2:-30}"
+  for _ in $(seq 1 "$timeout"); do
+    if rpc surface.read "{\"surface_id\": $surface, \"lines\": 400}" 2>/dev/null \
+      | python3 -c 'import json,sys; t=json.load(sys.stdin).get("text",""); sys.exit(0 if sys.argv[1].lower() in t.lower() else 1)' "${DEMO_CODEX_MODEL#gpt-}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Moves the pointer, with real mouse-moved events, to a point given in points
+# from the demo window's top-left corner. The window is brought to the front
+# first, so no other app gets the events; a point outside it is refused.
+hover_window_point() {
+  local px="$1" py="$2" wx wy ww wh
+  swift "$HERE/window-bounds.swift" activate "$APP_PID" >/dev/null 2>&1 || true
+  rpc app.activate '{}' >/dev/null 2>&1 || true
+  sleep 0.5
+  read -r wx wy ww wh < <(swift "$HERE/window-bounds.swift" "$APP_PID") || return 1
+  (( px > 0 && py > 0 && px < ww && py < wh )) || return 1
+  swift "$HERE/window-bounds.swift" hover $(( wx + px )) $(( wy + py ))
+}
+
+# Hovers the rail row of the session in <surface>. The rows' order comes from
+# the app (rail.list); where they are drawn is measured off a frame of this
+# stage - 11 pt type, client decorations, the `ledger` project first and
+# expanded under "Work", its branch line above its sessions - and holds in
+# both themes.
+RAIL_ROW_X=110
+RAIL_FIRST_ROW_Y=224
+RAIL_ROW_STEP=25
+hover_rail_session() {
+  local surface="$1" index
+  index="$(rpc rail.list | python3 -c '
+import json, sys
+sessions = json.load(sys.stdin)["projects"][0]["sessions"]
+ids = [s.get("surface_id") for s in sessions]
+print(ids.index(int(sys.argv[1])) if int(sys.argv[1]) in ids else -1)' "$surface")" || return 1
+  [[ "$index" -ge 0 ]] || return 1
+  hover_window_point "$RAIL_ROW_X" $(( RAIL_FIRST_ROW_Y + index * RAIL_ROW_STEP ))
 }
 
 # Writes the surface list into the run dir and the first <n> ids, in layout

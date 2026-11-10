@@ -160,6 +160,8 @@ class Scene(unittest.TestCase):
         self.assertIn(f'[projects."{repo}"]\ntrust_level = "trusted"', config)
         self.assertIn('approval_policy = "never"', config)
         self.assertIn('sandbox_mode = "workspace-write"', config)
+        # The cheapest model, never the account's default.
+        self.assertIn('model = "gpt-6-luna"\nmodel_reasoning_effort = "low"', config)
         # The five hooks Splitlane's shim installs are trusted up front, with
         # the hash Codex 0.158 itself wrote for such a hook after "Trust all"
         # (one recorded case: a SessionStart hook `/bin/echo hi`, timeout 5).
@@ -222,16 +224,19 @@ class Process(unittest.TestCase):
         m = {"start": 0.5, "app-ready": 1, "agents-ready": 2, "prompts-sent": 6, "focus-walk": 9,
              "waiting": 21, "hero-dark": 25, "jump": 31, "answered": 34, "all-idle": 40,
              "answer-menu": 41.5, "answer-send": 44, "answer-sent": 48, "grid": 57, "files": 66,
-             "palette": 72, "end": 78}
-        mov, run_dir = synthetic_run(self.tmp, "main", "light", m, 81)
+             "palette": 72, "tour-end": 75, "history": 100, "history-end": 105, "end": 108}
+        mov, run_dir = synthetic_run(self.tmp, "main", "light", m, 111)
         process(mov, run_dir)
         self.assertEqual(self.assets(run_dir), ["grid-diff-light.png", "grid.mp4", "hero-light.png", "hero.mp4",
+                                                "history-light.png", "history.mp4",
                                                 "marks.json", "state.mp4", "window.mp4"])
         a = os.path.join(run_dir, "assets")
         # 4 s of prompts at speed, 15 s of work at three times, 10 s of question.
         self.assertAlmostEqual(duration(os.path.join(a, "hero.mp4")), 4 + 15 / 3 + 10, delta=0.3)
         self.assertAlmostEqual(duration(os.path.join(a, "state.mp4")), duration(os.path.join(a, "hero.mp4")), delta=0.1)
         self.assertAlmostEqual(duration(os.path.join(a, "grid.mp4")), 66 - 48, delta=0.3)
+        # The pointer arriving (1.5 s before the mark) to the end of the hover.
+        self.assertAlmostEqual(duration(os.path.join(a, "history.mp4")), 105 - 98.5, delta=0.3)
         size = run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=width,height",
                     "-of", "csv=p=0", os.path.join(a, "hero.mp4")]).stdout.strip()
         self.assertEqual(size, "1920,1334")
@@ -244,12 +249,16 @@ class Process(unittest.TestCase):
 
     def test_main_dark_keeps_the_readme_assets(self):
         m = {"start": 0.5, "agents-ready": 1, "prompts-sent": 3, "waiting": 9, "hero-dark": 11, "jump": 15,
-             "answered": 17, "all-idle": 20, "answer-sent": 22, "grid": 26, "files": 30, "end": 34}
-        mov, run_dir = synthetic_run(self.tmp, "main", "dark", m, 36)
+             "answered": 17, "all-idle": 20, "answer-sent": 22, "grid": 26, "files": 30, "tour-end": 34,
+             "history": 50, "history-end": 55, "end": 58}
+        mov, run_dir = synthetic_run(self.tmp, "main", "dark", m, 60)
         process(mov, run_dir)
         for name in ["hero.mp4", "state.mp4", "grid.mp4", "demo.mp4", "demo.gif", "social-preview.png",
-                     "hero-dark.png", "grid-diff-dark.png"]:
+                     "hero-dark.png", "grid-diff-dark.png", "history-dark.png", "history.mp4"]:
             self.assertIn(name, self.assets(run_dir))
+        # The README clip stops at the end of the tour, not after the follow-ups:
+        # 8 s at 2x, 8 s, 3 s at 4x, 14 s.
+        self.assertAlmostEqual(duration(os.path.join(run_dir, "assets", "demo.mp4")), 4 + 8 + 0.75 + 14, delta=0.3)
 
     def test_fleet(self):
         m = {"start": 0.5, "app-ready": 1, "agents-ready": 3, "prompt-sent": 5, "first-opened": 12,

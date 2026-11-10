@@ -48,7 +48,7 @@ print(f"SCENE={scene}")
 # The marks each scene's cut needs; a run missing one cannot be cut.
 NEEDED = {
     "main": ["agents-ready", "prompts-sent", "waiting", "hero-dark", "jump", "answered",
-             "all-idle", "answer-sent", "grid", "files", "end"],
+             "all-idle", "answer-sent", "grid", "files", "tour-end", "history", "history-end", "end"],
     "fleet": ["agents-ready", "prompt-sent", "all-opened", "waiting", "fleet-hold", "end"],
     "host": ["agents-ready", "prompts-sent", "close", "closed", "reopen", "sessions-back", "end"],
 }
@@ -64,5 +64,8 @@ print(f"T_CLIP_END={float(t('end')) - 1.5:.2f}")
 if scene == "main":
     print(f"S_HERO_DARK={float(t('hero-dark')) + 1.5:.2f}")
     print(f"S_GRID={float(t('grid')) + 1.5:.2f}")
+    # The tooltip opens after a short dwell and fills in as it reads.
+    print(f"S_HISTORY={float(t('history')) + 3.5:.2f}")
+    print(f"T_HISTORY_FROM={max(float(t('history')) - 1.5, 0):.2f}")
 if scene == "fleet":
     print(f"S_FLEET={float(t('fleet-hold')) + 2:.2f}")
