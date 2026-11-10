@@ -752,6 +752,37 @@ h2 {
   padding: 0;
   list-style: none;
 }
+.posts article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.post-thumb {
+  display: block;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.post-thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+@media (min-width: 900px) {
+  .posts {
+    max-width: none;
+  }
+  .posts article {
+    grid-template-columns: minmax(0, 1fr) 360px;
+    column-gap: 48px;
+    align-items: start;
+  }
+  .post-thumb {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    margin-bottom: 0;
+  }
+}
 .posts li + li {
   margin-top: 40px;
 }
