@@ -183,7 +183,8 @@ class Scene(unittest.TestCase):
         self.assertEqual(surfaces[0]["title"], "plan")
         self.assertIs(surfaces[0]["agent"]["title_user_set"], True)
         self.assertIn("Bash(splitlane:*)", self.allowed(home))
-        self.assertNotIn("Bash", [a for a in self.allowed(home) if a != "Bash(splitlane:*)"])
+        self.assertIn("Bash(splitlane *)", self.allowed(home))
+        self.assertNotIn("Bash", [a for a in self.allowed(home) if a not in ("Bash(splitlane:*)", "Bash(splitlane *)", "Bash(echo *)")])
         skill = self.read(home, ".claude", "skills", "splitlane-fleet", "SKILL.md")
         with open(os.path.join(ROOT, "skills", "splitlane-fleet", "SKILL.md")) as f:
             self.assertEqual(skill, f.read())

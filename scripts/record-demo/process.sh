@@ -23,7 +23,7 @@
 #   demo.mp4                                  the clip for a README <video>
 #   demo.gif                                  fallback, 960 px, 12 fps
 # The fleet scene (record-fleet.sh):
-#   fleet-<theme>.png fleet.mp4               the lead opening four sessions
+#   fleet-<theme>.png fleet.mp4               the lead opening three sessions
 # The host scene (record-host.sh):
 #   host.mp4          close, nothing, reopen; the stretch with no window is
 #                     painted in the window's ground colour (gap.py finds it

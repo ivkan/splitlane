@@ -75,7 +75,7 @@ cat >"$APP_SUPPORT/splitlane-dev/splitlane.json" <<EOF
 EOF
 # `window_state.rs` reads this path without the `-dev` suffix.
 # The fleet scene fills the site's wide frame (1920:988), so its window is
-# wider and lower: a lead pane beside a grid of four.
+# wider and lower: a lead pane beside three.
 if [[ "$SCENE" == fleet ]]; then
   WINDOW_W="${DEMO_WINDOW_W:-1600}"
 else
@@ -315,7 +315,10 @@ EOF
 # one command is allowed; every session it opens shares these settings, and
 # the one told to run `npm test` still stops to ask.
 ALLOW='"Read", "Edit", "Write", "Glob", "Grep"'
-[[ "$SCENE" == fleet ]] && ALLOW="$ALLOW, \"Bash(splitlane:*)\""
+# Both spellings: Claude Code reads `splitlane *` now and `splitlane:*` from
+# older settings. `echo` too: the lead likes to chain `; echo "EXIT $?"` to
+# each command, and a prompt about that is not the one the clip is about.
+[[ "$SCENE" == fleet ]] && ALLOW="$ALLOW, \"Bash(splitlane *)\", \"Bash(splitlane:*)\", \"Bash(echo *)\""
 cat >"$DEMO_HOME/.claude/settings.json" <<EOF
 {
   "permissions": {
