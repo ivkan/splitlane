@@ -11,13 +11,27 @@
 //!
 //! 1. **A pane of the same kind.** An agent goes to the agent pane, a shell to
 //!    the shell pane, a `.md` to the markdown pane. This is what keeps the
-//!    window's shape stable across dozens of switches.
+//!    window's shape stable across dozens of switches. A pane showing an
+//!    **opener** - a session whose sessions are still listed - is not
+//!    taken here; see below.
 //! 2. **An empty pane** - one with no surface in it, which in practice is a
 //!    pane showing the launcher. Its whole purpose is to be filled.
 //! 3. **A new pane**, if there are fewer than [`crate::layout::MAX_PANES`] and
 //!    the split still leaves every pane at least [`MIN_PANE_FOR_SPLIT`] on the
 //!    long axis.
-//! 4. **The focused pane**, replaced.
+//! 4. **The focused pane**, replaced - unless it shows an opener and another
+//!    pane does not.
+//!
+//! **An opener is not the pane a switch lands in.** A coordinating session
+//! is the agent pane, so rung 1 used to hand it every child the person
+//! clicked: the session that was running the work went off the screen the
+//! moment its work was looked at, and the person had to find it in the rail
+//! to go back. So rungs 1 and 4 pass over a pane that shows an opener while
+//! the ladder has anywhere else to go: a child lands in an empty pane, in a
+//! new pane beside the opener when one fits, or replaces another pane. Only
+//! when every pane shows an opener does the old answer stand. The hold needs
+//! no setting and no pin: it lasts exactly as long as the opener has sessions
+//! listed, which is what `opened_by` already records.
 //!
 //! The return type is an enum rather than an `Entity<Pane>` because rung 3
 //! does not *pick* a pane, it *creates* one - and a caller that flattened the
@@ -68,6 +82,63 @@ pub(crate) enum SurfaceKind {
     Diff,
     /// A rendered markdown file.
     Markdown,
+}
+
+/// What the ladder reads from one pane, in tree order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LeafFacts {
+    /// The kind of the surface the pane shows; `None` for an empty pane.
+    pub kind: Option<SurfaceKind>,
+    /// The pane shows an opener: a session with sessions it opened still
+    /// listed in the project.
+    pub opener: bool,
+    /// The pane has the keyboard.
+    pub focused: bool,
+}
+
+/// The rung the ladder stopped on, with the pane's index in tree order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rung {
+    SameKind(usize),
+    Empty(usize),
+    NewPane,
+    Replace(usize),
+}
+
+impl Rung {
+    fn index(self) -> Option<usize> {
+        match self {
+            Rung::SameKind(i) | Rung::Empty(i) | Rung::Replace(i) => Some(i),
+            Rung::NewPane => None,
+        }
+    }
+}
+
+/// The ladder as a decision over facts, so it can be tested without a
+/// window. `room` is whether rung 3 may split.
+pub(crate) fn climb(leaves: &[LeafFacts], kind: SurfaceKind, room: bool) -> Rung {
+    if leaves.is_empty() {
+        return Rung::NewPane;
+    }
+    if let Some(i) = leaves
+        .iter()
+        .position(|leaf| leaf.kind == Some(kind) && !leaf.opener)
+    {
+        return Rung::SameKind(i);
+    }
+    if let Some(i) = leaves.iter().position(|leaf| leaf.kind.is_none()) {
+        return Rung::Empty(i);
+    }
+    if room {
+        return Rung::NewPane;
+    }
+    let focused = leaves.iter().position(|leaf| leaf.focused);
+    let i = focused
+        .filter(|&i| !leaves[i].opener)
+        .or_else(|| leaves.iter().position(|leaf| !leaf.opener))
+        .or(focused)
+        .unwrap_or(0);
+    Rung::Replace(i)
 }
 
 /// Where the ladder landed.
@@ -453,47 +524,120 @@ impl SplitlaneApp {
         kind: SurfaceKind,
         cx: &App,
     ) -> Option<PaneTarget> {
+        let (leaves, facts) = self.ladder_facts(ws_idx, cx)?;
+        let rung = climb(&facts, kind, self.room_for_another_pane_now(cx));
+        Some(match rung.index().and_then(|i| leaves.get(i)) {
+            Some(pane) => PaneTarget::Existing(pane.clone()),
+            None => PaneTarget::NewPane,
+        })
+    }
+
+    /// The panes of `ws_idx` in tree order, and what the ladder reads from
+    /// each. `None` only when the container does not exist. A container with
+    /// no tree, or an empty one, answers with no panes, which the ladder
+    /// turns into a first pane: "every surface is a pane's content" has no
+    /// arm for a surface with nowhere to be.
+    fn ladder_facts(&self, ws_idx: usize, cx: &App) -> Option<(Vec<Entity<Pane>>, Vec<LeafFacts>)> {
         let container = self.workspaces.get(ws_idx)?;
-        // A container with no tree at all - restored from a file that had no
-        // layout, or emptied by closing its last pane. The surface becomes its
-        // first pane rather than being refused: "every surface is a pane's
-        // content" has no arm for a surface with nowhere to be.
         let Some(root) = container.root.as_ref() else {
-            return Some(PaneTarget::NewPane);
+            return Some((Vec::new(), Vec::new()));
         };
         let leaves = root.collect_leaves();
-        if leaves.is_empty() {
-            return Some(PaneTarget::NewPane);
-        }
-        // 1. A pane of the same kind.
-        if let Some(pane) = leaves
-            .iter()
-            .find(|pane| self.pane_kind(pane, cx) == Some(kind))
-        {
-            return Some(PaneTarget::Existing(pane.clone()));
-        }
-        // 2. An empty pane - the launcher's.
-        if let Some(pane) = leaves
-            .iter()
-            .find(|pane| self.pane_kind(pane, cx).is_none())
-        {
-            return Some(PaneTarget::Existing(pane.clone()));
-        }
-        // 3. A new pane, if the split leaves every pane wide enough to still
-        //    read its own header.
-        if self.room_for_another_pane_now(cx) {
-            return Some(PaneTarget::NewPane);
-        }
-        // 4. The focused pane. `focused_pane_now` is the pair `⌃⇥` is answered
-        //    from, written every frame - so the ladder needs no `Window` and
-        //    gives the same answer a keystroke would.
+        // `focused_pane_now` is the pair `⌃⇥` is answered from, written every
+        // frame - so the ladder needs no `Window` and gives the same answer a
+        // keystroke would. With no focused pane in this tree, the first pane
+        // stands in for it, as it always has.
         let focused = self
             .focused_pane_now
             .as_ref()
             .and_then(|weak| weak.upgrade())
             .filter(|pane| root.contains_leaf(pane))
-            .or_else(|| leaves.first().cloned())?;
-        Some(PaneTarget::Existing(focused))
+            .or_else(|| leaves.first().cloned());
+        let facts = leaves
+            .iter()
+            .map(|pane| LeafFacts {
+                kind: self.pane_kind(pane, cx),
+                opener: self
+                    .pane_thread(pane, cx)
+                    .is_some_and(|id| self.is_opener_in(ws_idx, id)),
+                focused: focused.as_ref() == Some(pane),
+            })
+            .collect();
+        Some((leaves, facts))
+    }
+
+    /// The surface record behind the terminal `pane` shows, if any.
+    fn pane_thread(&self, pane: &Entity<Pane>, cx: &App) -> Option<u64> {
+        let pane = pane.read(cx);
+        pane.tabs
+            .get(pane.selected_idx)?
+            .as_terminal()?
+            .read(cx)
+            .agent_thread_id
+    }
+
+    /// Whether `thread_id` opened a session that is still listed in
+    /// `ws_idx`.
+    fn is_opener_in(&self, ws_idx: usize, thread_id: u64) -> bool {
+        self.workspaces.get(ws_idx).is_some_and(|container| {
+            container.threads.iter().any(|thread| {
+                thread.id != thread_id
+                    && thread
+                        .opened_by
+                        .as_ref()
+                        .is_some_and(|by| by.id == thread_id)
+            })
+        })
+    }
+
+    /// One line in the orchestration journal when the hold decided the
+    /// placement: `spared` when the ladder without it would have replaced an
+    /// opener, `replaced` when an opener was replaced anyway because every
+    /// pane showed one. It is what tells, after a week, whether switching
+    /// still takes the coordinator off the screen.
+    fn journal_placement(
+        &self,
+        facts: &[LeafFacts],
+        kind: SurfaceKind,
+        room: bool,
+        rung: Rung,
+        placed_thread: Option<u64>,
+    ) {
+        let shown = rung.index().and_then(|i| facts.get(i));
+        let replaced_opener = matches!(rung, Rung::SameKind(_) | Rung::Replace(_))
+            && shown.is_some_and(|leaf| leaf.opener);
+        let without_hold: Vec<LeafFacts> = facts
+            .iter()
+            .map(|leaf| LeafFacts {
+                opener: false,
+                ..*leaf
+            })
+            .collect();
+        let before = climb(&without_hold, kind, room);
+        let spared = !replaced_opener
+            && matches!(before, Rung::SameKind(_) | Rung::Replace(_))
+            && before
+                .index()
+                .and_then(|i| facts.get(i))
+                .is_some_and(|leaf| leaf.opener);
+        let outcome = match (replaced_opener, spared) {
+            (true, _) => "replaced",
+            (false, true) => "spared",
+            (false, false) => return,
+        };
+        let session = placed_thread
+            .map_or_else(crate::orchestration_journal::Session::default, |id| {
+                self.journal_session(id)
+            });
+        crate::orchestration_journal::record(
+            "opener_hold",
+            session,
+            serde_json::json!({
+                "outcome": outcome,
+                "rung": format!("{rung:?}"),
+                "panes": facts.len(),
+            }),
+        );
     }
 
     /// Open `tab` in the pane the ladder names, and leave it focused.
@@ -510,7 +654,18 @@ impl SplitlaneApp {
         tab: TabContent,
         cx: &mut Context<Self>,
     ) -> Option<Entity<Pane>> {
-        let target = self.target_pane_for(ws_idx, kind, cx)?;
+        let placed_thread = match &tab {
+            TabContent::Terminal(view) => view.read(cx).agent_thread_id,
+            _ => None,
+        };
+        let (leaves, facts) = self.ladder_facts(ws_idx, cx)?;
+        let room = self.room_for_another_pane_now(cx);
+        let rung = climb(&facts, kind, room);
+        self.journal_placement(&facts, kind, room, rung, placed_thread);
+        let target = match rung.index().and_then(|i| leaves.get(i)) {
+            Some(pane) => PaneTarget::Existing(pane.clone()),
+            None => PaneTarget::NewPane,
+        };
         let pane = match target {
             PaneTarget::Existing(pane) => {
                 // Shows, which replaces. Rungs 1, 2 and 4 all land here, and on
@@ -642,7 +797,78 @@ impl SplitlaneApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{MIN_PANE_FOR_SPLIT, PaneRefusal, refuse_another_pane};
+    use super::{
+        LeafFacts, MIN_PANE_FOR_SPLIT, PaneRefusal, Rung, SurfaceKind, climb, refuse_another_pane,
+    };
+
+    fn agent(opener: bool, focused: bool) -> LeafFacts {
+        LeafFacts {
+            kind: Some(SurfaceKind::Agent),
+            opener,
+            focused,
+        }
+    }
+
+    fn shell(focused: bool) -> LeafFacts {
+        LeafFacts {
+            kind: Some(SurfaceKind::Shell),
+            opener: false,
+            focused,
+        }
+    }
+
+    /// The case that forced the hold: one pane, the coordinator in it, a
+    /// child clicked in the rail. The child goes beside it when there is room.
+    #[test]
+    fn a_child_opens_beside_its_opener_when_a_pane_fits() {
+        let panes = [agent(true, true)];
+        assert_eq!(climb(&panes, SurfaceKind::Agent, true), Rung::NewPane);
+    }
+
+    /// With the coordinator and one child on screen, the next child takes the
+    /// child's pane, not the coordinator's - whichever has focus.
+    #[test]
+    fn the_next_child_replaces_the_child_not_the_opener() {
+        let panes = [agent(true, true), agent(false, false)];
+        assert_eq!(climb(&panes, SurfaceKind::Agent, false), Rung::SameKind(1));
+        assert_eq!(climb(&panes, SurfaceKind::Agent, true), Rung::SameKind(1));
+    }
+
+    /// No room and the opener focused: another pane is replaced, even one of
+    /// another kind, before the opener is.
+    #[test]
+    fn with_no_room_a_pane_that_is_not_an_opener_is_replaced() {
+        let panes = [agent(true, true), shell(false)];
+        assert_eq!(climb(&panes, SurfaceKind::Agent, false), Rung::Replace(1));
+    }
+
+    /// When every pane shows an opener the old answer stands: the focused
+    /// pane is replaced, so a click is never refused.
+    #[test]
+    fn when_every_pane_is_an_opener_the_focused_one_is_replaced() {
+        let panes = [agent(true, false), agent(true, true)];
+        assert_eq!(climb(&panes, SurfaceKind::Agent, false), Rung::Replace(1));
+        let alone = [agent(true, true)];
+        assert_eq!(climb(&alone, SurfaceKind::Agent, false), Rung::Replace(0));
+    }
+
+    /// Without openers the ladder is the one it always was.
+    #[test]
+    fn without_an_opener_the_ladder_is_unchanged() {
+        let panes = [agent(false, false), shell(true)];
+        assert_eq!(climb(&panes, SurfaceKind::Agent, true), Rung::SameKind(0));
+        assert_eq!(climb(&panes, SurfaceKind::Shell, true), Rung::SameKind(1));
+        let empty = [
+            agent(true, true),
+            LeafFacts {
+                kind: None,
+                opener: false,
+                focused: false,
+            },
+        ];
+        assert_eq!(climb(&empty, SurfaceKind::Agent, true), Rung::Empty(1));
+        assert_eq!(climb(&[], SurfaceKind::Agent, false), Rung::NewPane);
+    }
 
     /// The arithmetic as a bare yes/no. The refusal carries a reason because
     /// the interface has to state one; these tests are about the boundary, so
