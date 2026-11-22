@@ -31,8 +31,10 @@
 //! - [`presets`] - `from_panes_equal`, and the flattening normalizer
 //! - [`navigation`] - `FocusDirection`, `FocusNav`, focus movement
 //! - [`serde`] - `serialize` / `from_layout_node`
+//! - [`flip_watch`] - the log warning for a pane whose width will not settle
 
 mod close;
+pub(crate) mod flip_watch;
 mod grid;
 mod mutations;
 mod navigation;

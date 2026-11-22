@@ -496,6 +496,20 @@ const HEADER_LEVEL_RERUN: u8 = 2;
 /// Both are gone, so the step above the badge had nothing left to let in and
 /// the ladder is four steps rather than five.
 const HEADER_LEVEL_BADGE: u8 = 3;
+/// The ladder's rungs, widest first: the width a header needs to stand on
+/// each, and the step it lets in. See `Pane::header_level`.
+const HEADER_LADDER: [(f32, u8); 3] = [
+    (520., HEADER_LEVEL_BADGE),
+    (420., HEADER_LEVEL_RERUN),
+    (320., HEADER_LEVEL_STATUS),
+];
+/// How far past a rung's width a header has to be before it climbs onto it
+/// from below. Dropping a rung happens at the rung's width, so the ladder
+/// never shows more than fits; climbing waits for this margin, so a layout
+/// that moves the header by less than this cannot carry it up and down a rung
+/// on alternate frames. Smaller than the narrowest item a rung lets in, so a
+/// pane widened past a rung gains its item soon after.
+const HEADER_LADDER_HYSTERESIS: f32 = 24.;
 /// The square inside the Stop button - the whole button below 420px.
 const STOP_GLYPH: Pixels = px(8.);
 /// Square size shared by tab-bar icon buttons.
@@ -721,6 +735,13 @@ pub struct Pane {
     /// than shrinking everything, and a pane's width is a layout outcome that
     /// nothing in `Pane` knows without measuring it.
     header_width: Rc<Cell<f32>>,
+    /// The ladder step chosen from `header_width`, by the same canvas and in
+    /// the same frame, so the step a frame is drawn with depends on the step
+    /// before it (`next_header_level`). `None` until the header has a width.
+    header_step: Rc<Cell<Option<u8>>>,
+    /// Watches the measured width for a loop that will not settle, and says
+    /// so in the log. See [`crate::layout::flip_watch`].
+    header_flips: Rc<std::cell::RefCell<crate::layout::flip_watch::FlipWatch>>,
     /// Per-surface hover progress for reversible tab-bar fades and tint shifts.
     tab_bar_hover_motion: std::collections::HashMap<SharedString, TabBarHoverMotion>,
     /// Cached `splitlane.json` so `render_tab_bar` never calls the
@@ -843,6 +864,8 @@ impl Pane {
             surface_facts: std::collections::HashMap::new(),
             menu_open: false,
             header_width: Rc::new(Cell::new(0.)),
+            header_step: Rc::new(Cell::new(None)),
+            header_flips: Default::default(),
             tab_bar_hover_motion: std::collections::HashMap::new(),
             // Hydrate the tab-bar config cache once at creation (not
             // per frame); refreshed on ConfigWatcher reload via propagation.
@@ -914,6 +937,8 @@ impl Pane {
             surface_facts: std::collections::HashMap::new(),
             menu_open: false,
             header_width: Rc::new(Cell::new(0.)),
+            header_step: Rc::new(Cell::new(None)),
+            header_flips: Default::default(),
             tab_bar_hover_motion: std::collections::HashMap::new(),
             // See `Pane::new`.
             cached_config,
@@ -2451,6 +2476,9 @@ impl Pane {
         // to decide whether it fits beside the surface's name. Zero-size and
         // absolute, so it takes part in no flex arithmetic of its own.
         let measured = self.header_width.clone();
+        let step = self.header_step.clone();
+        let flips = self.header_flips.clone();
+        let pane_id = cx.entity_id();
         let bar = div()
             .relative()
             .flex()
@@ -2468,7 +2496,25 @@ impl Pane {
             .rounded_t(tok::radius::PANEL)
             .child(div().absolute().inset_0().child(gpui::canvas(
                 move |bounds, _window, _cx| {
-                    measured.set(f32::from(bounds.size.width));
+                    let width = f32::from(bounds.size.width);
+                    measured.set(width);
+                    let level = next_header_level(step.get(), width);
+                    step.set(level);
+                    if let Some(report) =
+                        flips
+                            .borrow_mut()
+                            .observe(width, level.unwrap_or(0), std::time::Instant::now())
+                    {
+                        log::warn!(
+                            "pane {pane_id:?}: header width keeps flipping between {:.1}px (level {}) and {:.1}px (level {}), {} times in {} ms; the split's layout is not settling",
+                            report.width_a,
+                            report.level_a,
+                            report.width_b,
+                            report.level_b,
+                            report.flips,
+                            report.over.as_millis(),
+                        );
+                    }
                 },
                 |_, _, _, _| {},
             )));
@@ -3049,8 +3095,12 @@ impl Pane {
     /// budget (`header_is_narrow`) that counted the buttons and gave the name
     /// what was left. With the buttons gone there is nothing to budget for, and
     /// the design's own measured ladder is what belongs here.
+    ///
+    /// The step is chosen by the header's canvas from the width it measures
+    /// and the step the previous frame used: a header drops a rung as soon as
+    /// it is narrower than the rung, and climbs one only once it is
+    /// `HEADER_LADDER_HYSTERESIS` past it (`next_header_level`).
     fn header_level(&self) -> u8 {
-        let width = self.header_width.get();
         // Before the first layout nothing has been measured, and an unmeasured
         // header shows the least it can. Assuming the widest step instead put
         // a full row of facts into a header whose width was still unknown: on
@@ -3058,18 +3108,7 @@ impl Pane {
         // trailing `⋯` and `×` outside the clip, which is the one
         // thing the design says may never happen. Arriving on the second frame
         // is the cheaper mistake.
-        if width <= 0. {
-            return 0;
-        }
-        if width >= 520. {
-            HEADER_LEVEL_BADGE
-        } else if width >= 420. {
-            HEADER_LEVEL_RERUN
-        } else if width >= 320. {
-            HEADER_LEVEL_STATUS
-        } else {
-            0
-        }
+        self.header_step.get().unwrap_or(0)
     }
 
     /// The right end of the slot header: the zoom mark, the surface's own
@@ -3591,6 +3630,38 @@ impl gpui::Focusable for Pane {
     }
 }
 
+/// The highest rung a header of `width` stands on, with no memory of where
+/// it was.
+fn ladder_step(width: f32) -> u8 {
+    HEADER_LADDER
+        .iter()
+        .find(|(min_width, _)| width >= *min_width)
+        .map_or(0, |(_, step)| *step)
+}
+
+/// The ladder step for a header measured at `width`, given the step it was
+/// drawn with last frame.
+///
+/// Down at once, up only with `HEADER_LADDER_HYSTERESIS` to spare. A step
+/// changes what the header holds, and so, if anything lets the header's
+/// content reach the layout, the width the next frame measures. Without the
+/// margin a header sitting on a rung's width could go up, be pushed back under
+/// it, go down, and come back up again every other frame. `None` when there is
+/// no width to go by (not laid out yet, or collapsed to nothing), and the next
+/// width that arrives is taken as it is.
+fn next_header_level(previous: Option<u8>, width: f32) -> Option<u8> {
+    if width <= 0. {
+        return None;
+    }
+    let plain = ladder_step(width);
+    Some(match previous {
+        Some(previous) if plain > previous => {
+            ladder_step(width - HEADER_LADDER_HYSTERESIS).max(previous)
+        }
+        _ => plain,
+    })
+}
+
 impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected_tab = self.tabs.get(self.selected_idx);
@@ -3898,6 +3969,68 @@ mod tests {
         pane_content_background, peek_badge_line, tab_bar_background, truncate_tab_title,
     };
     use gpui::SharedString;
+
+    /// The ladder reads the plain thresholds when it has nothing to go by.
+    #[test]
+    fn the_first_width_takes_the_plain_rung() {
+        use super::{
+            HEADER_LEVEL_BADGE, HEADER_LEVEL_RERUN, HEADER_LEVEL_STATUS, next_header_level,
+        };
+        assert_eq!(next_header_level(None, 0.), None);
+        assert_eq!(next_header_level(None, 319.), Some(0));
+        assert_eq!(next_header_level(None, 320.), Some(HEADER_LEVEL_STATUS));
+        assert_eq!(next_header_level(None, 420.), Some(HEADER_LEVEL_RERUN));
+        assert_eq!(next_header_level(None, 520.), Some(HEADER_LEVEL_BADGE));
+        // A collapsed header forgets its step, so it does not climb from a
+        // rung it was never measured on.
+        assert_eq!(next_header_level(Some(HEADER_LEVEL_BADGE), 0.), None);
+    }
+
+    /// A header whose width moves back and forth across a rung, by less than
+    /// the margin, settles on one step instead of following it.
+    #[test]
+    fn a_width_flipping_across_a_rung_does_not_flip_the_step() {
+        use super::{HEADER_LADDER_HYSTERESIS, HEADER_LEVEL_STATUS, next_header_level};
+        // The two widths a recorded flicker alternated between, scaled to
+        // straddle the 320px rung by less than the margin.
+        let (narrow, wide) = (316., 316. + HEADER_LADDER_HYSTERESIS - 1.);
+        for start in [narrow, wide] {
+            let mut step = next_header_level(None, start);
+            let mut seen = std::collections::BTreeSet::new();
+            for frame in 0..20 {
+                let width = if frame % 2 == 0 { narrow } else { wide };
+                step = next_header_level(step, width);
+                if frame >= 2 {
+                    seen.insert(step);
+                }
+            }
+            assert_eq!(seen.len(), 1, "starting at {start}: steps {seen:?}");
+        }
+        // Climbing needs the margin; dropping does not.
+        assert_eq!(
+            next_header_level(Some(0), 320. + HEADER_LADDER_HYSTERESIS - 1.),
+            Some(0)
+        );
+        assert_eq!(
+            next_header_level(Some(0), 320. + HEADER_LADDER_HYSTERESIS),
+            Some(HEADER_LEVEL_STATUS)
+        );
+        assert_eq!(next_header_level(Some(HEADER_LEVEL_STATUS), 319.), Some(0));
+    }
+
+    /// A pane widened a long way climbs every rung it clears with the margin,
+    /// not just one.
+    #[test]
+    fn a_wide_jump_climbs_all_the_rungs_it_clears() {
+        use super::{
+            HEADER_LADDER_HYSTERESIS, HEADER_LEVEL_BADGE, HEADER_LEVEL_RERUN, next_header_level,
+        };
+        assert_eq!(
+            next_header_level(Some(0), 520. + HEADER_LADDER_HYSTERESIS),
+            Some(HEADER_LEVEL_BADGE)
+        );
+        assert_eq!(next_header_level(Some(0), 530.), Some(HEADER_LEVEL_RERUN));
+    }
 
     /// The name leads somewhere only while the session it names is there.
     #[test]
