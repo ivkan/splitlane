@@ -6,11 +6,52 @@ Notable changes to Splitlane are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-22
+
+### Added
+
+- **A coordinator's sessions gather as tabs of one pane.** The sessions an
+  agent opens no longer spread over the other panes: the first opens in a
+  pane beside it, the rest join that pane as tabs, shown as chips in its
+  header. The same rule holds however a session reaches the screen - opened
+  with `splitlane add`, shown with `splitlane show`, clicked in the rail,
+  picked in the palette, or restored after a restart. A session you place in
+  a pane yourself, by dragging it or with Show in pane, stays where you put
+  it. See [Layouts](docs/user/layouts.md).
+- **A session opened by another session can open sessions of its own,** one
+  level further down. The limit of eight running sessions is shared by the
+  whole tree, and an agent can write into, stop, move and close the sessions
+  its sessions opened.
+- **`splitlane send --json`** prints the answer as JSON with `runs_ended`.
+
+### Changed
+
+- **A coordinating session stays on screen.** Opening one of its sessions no
+  longer replaces the coordinator's pane while another pane can take it.
+- **When a session stops to ask a person,** `splitlane wait` says what it
+  asks - the permission it wants or the question with its options - instead
+  of an empty message.
+- **Fewer `[Splitlane]` lines in a coordinator's pane.** A turn a session
+  took up by itself is not announced while the coordinator is waiting on it,
+  and the rest are written as one line with a count.
+- **`splitlane wait` rides out a busy or briefly unreachable app** and keeps
+  waiting until its own timeout, instead of failing after ten seconds.
+- **`splitlane answer` reports `runs_ended`** (on stderr in text mode).
+- The agent skill says plainly that any session in the project can be read.
+
 ### Fixed
 
 - **The phone's page finds Share on iOS 26.** Safari there keeps Share in the
   menu behind the button beside the address, not in the toolbar; the steps for
   adding the page to the home screen now say so.
+- **Panes in a split no longer flicker between their layout and a broken
+  one** at some window widths. The slots of a split are sized by their ratio
+  alone, and the pane header changes its density with a margin, so the two
+  can no longer feed each other.
+
+### Security
+
+- `url` is updated to 2.5.9 for RUSTSEC-2026-0592.
 
 ## [0.3.0] - 2026-11-09
 
