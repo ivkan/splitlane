@@ -262,11 +262,21 @@ impl LayoutTree {
                     }
 
                     let elem = child.node.render(window, cx, on_resize_end.clone());
+                    // A slot's size is its ratio of the container and nothing
+                    // else, so the wrapper carries no percentage at all: a
+                    // zero basis, its ratio as the grow factor, and the cross
+                    // axis left to `stretch`. Taffy's measurement cache is
+                    // keyed by known size and available space but not by the
+                    // parent size a percentage resolves against, so a
+                    // `flex_basis(relative(ratio))` measured once against an
+                    // indefinite parent could be served back in the final
+                    // pass, and the slots came out sized by their headers.
+                    // See "A slot's size is its ratio, and nothing it holds" in
+                    // docs/internals/design-decisions.md.
                     let child_wrapper = div()
-                        .flex_basis(gpui::relative(child.ratio.get()))
-                        .flex_grow(1.0)
+                        .flex_basis(px(0.))
+                        .flex_grow(child.ratio.get().max(0.0))
                         .flex_shrink(1.0)
-                        .size_full()
                         .min_w(px(80.))
                         .min_h(px(80.))
                         .overflow_hidden();
@@ -470,6 +480,106 @@ mod tests {
         for selector in ["layout-child-0", "layout-child-1", "layout-child-2"] {
             let bounds = cx.debug_bounds(selector).expect("child not painted");
             assert_px_eq(bounds.size.width, MIN_PANE_FOR_SPLIT, selector);
+        }
+    }
+
+    /// The panes area as the window nests it: a flex item that clips. The
+    /// clip is what matters - without `overflow_hidden` the split laid out
+    /// right at every width tried.
+    struct ClippedAreaHarness {
+        tree: LayoutTree,
+    }
+
+    impl Render for ClippedAreaHarness {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            div().flex().flex_row().size_full().child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .child(self.tree.render(window, cx, None)),
+            )
+        }
+    }
+
+    /// A slot's width is its ratio of the container whatever its header says.
+    ///
+    /// The headers are the kind a recorded flicker showed: an idle
+    /// coordinator with two shells beside two sessions it opened. With a
+    /// percentage basis on the slot, single widths in this range laid the row
+    /// out by header content instead ([251, 367, 367] against [328, 328, 328]),
+    /// and before the ladder had its margin, the ladder kept it flipping
+    /// between the two on alternate frames. Which widths collide depends on
+    /// the exact header text, so the range is wide and the text is the one
+    /// that collided under the test text system.
+    #[gpui::test]
+    fn slot_width_is_the_ratio_whatever_the_header_holds(cx: &mut TestAppContext) {
+        use crate::pane::{ContextFact, SurfaceFacts};
+        use crate::project::ThreadStatus;
+
+        let (_view, cx) = cx.add_window_view(|_, cx| {
+            let nodes = (0..3)
+                .map(|i| {
+                    let terminal = cx.new(|cx| TerminalView::display_only_for_test(1, cx));
+                    let surface = terminal.entity_id();
+                    let pane = cx.new(|cx| Pane::new(terminal, cx));
+                    let context = |tokens| ContextFact {
+                        tokens,
+                        ceiling: None,
+                        compaction: None,
+                        compactions_seen: 0,
+                    };
+                    let facts = if i == 0 {
+                        SurfaceFacts {
+                            is_agent: true,
+                            status: Some(ThreadStatus::Idle),
+                            background_shells: 2,
+                            context: Some(context(310_000)),
+                            ..Default::default()
+                        }
+                    } else {
+                        SurfaceFacts {
+                            is_agent: true,
+                            status: Some(ThreadStatus::Thinking),
+                            opened_by: Some(("Release Coordinator".into(), true)),
+                            context: Some(context(116_000)),
+                            ..Default::default()
+                        }
+                    };
+                    pane.update(cx, |pane, cx| {
+                        pane.set_surface_facts([(surface, facts)].into_iter().collect(), cx);
+                    });
+                    LayoutTree::Leaf(pane)
+                })
+                .collect();
+            ClippedAreaHarness {
+                tree: equal_container(SplitDirection::Vertical, nodes),
+            }
+        });
+
+        for width in 980..=1030 {
+            let width = width as f32;
+            cx.simulate_resize(size(px(width), px(1000.0)));
+            cx.run_until_parked();
+            let expected = available_main_axis_px(width, 3) / 3.0;
+            // The ladder reads the width the previous frame measured, so a
+            // feedback loop needs several frames to show.
+            for frame in 0..6 {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+                for selector in ["layout-child-0", "layout-child-1", "layout-child-2"] {
+                    let bounds = cx.debug_bounds(selector).expect("slot not painted");
+                    assert_px_eq(
+                        bounds.size.width,
+                        expected,
+                        &format!("{selector} at window width {width}, frame {frame}"),
+                    );
+                }
+            }
         }
     }
 
