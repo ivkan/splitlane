@@ -891,17 +891,22 @@ impl Pane {
         }
         let selected_idx = selected_idx.min(tabs.len().saturating_sub(1));
         // A pane is built holding one surface. The only pane that holds more
-        // is an opener's children pane, and it grows one tab at a time through
-        // `add_tab`; a pane built with two would be something else, holding a
-        // PTY nothing chose to put there. Every caller trims first - restore through
+        // is an opener's children pane - grown through `add_tab`, or restored
+        // whole - and every tab of it is an agent session with a rail row; a
+        // pane built with two of anything else would hold a PTY nothing chose
+        // to put there. Every caller trims first - restore through
         // `keep_one_surface_per_pane`, undo through a record of one - and this
         // is where a future one finds out it did not. Asserted rather than
         // typed because the vec is read in 22 files and collapsing it is a
         // separate cleanup; asserted rather than trusted because the last path
         // that appended was found by a reviewer, not by us.
         debug_assert!(
-            tabs.len() <= 1,
-            "a pane holds one surface; got {}",
+            tabs.len() <= 1
+                || tabs.iter().all(|tab| {
+                    tab.as_terminal()
+                        .is_some_and(|view| view.read(cx).agent_thread_id.is_some())
+                }),
+            "a pane holds one surface, or a children pane's agent sessions; got {}",
             tabs.len()
         );
         Self {
@@ -1647,20 +1652,26 @@ impl Pane {
         cx.notify();
     }
 
-    /// Add `content` beside what the pane holds and select it.
+    /// Add `content` beside what the pane holds, raising it when `select`.
     ///
     /// The one exception to [`Self::show_surface`]'s replacing: an opener's
-    /// children gather as tabs of one pane (`targeting::climb_for`), so a
+    /// children gather as tabs of one pane (`targeting::place_child`), so a
     /// coordinator's sessions take one pane between them instead of spreading
     /// over the others. Every tab of such a pane is an agent session with a
     /// rail row, so a later replace that drops them stops none of them.
-    pub fn add_tab(&mut self, content: TabContent, cx: &mut Context<Self>) {
+    pub fn add_tab(&mut self, content: TabContent, select: bool, cx: &mut Context<Self>) {
+        if let TabContent::Terminal(terminal) = &content {
+            Self::subscribe_terminal(terminal, cx);
+            Self::apply_terminal_render_config(terminal, &self.cached_config, cx);
+        }
         if self.tabs.is_empty() {
             self.show_surface(content, cx);
             return;
         }
         self.tabs.push(content);
-        self.selected_idx = self.tabs.len() - 1;
+        if select {
+            self.selected_idx = self.tabs.len() - 1;
+        }
         cx.emit(PaneEvent::TabsChanged);
         cx.notify();
     }

@@ -34,10 +34,11 @@
 //! listed, which is what `opened_by` already records.
 //!
 //! **An opener's children share one pane.** A session another session opened
-//! climbs [`climb_for`] instead: it becomes a tab of the pane already showing
-//! one of its siblings, and only the first child takes a pane - an empty one,
-//! a new one inserted beside the opener, or with no room the one the ladder
-//! above would replace. A coordinator with eight children then takes two
+//! goes by [`place_child`], whichever door put it on screen (a click, the
+//! palette, `splitlane add`, `splitlane show`): it becomes a tab of the pane
+//! already showing one of its siblings, and only the first child takes a
+//! pane - an empty one, a new one inserted beside the opener, or for a click
+//! with no room the one the ladder above would replace. A coordinator with eight children then takes two
 //! panes, not every pane on screen, and the other panes keep what they show.
 //!
 //! The return type is an enum rather than an `Entity<Pane>` because rung 3
@@ -106,6 +107,8 @@ pub(crate) struct LeafFacts {
     /// The opener of the session the pane shows: the pane is that opener's
     /// **children pane**, where its other sessions gather as tabs.
     pub family: Option<u64>,
+    /// How many surfaces the pane holds.
+    pub tabs: usize,
 }
 
 /// The rung the ladder stopped on, with the pane's index in tree order.
@@ -169,18 +172,56 @@ pub(crate) fn climb(leaves: &[LeafFacts], kind: SurfaceKind, room: bool) -> Rung
     Rung::Replace(i)
 }
 
-/// The ladder for a session `opened_by` opened, or the ordinary one when
-/// `opened_by` is `None`.
+/// Where a session `opener` opened goes, short of replacing anything: the
+/// one rule every door that puts such a session on screen asks - a rail
+/// click, the palette, `splitlane add`, `splitlane show`.
 ///
 /// **An opener's children gather in one pane.** A coordinator hands out more
 /// sessions than there are panes, and with every child taking a pane of its
 /// own they spread over whatever else was on screen, one replacement at a
-/// time. So the first child goes to an empty pane, or to a new pane beside
-/// the opener, or - with no room - to the pane the ordinary ladder would
-/// replace; that pane then shows a child, which makes it the opener's
-/// children pane, and every later child is a tab in it. A child of another
-/// opener never joins it. Nothing is stored: the pane is a children pane for
-/// as long as it shows a child, and an ordinary pane again once it does not.
+/// time. So a child joins the pane already showing one of its siblings, as a
+/// tab; only when there is none does it take a pane - an empty one, or a new
+/// one inserted beside the opener. A child of another opener never joins.
+/// Nothing is stored: the pane is a children pane for as long as it shows a
+/// child, and an ordinary pane again once it does not.
+///
+/// `None` when the only places left are panes showing something else. What
+/// happens then is the asker's: a person's click replaces a pane
+/// ([`climb_for`]), a session's open goes to the rail, since a session does
+/// not take a person's pane.
+pub(crate) fn place_child(leaves: &[LeafFacts], opener: u64, room: bool) -> Option<Rung> {
+    if leaves.is_empty() {
+        return Some(Rung::NewPane);
+    }
+    // The pane holding most of the siblings, the first of those on a tie: a
+    // child a person put in a pane of its own does not split the group.
+    let mut group: Option<usize> = None;
+    for (i, leaf) in leaves.iter().enumerate() {
+        if leaf.family == Some(opener) && group.is_none_or(|g| leaf.tabs > leaves[g].tabs) {
+            group = Some(i);
+        }
+    }
+    if let Some(i) = group {
+        return Some(Rung::ChildrenTab(i));
+    }
+    if let Some(i) = leaves.iter().position(|leaf| leaf.kind.is_none()) {
+        return Some(Rung::Empty(i));
+    }
+    if room {
+        return Some(
+            match leaves.iter().position(|leaf| leaf.shows == Some(opener)) {
+                Some(i) => Rung::NewPaneBeside(i),
+                None => Rung::NewPane,
+            },
+        );
+    }
+    None
+}
+
+/// The ladder for a person's click on a session `opened_by` opened, or the
+/// ordinary one when `opened_by` is `None`: [`place_child`], and with no
+/// place left there, the pane the ordinary ladder would replace - which then
+/// shows a child and so becomes the children pane.
 pub(crate) fn climb_for(
     leaves: &[LeafFacts],
     kind: SurfaceKind,
@@ -190,19 +231,7 @@ pub(crate) fn climb_for(
     let Some(opener) = opened_by else {
         return climb(leaves, kind, room);
     };
-    if let Some(i) = leaves.iter().position(|leaf| leaf.family == Some(opener)) {
-        return Rung::ChildrenTab(i);
-    }
-    if let Some(i) = leaves.iter().position(|leaf| leaf.kind.is_none()) {
-        return Rung::Empty(i);
-    }
-    if room {
-        return match leaves.iter().position(|leaf| leaf.shows == Some(opener)) {
-            Some(i) => Rung::NewPaneBeside(i),
-            None => Rung::NewPane,
-        };
-    }
-    climb(leaves, kind, false)
+    place_child(leaves, opener, room).unwrap_or_else(|| climb(leaves, kind, false))
 }
 
 /// Where the ladder landed.
@@ -627,10 +656,17 @@ impl SplitlaneApp {
                     focused: focused.as_ref() == Some(pane),
                     shows,
                     family: shows.and_then(|id| self.opener_of(id)),
+                    tabs: pane.read(cx).tabs.len(),
                 }
             })
             .collect();
         Some((leaves, facts))
+    }
+
+    /// The opener whose children pane `pane` is: the opener of the session
+    /// it shows, when another session opened it.
+    pub(crate) fn pane_family(&self, pane: &Entity<Pane>, cx: &App) -> Option<u64> {
+        self.pane_thread(pane, cx).and_then(|id| self.opener_of(id))
     }
 
     /// The surface record behind the terminal `pane` shows, if any.
@@ -644,7 +680,7 @@ impl SplitlaneApp {
     }
 
     /// The session that opened `thread_id`, when another session did.
-    fn opener_of(&self, thread_id: u64) -> Option<u64> {
+    pub(crate) fn opener_of(&self, thread_id: u64) -> Option<u64> {
         self.thread_by_id(thread_id)?
             .opened_by
             .as_ref()
@@ -764,41 +800,96 @@ impl SplitlaneApp {
         let opened_by = placed_thread
             .filter(|_| kind == SurfaceKind::Agent)
             .and_then(|id| self.opener_of(id));
-        let (leaves, facts) = self.ladder_facts(ws_idx, cx)?;
+        let (_, facts) = self.ladder_facts(ws_idx, cx)?;
         let room = self.room_for_another_pane_now(cx);
         let rung = climb_for(&facts, kind, room, opened_by);
         self.journal_placement(&facts, kind, room, rung, placed_thread);
-        let pane = match rung {
-            Rung::ChildrenTab(i) => {
-                let pane = leaves.get(i)?.clone();
-                // Added, not shown in place: the siblings already in the pane
-                // stay one click away in its header.
-                pane.update(cx, |pane, cx| pane.add_tab(tab, cx));
-                pane
-            }
-            Rung::NewPaneBeside(i) => {
-                let anchor = leaves.get(i).cloned();
-                self.append_pane_after(ws_idx, tab, anchor, cx)?
-            }
-            Rung::NewPane => self.append_pane_with(ws_idx, tab, cx)?,
-            Rung::SameKind(i) | Rung::Empty(i) | Rung::Replace(i) => {
-                // Shows, which replaces. Rungs 1, 2 and 4 all land here, and on
-                // a laptop rung 4 is most of them - see the note above on why
-                // that costs the user their place on screen and not their work.
-                let pane = leaves.get(i)?.clone();
-                pane.update(cx, |pane, cx| pane.show_surface(tab, cx));
-                pane
-            }
-        };
-        if let (Some(_), Some(thread_id)) = (opened_by, placed_thread) {
-            let tabs = pane.read(cx).tabs.len();
-            self.journal_children_pane(rung, facts.len(), tabs, thread_id);
-        }
+        let pane = self.put_on_rung(ws_idx, rung, tab, None, true, cx)?;
         self.active_idx = ws_idx;
         self.pending_pane_focus = Some(pane.clone());
         self.reroot_files_tree(cx);
         self.save_session(cx);
         cx.notify();
+        Some(pane)
+    }
+
+    /// [`place_child`] asked of `ws_idx`'s panes as they are now. `None` when
+    /// the container does not exist or nothing but a replacement is left.
+    pub(crate) fn child_rung(&self, ws_idx: usize, opener: u64, cx: &App) -> Option<Rung> {
+        let (_, facts) = self.ladder_facts(ws_idx, cx)?;
+        let room = self.refuse_another_pane_in(ws_idx, cx).is_none();
+        place_child(&facts, opener, room)
+    }
+
+    /// Put `tab` where `rung` says. The one executor for every placement the
+    /// ladder decided, whoever asked, so a rail click and `splitlane add`
+    /// cannot come to put the same session in different places.
+    ///
+    /// `anchor` overrides the pane a new pane is inserted after (a caller
+    /// that named a neighbour). `select` is whether a tab added to a children
+    /// pane is raised: a person's click raises it, a session's open adds it
+    /// behind the one the person is looking at. Focus is the caller's, except
+    /// that raising a tab in the pane holding the keyboard keeps the keyboard
+    /// in that pane rather than on a terminal that is no longer drawn.
+    pub(crate) fn put_on_rung(
+        &mut self,
+        ws_idx: usize,
+        rung: Rung,
+        tab: TabContent,
+        anchor: Option<Entity<Pane>>,
+        select: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<Pane>> {
+        let leaves = self
+            .workspaces
+            .get(ws_idx)?
+            .root
+            .as_ref()
+            .map(|root| root.collect_leaves())
+            .unwrap_or_default();
+        let thread_id = match &tab {
+            TabContent::Terminal(view) => view.read(cx).agent_thread_id,
+            _ => None,
+        };
+        let pane = match rung {
+            Rung::ChildrenTab(i) => {
+                let pane = leaves.get(i)?.clone();
+                // Added, not shown in place: the siblings already in the pane
+                // stay one click away in its header.
+                pane.update(cx, |pane, cx| pane.add_tab(tab, select, cx));
+                let holds_keyboard = self
+                    .focused_pane_now
+                    .as_ref()
+                    .and_then(|weak| weak.upgrade())
+                    .is_some_and(|focused| focused == pane);
+                if select && holds_keyboard {
+                    self.pending_pane_focus = Some(pane.clone());
+                }
+                pane
+            }
+            Rung::NewPaneBeside(i) => {
+                let anchor = anchor.or_else(|| leaves.get(i).cloned());
+                self.append_pane_after(ws_idx, tab, anchor, cx)?
+            }
+            Rung::NewPane => self.append_pane_after(ws_idx, tab, anchor, cx)?,
+            Rung::SameKind(i) | Rung::Empty(i) | Rung::Replace(i) => {
+                // Shows, which replaces. Rungs 1, 2 and 4 all land here, and on
+                // a laptop rung 4 is most of them - see the note above on why
+                // that costs the user their place on screen and not their work.
+                let pane = leaves.get(i)?.clone();
+                pane.update(cx, |pane, cx| match tab {
+                    TabContent::Terminal(view) => pane.show_terminal(view, cx),
+                    other => pane.show_surface(other, cx),
+                });
+                pane
+            }
+        };
+        if let Some(thread_id) = thread_id
+            && self.opener_of(thread_id).is_some()
+        {
+            let tabs = pane.read(cx).tabs.len();
+            self.journal_children_pane(rung, leaves.len(), tabs, thread_id);
+        }
         Some(pane)
     }
 
@@ -939,7 +1030,7 @@ impl SplitlaneApp {
 mod tests {
     use super::{
         LeafFacts, MIN_PANE_FOR_SPLIT, PaneRefusal, Rung, SurfaceKind, climb, climb_for,
-        refuse_another_pane,
+        place_child, refuse_another_pane,
     };
 
     fn agent(opener: bool, focused: bool) -> LeafFacts {
@@ -1021,6 +1112,66 @@ mod tests {
         let empty = [agent(true, true), LeafFacts::default()];
         assert_eq!(climb(&empty, SurfaceKind::Agent, true), Rung::Empty(1));
         assert_eq!(climb(&[], SurfaceKind::Agent, false), Rung::NewPane);
+    }
+
+    /// The rule a session's open asks (`splitlane add`, `splitlane show`):
+    /// the same places a click finds, and no replacement - with nothing but a
+    /// replacement left the answer is `None`, and the session goes to the
+    /// rail.
+    #[test]
+    fn a_session_opening_a_child_finds_the_places_a_click_finds() {
+        let grouped = [coordinator(7, true), child_of(7, false)];
+        assert_eq!(place_child(&grouped, 7, false), Some(Rung::ChildrenTab(1)));
+        let alone = [coordinator(7, true)];
+        assert_eq!(place_child(&alone, 7, true), Some(Rung::NewPaneBeside(0)));
+        assert_eq!(place_child(&alone, 7, false), None);
+        let beside_shell = [coordinator(7, true), shell(false)];
+        assert_eq!(place_child(&beside_shell, 7, false), None);
+        // A project with no panes takes the child as its first.
+        assert_eq!(place_child(&[], 7, false), Some(Rung::NewPane));
+        // Wherever `place_child` has an answer, a click gets the same one.
+        for (panes, room) in [(&grouped[..], false), (&alone[..], true)] {
+            assert_eq!(
+                Some(climb_for(panes, SurfaceKind::Agent, room, Some(7))),
+                place_child(panes, 7, room)
+            );
+        }
+    }
+
+    /// A child a person put in a pane of its own does not split the group:
+    /// the next child joins the pane holding most of its siblings.
+    #[test]
+    fn the_next_child_joins_the_pane_holding_most_of_its_siblings() {
+        let stray = child_of(7, false);
+        let group = LeafFacts {
+            tabs: 3,
+            ..child_of(7, false)
+        };
+        let panes = [coordinator(7, true), stray, group];
+        assert_eq!(place_child(&panes, 7, false), Some(Rung::ChildrenTab(2)));
+    }
+
+    /// A grandchild groups under the session that opened it, which is itself
+    /// a tab of its own opener's children pane - no special case.
+    #[test]
+    fn a_grandchild_groups_under_its_immediate_opener() {
+        // 7 coordinates; 8 is its child and has opened sessions itself.
+        let middle = LeafFacts {
+            shows: Some(8),
+            opener: true,
+            ..child_of(7, false)
+        };
+        let panes = [coordinator(7, false), middle];
+        assert_eq!(place_child(&panes, 8, true), Some(Rung::NewPaneBeside(1)));
+        let with_grandchild = [coordinator(7, false), middle, child_of(8, true)];
+        assert_eq!(
+            place_child(&with_grandchild, 8, false),
+            Some(Rung::ChildrenTab(2))
+        );
+        assert_eq!(
+            place_child(&with_grandchild, 7, false),
+            Some(Rung::ChildrenTab(1))
+        );
     }
 
     /// The first child of a coordinator alone on screen starts the children

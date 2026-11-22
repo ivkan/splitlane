@@ -950,6 +950,9 @@ pub(crate) enum Placement {
     EmptyPane,
     /// A pane added for it.
     NewPane,
+    /// Where its opener's children go (`targeting::place_child`): a tab of
+    /// the pane showing a sibling, or the pane that starts that group.
+    Children,
     /// No pane: a row in the rail and a running process.
     Parked(ParkedBecause),
 }
@@ -1765,10 +1768,18 @@ impl SplitlaneApp {
             .iter()
             .find(|pane| pane.read(cx).tabs.is_empty())
             .cloned();
+        // A session another one opened goes where its opener's children go,
+        // as it does from a rail click; the arms below are what is left when
+        // that rule has no place short of replacing a pane.
+        let child_rung = self
+            .opener_of(thread_id)
+            .and_then(|opener| self.child_rung(ws_idx, opener, cx));
+        let named_neighbour = beside.clone();
         // Where it goes, decided before the view is touched. A named
         // neighbour is honoured when a pane can be added next to it; when
         // none can, the request is still for a pane and the ladder answers.
         enum Spot {
+            Children,
             Beside(Entity<crate::pane::Pane>),
             Empty(Entity<crate::pane::Pane>),
             New,
@@ -1776,6 +1787,7 @@ impl SplitlaneApp {
         }
         let can_add = matches!(room, None | Some(PaneRefusal::NoPanes));
         let spot = match (beside, empty_pane) {
+            _ if child_rung.is_some() => Spot::Children,
             (Some(pane), _) if can_add => Spot::Beside(pane),
             (_, Some(pane)) => Spot::Empty(pane),
             _ if can_add => Spot::New,
@@ -1827,6 +1839,23 @@ impl SplitlaneApp {
         };
         // As with opening: the keyboard stays where the person left it.
         let displaced = match spot {
+            // Raised: showing it is what was asked for.
+            Spot::Children => {
+                let placed = child_rung.and_then(|rung| {
+                    self.put_on_rung(
+                        ws_idx,
+                        rung,
+                        TabContent::Terminal(view.clone()),
+                        named_neighbour,
+                        true,
+                        cx,
+                    )
+                });
+                if placed.is_none() {
+                    return self.refused(Refusal::NoRoom, METHOD, Some(thread_id), &caller);
+                }
+                None
+            }
             Spot::Empty(pane) => {
                 pane.update(cx, |pane, cx| pane.show_terminal(view.clone(), cx));
                 None
@@ -2219,12 +2248,21 @@ impl SplitlaneApp {
                 .into_iter()
                 .find(|pane| pane.read(cx).tabs.is_empty())
         });
+        // A session opened from a pane is its opener's child, and goes where
+        // the opener's children go - the same rule a rail click follows.
+        let child_rung = match (&caller, ask) {
+            (Caller::Pane(pane), PlacementAsk::Auto | PlacementAsk::Pane) => {
+                self.child_rung(ws_idx, pane.thread_id, cx)
+            }
+            _ => None,
+        };
         // Decided before anything is created, so a refusal leaves nothing.
         let placement = match place_opened(
             ask,
             empty_pane.is_some(),
             self.refuse_another_pane_in(ws_idx, cx),
         ) {
+            _ if child_rung.is_some() => Placement::Children,
             Ok(placement) => placement,
             Err(refusal) => {
                 refuse_open(refusal.word());
@@ -2314,6 +2352,21 @@ impl SplitlaneApp {
                     None => Placement::Parked(ParkedBecause::Ceiling),
                 }
             }
+            // Added behind the tab the person is looking at, and the keyboard
+            // stays where it is - the same as the two arms above.
+            Placement::Children => match child_rung.and_then(|rung| {
+                self.put_on_rung(
+                    ws_idx,
+                    rung,
+                    TabContent::Terminal(view.clone()),
+                    None,
+                    false,
+                    cx,
+                )
+            }) {
+                Some(_) => placement,
+                None => Placement::Parked(ParkedBecause::Ceiling),
+            },
             Placement::Parked(_) => placement,
         };
         // A pane starts its process when it is first drawn. A session in the
@@ -2322,7 +2375,7 @@ impl SplitlaneApp {
         view.update(cx, |view, cx| view.ensure_backend_started(cx));
 
         let (placement_word, placement_reason) = match placement {
-            Placement::EmptyPane | Placement::NewPane => ("pane", None),
+            Placement::EmptyPane | Placement::NewPane | Placement::Children => ("pane", None),
             Placement::Parked(because) => ("parked", Some(because.word())),
         };
         // Before the prompt is handed on, so the open comes first in the

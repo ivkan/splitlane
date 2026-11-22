@@ -57,9 +57,14 @@ configuration files:
   (also printed last on the default line, after `key`): pass it as `--key
   KEY`, before or after the verb, or in `SPLITLANE_SESSION_KEY`, to `send`,
   `key`, `interrupt` and `close` for that session. `--as NAME` is what the
-  session's row calls the program that opened it. The session goes into an empty pane, or a new
-  pane where one fits, and otherwise into the rail with no pane; it never
-  takes the place of what a pane is showing. `--parked` asks for the rail,
+  session's row calls the program that opened it. Opened from a pane, the
+  session goes where its opener's sessions go: a tab, behind the one shown,
+  of the pane already showing one of them; otherwise an empty pane, or a new
+  pane beside the opener where one fits (see [Layouts](../layouts.md)).
+  Opened from outside a pane, it goes into an empty pane, or a new pane where
+  one fits. Either way it goes into the rail with no pane when there is no
+  such place; it never takes the place of what a pane is showing, and the
+  keyboard stays where it was. `--parked` asks for the rail,
   `--pane` for a pane or a refusal. The answer carries `runs_ended`, the
   number to pass to `wait --after`. One session has at most eight sessions
   it opened running at a time, and a session that was itself opened by one
@@ -90,8 +95,11 @@ configuration files:
   lets the caller park any session but itself. Nothing else about the
   session changes hands, and the journal's `park` line records `asked` and
   `opened_by_caller`.
-  `show` puts a session that has no pane into one: an empty pane, a new
-  pane, or failing both the pane of another session the caller opened, the
+  `show` puts a session that has no pane into one. A session another one
+  opened goes where a rail click would put it: a tab, raised, of the pane
+  already showing one of its opener's sessions, or an empty pane, or a new
+  pane beside its opener. Failing those, and for other sessions: an empty
+  pane, a new pane, or the pane of another session the caller opened, the
   one that has gone longest without focus.
 - `close` is "Delete session": it stops the session's process and drops its
   row. The conversation stays in the agent's own history. A session in the

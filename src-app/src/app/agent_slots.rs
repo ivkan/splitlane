@@ -26,6 +26,48 @@ use crate::pane::{Pane, TabContent};
 use crate::terminal::view::TerminalView;
 use crate::workspace::Workspace;
 
+/// What happens to the pane a surface is moved out of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceAfterMove {
+    /// It was in no pane.
+    Untouched,
+    /// It was the pane's only surface: the pane takes back what the
+    /// destination showed, or the launcher.
+    ClearAndSwap,
+    /// It was one tab of a children pane: only that tab leaves, and the
+    /// group keeps the rest.
+    CloseTab,
+}
+
+/// A move a person asked for by naming the pane: a drag onto it, or
+/// `Show in ‹pane›`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MovePlan {
+    /// The destination shows a sibling: the surface joins that group as a
+    /// tab instead of replacing the sibling.
+    pub join_as_tab: bool,
+    pub source: SourceAfterMove,
+}
+
+/// The decision behind [`SplitlaneApp::show_surface_in_pane`], without a
+/// window. A person who names a pane gets that pane - the ladder decides
+/// only where nobody said - so a child dropped on a plain pane stays there;
+/// what it never does is take its siblings with it, or push a sibling out.
+pub(crate) fn plan_move(dest_holds_siblings: bool, source_tabs: Option<usize>) -> MovePlan {
+    let source = match source_tabs {
+        None => SourceAfterMove::Untouched,
+        Some(n) if n > 1 => SourceAfterMove::CloseTab,
+        // Its only surface, moving into its own group: the pane is left
+        // holding the launcher, as a move out of a one-surface pane always
+        // leaves it when nothing comes back.
+        Some(_) => SourceAfterMove::ClearAndSwap,
+    };
+    MovePlan {
+        join_as_tab: dest_holds_siblings,
+        source,
+    }
+}
+
 /// The agent surface `thread_id`'s PTY view, if it is showing in `pane`.
 pub(crate) fn agent_view_in_pane(
     pane: &Entity<Pane>,
@@ -424,7 +466,17 @@ impl SplitlaneApp {
         let Some(view) = self.mount_agents_terminal_for_target(target, cx) else {
             return false;
         };
-        let displaced = dest.read(cx).surface();
+        let dest_family = self.pane_family(dest, cx);
+        let plan = plan_move(
+            self.opener_of(thread_id)
+                .is_some_and(|opener| dest_family == Some(opener)),
+            source.as_ref().map(|pane| pane.read(cx).tabs.len()),
+        );
+        let displaced = if plan.join_as_tab {
+            None
+        } else {
+            dest.read(cx).surface()
+        };
         // Before anything points away from it: a surface nothing else owns
         // gets a rail row, so the replace below cannot destroy it. If it
         // cannot be given one, nothing happens at all - a view action that
@@ -441,13 +493,36 @@ impl SplitlaneApp {
         // cannot draw. Emptying the source first makes the only transient
         // state "in no pane", which is always safe to observe.
         if let Some(source) = source.as_ref() {
-            source.update(cx, |pane, cx| pane.clear_to_launcher(cx));
+            match plan.source {
+                SourceAfterMove::CloseTab => {
+                    let idx = source.read(cx).tabs.iter().position(|tab| {
+                        tab.as_terminal()
+                            .is_some_and(|held| held.read(cx).agent_thread_id == Some(thread_id))
+                    });
+                    if let Some(idx) = idx {
+                        source.update(cx, |pane, cx| pane.close_tab_at(idx, cx));
+                    }
+                }
+                SourceAfterMove::ClearAndSwap | SourceAfterMove::Untouched => {
+                    source.update(cx, |pane, cx| pane.clear_to_launcher(cx));
+                }
+            }
         }
-        dest.update(cx, |pane, cx| pane.show_terminal(view, cx));
+        if plan.join_as_tab {
+            dest.update(cx, |pane, cx| {
+                pane.add_tab(TabContent::Terminal(view), true, cx)
+            });
+        } else {
+            dest.update(cx, |pane, cx| pane.show_terminal(view, cx));
+        }
         // And the other half: whatever the destination was showing goes back
         // to where this surface came from. A destination that was showing
-        // nothing hands nothing back, and the source stays the launcher.
-        if let (Some(source), Some(displaced)) = (source, displaced) {
+        // nothing hands nothing back, and the source stays the launcher. A
+        // children pane the surface left keeps its other tabs and takes
+        // nothing back: what was displaced is parked in the rail.
+        if plan.source == SourceAfterMove::ClearAndSwap
+            && let (Some(source), Some(displaced)) = (source, displaced)
+        {
             source.update(cx, |pane, cx| pane.show_surface(displaced, cx));
         }
         self.active_idx = ws_idx;
@@ -507,8 +582,36 @@ impl SplitlaneApp {
 
 #[cfg(test)]
 mod tests {
+    use super::{SourceAfterMove, plan_move};
     use crate::SplitlaneApp;
     use crate::layout::PaneForm;
+
+    /// Moving one child out of a children pane takes that tab and nothing
+    /// else: the group keeps the rest and takes nothing back.
+    #[test]
+    fn moving_a_child_out_leaves_the_group_standing() {
+        let plan = plan_move(false, Some(3));
+        assert!(!plan.join_as_tab);
+        assert_eq!(plan.source, SourceAfterMove::CloseTab);
+    }
+
+    /// A child moved onto a pane showing a sibling joins it as a tab, and does
+    /// not push the sibling out.
+    #[test]
+    fn a_child_moved_onto_its_siblings_joins_them() {
+        assert!(plan_move(true, None).join_as_tab);
+        assert!(plan_move(true, Some(1)).join_as_tab);
+        assert_eq!(plan_move(true, None).source, SourceAfterMove::Untouched);
+    }
+
+    /// A one-surface pane is still a swap, as it always was.
+    #[test]
+    fn a_one_surface_move_is_still_a_swap() {
+        let plan = plan_move(false, Some(1));
+        assert!(!plan.join_as_tab);
+        assert_eq!(plan.source, SourceAfterMove::ClearAndSwap);
+        assert_eq!(plan_move(false, None).source, SourceAfterMove::Untouched);
+    }
 
     /// A grid cell has a name, and it is the whole of what "reorder
     /// the grid" comes to. The order is the grid's own reading order, which
