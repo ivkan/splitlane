@@ -23,7 +23,12 @@ use super::{CliError, EXIT_OK, EXIT_RUNTIME};
 pub(super) const SUBMIT_START_TIMEOUT: Duration = Duration::from_millis(3000);
 const SUBMIT_START_POLL: Duration = Duration::from_millis(60);
 
-/// `splitlane send <target> <text> [--broadcast] [--submit] [--paste]`.
+/// `splitlane send <target> <text> [--broadcast] [--submit] [--paste] [--json]`.
+///
+/// The answer is JSON whether or not `--json` is given. The flag adds the
+/// session's `runs_ended`, the baseline for `wait --after`, to a send that
+/// does not submit: one that submits always carries it.
+#[allow(clippy::too_many_arguments)]
 pub fn send(
     client: &impl IpcTransport,
     target: &str,
@@ -32,6 +37,7 @@ pub fn send(
     submit: bool,
     paste: bool,
     report_file: Option<&str>,
+    json: bool,
 ) -> Result<i32, CliError> {
     if broadcast && report_file.is_some() {
         return Err(CliError::runtime(
@@ -47,7 +53,7 @@ pub fn send(
         return send_broadcast(client, target, &text, submit, paste);
     }
     let surface_id = resolve_target(client, target)?;
-    match send_to(client, surface_id, &text, submit, paste) {
+    match send_to(client, surface_id, &text, submit, paste, submit || json) {
         Ok(mut result) => {
             if let Some(report) = report {
                 result["report_file"] = json!(report.path);
@@ -115,8 +121,9 @@ fn send_to(
     text: &str,
     submit: bool,
     paste: bool,
+    baseline: bool,
 ) -> Result<serde_json::Value, CliError> {
-    let before = if submit {
+    let before = if baseline {
         status_snapshot(client, surface_id)
     } else {
         None
@@ -293,7 +300,7 @@ fn send_broadcast(
     let mut sent: Vec<u64> = Vec::new();
     let mut failed: Vec<serde_json::Value> = Vec::new();
     for id in ids {
-        match send_to(client, id, text, submit, paste) {
+        match send_to(client, id, text, submit, paste, submit) {
             Ok(_) => sent.push(id),
             // Gate off: abort with the hint; nothing was partially injected
             // (the very first call already failed the same way).
@@ -409,7 +416,7 @@ mod tests {
     fn send_passes_submit_flag_through() {
         let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true, "submitted": true }))]);
         assert_eq!(
-            send(&fake, "shard-api", "run", false, true, false, None).expect("ok"),
+            send(&fake, "shard-api", "run", false, true, false, None, false).expect("ok"),
             EXIT_OK
         );
         let calls = fake.calls.borrow();
@@ -427,7 +434,7 @@ mod tests {
     #[test]
     fn send_default_is_not_submitting() {
         let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true }))]);
-        send(&fake, "shard-api", "run", false, false, false, None).expect("ok");
+        send(&fake, "shard-api", "run", false, false, false, None, false).expect("ok");
         assert_eq!(fake.calls.borrow()[0].1["submit"], false);
     }
 
@@ -435,7 +442,7 @@ mod tests {
     fn paste_flag_is_forwarded_only_when_set() {
         // `--paste` -> the param rides through to the server.
         let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true, "paste": true }))]);
-        send(&fake, "shard-api", "hi", false, true, true, None).expect("ok");
+        send(&fake, "shard-api", "hi", false, true, true, None, false).expect("ok");
         let calls = fake.calls.borrow();
         let send_call = calls
             .iter()
@@ -458,7 +465,7 @@ mod tests {
             Ok(json!({ "state": "thinking", "hooked": true, "output_generation": 2 })),
         ]);
         assert_eq!(
-            send(&fake, "shard-api", "hi", false, true, false, None).expect("ok"),
+            send(&fake, "shard-api", "hi", false, true, false, None, false).expect("ok"),
             EXIT_OK
         );
         let calls = fake.calls.borrow();
@@ -480,7 +487,7 @@ mod tests {
             })),
             Ok(json!({ "state": "idle", "hooked": false, "output_generation": 42 })),
         ]);
-        let result = send_to(&fake, 12, "hi", true, false).expect("output confirms start");
+        let result = send_to(&fake, 12, "hi", true, false, true).expect("output confirms start");
         assert_eq!(result["started"], true);
         assert_eq!(result["start_reason"], "output_generation_changed");
     }
@@ -500,7 +507,7 @@ mod tests {
             Ok(json!({ "state": "idle", "hooked": false, "output_generation": 11 })),
         ]);
 
-        let result = send_to(&fake, 12, "hi", true, false).expect("output confirms start");
+        let result = send_to(&fake, 12, "hi", true, false, true).expect("output confirms start");
         assert_eq!(result["started"], true);
         assert_eq!(result["start_reason"], "output_generation_changed");
     }
@@ -514,7 +521,8 @@ mod tests {
             "submit_mode": "inline_cr"
         }))]);
 
-        let result = send_to(&fake, 12, "hi", true, false).expect("inline shell submit is ok");
+        let result =
+            send_to(&fake, 12, "hi", true, false, true).expect("inline shell submit is ok");
         assert!(result.get("started").is_none());
         assert_eq!(
             fake.calls
@@ -532,7 +540,8 @@ mod tests {
         // "shard" prefixes both panes: single-target send must refuse, not
         // pick one silently (single-target keeps its existing semantics).
         let fake = ScriptedTransport::new(vec![]);
-        let err = send(&fake, "shard", "x", false, false, false, None).expect_err("ambiguous");
+        let err =
+            send(&fake, "shard", "x", false, false, false, None, false).expect_err("ambiguous");
         assert_eq!(err.code, crate::cli::EXIT_TARGET);
         assert!(fake.calls.borrow().is_empty());
     }
@@ -544,7 +553,7 @@ mod tests {
             Ok(json!({ "sent": true })),
         ]);
         assert_eq!(
-            send(&fake, "shard", "x", true, false, false, None).expect("ok"),
+            send(&fake, "shard", "x", true, false, false, None, false).expect("ok"),
             EXIT_OK
         );
         let calls = fake.calls.borrow();
@@ -560,7 +569,8 @@ mod tests {
             Ok(json!({ "error": "Surface not found" })),
             Ok(json!({ "sent": true })),
         ]);
-        let code = send(&fake, "shard", "x", true, false, false, None).expect("report, not abort");
+        let code =
+            send(&fake, "shard", "x", true, false, false, None, false).expect("report, not abort");
         assert_eq!(code, EXIT_RUNTIME);
         assert_eq!(fake.calls.borrow().len(), 2, "second pane still served");
     }
@@ -568,7 +578,7 @@ mod tests {
     #[test]
     fn broadcast_no_match_is_target_error() {
         let fake = ScriptedTransport::new(vec![]);
-        let err = send(&fake, "zzz", "x", true, false, false, None).expect_err("no match");
+        let err = send(&fake, "zzz", "x", true, false, false, None, false).expect_err("no match");
         assert_eq!(err.code, crate::cli::EXIT_TARGET);
         assert!(fake.calls.borrow().is_empty(), "no partial send");
     }
@@ -578,7 +588,7 @@ mod tests {
         let fake = ScriptedTransport::new(vec![Err(
             "server error -32601: surface.send_text disabled".to_string(),
         )]);
-        let err = send(&fake, "shard", "x", true, false, false, None).expect_err("gate off");
+        let err = send(&fake, "shard", "x", true, false, false, None, false).expect_err("gate off");
         assert_eq!(err.code, EXIT_RUNTIME);
         assert!(err.message.contains("SPLITLANE_IPC_SCRIPTING"));
         assert_eq!(fake.calls.borrow().len(), 1, "aborted after first reply");
@@ -597,6 +607,27 @@ mod tests {
         ));
     }
 
+    /// `send --json` was refused as an unknown argument, by agents told the
+    /// answer of `send` carries `runs_ended`. It is accepted, and gives the
+    /// baseline even for text that is not submitted.
+    #[test]
+    fn json_gives_the_baseline_without_a_submit() {
+        let fake = ScriptedTransport::new(vec![
+            Ok(json!({ "state": "idle", "rail": { "runs_ended": 4 } })),
+            Ok(json!({ "sent": true })),
+        ]);
+        let result = send_to(&fake, 12, "draft", false, false, true).expect("sent");
+        assert_eq!(result["runs_ended"], 4);
+        let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true }))]);
+        let result = send_to(&fake, 12, "draft", false, false, false).expect("sent");
+        assert!(result.get("runs_ended").is_none());
+        let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true }))]);
+        assert_eq!(
+            send(&fake, "shard-api", "draft", false, false, false, None, true).expect("ok"),
+            EXIT_OK
+        );
+    }
+
     #[test]
     fn report_file_adds_file_contract_to_sent_prompt() {
         let fake = ScriptedTransport::new(vec![Ok(json!({ "sent": true }))]);
@@ -609,6 +640,7 @@ mod tests {
                 false,
                 false,
                 Some("reports/out.md"),
+                false,
             )
             .expect("ok"),
             EXIT_OK
@@ -635,6 +667,7 @@ mod tests {
             false,
             false,
             Some("reports/out.md"),
+            false,
         )
         .expect_err("one report file cannot serve multiple panes");
         assert_eq!(err.code, EXIT_RUNTIME);
@@ -663,7 +696,8 @@ mod tests {
     fn a_refused_write_has_the_refusal_exit_code() {
         let refusal = "splitlane error -32004: surface.send_text refused (not_yours): no";
         let fake = ScriptedTransport::new(vec![Err(refusal.to_string())]);
-        let err = send(&fake, "shard-api", "x", false, false, false, None).expect_err("refused");
+        let err =
+            send(&fake, "shard-api", "x", false, false, false, None, false).expect_err("refused");
         assert_eq!(err.code, crate::cli::EXIT_REFUSED);
         assert!(err.message.contains("not_yours"));
 
@@ -699,7 +733,17 @@ mod tests {
             "sent": true, "length": payload.len(), "submitted": true
         }))]);
         assert_eq!(
-            send(&fake, "shard-api", &payload, false, true, false, None).expect("ok"),
+            send(
+                &fake,
+                "shard-api",
+                &payload,
+                false,
+                true,
+                false,
+                None,
+                false
+            )
+            .expect("ok"),
             EXIT_OK
         );
         let calls = fake.calls.borrow();

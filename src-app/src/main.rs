@@ -34,6 +34,7 @@ mod app;
 mod assets;
 mod caller;
 mod claude_pid_state;
+mod claude_question;
 mod claude_sessions;
 mod claude_usage;
 mod cli;

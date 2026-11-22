@@ -341,6 +341,17 @@ pub(crate) fn answer_value(
     }))
 }
 
+/// The header that gives the session's count of ended runs beside an answer
+/// printed as text, on standard error so the answer on standard output stays
+/// exactly what the agent wrote. A lead that ran `send` in the background
+/// used to read its output file back for this number alone.
+fn runs_ended_line(report: &Value) -> Option<String> {
+    let runs_ended = report.get("runs_ended").and_then(Value::as_u64)?;
+    Some(format!(
+        "splitlane: runs_ended {runs_ended} (pass it as --after to wait for the next turn)"
+    ))
+}
+
 /// `splitlane answer <target> [--after N] [--max-bytes B] [--out FILE] [--raw] [--json]`.
 pub fn answer(
     client: &impl IpcTransport,
@@ -375,6 +386,11 @@ pub fn answer(
         "runs_ended": field("runs_ended"),
     });
     let code = outcome.exit_code();
+    if !options.json
+        && let Some(line) = runs_ended_line(&report)
+    {
+        eprintln!("{line}");
+    }
     match &outcome {
         Outcome::Found(answer) => {
             let stem = format!("splitlane-answer-{surface_id}-");
@@ -424,6 +440,16 @@ pub fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_text_answer_is_headed_by_the_count_of_ended_runs() {
+        assert_eq!(
+            runs_ended_line(&json!({ "outcome": "found", "runs_ended": 8 })).as_deref(),
+            Some("splitlane: runs_ended 8 (pass it as --after to wait for the next turn)")
+        );
+        // An instance too old to give it says nothing.
+        assert_eq!(runs_ended_line(&json!({ "runs_ended": null })), None);
+    }
 
     fn status(agent: &str, word: &str, runs_ended: u64, session_id: Option<&str>) -> Value {
         json!({

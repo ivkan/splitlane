@@ -64,6 +64,93 @@ pub struct RailWaitOptions {
     pub mode: MatchMode,
 }
 
+/// How long the app may refuse connections, or have no socket at all, before
+/// the wait stops asking. Long enough for the app to be restarted or updated;
+/// a socket that is gone for longer than this is an app that is not coming
+/// back.
+const UNREACHABLE_FOR: Duration = Duration::from_secs(60);
+
+/// The longest pause between two reads while the app is not answering.
+const MAX_RETRY_PAUSE: Duration = Duration::from_secs(5);
+
+/// A failure to reach the app that the wait rides out instead of ending on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hiccup {
+    /// The app took the connection and did not answer in time: it is there
+    /// and busy. Asked again until the wait's own time runs out.
+    Busy,
+    /// The connection was refused or the socket is missing. Asked again for
+    /// [`UNREACHABLE_FOR`], then given up on.
+    Unreachable,
+}
+
+/// Whether a failed call is one the wait rides out, read from the client's
+/// message. A refusal by Codex's sandbox is not: asking again cannot change
+/// it, and its message says so.
+fn hiccup_of(message: &str) -> Option<Hiccup> {
+    if message.contains("did not respond within") {
+        Some(Hiccup::Busy)
+    } else if message.contains("cannot reach the app") {
+        Some(Hiccup::Unreachable)
+    } else {
+        None
+    }
+}
+
+/// What the wait knows about the app not answering.
+#[derive(Clone, Debug, Default)]
+struct Outage {
+    /// Calls that failed in a row.
+    failures: u32,
+    /// When the app was first found unreachable in this run of failures, on
+    /// the wait's clock.
+    unreachable_since: Option<Duration>,
+    /// The caller has been told the wait is riding out a failure.
+    told: bool,
+}
+
+impl Outage {
+    /// Note a failed call. `Err` when the app has been unreachable too long
+    /// to wait for.
+    fn note(&mut self, hiccup: Hiccup, error: CliError, elapsed: Duration) -> Result<(), CliError> {
+        self.failures = self.failures.saturating_add(1);
+        match hiccup {
+            Hiccup::Busy => self.unreachable_since = None,
+            Hiccup::Unreachable => {
+                let since = *self.unreachable_since.get_or_insert(elapsed);
+                if elapsed.saturating_sub(since) >= UNREACHABLE_FOR {
+                    return Err(error);
+                }
+            }
+        }
+        if !self.told {
+            self.told = true;
+            eprintln!(
+                "splitlane: {}. The wait carries on and asks again; it does not need a retry \
+                 loop around it.",
+                error.message
+            );
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self) {
+        self.failures = 0;
+        self.unreachable_since = None;
+        self.told = false;
+    }
+
+    /// How long to pause before the next read: the poll interval while the
+    /// app answers, doubling after each failure up to [`MAX_RETRY_PAUSE`].
+    fn pause(&self) -> Duration {
+        if self.failures == 0 {
+            return POLL_INTERVAL;
+        }
+        let doubled = POLL_INTERVAL.saturating_mul(1u32 << self.failures.min(8));
+        doubled.min(MAX_RETRY_PAUSE)
+    }
+}
+
 /// The status words `--state` accepts.
 pub const STATUS_WORDS: [&str; 5] = ["starting", "running", "waiting", "idle", "failed"];
 
@@ -340,6 +427,7 @@ struct Target {
 struct Session {
     options: RailWaitOptions,
     targets: Vec<Target>,
+    outage: Outage,
 }
 
 impl Session {
@@ -354,17 +442,36 @@ impl Session {
                     outcome: None,
                 })
                 .collect(),
+            outage: Outage::default(),
         }
     }
 
     /// Read every undecided target once and decide it. `Ok(true)` when the
     /// wait as a whole is over.
+    ///
+    /// The app not answering is not an outcome of the wait. A wait ended on
+    /// it was wrapped by its callers in loops of their own that went round
+    /// for hours, so the failure is ridden out here: the targets stay
+    /// undecided and are read again after a pause, until the app answers,
+    /// the wait's own time runs out, or the socket has been gone too long.
     fn step(&mut self, client: &impl IpcTransport, elapsed: Duration) -> Result<bool, CliError> {
         for target in &mut self.targets {
             if target.outcome.is_some() {
                 continue;
             }
-            let observation = observe(client, target.id)?;
+            let observation = match observe(client, target.id) {
+                Ok(observation) => {
+                    self.outage.clear();
+                    observation
+                }
+                Err(error) => match hiccup_of(&error.message) {
+                    Some(hiccup) => {
+                        self.outage.note(hiccup, error, elapsed)?;
+                        return Ok(false);
+                    }
+                    None => return Err(error),
+                },
+            };
             let step = match &self.options.wait {
                 RailWait::TurnEnd => {
                     decide_turn_end(&observation, &mut target.track, &self.options, elapsed)
@@ -487,7 +594,7 @@ fn run_polling(
         if session.step(client, elapsed)? || elapsed >= timeout {
             return Ok(session.report());
         }
-        sleep(POLL_INTERVAL);
+        sleep(session.outage.pause());
     }
 }
 
@@ -497,12 +604,17 @@ pub fn wait_rail(
     target: &str,
     options: RailWaitOptions,
 ) -> Result<i32, CliError> {
-    let ids: Vec<u64> = match options.mode {
-        MatchMode::Single => vec![resolve_target(client, target)?],
-        MatchMode::Any | MatchMode::All => resolve_all(client, target)?,
-    };
     let started = Instant::now();
     let timeout = options.timeout;
+    let ids: Vec<u64> = resolve_riding_out(
+        || match options.mode {
+            MatchMode::Single => resolve_target(client, target).map(|id| vec![id]),
+            MatchMode::Any | MatchMode::All => resolve_all(client, target),
+        },
+        timeout,
+        || started.elapsed(),
+        std::thread::sleep,
+    )?;
     let mut session = Session::new(ids.clone(), options);
 
     // The first reading is taken before subscribing, so a wait that is already
@@ -548,9 +660,16 @@ pub fn wait_rail(
         return Err(CliError::runtime("wait ended without a verdict (internal)"));
     };
     match streamed {
-        Ok(()) if closed => Err(CliError::runtime(
-            "the Splitlane event stream closed before the wait finished (did Splitlane exit?)",
-        )),
+        // The stream is only the reason to look sooner. Losing it - the app
+        // restarting, or dropping a subscriber it could not serve - is not
+        // the end of the wait: the rest of it runs on its own clock, which
+        // rides out an app that is briefly not there.
+        Ok(()) if closed => finish(run_polling(
+            client,
+            session,
+            || started.elapsed(),
+            std::thread::sleep,
+        )?),
         Ok(()) => finish(session.report()),
         // No subscription to be woken by: the same wait, on its own clock.
         Err(_) => finish(run_polling(
@@ -559,6 +678,33 @@ pub fn wait_rail(
             || started.elapsed(),
             std::thread::sleep,
         )?),
+    }
+}
+
+/// Find the targets, riding out the app not answering the way a read does:
+/// until it answers, the wait's time is up, or it has been unreachable for
+/// [`UNREACHABLE_FOR`].
+fn resolve_riding_out<T>(
+    mut resolve: impl FnMut() -> Result<T, CliError>,
+    timeout: Duration,
+    now: impl Fn() -> Duration,
+    mut sleep: impl FnMut(Duration),
+) -> Result<T, CliError> {
+    let mut outage = Outage::default();
+    loop {
+        let error = match resolve() {
+            Ok(found) => return Ok(found),
+            Err(error) => error,
+        };
+        let Some(hiccup) = hiccup_of(&error.message) else {
+            return Err(error);
+        };
+        let elapsed = now();
+        if elapsed >= timeout {
+            return Err(error);
+        }
+        outage.note(hiccup, error, elapsed)?;
+        sleep(outage.pause());
     }
 }
 
@@ -592,7 +738,27 @@ fn finish((report, code): (Value, i32)) -> Result<i32, CliError> {
              Pass --after <runs_ended> taken before the prompt was sent."
         ),
         Some("waiting") => {
-            eprintln!("splitlane: the agent is waiting for a person; answer it in its own pane.")
+            // The question itself, so the caller can pass it on without
+            // reading the pane first.
+            let question = report
+                .get("targets")
+                .and_then(Value::as_array)
+                .and_then(|targets| {
+                    targets.iter().find_map(|target| {
+                        (target.get("outcome").and_then(Value::as_str) == Some("waiting"))
+                            .then(|| target.get("message").and_then(Value::as_str))
+                            .flatten()
+                    })
+                });
+            match question {
+                Some(question) => eprintln!(
+                    "splitlane: the agent is waiting for a person: {question}. \
+                     Pass the question on; the person answers it in the agent's own pane."
+                ),
+                None => eprintln!(
+                    "splitlane: the agent is waiting for a person; answer it in its own pane."
+                ),
+            }
         }
         Some("interrupted") => eprintln!(
             "splitlane: the turn was stopped before it finished; there is no answer to read."
@@ -1292,6 +1458,161 @@ mod tests {
         assert_eq!(code, EXIT_TIMEOUT);
         assert_eq!(report["targets"][0]["outcome"], "finished");
         assert_eq!(report["targets"][1]["outcome"], "timeout");
+    }
+
+    /// One surface whose `surface.status` answers from a script of replies,
+    /// failures included; the last one repeats.
+    struct Flaky {
+        replies: RefCell<Vec<Result<Value, String>>>,
+    }
+
+    impl IpcTransport for Flaky {
+        fn call(&self, method: &str, _params: Value) -> Result<Value, String> {
+            assert_eq!(method, "surface.status");
+            let mut replies = self.replies.borrow_mut();
+            if replies.len() > 1 {
+                replies.remove(0)
+            } else {
+                replies[0].clone()
+            }
+        }
+    }
+
+    const BUSY: &str = "cannot reach the app at /tmp/s.sock (splitlane did not respond within 10s); is Splitlane running?";
+    const GONE: &str = "cannot reach the app at /tmp/s.sock (Connection refused (os error 61)); is Splitlane running?";
+
+    fn flaky(replies: Vec<Result<Value, String>>) -> Flaky {
+        Flaky {
+            replies: RefCell::new(replies),
+        }
+    }
+
+    fn reply(word: &str, runs_ended: u64) -> Result<Value, String> {
+        Ok(status(word, "T1", runs_ended).expect("a reading"))
+    }
+
+    fn poll_flaky(fake: &Flaky, opts: RailWaitOptions) -> Result<(Value, i32), CliError> {
+        let clock = Cell::new(Duration::ZERO);
+        run_polling(
+            fake,
+            Session::new(vec![1], opts),
+            || clock.get(),
+            |slept| clock.set(clock.get() + slept),
+        )
+    }
+
+    /// The failure that sent callers to write retry loops of their own: the
+    /// app busy for a while in the middle of a wait. The wait rides it out
+    /// and ends on the turn, with the exit code the turn gives.
+    #[test]
+    fn a_busy_app_is_waited_out() {
+        let fake = flaky(vec![
+            reply("running", 7),
+            Err(BUSY.to_string()),
+            Err(BUSY.to_string()),
+            Err(BUSY.to_string()),
+            reply("idle", 8),
+        ]);
+        let (report, code) = poll_flaky(&fake, options(Some(7))).expect("the wait went on");
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(report["outcome"], "finished");
+    }
+
+    /// An app restarting refuses connections for a few seconds, and the wait
+    /// carries on through that too.
+    #[test]
+    fn a_short_refusal_is_waited_out() {
+        let fake = flaky(vec![
+            reply("running", 7),
+            Err(GONE.to_string()),
+            Err(GONE.to_string()),
+            reply("waiting", 7),
+        ]);
+        let (report, code) = poll_flaky(&fake, options(Some(7))).expect("the wait went on");
+        assert_eq!(code, EXIT_NEEDS_PERSON);
+        assert_eq!(report["targets"][0]["message"], "Allow?");
+    }
+
+    /// A socket gone for longer than a restart takes ends the wait with the
+    /// error it always gave.
+    #[test]
+    fn an_app_gone_for_good_ends_the_wait_with_the_old_error() {
+        let fake = flaky(vec![reply("running", 7), Err(GONE.to_string())]);
+        let error = poll_flaky(&fake, options(Some(7))).expect_err("the app is gone");
+        assert_eq!(error.code, EXIT_RUNTIME);
+        assert!(error.message.contains("is Splitlane running?"), "{error:?}");
+    }
+
+    /// A busy app is asked again until the wait's own time is up, and the
+    /// wait then ends as any wait that ran out of time does.
+    #[test]
+    fn a_busy_app_runs_into_the_waits_own_timeout() {
+        let mut opts = options(Some(7));
+        opts.timeout = Duration::from_secs(120);
+        let fake = flaky(vec![reply("running", 7), Err(BUSY.to_string())]);
+        let (report, code) = poll_flaky(&fake, opts).expect("a timeout, not an error");
+        assert_eq!(code, EXIT_TIMEOUT);
+        assert_eq!(report["outcome"], "timeout");
+    }
+
+    /// Anything else the transport says is not ridden out.
+    #[test]
+    fn other_failures_end_the_wait_at_once() {
+        let sandbox = "Codex's sandbox blocked the connection to Splitlane at /tmp/s.sock";
+        let fake = flaky(vec![Err(sandbox.to_string())]);
+        let error = poll_flaky(&fake, options(Some(7))).expect_err("refused");
+        assert!(error.message.contains("sandbox"));
+        assert_eq!(hiccup_of(sandbox), None);
+        assert_eq!(hiccup_of(BUSY), Some(Hiccup::Busy));
+        assert_eq!(hiccup_of(GONE), Some(Hiccup::Unreachable));
+    }
+
+    #[test]
+    fn the_pause_grows_while_the_app_does_not_answer() {
+        let mut outage = Outage::default();
+        assert_eq!(outage.pause(), POLL_INTERVAL);
+        let mut pauses = Vec::new();
+        for _ in 0..6 {
+            outage
+                .note(Hiccup::Busy, CliError::runtime(BUSY), Duration::ZERO)
+                .expect("busy is never given up on");
+            pauses.push(outage.pause());
+        }
+        assert_eq!(pauses[0], POLL_INTERVAL * 2);
+        assert!(pauses.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(*pauses.last().expect("pauses"), MAX_RETRY_PAUSE);
+        outage.clear();
+        assert_eq!(outage.pause(), POLL_INTERVAL);
+    }
+
+    /// Finding the targets rides out the same failures.
+    #[test]
+    fn finding_the_targets_rides_out_a_busy_app() {
+        let clock = Cell::new(Duration::ZERO);
+        let tries = Cell::new(0);
+        let found = resolve_riding_out(
+            || {
+                tries.set(tries.get() + 1);
+                if tries.get() < 3 {
+                    Err(CliError::runtime(BUSY))
+                } else {
+                    Ok(vec![1_u64])
+                }
+            },
+            DEFAULT_TIMEOUT,
+            || clock.get(),
+            |slept| clock.set(clock.get() + slept),
+        )
+        .expect("found");
+        assert_eq!(found, vec![1]);
+        let target_error = resolve_riding_out(
+            || Err::<Vec<u64>, _>(CliError::target("no surface matches 'x'")),
+            DEFAULT_TIMEOUT,
+            || clock.get(),
+            |slept| clock.set(clock.get() + slept),
+        )
+        .expect_err("not ridden out");
+        assert_eq!(target_error.code, super::super::EXIT_TARGET);
     }
 
     #[test]

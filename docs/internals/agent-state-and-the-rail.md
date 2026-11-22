@@ -716,11 +716,22 @@ one to none. So the rule is about order, not ownership
 
 Nothing is held and nothing is floored. The end of a run waits out a span and
 needs ten seconds behind it; a wait is raised on the first reading that shows
-it, two seconds into a run or twenty minutes. The message is the agent's own
-question when a frame brought one and the status file's `waitingFor`
-otherwise, which was measured as `permission prompt` for a permission ask and
-`input needed` for a question the agent asks; a wait with no words is
-announced by name alone. A question this app puts to a person on a session's
+it, two seconds into a run or twenty minutes. The message is the call the
+agent is waiting on, read from the end of its transcript in the same pass
+(`claude_question`): `Permission to use Bash: <command>`, or the question and
+its options for `AskUserQuestion`. Failing that it is the agent's own words
+when a frame brought them, and failing those the status file's `waitingFor`,
+which was measured as `permission prompt` for a permission ask and `input
+needed` for a question the agent asks; a wait with no words is announced by
+name alone. The transcript comes first because of who reads it: the
+orchestration journal showed every wait of a session opened by another
+session reaching `surface.status` with no message at all, the status file
+having spoken first and no frame bringing words, and each lead told
+"waiting" by `wait` then spent a `status` and a `read` of the pane learning
+what was asked. The record is there to read on 2.1.317 (see above); on a
+version that writes it only after the answer, the fallbacks stand. The
+message is set by the reading that sees the wait and taken down by the one
+that sees it end, so the next wait cannot carry this one's question. A question this app puts to a person on a session's
 behalf is announced where it is put and not here: the pass asks what the
 source read, not the status it wrote.
 

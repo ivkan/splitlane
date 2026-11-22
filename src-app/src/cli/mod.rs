@@ -250,6 +250,10 @@ enum Commands {
     },
     /// Print the last answer an agent gave, read from the agent's own record
     /// of the conversation (Claude Code and Codex), never from scrollback.
+    ///
+    /// As text, the answer goes to standard output and a first line on
+    /// standard error gives the session's `runs_ended`; with `--json` it is a
+    /// field.
     Answer {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
@@ -465,6 +469,11 @@ enum Commands {
         /// resolved relative to the caller's current directory.
         #[arg(long, value_name = "PATH")]
         report_file: Option<String>,
+        /// The answer is JSON either way; with this it also carries
+        /// `runs_ended` when the text is not submitted (a submit always
+        /// does), the baseline for `wait --until turn-end --after`.
+        #[arg(long)]
+        json: bool,
     },
     /// Give a targeted surface the keyboard focus.
     Focus {
@@ -516,7 +525,11 @@ enum Commands {
         /// The pane must produce no new output for this long to count as idle.
         #[arg(long = "for", value_name = "MS")]
         for_ms: Option<u64>,
-        /// Max seconds to wait before giving up (default 300).
+        /// Max seconds to wait before giving up (default 300). With
+        /// `--until` or `--state` the wait rides out the app not answering
+        /// for a while (busy, or restarting) and asks again until this runs
+        /// out; it gives up early, with exit 1, only when the app has been
+        /// unreachable for a minute. Do not wrap it in a retry loop.
         #[arg(long)]
         timeout: Option<u64>,
         /// Succeed as soon as ANY matching pane matches (selector may hit
@@ -813,6 +826,7 @@ fn dispatch_closed(
             submit,
             paste,
             report_file,
+            json,
         } => send_cmd::send(
             closed,
             &target,
@@ -821,6 +835,7 @@ fn dispatch_closed(
             submit,
             paste,
             report_file.as_deref(),
+            json,
         ),
         Commands::Answer {
             target,
@@ -1008,6 +1023,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             submit,
             paste,
             report_file,
+            json,
         } => send_cmd::send(
             client,
             &target,
@@ -1016,6 +1032,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             submit,
             paste,
             report_file.as_deref(),
+            json,
         ),
         Commands::Focus { target } => control_cmds::focus(client, &target),
         Commands::Key { target, keystroke } => send_cmd::key(client, &target, &keystroke),
@@ -1459,6 +1476,22 @@ mod tests {
             argv.extend(bad.iter().copied());
             assert!(Cli::try_parse_from(argv).is_err(), "{bad:?} must not parse");
         }
+    }
+
+    /// Agents told that `send` answers with `runs_ended` add `--json`, and
+    /// it used to be refused as an unknown argument.
+    #[test]
+    fn send_takes_json() {
+        let cli = Cli::try_parse_from(["splitlane", "send", "worker", "go", "--submit", "--json"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Send {
+                json: true,
+                submit: true,
+                ..
+            })
+        ));
     }
 
     #[test]

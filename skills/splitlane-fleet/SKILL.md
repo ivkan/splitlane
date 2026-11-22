@@ -69,13 +69,15 @@ n=0
 # Wait for the turn to end - in the background, see below.
 splitlane wait --match reviewer --until turn-end --after "$n" --timeout 7200
 
-# Read the answer from the agent's own record, not from the screen.
+# Read the answer from the agent's own record, not from the screen. A line
+# on stderr above it gives `runs_ended` again.
 splitlane answer reviewer --after "$n"
 
 # Hand over the next task. Its answer carries `runs_ended` again: that is
 # the new n, for the next wait and the next answer. An old n makes the wait
 # return at once on the turn that is already over, and hands you its answer.
-splitlane send reviewer "Now check the tests cover it." --submit
+# `send` answers in JSON with or without `--json`.
+splitlane send reviewer "Now check the tests cover it." --submit --json
 
 # Close it when its turn is over. A session left running goes on spending.
 splitlane close reviewer
@@ -113,19 +115,24 @@ with `splitlane answer <surface>` and carry on with the task you were given.
 The line waits while you are busy or while the person is typing to you, and a
 person can turn it off, so the wait above stays the way to be sure.
 
-The line also comes for a turn you did not start. A session that ended its
+The line also comes for turns you did not start. A session that ended its
 turn while its own command was still running starts another turn by itself
-when that command finishes, and you are told when that turn ends too. Two
-notes can follow the surface id. `taken up by itself` means you did not start
-this turn. `a command of its own still running` means the answer you are
-about to read may not be its last word.
+when that command finishes. You are not told of each such turn: one line
+comes once the session has settled - no turn running and no command of its
+own left - or has gone ten minutes without ending another, and none at all
+while a `wait` of yours is on that session. Notes can follow the surface id.
+`taken up by itself` (or `3 turns taken up by itself`) means you did not
+start these turns. `a command of its own still running` means the answer you
+are about to read may not be its last word.
 
 ### What the wait tells you
 
 `wait --until turn-end` exits `0` when the turn ended, `5` when the session
-is **asking a person a question** - pass the question on word for word and
-stop; you cannot answer it and nothing can be sent to that session until a
-person has - `6` when the run failed, `7` when the agent gives no turn
+is **asking a person a question** - the target's `message` in the output
+holds the question (for a permission ask, the tool and what it would run),
+so there is no need to `status` or `read` first: pass it on word for word
+and stop; you cannot answer it and nothing can be sent to that session until
+a person has - `6` when the run failed, `7` when the agent gives no turn
 signal (use `--idle --pattern` from section 4), `10` when the turn was
 stopped before it finished - a person pressed Esc there, or it was
 interrupted: there is no answer to read, so say so and ask what the session
@@ -145,6 +152,13 @@ Act on the exit code, and take `runs_ended` from here for the next
 turn is really over, and do not put the wait in a loop that goes round until
 such a check passes: a check that is wrong never passes, the command never
 ends, and you are never called back.
+
+**Never wrap `wait` in a retry loop of your own** - no `for i in $(seq ...)`,
+no `while true; do ...; sleep 60; done`. The wait retries by itself: when the
+app is busy and does not answer in time, or is restarting, it says so once on
+stderr and keeps asking until its own `--timeout`. It gives up early, with
+exit `1` and "is Splitlane running?", only when the app has been unreachable
+for a whole minute; then tell the person instead of retrying.
 
 `add` with a prompt exits `5` too, when the agent stopped at a question of
 its own before it took the task - whether to trust the folder, how to sign

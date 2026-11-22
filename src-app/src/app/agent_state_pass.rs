@@ -209,6 +209,9 @@ struct StateReading {
     /// What the agent's own status says it is waiting for, when the state is
     /// a wait and the source gives words for it. Only the status file does.
     waiting_for: Option<String>,
+    /// The question itself, read from the agent's transcript while the state
+    /// is a wait: the call it is waiting on. See [`crate::claude_question`].
+    question: Option<String>,
     /// Echoed back from the target, like the output count.
     text_entry: TextEntry,
     /// The agent's own process was found under the pane by this pass.
@@ -784,7 +787,24 @@ impl SplitlaneApp {
                     // Taken before the deposit moves it: an older reading
                     // must not rewrite what a newer one already said.
                     let stale = thread.detector_read_at.is_some_and(|seen| seen > read_at);
+                    let was_waiting =
+                        thread.status == crate::project::ThreadStatus::WaitingForInput;
                     changed |= deposit(thread, read_at, state);
+                    // The app's own question, while one is up, is the row's
+                    // message and is kept by whoever put it there.
+                    if !stale && !self.drive.has_questions(reading.thread_id) {
+                        let message = waiting_message_after(
+                            thread.rail.waiting_message.as_deref(),
+                            reading.state.as_ref(),
+                            was_waiting,
+                            reading.question.as_deref(),
+                            reading.waiting_for.as_deref(),
+                        );
+                        if thread.rail.waiting_message != message {
+                            thread.rail.waiting_message = message;
+                            changed = true;
+                        }
+                    }
                     let watch = self.turn_ends.entry(reading.thread_id).or_default();
                     if let Some(tail) = reading.turn_end.clone() {
                         watch.background_shells = tail.background_shells;
@@ -1347,6 +1367,31 @@ pub(crate) struct FinishedRun {
     /// for a turn that was held for [`SHELL_HOLD`] and whose command outlived
     /// it.
     background_shells: u32,
+}
+
+/// The question the rail keeps for a session after a reading of its status
+/// file.
+///
+/// A hook frame brings the agent's words for a wait when it brings any, and
+/// for a session whose status file speaks for it the frame usually brings
+/// none: every wait such sessions reported had no question on the rail, so a
+/// caller told "waiting" had to read the pane to learn what was asked. The
+/// call the agent waits on, read from its transcript, is the question and
+/// replaces whatever was there; without it, the status file's own words stand
+/// in for a question nobody else gave. Leaving the wait takes the question
+/// down, so the next wait cannot show this one's.
+fn waiting_message_after(
+    current: Option<&str>,
+    reading: Option<&AgentState>,
+    was_waiting: bool,
+    question: Option<&str>,
+    words: Option<&str>,
+) -> Option<String> {
+    match reading {
+        Some(AgentState::WaitingForInput) => question.or(current).or(words).map(str::to_string),
+        Some(_) if was_waiting => None,
+        _ => current.map(str::to_string),
+    }
 }
 
 /// A wait the detector read before any hook frame spoke of it.
@@ -2093,6 +2138,16 @@ fn read_states(mut targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateR
                 let turn_end = (state == AgentState::Finished)
                     .then(|| read_turn_end(target.state_file.as_ref(), target.turn_end_len, now))
                     .flatten();
+                // Read here, off the main thread, so the question is on the
+                // rail in the same pass that says the session waits: a
+                // `wait` returns on that pass and reports it.
+                let question = match (&state, target.state_file.as_ref()) {
+                    (
+                        AgentState::WaitingForInput,
+                        Some(crate::agent_sessions::StateFile::Claude(path)),
+                    ) => crate::claude_question::pending_question(path),
+                    _ => None,
+                };
                 return StateReading {
                     thread_id: target.thread_id,
                     state: Some(state),
@@ -2102,6 +2157,7 @@ fn read_states(mut targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateR
                     turn_end,
                     background_shell,
                     waiting_for,
+                    question,
                     text_entry: target.text_entry,
                     agent_found: true,
                 };
@@ -2131,6 +2187,7 @@ fn read_states(mut targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateR
                     turn_end: None,
                     background_shell: false,
                     waiting_for: None,
+                    question: None,
                     text_entry: target.text_entry,
                     agent_found: agent_pid.is_some(),
                 };
@@ -2165,6 +2222,7 @@ fn read_states(mut targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateR
                     turn_end: None,
                     background_shell: false,
                     waiting_for: None,
+                    question: None,
                     text_entry: target.text_entry,
                     agent_found: agent_pid.is_some(),
                 };
@@ -2266,6 +2324,7 @@ fn read_states(mut targets: Vec<StateTarget>) -> (std::time::Instant, Vec<StateR
                 // any is alive, and it did not answer for this surface.
                 background_shell: false,
                 waiting_for: None,
+                question: None,
                 text_entry: target.text_entry,
                 agent_found: agent_pid.is_some(),
             }
@@ -2403,6 +2462,67 @@ mod tests {
         RUN_END_CONFIRM, confirm_run_end, deposit, deposit_pty_flow, deposit_terminal_question,
         withdraw_starting_if_unwatched,
     };
+
+    /// A session the status file reads gets the question it waits on, from
+    /// its transcript before anything else; the file's own words only where
+    /// nothing better was given; and nothing once the wait is over.
+    #[test]
+    fn a_wait_read_from_the_status_file_carries_its_question() {
+        use super::waiting_message_after;
+        let waiting = Some(&AgentState::WaitingForInput);
+        assert_eq!(
+            waiting_message_after(
+                None,
+                waiting,
+                false,
+                Some("Permission to use Bash: make"),
+                Some("permission prompt")
+            )
+            .as_deref(),
+            Some("Permission to use Bash: make")
+        );
+        assert_eq!(
+            waiting_message_after(
+                Some("Claude needs your permission"),
+                waiting,
+                true,
+                Some("Permission to use Bash: make"),
+                None
+            )
+            .as_deref(),
+            Some("Permission to use Bash: make")
+        );
+        assert_eq!(
+            waiting_message_after(
+                Some("Claude needs your permission"),
+                waiting,
+                true,
+                None,
+                Some("permission prompt")
+            )
+            .as_deref(),
+            Some("Claude needs your permission")
+        );
+        assert_eq!(
+            waiting_message_after(None, waiting, false, None, Some("input needed")).as_deref(),
+            Some("input needed")
+        );
+        // The wait is over: its question goes with it.
+        assert_eq!(
+            waiting_message_after(Some("old"), Some(&AgentState::Thinking), true, None, None),
+            None
+        );
+        // A frame's words that arrived ahead of the file's wait are kept.
+        assert_eq!(
+            waiting_message_after(Some("new"), Some(&AgentState::Thinking), false, None, None)
+                .as_deref(),
+            Some("new")
+        );
+        assert_eq!(
+            waiting_message_after(Some("kept"), None, true, None, None).as_deref(),
+            Some("kept")
+        );
+    }
 
     fn surface() -> Thread {
         Thread::new_terminal("agent", "/tmp", None)
