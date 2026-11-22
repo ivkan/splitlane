@@ -67,6 +67,22 @@ ignore = [
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 
+    # RUSTSEC-2026-0543 - chrono is unmaintained (no vulnerability, no fix).
+    #
+    # Why ignored:
+    #   * This is a maintenance notice, not a flaw: no chrono release is
+    #     reported as exploitable, and "no safe upgrade" means there is none
+    #     to take.
+    #   * GPUI itself depends on chrono (gpui, scheduler, zlog at the pinned
+    #     Zed revision), so moving Splitlane's own code to jiff or time would
+    #     not take chrono out of the build.
+    #
+    # Re-evaluation triggers:
+    #   * the pinned Zed revision drops chrono - then move src-app off it too
+    #     (it uses only the clock and formatting),
+    #   * OR a RustSec vulnerability (not unmaintained) is filed against it.
+    "RUSTSEC-2026-0543",
+
     # NOTE (2026-10-10): the ignore for RUSTSEC-2023-0071 (the `rsa` timing
     # side channel) was removed. `rsa` came in through Zed's `markdown` ->
     # `language` -> `rpc` path and left the lockfile when that dependency was
