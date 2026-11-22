@@ -24,7 +24,8 @@ dev servers and opens the folder in an editor or the file manager.
 ## Panes and what they hold
 
 A pane holds one surface at a time: an agent session, a shell, the project's
-diff or a file. Its header names what is in it; the `⋯` menu holds that
+diff or a file. The one exception is the sessions a coordinator opened, which
+share a pane as tabs (below). Its header names what is in it; the `⋯` menu holds that
 surface's actions and the `×` closes the pane.
 
 Where a newly opened surface lands is decided the same way wherever you open it
@@ -43,6 +44,18 @@ replaced while those sessions are listed and there is another pane to use.
 Clicking one of its sessions in the rail opens it beside the coordinator when
 there is room, or in place of another pane when there is not. Only when every
 pane shows such a session does the click replace the focused one.
+
+The sessions a coordinator opened share one pane. The first one you open from
+the rail goes to an empty pane, or to a new pane beside the coordinator when
+there is room, or in place of a pane that is not a coordinator. Every one after
+it opens as a tab of that pane, so the coordinator and your other panes stay as
+they are. The pane's header then lists them, each with its status dot; click a
+name to show that session, and hover it to see which session opened it.
+Clicking a session in the rail that is already a tab selects that tab. A
+session opened by a different coordinator gets a pane of its own. Once the pane
+holds a single session again it is an ordinary pane. After a restart, such a
+pane comes back showing the session that was selected; the others are in the
+rail and rejoin it when clicked.
 
 ## The three forms
 

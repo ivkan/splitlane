@@ -1032,6 +1032,36 @@ Each placement the hold decides is a line in the orchestration journal
 (`opener_hold`: `spared`, or `replaced` when there was nowhere else), so how
 often a coordinator still leaves the screen is counted, not remembered.
 
+**An opener's children are tabs of one pane.** The hold kept the coordinator
+on screen and moved the problem next to it: a coordinator hands out more
+sessions than there are panes, so its children took the other panes one
+replacement at a time, and a laptop has two panes to share between all of
+them. A child now climbs `targeting::climb_for`: it becomes a tab of the
+pane already showing one of its siblings, and only the first child takes a
+pane - an empty one, a new one inserted right after the opener's, or with no
+room the one the ordinary ladder would replace. The rest of the screen keeps
+what it shows.
+
+This is the one place a pane holds more than one surface, and the reason the
+one-surface rule gives for itself - the rail already answers "what is open",
+and two inventories disagree - is why it stays narrow. The pane is a children
+pane because of what it shows (its selected tab's `opened_by`), not because of
+a flag on it: it starts being one when a child lands in it and stops when it
+holds a single session again, and nothing has to be cleaned up when the
+children are closed. Every tab in it is an agent session with a rail row and a
+view the cache owns, so a later replace or a move that drops the tabs stops
+none of them. A child of another opener never joins it, and an ordinary session
+passes over it on rung 1 and replaces it only when the other choice is an
+opener: replacing it takes all of its children off the screen at once.
+The chips carry the name and status dot and name the opener in their tooltip;
+the header's other facts come back when one surface is left. Restore keeps one
+surface per pane, so after a restart the pane shows the selected child and its
+siblings rejoin it from the rail. Each child placed this way is a
+`children_pane` line in the orchestration journal (`joined`, `beside`,
+`new_pane` or `reused`), so whether children still spread over the screen is
+counted. Sessions an agent opens through the CLI still follow their own ladder
+(empty pane, new pane, rail) and do not join the children pane.
+
 **The first prompt waits for the agent, not for the pane.** The launch command
 is typed into the pane's shell, so for the first moments the shell is what
 reads input. The prompt is written once something speaks for the agent - its
