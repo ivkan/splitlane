@@ -464,6 +464,11 @@ enum Commands {
         /// resolved relative to the caller's current directory.
         #[arg(long, value_name = "PATH")]
         report_file: Option<String>,
+        /// The answer is JSON either way; with this it also carries
+        /// `runs_ended` when the text is not submitted (a submit always
+        /// does), the baseline for `wait --until turn-end --after`.
+        #[arg(long)]
+        json: bool,
     },
     /// Give a targeted surface the keyboard focus.
     Focus {
@@ -816,6 +821,7 @@ fn dispatch_closed(
             submit,
             paste,
             report_file,
+            json,
         } => send_cmd::send(
             closed,
             &target,
@@ -824,6 +830,7 @@ fn dispatch_closed(
             submit,
             paste,
             report_file.as_deref(),
+            json,
         ),
         Commands::Answer {
             target,
@@ -1011,6 +1018,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             submit,
             paste,
             report_file,
+            json,
         } => send_cmd::send(
             client,
             &target,
@@ -1019,6 +1027,7 @@ fn dispatch(command: Commands, client: &IpcClient) -> Result<i32, CliError> {
             submit,
             paste,
             report_file.as_deref(),
+            json,
         ),
         Commands::Focus { target } => control_cmds::focus(client, &target),
         Commands::Key { target, keystroke } => send_cmd::key(client, &target, &keystroke),
@@ -1462,6 +1471,22 @@ mod tests {
             argv.extend(bad.iter().copied());
             assert!(Cli::try_parse_from(argv).is_err(), "{bad:?} must not parse");
         }
+    }
+
+    /// Agents told that `send` answers with `runs_ended` add `--json`, and
+    /// it used to be refused as an unknown argument.
+    #[test]
+    fn send_takes_json() {
+        let cli = Cli::try_parse_from(["splitlane", "send", "worker", "go", "--submit", "--json"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Send {
+                json: true,
+                submit: true,
+                ..
+            })
+        ));
     }
 
     #[test]
