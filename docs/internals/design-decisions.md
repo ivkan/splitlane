@@ -1017,6 +1017,21 @@ other. It starts its process at once, at the default grid size, because
 nothing will ever draw it to trigger the start. Neither arm takes the keyboard
 or changes which project is on screen.
 
+**A switch does not land on an opener.** The ordinary ladder's first rung is
+"a pane of the same kind", and in a project run by a coordinating session the
+agent pane is the coordinator's. So every child the person clicked in the rail
+took the coordinator's place: the session running the work went off the screen
+the moment its work was looked at, and getting back meant finding it in the
+rail. Rungs 1 and 4 now pass over a pane whose session opened sessions that are
+still listed (`targeting::climb`): the child goes to an empty pane, to a new
+pane beside the opener when one fits, or replaces a pane that is not an opener.
+When every pane shows an opener the old answer stands, so a click is never
+refused. The hold is not a pin or a setting - it lasts as long as `opened_by`
+says the opener has sessions, which is exactly as long as it is coordinating.
+Each placement the hold decides is a line in the orchestration journal
+(`opener_hold`: `spared`, or `replaced` when there was nowhere else), so how
+often a coordinator still leaves the screen is counted, not remembered.
+
 **The first prompt waits for the agent, not for the pane.** The launch command
 is typed into the pane's shell, so for the first moments the shell is what
 reads input. The prompt is written once something speaks for the agent - its

@@ -38,6 +38,12 @@ from (a rail row, `+ agent`, the palette, `⌘D`, a file in the Files panel):
 Replacing a session does not stop it. It keeps running, and its rail row stays
 one click away from a pane again.
 
+A session that opened other sessions - a coordinator handing out work - is not
+replaced while those sessions are listed and there is another pane to use.
+Clicking one of its sessions in the rail opens it beside the coordinator when
+there is room, or in place of another pane when there is not. Only when every
+pane shows such a session does the click replace the focused one.
+
 ## The three forms
 
 The panes of a project are always in one of three forms:
