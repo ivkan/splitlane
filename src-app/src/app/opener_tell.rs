@@ -23,6 +23,13 @@ pub(crate) struct Tell {
     /// about it afterwards. Such a line is not written while the opener may
     /// still be acting on what it heard ([`held_step`]).
     pub held: Option<Held>,
+    /// Every end this line is about was a turn the session took up by
+    /// itself: none was the end of work the opener gave it.
+    pub by_itself: bool,
+    /// How many of the ends this line is about were taken up by itself.
+    pub self_turns: u32,
+    /// When the newest of those ends was noted.
+    pub noted_at: std::time::Instant,
 }
 
 /// Where an opener stood when it last had another way to hear.
@@ -67,6 +74,32 @@ const HELD_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 /// still reads `idle`. A second line written then would land in a turn that
 /// is already starting.
 const TELL_GAP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a session that keeps taking turns up by itself must go without
+/// ending another before its opener is told, while a command of its own is
+/// still running.
+///
+/// A session waiting on its own long command ends a turn each time the
+/// command wakes it, and each end used to be one line, one turn of the
+/// opener: 95 lines for one task in one case. The line waits until the
+/// session has nothing of its own left running, or has gone this long
+/// without ending another turn, and then names them all at once.
+const SELF_TURN_QUIET: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether the line about turns a session took up by itself waits for the
+/// session to settle.
+///
+/// `session_busy` is the session at work again, or idle with a command of its
+/// own still running: either way another end is coming, and this line would
+/// be followed by another. A line that is about the end of work the opener
+/// gave is never kept back here.
+pub(crate) fn self_turn_waits(
+    by_itself: bool,
+    session_busy: bool,
+    quiet_for: std::time::Duration,
+) -> bool {
+    by_itself && session_busy && quiet_for < SELF_TURN_QUIET
+}
 
 /// The most of a session's title that is put on another agent's input line.
 /// A title is whatever the session's agent set it to.
@@ -179,6 +212,8 @@ pub(crate) struct Told {
     /// The session took the turn up by itself, woken by a command of its
     /// own: the opener did not start it and may not be expecting it.
     pub by_itself: bool,
+    /// How many turns it took up by itself since the opener was last told.
+    pub self_turns: u32,
     /// A command the session started is still running, so this answer may
     /// not be its last word: it can take another turn up by itself.
     pub command_running: bool,
@@ -189,14 +224,19 @@ pub(crate) struct Told {
 pub(crate) fn tell_text(sessions: &[Told]) -> String {
     let named = |told: &Told| {
         let short: String = told.title.chars().take(TITLE_MAX).collect();
-        let notes: String = [
-            (told.by_itself, ", taken up by itself"),
-            (told.command_running, ", a command of its own still running"),
-        ]
-        .iter()
-        .filter(|(on, _)| *on)
-        .map(|(_, note)| *note)
-        .collect();
+        let turns = |count: u32| match count {
+            1 => "1 turn".to_string(),
+            count => format!("{count} turns"),
+        };
+        let mut notes = match (told.by_itself, told.self_turns) {
+            (_, 0) => String::new(),
+            (true, 1) => ", taken up by itself".to_string(),
+            (true, count) => format!(", {} taken up by itself", turns(count)),
+            (false, count) => format!(", then {} taken up by itself", turns(count)),
+        };
+        if told.command_running {
+            notes.push_str(", a command of its own still running");
+        }
         format!(
             "{} (surface {}{notes})",
             crate::app::send_answer::quoted_title(&short),
@@ -236,6 +276,7 @@ impl SplitlaneApp {
         let Some(thread) = self.thread_by_id(thread_id) else {
             return;
         };
+        let by_itself = thread.turn_began_unprompted;
         let Some(opener) = thread
             .opened_by
             .as_ref()
@@ -254,10 +295,40 @@ impl SplitlaneApp {
             target: crate::app::agent_state_pass::TRACE,
             "#{thread_id} turn ended for its opener #{opener}: watched={watched}",
         );
+        // A turn the session took up by itself, ended while a wait is on it,
+        // is the wait's to report: such a wait is one waiting out the
+        // session's own command (`--settled`), or one started after the turn
+        // began, and it returns on this end or a later one. A line as well
+        // would be a second turn of the opener's about one thing.
+        if watched && by_itself {
+            log::debug!(
+                target: crate::app::agent_state_pass::TRACE,
+                "#{thread_id} ended a turn it took up by itself under a wait: not told",
+            );
+            return;
+        }
         let held = watched.then(|| self.held_now(opener));
         let tells = self.opener_tells.entry(opener).or_default();
-        tells.retain(|tell| tell.thread_id != thread_id);
-        tells.push(Tell { thread_id, held });
+        // Ends not yet told are one line: what the opener has not heard of
+        // yet, it hears of together.
+        let earlier = tells
+            .iter()
+            .position(|tell| tell.thread_id == thread_id)
+            .map(|at| tells.remove(at));
+        let (by_itself_all, self_turns) = match earlier {
+            Some(earlier) => (
+                earlier.by_itself && by_itself,
+                earlier.self_turns + u32::from(by_itself),
+            ),
+            None => (by_itself, u32::from(by_itself)),
+        };
+        tells.push(Tell {
+            thread_id,
+            held,
+            by_itself: by_itself_all,
+            self_turns,
+            noted_at: std::time::Instant::now(),
+        });
     }
 
     /// Note that `opener` has asked the app about `thread_id` itself.
@@ -331,6 +402,15 @@ impl SplitlaneApp {
             let tells: Vec<Tell> = tells
                 .into_iter()
                 .filter_map(|mut tell| {
+                    // Turns the session took up by itself are told once it
+                    // has settled, not one at a time.
+                    let session_busy = self.thread_by_id(tell.thread_id).is_some_and(|thread| {
+                        thread.status == ThreadStatus::Thinking || thread.rail.background_shells > 0
+                    });
+                    if self_turn_waits(tell.by_itself, session_busy, tell.noted_at.elapsed()) {
+                        waiting.push(tell);
+                        return None;
+                    }
                     let (Some(held), Some((status, runs, background_shells))) =
                         (tell.held, opener_now)
                     else {
@@ -401,7 +481,8 @@ impl SplitlaneApp {
                     let told = Told {
                         title,
                         surface_id,
-                        by_itself: thread.turn_began_unprompted,
+                        by_itself: tell.by_itself,
+                        self_turns: tell.self_turns,
                         command_running: thread.rail.background_shells > 0,
                     };
                     Some((tell, told))
@@ -731,6 +812,7 @@ mod tests {
             title: title.to_string(),
             surface_id,
             by_itself: false,
+            self_turns: 0,
             command_running: false,
         }
     }
@@ -747,6 +829,7 @@ mod tests {
         );
         let long = tell_text(&[Told {
             by_itself: true,
+            self_turns: 1,
             command_running: true,
             ..told(&("x".repeat(500) + "\nrm -rf"), 7)
         }]);
@@ -763,6 +846,7 @@ mod tests {
     fn the_line_says_who_began_the_turn_and_whether_more_may_follow() {
         let line = tell_text(&[Told {
             by_itself: true,
+            self_turns: 1,
             command_running: true,
             ..told("run", 7)
         }]);
@@ -774,5 +858,46 @@ mod tests {
         );
         let plain = tell_text(&[told("run", 7)]);
         assert!(plain.contains("\"run\" (surface 7)"), "{plain}");
+    }
+
+    /// Several turns taken up by itself are named in one line, with their
+    /// count, and so are such turns after the end of the opener's own task.
+    #[test]
+    fn turns_taken_up_by_itself_are_counted_in_one_line() {
+        let many = tell_text(&[Told {
+            by_itself: true,
+            self_turns: 4,
+            ..told("run", 7)
+        }]);
+        assert!(
+            many.contains("\"run\" (surface 7, 4 turns taken up by itself)"),
+            "{many}"
+        );
+        let after_task = tell_text(&[Told {
+            by_itself: false,
+            self_turns: 1,
+            ..told("run", 7)
+        }]);
+        assert!(
+            after_task.contains("\"run\" (surface 7, then 1 turn taken up by itself)"),
+            "{after_task}"
+        );
+    }
+
+    /// The case behind the rule: a session woken again and again by its own
+    /// command wrote a line into its opener at every turn end. Those lines
+    /// wait until the session settles or goes quiet; the end of the task the
+    /// opener sent is never kept back.
+    #[test]
+    fn turns_taken_up_by_itself_wait_for_the_session_to_settle() {
+        let soon = std::time::Duration::from_secs(30);
+        let late = SELF_TURN_QUIET;
+        assert!(self_turn_waits(true, true, soon));
+        assert!(!self_turn_waits(true, false, soon), "settled: told now");
+        assert!(!self_turn_waits(true, true, late), "quiet long enough");
+        assert!(
+            !self_turn_waits(false, true, soon),
+            "the opener's own task is told at its first end"
+        );
     }
 }

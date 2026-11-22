@@ -1554,6 +1554,34 @@ itself` and `a command of its own still running`. The lead that missed those
 stops asked for exactly these two facts. They are short notes, not a field:
 the line is read by an agent, and one sentence carries them.
 
+**Turns a session takes up by itself are told once, when it settles.** The
+line for such turns woke the lead for every one of them. The orchestration
+journal of one stretch of real use had 1,359 turn ends of sessions opened by
+another session for 361 tasks, 95 of them for a single task; of the lines
+written into leads, 135 in 148 said `taken up by itself` and 86 `a command of
+its own still running`. A session waiting on its own long command ends a turn
+each time the command wakes it, and each line started a turn of the lead's
+about work that was not done yet. The rule now, in order:
+
+1. The end of work the opener gave (the turn did not begin by itself) is
+   told as before, at its first end, whatever the session still has running.
+2. A turn taken up by itself that ends while something is waiting on the
+   session by id is not written at all. That wait is a `wait --settled`
+   waiting out the session's command, or one started after the turn began,
+   and it returns on this end or a later one.
+3. Otherwise ends not yet told about one session are one line. A line made
+   only of turns taken up by itself is kept back while the session is at
+   work again or idle with a command of its own still running, and written
+   when it has neither (it settled), or after ten minutes with no further
+   end (`SELF_TURN_QUIET`), for a session beside a command that never ends.
+   The line then gives the count: `3 turns taken up by itself`, or `then 1
+   turn taken up by itself` after the end of the opener's own task that had
+   not been told yet.
+
+What this gives up: a session that stops with a decision for the lead while a
+command of its own is still running reaches the lead ten minutes late. Its
+question to a person is not affected, because a wait is not an ended turn.
+
 What it does not cover: a session that ends its turn by asking a person
 something is `waiting`, not ended, and the opener is not told; the person is.
 An opener that is itself a Codex session takes the line like any other, but
