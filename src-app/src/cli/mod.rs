@@ -515,7 +515,11 @@ enum Commands {
         /// The pane must produce no new output for this long to count as idle.
         #[arg(long = "for", value_name = "MS")]
         for_ms: Option<u64>,
-        /// Max seconds to wait before giving up (default 300).
+        /// Max seconds to wait before giving up (default 300). With
+        /// `--until` or `--state` the wait rides out the app not answering
+        /// for a while (busy, or restarting) and asks again until this runs
+        /// out; it gives up early, with exit 1, only when the app has been
+        /// unreachable for a minute. Do not wrap it in a retry loop.
         #[arg(long)]
         timeout: Option<u64>,
         /// Succeed as soon as ANY matching pane matches (selector may hit
