@@ -24,7 +24,8 @@ dev servers and opens the folder in an editor or the file manager.
 ## Panes and what they hold
 
 A pane holds one surface at a time: an agent session, a shell, the project's
-diff or a file. Its header names what is in it; the `⋯` menu holds that
+diff or a file. The one exception is the sessions a coordinator opened, which
+share a pane as tabs (below). Its header names what is in it; the `⋯` menu holds that
 surface's actions and the `×` closes the pane.
 
 Where a newly opened surface lands is decided the same way wherever you open it
@@ -43,6 +44,38 @@ replaced while those sessions are listed and there is another pane to use.
 Clicking one of its sessions in the rail opens it beside the coordinator when
 there is room, or in place of another pane when there is not. Only when every
 pane shows such a session does the click replace the focused one.
+
+The sessions a coordinator opened share one pane, however they come on
+screen - clicked in the rail or the palette, opened by the coordinator with
+`splitlane add`, or shown with `splitlane show`. The first one goes to an
+empty pane, or to a new pane beside the coordinator when there is room. Every
+one after it becomes a tab of that pane, so the coordinator and your other
+panes stay as they are. The pane's header lists them, each with its status
+dot; click a name to show that session, and hover it to see which session
+opened it. A session opened by a different coordinator gets a pane of its
+own, and a session opened by a coordinator's session groups under that
+session, the one that opened it.
+
+- **Which tab shows.** A session you click, or one `splitlane show` asks for,
+  is raised. One the coordinator opens with `splitlane add` is added behind
+  the tab you are looking at, and its status dot shows in the header; the
+  keyboard stays where it was either way. In the rail, a session behind
+  another tab is marked the way any session behind something else is.
+- **No room.** A click with no empty pane and no room replaces a pane that is
+  not a coordinator, which then becomes the group's pane. A coordinator's
+  `splitlane add` never replaces a pane: with nowhere to go the session waits
+  in the rail.
+- **Putting one somewhere yourself.** Dragging a session onto a pane, or
+  **Show in ‹pane›**, puts it where you said. Onto a pane showing one of its
+  siblings it joins them as a tab. Moved out of the group, only that session
+  leaves; the others stay together in their pane. Later sessions of the same
+  coordinator join the pane holding most of its sessions.
+- **Closing.** `⌘W` / `Ctrl+W` closes the shown tab only; the session keeps
+  running in the rail. Closing the pane (`×`, `⌘⇧W`) takes all of its
+  sessions off the screen, and they too keep running. Once the pane holds a
+  single session it is an ordinary pane.
+- **Restart.** The pane comes back with every session still open, in the
+  same order, with the same one shown.
 
 ## The three forms
 

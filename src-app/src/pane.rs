@@ -890,17 +890,23 @@ impl Pane {
             }
         }
         let selected_idx = selected_idx.min(tabs.len().saturating_sub(1));
-        // A pane holds one surface. The tab strip that could draw a second is
-        // gone, so a pane built with two would hold a running PTY nothing can
-        // show, select or close. Every caller trims first - restore through
+        // A pane is built holding one surface. The only pane that holds more
+        // is an opener's children pane - grown through `add_tab`, or restored
+        // whole - and every tab of it is an agent session with a rail row; a
+        // pane built with two of anything else would hold a PTY nothing chose
+        // to put there. Every caller trims first - restore through
         // `keep_one_surface_per_pane`, undo through a record of one - and this
         // is where a future one finds out it did not. Asserted rather than
         // typed because the vec is read in 22 files and collapsing it is a
         // separate cleanup; asserted rather than trusted because the last path
         // that appended was found by a reviewer, not by us.
         debug_assert!(
-            tabs.len() <= 1,
-            "a pane holds one surface; got {}",
+            tabs.len() <= 1
+                || tabs.iter().all(|tab| {
+                    tab.as_terminal()
+                        .is_some_and(|view| view.read(cx).agent_thread_id.is_some())
+                }),
+            "a pane holds one surface, or a children pane's agent sessions; got {}",
             tabs.len()
         );
         Self {
@@ -1641,6 +1647,30 @@ impl Pane {
         self.selected_idx = 0;
         for gone in displaced {
             self.clear_tab_hover_motion(gone.entity_id());
+        }
+        cx.emit(PaneEvent::TabsChanged);
+        cx.notify();
+    }
+
+    /// Add `content` beside what the pane holds, raising it when `select`.
+    ///
+    /// The one exception to [`Self::show_surface`]'s replacing: an opener's
+    /// children gather as tabs of one pane (`targeting::place_child`), so a
+    /// coordinator's sessions take one pane between them instead of spreading
+    /// over the others. Every tab of such a pane is an agent session with a
+    /// rail row, so a later replace that drops them stops none of them.
+    pub fn add_tab(&mut self, content: TabContent, select: bool, cx: &mut Context<Self>) {
+        if let TabContent::Terminal(terminal) = &content {
+            Self::subscribe_terminal(terminal, cx);
+            Self::apply_terminal_render_config(terminal, &self.cached_config, cx);
+        }
+        if self.tabs.is_empty() {
+            self.show_surface(content, cx);
+            return;
+        }
+        self.tabs.push(content);
+        if select {
+            self.selected_idx = self.tabs.len() - 1;
         }
         cx.emit(PaneEvent::TabsChanged);
         cx.notify();
@@ -2521,6 +2551,8 @@ impl Pane {
                     None => self.render_surface_status(ui),
                 })
                 .children(self.render_surface_driver(ui, cx));
+        } else {
+            tabs_row = tabs_row.children(self.render_children_tabs(ui, cx));
         }
         let tabs_area = tabs_area.child(tabs_row);
 
@@ -2643,6 +2675,82 @@ impl Pane {
             .into_any_element()
     }
 
+    /// The header of an opener's children pane: one chip per child, each with
+    /// its name and status dot, the selected one filled.
+    ///
+    /// A chip names the session that opened it in its tooltip, which is the
+    /// same "opened by" line a one-surface header carries beside the name -
+    /// there is no room for it on every chip, and it is the same for all of
+    /// them. The surface's other facts (badge, branch, status word) are not
+    /// repeated per chip; they come back when the pane holds one surface again.
+    fn render_children_tabs(
+        &self,
+        ui: crate::theme::UiColors,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let selected = i == self.selected_idx;
+                let glyph = match Self::tab_glyph(tab, cx) {
+                    Some(mark) => div()
+                        .flex_none()
+                        .text_size(tok::text::ROW)
+                        .text_color(ui.dim)
+                        .child(mark)
+                        .into_any_element(),
+                    None => svg()
+                        .size(px(12.))
+                        .flex_none()
+                        .path(Self::tab_icon(tab))
+                        .text_color(ui.dim)
+                        .into_any_element(),
+                };
+                let terminal_id = tab.as_terminal().map(|view| view.entity_id());
+                let status = terminal_id.and_then(|id| self.surface_status_of(id));
+                let full_title = Self::tab_full_title(tab, cx);
+                let tooltip = match terminal_id
+                    .and_then(|id| self.surface_facts.get(&id))
+                    .and_then(|facts| facts.opened_by.as_ref())
+                {
+                    Some((opener, _)) => format!("{full_title} \u{b7} opened by {opener}"),
+                    None => full_title,
+                };
+                let mut chip = div()
+                    .id(SharedString::from(format!("pane-child-tab-{i}")))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .h(tok::row::CAPTION)
+                    .pr(tok::space::SM)
+                    .rounded(tok::radius::TAG)
+                    .cursor_pointer()
+                    .when(selected, |chip| chip.bg(ui.list_selection))
+                    .when(!selected, |chip| chip.hover(|chip| chip.bg(ui.subtle)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        if this.selected_idx != i && i < this.tabs.len() {
+                            this.selected_idx = i;
+                            cx.emit(PaneEvent::TabsChanged);
+                        }
+                        this.focus_handle(cx).focus(window, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .child(crate::app::slot_header::slot_header_name(
+                        glyph,
+                        SharedString::from(Self::tab_title(tab, cx)),
+                        status,
+                        ui,
+                    ));
+                if !self.menu_open {
+                    chip = chip.tooltip(crate::ui_primitives::text_tooltip(tooltip));
+                }
+                chip.into_any_element()
+            })
+            .collect()
+    }
+
     /// The four wedges that make the slot's corners round.
     ///
     /// GPUI rounds a quad, not the children painted inside it: the header
@@ -2722,6 +2830,11 @@ impl Pane {
     /// function and not two lookups.
     fn single_surface_status(&self) -> Option<crate::project::ThreadStatus> {
         let id = self.tabs.get(self.selected_idx)?.as_terminal()?.entity_id();
+        self.surface_status_of(id)
+    }
+
+    /// [`Self::single_surface_status`] for any terminal tab of this pane.
+    fn surface_status_of(&self, id: gpui::EntityId) -> Option<crate::project::ThreadStatus> {
         if self.errored.contains(&id) {
             return Some(crate::project::ThreadStatus::Failed);
         }

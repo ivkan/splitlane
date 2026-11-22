@@ -1009,9 +1009,11 @@ the same usage window as the one that opened it.
 **A session with no pane to go to is opened without one.** The ordinary ladder
 ends on "the focused pane, replaced", and the focused pane is as a rule the
 caller's own - an agent opening five sessions would push itself and four of
-them off the screen. So opening has a ladder of its own
-(`orchestration::place_opened`): an empty pane, then a new pane where one
-fits, then the rail. A session in the rail is not hidden: it has a row, a
+them off the screen. So opening never replaces: a session opened from a pane
+goes where its opener's children go (`targeting::place_child`, below), one
+opened from outside a pane to an empty pane or a new one where it fits
+(`orchestration::place_opened`), and with no such place either goes to the
+rail. A session in the rail is not hidden: it has a row, a
 status, a place in the attention queue, and the state pass reads it like any
 other. It starts its process at once, at the default grid size, because
 nothing will ever draw it to trigger the start. Neither arm takes the keyboard
@@ -1031,6 +1033,66 @@ says the opener has sessions, which is exactly as long as it is coordinating.
 Each placement the hold decides is a line in the orchestration journal
 (`opener_hold`: `spared`, or `replaced` when there was nowhere else), so how
 often a coordinator still leaves the screen is counted, not remembered.
+
+**An opener's children are tabs of one pane, whichever door opened them.**
+The hold kept the coordinator on screen and moved the problem next to it: a
+coordinator hands out more sessions than there are panes, so its children
+took the other panes one replacement at a time, and a laptop has two panes to
+share between all of them. So a session another one opened has one rule for
+where it goes, `targeting::place_child`: a tab of the pane already showing one
+of its siblings; otherwise an empty pane; otherwise a new pane inserted right
+after its opener's. Every door asks it - a rail click and the palette
+(`place_surface`), `surface.add_agent` and `surface.show` - and one executor
+(`put_on_rung`) carries the answer out, so two doors cannot come to put the
+same session in two places. What differs is only what happens when the rule
+has no place short of replacing a pane, and that difference is older than the
+rule: a person's click replaces the pane the ordinary ladder names (which then
+shows a child and so becomes the group's pane), and a session's open goes to
+the rail, because a session does not take a person's pane. `show` keeps its
+last resort, the pane of another session the caller opened.
+
+A click or `show` raises the new tab; `add` puts it behind the one shown,
+because a session opening is not a reason to change what a person is reading -
+the same reason it never moves the keyboard. Raising a tab in the pane that
+holds the keyboard hands the keyboard to the raised tab, since the terminal
+that had it is no longer drawn.
+
+This is the one place a pane holds more than one surface, and the reason the
+one-surface rule gives for itself - the rail already answers "what is open",
+and two inventories disagree - is why it stays narrow. The pane is a children
+pane because of what it shows (its selected tab's `opened_by`), not because of
+a flag on it: it starts being one when a child lands in it and stops when it
+holds a single session again, and nothing has to be cleaned up. Every tab in
+it is an agent session with a rail row and a view the cache owns, so dropping
+the tabs stops none of them. A child of another opener never joins it; a
+grandchild groups under the session that opened it, with no case of its own.
+An ordinary session passes over it on rung 1 and replaces it only when the
+other choice is an opener: replacing it takes all of its children off the
+screen at once. The chips carry the name and status dot and name the opener
+in their tooltip; the header's other facts come back when one surface is
+left. In the rail a child behind another tab is `behind`, the existing mark
+for a surface in a pane but not shown.
+
+**A person who names a pane gets that pane.** A drag onto a pane and `Show in
+‹pane›` are not the ladder's to overrule: a menu item that put the session
+somewhere other than the pane it names would be a lie. So a child dropped on a
+plain pane stays there. What a move never does is break the group
+(`agent_slots::plan_move`): moving one child out closes only its tab, and the
+group takes nothing back in exchange (what the destination showed is parked
+in the rail, as any displaced surface is); a child dropped on a pane showing
+a sibling joins it as a tab instead of pushing the sibling out. A child left
+in a pane of its own does not split the group either: the next child joins
+the pane holding most of its siblings.
+
+**Restore brings a children pane back whole.** The one-surface trim on
+restore (`keep_one_surface_per_pane`) passes over a saved pane whose surfaces
+are all agent sessions opened by one session (`is_children_group`): every
+child still listed comes back, in its order, with the same one selected. A
+child whose record is gone drops out when the pane is built.
+
+Each child placed by the rule is a `children_pane` line in the orchestration
+journal (`joined`, `beside`, `new_pane` or `reused`), so whether children
+still spread over the screen is counted.
 
 **The first prompt waits for the agent, not for the pane.** The launch command
 is typed into the pane's shell, so for the first moments the shell is what

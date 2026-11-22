@@ -537,11 +537,19 @@ impl SplitlaneApp {
             // restore, so no workspace can ever restore more
             // than MAX_PANES real PTYs: over the cap we drop the layout and fall
             // back to a single default terminal.
+            let openers: std::collections::HashMap<u64, u64> = ws_session
+                .surfaces
+                .iter()
+                .filter_map(|surface| {
+                    Some((surface.id, surface.agent.as_ref()?.opened_by.as_ref()?.id))
+                })
+                .collect();
+            let opener_of = |id: u64| openers.get(&id).copied();
             let capped = ws_session
                 .layout
                 .clone()
                 .map(without_persisted_scrollback)
-                .map(layout_within_cap)
+                .map(|layout| layout_within_cap_with(layout, &opener_of))
                 .unwrap_or(CappedLayout {
                     layout: None,
                     evicted: Vec::new(),
@@ -1158,7 +1166,17 @@ pub(crate) struct CappedLayout {
 /// row or column - the same normalization `LayoutTree::flattened` applies to
 /// everything that arrives from disk, done early enough that the panes past the
 /// cap are never built.
-fn layout_within_cap(mut layout: LayoutNode) -> CappedLayout {
+#[cfg(test)]
+fn layout_within_cap(layout: LayoutNode) -> CappedLayout {
+    layout_within_cap_with(layout, &|_| None)
+}
+
+/// [`layout_within_cap`], told who opened each surface record
+/// (`opener_of`), so a children pane comes back whole.
+fn layout_within_cap_with(
+    mut layout: LayoutNode,
+    opener_of: &dyn Fn(u64) -> Option<u64>,
+) -> CappedLayout {
     splitlane_config::loader::validate_layout(&mut layout);
 
     // A pane holds one surface. Done first and **in place**: the file's shape
@@ -1167,7 +1185,7 @@ fn layout_within_cap(mut layout: LayoutNode) -> CappedLayout {
     // the over-cap branch below has to - would reset every pane's width on
     // every launch, which is a loss the user would see and never asked for.
     let mut displaced_tabs: Vec<splitlane_config::schema::SurfaceDefinition> = Vec::new();
-    keep_one_surface_per_pane(&mut layout, &mut displaced_tabs);
+    keep_one_surface_per_pane(&mut layout, &mut displaced_tabs, opener_of);
     // A slot that holds nothing is not a slot. Closing the last pane of a
     // container leaves it with none at all - the rail row's own
     // `+ agent` / `+ shell` / `+ worktree` are how the next one arrives - so a
@@ -1341,18 +1359,47 @@ fn is_grid_node(node: &LayoutNode) -> bool {
 fn keep_one_surface_per_pane(
     node: &mut LayoutNode,
     displaced: &mut Vec<splitlane_config::schema::SurfaceDefinition>,
+    opener_of: &dyn Fn(u64) -> Option<u64>,
 ) {
     match node {
         LayoutNode::Pane { surfaces } => {
+            // A children pane is the one pane that holds more than one
+            // surface, and it comes back as it was: every child still listed,
+            // in its order, the selected one selected. A child whose record is
+            // gone is dropped when the pane is built.
+            if is_children_group(surfaces, opener_of) {
+                return;
+            }
             let taken = std::mem::take(surfaces);
             *surfaces = keep_one_surface(taken, displaced);
         }
         LayoutNode::Split { children, .. } => {
             for child in children {
-                keep_one_surface_per_pane(child, displaced);
+                keep_one_surface_per_pane(child, displaced, opener_of);
             }
         }
     }
+}
+
+/// Whether a saved pane is a children pane: two or more agent surfaces, all
+/// opened by the same session.
+fn is_children_group(
+    surfaces: &[splitlane_config::schema::SurfaceDefinition],
+    opener_of: &dyn Fn(u64) -> Option<u64>,
+) -> bool {
+    if surfaces.len() < 2 {
+        return false;
+    }
+    let mut openers = surfaces.iter().map(|surface| {
+        (surface.surface_type.as_deref() == Some("agent"))
+            .then_some(surface.surface_id)
+            .flatten()
+            .and_then(opener_of)
+    });
+    let Some(Some(first)) = openers.next() else {
+        return false;
+    };
+    openers.all(|opener| opener == Some(first))
 }
 
 /// Keep the surface a pane was showing and hand the rest back to be parked.
@@ -2072,6 +2119,47 @@ mod tests {
             "nothing was over the pane cap here; the two reasons stay apart \
              because the toast names the reason"
         );
+    }
+
+    /// A children pane comes back whole: every child, in order, the selected
+    /// one selected. A pane mixing children of two openers, or a child and a
+    /// shell, is not one and keeps one surface as before.
+    #[test]
+    fn layout_within_cap_keeps_a_children_pane_whole() {
+        use splitlane_config::schema::{LayoutNode, SurfaceDefinition};
+        let child = |id: u64, focus: bool| SurfaceDefinition {
+            surface_type: Some("agent".to_string()),
+            surface_id: Some(id),
+            focus: focus.then_some(true),
+            ..Default::default()
+        };
+        // 11, 12 and 13 were opened by 7; 21 by 9.
+        let opener_of = |id: u64| match id {
+            11..=13 => Some(7),
+            21 => Some(9),
+            _ => None,
+        };
+        let group = LayoutNode::Pane {
+            surfaces: vec![child(11, false), child(12, true), child(13, false)],
+        };
+        let capped = layout_within_cap_with(group, &opener_of);
+        let Some(LayoutNode::Pane { surfaces }) = capped.layout else {
+            panic!("one pane in, one pane out");
+        };
+        let ids: Vec<Option<u64>> = surfaces.iter().map(|s| s.surface_id).collect();
+        assert_eq!(ids, vec![Some(11), Some(12), Some(13)]);
+        assert_eq!(surfaces[1].focus, Some(true));
+        assert!(capped.displaced_tabs.is_empty());
+
+        let mixed = LayoutNode::Pane {
+            surfaces: vec![child(11, true), child(21, false)],
+        };
+        let capped = layout_within_cap_with(mixed, &opener_of);
+        let Some(LayoutNode::Pane { surfaces }) = capped.layout else {
+            panic!("one pane in, one pane out");
+        };
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(capped.displaced_tabs.len(), 1);
     }
 
     /// The evicted surfaces are the ones past the cap, in file order, and the
