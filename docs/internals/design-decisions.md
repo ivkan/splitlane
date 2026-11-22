@@ -479,8 +479,56 @@ assuming the widest step before the first layout pushed the trailing `⋯` and `
 outside the clip for one frame on a narrow pane, and arriving on the second
 frame is the cheaper mistake.
 
+**The ladder drops a rung at once and climbs one with 24px to spare**
+(`next_header_level`, `HEADER_LADDER_HYSTERESIS`). The step is chosen from the
+width the previous frame measured, and the step decides what the header holds;
+so if anything lets the header's content reach the layout, a header sitting on
+a rung's width can climb, be pushed back under it, drop, and climb again on
+alternate frames. Dropping at the rung keeps the rule that the header never
+shows more than fits. Climbing late is the cheap side: a pane widened past a
+rung gets its item 24px later, which is less than the item itself is wide.
+
 The pane border is focus's, not attention's. The waiting signal is the status
 dot in the slot header and on the rail row.
+
+## A slot's size is its ratio, and nothing it holds
+
+**A split's slot is sized by its ratio alone.** The wrapper
+`layout/render.rs` puts around each slot has a zero flex basis, its ratio as
+the grow factor, and no percentage anywhere: the cross axis is left to
+`stretch`. The arithmetic is the same as the percentage basis it replaces -
+every slot gets its ratio of the container less the dividers - but nothing in
+it can be resolved against an unknown size.
+
+The percentage was the bug. A three-pane row was recorded flickering between
+two layouts on alternate frames: the slots at their ratio, then sized by their
+headers, with the terminals blank because they had been given no size. Taffy
+(0.10.1, the version GPUI pins) caches a node's measurements keyed by the size
+it was given and the space it had, but not by the parent size that percentages
+resolve against. A slot whose basis was `relative(ratio)` could be measured
+while its parent's width was still unknown - the percentage then falls back to
+the slot's content - and that entry could be handed back in the final pass,
+when the width asked about happened to equal the size the entry recorded. Which
+width that is depends on what the headers hold, so it hit one window width in
+hundreds; and the header ladder, reading the previous frame's width, changed
+the headers every frame and kept the row alternating between the two answers.
+A copy of Taffy whose cache also compared the parent size made the row lay out
+right at the same width, which is what pins the cause on the cache rather than
+on the ladder. Resizing a pane moved the width off the one that collided,
+which is why that made it go away.
+
+Two guards stay behind it. The ladder's margin (above) means a loop needs the
+layout to move a header by more than 24px, not by a pixel. And
+`layout/flip_watch.rs` watches every header's measured width: when it returns
+to the value it had two frames before, six times within two seconds, the log
+gets one warning per episode (at most one a minute per pane) naming the two
+widths and steps, so a loop that comes back from somewhere else leaves a
+record. It keeps two samples and a counter per pane and does nothing else on
+the render thread.
+
+**What would re-open it:** a Taffy whose cache key includes the parent size
+would let the slot go back to a percentage basis, but nothing needs that - the
+zero basis says the same thing in a form no cache can get wrong.
 
 ## Permission asks are answered in the agent's own terminal
 
