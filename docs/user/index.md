@@ -290,7 +290,8 @@ Settings → Phone → **Pair a phone**. See [Your phone](phone.md).
 - **CLI and JSON-RPC.** The `splitlane` binary is also a command-line client for
   a running app over a local socket: `splitlane ls`, `read`, `send`, `wait`,
   `watch`, `up` and `flow`. An agent in a pane may type into the sessions it
-  opened itself, and into one you opened once you allow it; a script outside
+  opened itself and the ones those opened, and into one you opened once you
+  allow it; a script outside
   a pane may type into the sessions it opened with `splitlane add`. Typing
   into any other pane is off until you enable it. See
   [Scripting](scripting.md) and the [reference](scripting/reference.md).

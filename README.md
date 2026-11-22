@@ -142,16 +142,18 @@ you can see.
   them, joined by a bracket in the margin. The opener's row counts them, and
   the count folds them away; folded, the row says what they are doing. Each
   one's pane says `opened by <name>`.
-- **Eight at most, one level deep.** A session that was opened by another
-  cannot open any, and it works in its opener's worktree.
+- **Eight at most, two levels deep.** A session that was opened by another
+  may open sessions of its own, and those open none. The eight are shared by
+  everything under the session you opened, and each works in its opener's
+  worktree.
 - **A session you opened is yours.** When an agent sends to one, nothing is
   written and you are asked, in that agent's own pane: `plan wants to send
   messages to api`. Your answer holds for that pair of sessions until you quit.
   `Stop plan driving` takes it back, and an agent never closes a session you
   opened.
-- **An agent closes only what it opened.** Even then, a session in
-  the middle of a turn, or waiting for a person, closes only with
-  `--stop-turn`. If you typed into it and have not read its answer, the
+- **An agent closes only what it opened**, and what those sessions opened.
+  Even then, a session in the middle of a turn, or waiting for a person,
+  closes only with `--stop-turn`. If you typed into it and have not read its answer, the
   agent tells you that answer when it closes the session; the conversation
   stays in history either way.
 - **A question meant for you reaches you.** No agent types into a session
@@ -349,10 +351,11 @@ DirectX on Windows.
 **Does it run agents for me, or in the cloud?**
 Neither. The agents are the CLIs installed on your machine, signed in with your
 own accounts, running in ordinary terminals. Splitlane never sends a prompt on
-its own. An agent can send one to a session it opened itself, and to a session
-you opened only after you say it may. A script of yours can open a session
-with a task and write to the sessions it opened; into any other pane it
-types only when you start Splitlane with that switched on. A paired phone
+its own. An agent can send one to a session it opened itself or one of those
+opened, and to a session you opened only after you say it may. A script of
+yours can open a session with a task and write to the sessions it opened;
+into any other pane it types only when you start Splitlane with that
+switched on. A paired phone
 writes what you type on it, and only into agent sessions.
 
 **Can other agents read my terminals?**
