@@ -592,7 +592,27 @@ fn finish((report, code): (Value, i32)) -> Result<i32, CliError> {
              Pass --after <runs_ended> taken before the prompt was sent."
         ),
         Some("waiting") => {
-            eprintln!("splitlane: the agent is waiting for a person; answer it in its own pane.")
+            // The question itself, so the caller can pass it on without
+            // reading the pane first.
+            let question = report
+                .get("targets")
+                .and_then(Value::as_array)
+                .and_then(|targets| {
+                    targets.iter().find_map(|target| {
+                        (target.get("outcome").and_then(Value::as_str) == Some("waiting"))
+                            .then(|| target.get("message").and_then(Value::as_str))
+                            .flatten()
+                    })
+                });
+            match question {
+                Some(question) => eprintln!(
+                    "splitlane: the agent is waiting for a person: {question}. \
+                     Pass the question on; the person answers it in the agent's own pane."
+                ),
+                None => eprintln!(
+                    "splitlane: the agent is waiting for a person; answer it in its own pane."
+                ),
+            }
         }
         Some("interrupted") => eprintln!(
             "splitlane: the turn was stopped before it finished; there is no answer to read."
