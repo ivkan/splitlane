@@ -250,6 +250,10 @@ enum Commands {
     },
     /// Print the last answer an agent gave, read from the agent's own record
     /// of the conversation (Claude Code and Codex), never from scrollback.
+    ///
+    /// As text, the answer goes to standard output and a first line on
+    /// standard error gives the session's `runs_ended`; with `--json` it is a
+    /// field.
     Answer {
         /// Target: surface id, name, `cmdline:<substr>`, or `cwd:<path>`.
         target: String,
