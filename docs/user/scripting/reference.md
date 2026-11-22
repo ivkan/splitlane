@@ -66,9 +66,9 @@ configuration files:
   such place; it never takes the place of what a pane is showing, and the
   keyboard stays where it was. `--parked` asks for the rail,
   `--pane` for a pane or a refusal. The answer carries `runs_ended`, the
-  number to pass to `wait --after`. One session has at most eight sessions
-  it opened running at a time, and a session that was itself opened by one
-  opens none.
+  number to pass to `wait --after`. A session opened by a session may open
+  sessions of its own; those open none. A session a person opened and every
+  session under it have at most eight running at a time between them.
 
   A prompt is written once the agent is there to read it and is not
   submitted without `--submit`. With a prompt, `add` returns when that has
@@ -312,11 +312,11 @@ A call a rule refuses returns JSON-RPC error `-32004` with the reason under
 | `not_from_a_pane` | The caller is in no pane of this app, presented no key for the target, and the launch variable for the call is not set |
 | `no_project_here` | `add` from outside a pane: the current directory is in no project open in Splitlane |
 | `script_ceiling` | `add` from outside a pane: eight sessions opened that way are already running |
-| `not_yours` | The target is not a session the caller opened |
+| `not_yours` | The target is not a session the caller opened, nor one opened by a session the caller opened |
 | `self` | The target is the caller's own session |
 | `waiting` | The target is waiting for a person. Only a person answers that; a key from another session would be an answer |
-| `worker_ceiling` | The caller already has eight sessions it opened running |
-| `opened_session_cannot_open` | The caller was itself opened by a session, or by a program outside a pane |
+| `worker_ceiling` | Eight sessions are already running under the session a person opened that the caller belongs to: the caller's own, its opener's, and those its opener's other sessions opened |
+| `opened_session_cannot_open` | The caller was opened by a session that was itself opened by a session, or by a program outside a pane |
 | `no_room` | A pane was required and there is none to give |
 | `other_project` | `close`: the target is in another project |
 | `turn_in_flight` | `close`: the target is in the middle of a turn or waiting for a person; pass `--stop-turn` to close it anyway |

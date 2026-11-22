@@ -962,8 +962,13 @@ missing convenience, not a wrong project.
 record of each carries `opened_by`, the id and name of the session that opened
 it. Three limits come with that, all checked on the server:
 
-- a session that was itself opened by a session opens none;
-- one session has at most eight it opened running at a time;
+- a session a person opened is at depth zero, one it opened at depth one,
+  and one that one opened at depth two; a session at depth two opens none;
+- a session a person opened and everything under it have at most eight
+  running at a time between them;
+- a session reaches down its own branch: it writes into, stops, moves and
+  closes what it opened and what those opened, never its opener or the
+  sessions beside it;
 - a caller that is in no pane is not covered by any of this, and is let in by
   the variables the app was launched with, as before.
 
@@ -1000,11 +1005,49 @@ the app makes the second one a row in the rail, counts it against a limit, and
 records where it came from. The harm a forged request could do is the harm the
 agent could do anyway, so no confirmation stands in front of it.
 
-**Why depth is one and the count is eight.** Both bound the same failure: an
-agent in a loop that opens sessions. Without a depth limit the bound on eight
-is a bound on eight per level. Eight is as many rows as a person keeps track
-of under one opener; every Claude Code session opened this way also draws on
-the same usage window as the one that opened it.
+**Why depth is two and the count is eight, shared.** Both bound the same
+failure: an agent in a loop that opens sessions. Depth one was the first
+rule, and it was stricter than that failure needs. A session handed a large
+piece of work could not split it further, and sessions opened this way did
+hit the refusal and fell back to doing everything in one. Lead sessions,
+meanwhile, never came near eight at once - four was the most seen. So the
+depth went to two, and what keeps the loop bounded is that the count did not
+multiply with it: a session at depth one opening sessions spends from the
+same eight as the session a person opened, and the tree under one person's
+session never runs more than eight (`orchestration::sessions_in_tree`).
+Without that, eight per opener at depth two would be eight times eight. The
+depth still has a floor, because a budget alone would let a chain eight deep
+form, each link waiting on the next, and nobody reading the rail follows
+that. Eight is as many rows as a person keeps track of under one opener;
+every Claude Code session opened this way also draws on the same usage
+window as the one that opened it.
+
+The depth is read from the chain of `opened_by` records, not stored: the
+records are already what says who opened what, and a second field could
+disagree with them. A chain that cannot be followed to the top - an opener
+whose record is gone, or a file that says something the rules never allow -
+counts as the deepest there is. Such a session has no tree whose budget its
+sessions could be counted against, so it is the one place where letting it
+open would let the count go unbounded.
+
+**An opener reaches the sessions its sessions opened.** The work a session at
+depth one hands down is part of the work it was handed, so the session above
+it answers for that too: it may write into, stop, move and close a session
+its session opened, and give up the pane of one to show its own
+(`orchestration::opened_under`). Without that, the person's lead could not
+stop or close what its own work started, and a session at depth one that
+ended without closing its own would leave sessions nobody but the person
+could clean up. The reach goes down only. A session does not reach its
+opener, whose plan it serves and does not set, nor the sessions beside it,
+which were handed other parts of the same work; a key from one into the
+other is an answer given to a question asked in another.
+
+**Reading is not limited.** `read`, `search`, `status`, `answer`, `ls` and
+`ps` never checked who opened the target: they change nothing in it, and an
+agent can read a pane's output by other means anyway. Agents read the skill's
+wording on writing as a rule about reading too, and refused to look at a
+session they had not opened even when that was the task. The skill now says
+so in as many words.
 
 **A session with no pane to go to is opened without one.** The ordinary ladder
 ends on "the focused pane, replaced", and the focused pane is as a rule the
@@ -1111,10 +1154,11 @@ intervention in a format this app does not own.
 
 **Writing follows the same line.** `surface.send_text` and
 `surface.send_keystroke` let a session type into the sessions it opened, with
-nothing switched on (`orchestration::may_write`). Text sent that way carries
-the line above; a key carries nothing, having nowhere to put it. Into a
-session another session opened, or its own opener, a session does not write:
-there is no correspondence between sessions, only a task handed down. Into
+nothing switched on (`orchestration::may_write`), and into the ones those
+opened. Text sent that way carries the line above; a key carries nothing,
+having nowhere to put it. Into a session of another branch, or its own
+opener, a session does not write: there is no correspondence between
+sessions, only a task handed down. Into
 one a person opened it writes only with that person's leave, which has a
 section of its own below. The case that forced this is the plainest
 complaint about agents sharing a window: a session answering a question that
@@ -1321,7 +1365,10 @@ first opened first (`agents_sidebar::under_their_openers`) - the one place
 the rail is not newest-first, because it is a list of what was handed out. A
 pin on the opener takes them with it; a pin on one of them does not lift it
 out. The pane of each says `opened by ‹name›` in its header, with the
-opener's name as it is now.
+opener's name as it is now. Only one level is gathered: a session at depth two,
+whose opener is itself under a row, keeps a place of its own by age, since a
+row moved under a row that is itself being moved would be drawn nowhere
+(`agents_sidebar::Openers`). Its header still names its opener.
 
 **What joins them is a bracket, not an indent and not a word.** The rows
 stay at the depth of every session, and in the indent each already has runs

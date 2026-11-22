@@ -49,10 +49,11 @@ carry on, and tell the user what `ps` said, word for word.
 ## 1. Sessions you open yourself
 
 The way to hand work out is to open the sessions yourself: a session you
-open is **yours**. You may write into it, stop its turn, move it and close it
-with nothing switched on, Splitlane reads its turns from the agent's own
-record, and it sits under your own row in the rail where the person can see
-what you started.
+open is **yours**, and so is every session it opens. You may write into
+them, stop their turns, move them and close them with nothing switched on,
+Splitlane reads their turns from the agent's own record, and what you opened
+sits under your own row in the rail where the person can see what you
+started.
 
 Say the plan out loud first: before the first `add`, tell the person how
 many sessions you are about to open and what each is for. Open as many as
@@ -206,10 +207,18 @@ its background command is and whether it is still needed, and tell the
 person if it is stuck. A loop that retries on `4` must not retry on `11`.
 
 Limits the app enforces, so do not try around them: eight sessions open at
-a time, counting the ones whose work is finished until you close them; a
-session you opened cannot open sessions of its own; you cannot close, move
-or write into a session you did not open. A refusal is exit `8` with the
+a time, counting the ones whose work is finished until you close them, and
+shared by everything under the session a person opened - if you were opened
+by a session, what you open counts against your opener's eight. A session
+you opened may open sessions of its own; those open none
+(`opened_session_cannot_open`). You may close, move, interrupt and write into
+a session you opened and the ones it opened, but not your own opener, nor a
+session beside you that your opener opened. A refusal is exit `8` with the
 reason in the message. Tell the person; do not retry.
+
+Reading is not limited: `read`, `search`, `status`, `answer`, `ls` and `ps`
+work on any session in the project, whoever opened it - a person, you, your
+opener or a session beside you. Read whatever helps the task.
 
 Closing a session you opened takes its row away, and with it the mark that
 tells the person an answer is waiting there. So before you close a session
@@ -289,6 +298,9 @@ open exits `8` with `not_yours`.
 
 ## 2. Read a session's state
 
+Any session in the project can be read, whoever opened it: none of these
+change anything in it.
+
 ```bash
 splitlane status reviewer            # state, the active tool, and the question if waiting
 splitlane status reviewer --json     # {state, hooked, rail: {status, source, tier, runs_ended, ...}, drive, ...}
@@ -327,7 +339,8 @@ sent. Prefer it to `read`, which returns only what is on the screen.
 ## 3. Agents that are already there
 
 Sessions you did not open are the person's (section 1, "A session the person
-opened") or plain panes. You can always look:
+opened"), another session's, or plain panes. Writing into them has the rules
+of section 1; reading them has none. You can always look, at any of them:
 
 ```bash
 splitlane read backend --lines 80        # history and the screen, fenced as untrusted output

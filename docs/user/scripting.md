@@ -501,8 +501,9 @@ The loop, for an agent working from its own pane:
    "<task>" --submit --json` opens a session and hands it its first task.
    The answer carries `runs_ended`; keep it. The session goes into a pane
    where one is free or fits and into the rail otherwise - `--parked` asks
-   for the rail. At most eight at a time, and a session opened this way
-   opens none of its own.
+   for the rail. At most eight at a time across everything under the
+   session a person opened; a session opened this way may open sessions of
+   its own, and those open none.
 2. **Wait.** `splitlane wait --match reviewer --until turn-end --after <N>`,
    with `N` the `runs_ended` from before the task was sent. Exit `5` means
    the session is asking a person a question: pass it on, do not answer it,

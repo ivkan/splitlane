@@ -301,8 +301,9 @@ enum Commands {
     ///
     /// Run from a pane, it needs nothing switched on: the session opens in
     /// that pane's project and belongs to the session that opened it, which
-    /// may then write to it. A session opened this way cannot open sessions
-    /// itself, and one session may have 8 running at a time.
+    /// may then write to it. A session opened this way may open sessions of
+    /// its own, which open none; the whole tree under a session a person
+    /// opened may have 8 running at a time.
     ///
     /// Run from outside a pane - a script, a scheduled job - it needs
     /// nothing switched on either: the session opens in the project the

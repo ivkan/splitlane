@@ -22,11 +22,20 @@ use crate::orchestration_journal as journal;
 use crate::pane::TabContent;
 use crate::terminal::view::TerminalView;
 
-/// How many sessions one session may have open at a time.
+/// How many sessions one tree of openers may have open at a time: a session
+/// a person opened, and every session under it.
 ///
 /// Counted in sessions and not in panes: a session with no pane to go to is
 /// opened without one, so room on screen is never what stops the ninth.
+/// Counted across the tree and not per opener: a session it opened opening
+/// sessions of its own spends from the same eight, so depth does not
+/// multiply what one person's session can start.
 pub(crate) const MAX_OPENED_SESSIONS: usize = 8;
+
+/// How deep the tree of openers goes. A session a person opened is at depth
+/// zero; one it opened is at one and may open sessions of its own; those are
+/// at two and open none.
+pub(crate) const MAX_OPEN_DEPTH: usize = 2;
 
 /// The text put in front of whatever one session writes into another.
 ///
@@ -252,13 +261,16 @@ pub(crate) enum Refusal {
     /// The caller is in no pane of this app, and the app was not launched
     /// with the variable that lets a script outside one do this.
     NotFromAPane,
-    /// The caller already has [`MAX_OPENED_SESSIONS`] sessions running.
+    /// The caller's tree of openers already has [`MAX_OPENED_SESSIONS`]
+    /// sessions running.
     WorkerCeiling,
-    /// The caller was itself opened by a session.
+    /// The caller is at [`MAX_OPEN_DEPTH`], or was opened by a program
+    /// outside a pane. The word predates depth two and is published.
     OpenedSessionCannotOpen,
     /// A pane was required and there is none to give.
     NoRoom,
-    /// The target is not a session the caller opened.
+    /// The target is not a session the caller opened, nor one opened by a
+    /// session the caller opened.
     NotYours,
     /// The target is the caller's own session.
     Itself,
@@ -322,17 +334,20 @@ impl Refusal {
                  open sessions is off"
                 .to_string(),
             Refusal::WorkerCeiling => format!(
-                "this session already has {MAX_OPENED_SESSIONS} sessions it opened still \
-                 running; close one first"
+                "{MAX_OPENED_SESSIONS} sessions opened by this session, by the session that \
+                 opened it, or by the others that one opened are still running; close one \
+                 first"
             ),
-            Refusal::OpenedSessionCannotOpen => "a session opened by another session or by a \
-                 script cannot open sessions; do the task in this one"
+            Refusal::OpenedSessionCannotOpen => "this session is two levels below the session \
+                 a person opened, or was opened by a script, and cannot open sessions; do the \
+                 task in this one"
                 .to_string(),
             Refusal::NoRoom => "no pane is empty and another would not fit; ask without \
                  requiring a pane to open the session in the rail"
                 .to_string(),
-            Refusal::NotYours => "the target is not a session the calling session opened; a \
-                 session works only through the sessions it opened"
+            Refusal::NotYours => "the target is not a session the calling session opened, \
+                 nor one opened by a session it opened; a session works only through the \
+                 sessions under it"
                 .to_string(),
             Refusal::Itself => "the target is the calling session itself".to_string(),
             Refusal::Waiting => "the target is waiting for a person, and only a person \
@@ -384,8 +399,19 @@ pub(crate) struct PaneCaller {
     pub thread_id: u64,
     pub ws_idx: usize,
     pub title: String,
-    /// Whether this session was itself opened by a session.
-    pub opened: bool,
+    /// How many openers stand between this session and a person: 0 for one
+    /// a person opened, 1 for one that session opened, and so on. A session
+    /// a program outside a pane opened, and one whose opener's record is
+    /// gone, count as [`MAX_OPEN_DEPTH`]: neither has a tree whose budget it
+    /// could be counted against.
+    pub depth: usize,
+}
+
+impl PaneCaller {
+    /// Whether this session was itself opened by a session or a program.
+    pub(crate) fn opened(&self) -> bool {
+        self.depth > 0
+    }
 }
 
 /// Who is asking.
@@ -492,10 +518,12 @@ impl LaunchGates {
     }
 }
 
-/// Whether `caller` may open a session, having `already_open` running.
+/// Whether `caller` may open a session, its tree of openers having
+/// `already_open` running.
 ///
 /// A caller in a pane needs nothing switched on. It is bounded instead: by a
-/// count, and by depth - a session that was opened by one opens none.
+/// count shared by the whole tree, and by depth - a session two levels below
+/// a person's opens none.
 ///
 /// A caller outside one is let in by the setting, bounded by a count across
 /// the app, and where the setting is off by the launch variables as before.
@@ -508,7 +536,7 @@ pub(crate) fn may_open(
 ) -> Result<(), Refusal> {
     match caller {
         Caller::Pane(pane) => {
-            if pane.opened {
+            if pane.depth >= MAX_OPEN_DEPTH {
                 return Err(Refusal::OpenedSessionCannotOpen);
             }
             if already_open >= MAX_OPENED_SESSIONS {
@@ -535,6 +563,78 @@ pub(crate) fn may_open(
     }
 }
 
+/// The sessions above `thread_id` in the tree of openers, nearest first,
+/// and whether the chain ends at a session nobody opened. `records` maps each
+/// session's record id to the id of the session that opened it.
+///
+/// The chain does not end so when an opener's record is gone - closed, or
+/// lost with a file - since what opened that one can no longer be known. A
+/// file can also say anything, cycles included, so the walk stops a step past
+/// the deepest tree the rules allow and calls that unknown too.
+pub(crate) fn openers_above(
+    thread_id: u64,
+    records: &HashMap<u64, Option<u64>>,
+) -> (Vec<u64>, bool) {
+    let mut above = Vec::new();
+    let mut current = thread_id;
+    while above.len() <= MAX_OPEN_DEPTH {
+        let Some(opener) = records.get(&current) else {
+            return (above, false);
+        };
+        let Some(opener) = *opener else {
+            return (above, true);
+        };
+        if opener == thread_id || above.contains(&opener) {
+            return (above, false);
+        }
+        above.push(opener);
+        current = opener;
+    }
+    (above, false)
+}
+
+/// How deep `thread_id` sits in its tree of openers ([`PaneCaller::depth`]).
+/// A chain that cannot be followed to its top counts as the deepest: a
+/// session whose tree is not known has no budget to be counted against.
+pub(crate) fn depth_in_tree(thread_id: u64, records: &HashMap<u64, Option<u64>>) -> usize {
+    match openers_above(thread_id, records) {
+        (above, true) => above.len(),
+        (_, false) => MAX_OPEN_DEPTH,
+    }
+}
+
+/// How many sessions under the top of `thread_id`'s tree of openers are
+/// `running`: what a call from `thread_id` to open one counts against
+/// [`MAX_OPENED_SESSIONS`], at whatever level of the tree it is.
+pub(crate) fn sessions_in_tree(
+    thread_id: u64,
+    records: &HashMap<u64, Option<u64>>,
+    running: impl Fn(u64) -> bool,
+) -> usize {
+    let root = openers_above(thread_id, records)
+        .0
+        .last()
+        .copied()
+        .unwrap_or(thread_id);
+    records
+        .keys()
+        .filter(|id| **id != root && running(**id))
+        .filter(|id| openers_above(**id, records).0.contains(&root))
+        .count()
+}
+
+/// Whether the session `caller` stands above a session whose opener is
+/// `opened_by` and whose opener's opener is `grand_opener`: it opened the
+/// session, or opened the session that did.
+///
+/// An opener answers for the whole of the work it handed out, and a session
+/// it opened that opened others is still doing that work. Its own opener
+/// and the sessions beside it are no part of what it was handed, so a
+/// session reaches down its own branch and never up or across.
+pub(crate) fn opened_under(opened_by: Option<u64>, grand_opener: Option<u64>, caller: u64) -> bool {
+    opened_by == Some(caller) || grand_opener == Some(caller)
+}
+
 /// The session a write is aimed at, as the rules see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WriteTarget {
@@ -542,6 +642,8 @@ pub(crate) struct WriteTarget {
     pub thread_id: Option<u64>,
     /// The record id of the session that opened it, if a session did.
     pub opened_by: Option<u64>,
+    /// The record id of the session that opened that one, if a session did.
+    pub grand_opener: Option<u64>,
     /// The rail says it is waiting for a person.
     pub waiting: bool,
     /// Where a person's leave for this caller to drive it stands.
@@ -551,7 +653,8 @@ pub(crate) struct WriteTarget {
 /// On what ground a write is let through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriteLeave {
-    /// The caller opened the target. The text is marked as sent by it.
+    /// The caller opened the target, or opened the session that did. The
+    /// text is marked as sent by it.
     Opener,
     /// A person opened the target and let the caller drive it. The text is
     /// marked the same way.
@@ -642,7 +745,7 @@ pub(crate) fn may_write(
     if target.waiting {
         return Err(WriteDenied::Refused(Refusal::Waiting));
     }
-    if target.opened_by == Some(pane.thread_id) {
+    if opened_under(target.opened_by, target.grand_opener, pane.thread_id) {
         return Ok(WriteLeave::Opener);
     }
     if target.drive == Drive::Standing(Standing::Allowed) {
@@ -703,7 +806,7 @@ pub(crate) fn may_arrange(
     if target.thread_id == Some(pane.thread_id) {
         return Err(Refusal::Itself);
     }
-    if target.opened_by == Some(pane.thread_id) {
+    if opened_under(target.opened_by, target.grand_opener, pane.thread_id) {
         Ok(())
     } else {
         Err(Refusal::NotYours)
@@ -795,6 +898,7 @@ pub(crate) struct CloseTarget {
     pub thread_id: u64,
     pub ws_idx: usize,
     pub opened_by: Option<u64>,
+    pub grand_opener: Option<u64>,
     /// The rail says `running` or `waiting`: a turn is in flight, or a
     /// question to a person is on screen.
     pub turn_in_flight: bool,
@@ -849,7 +953,7 @@ pub(crate) fn may_close(
             if target.ws_idx != pane.ws_idx {
                 return Err(Refusal::OtherProject);
             }
-            if target.opened_by != Some(pane.thread_id) {
+            if !opened_under(target.opened_by, target.grand_opener, pane.thread_id) {
                 return Err(Refusal::NotYours);
             }
         }
@@ -876,13 +980,16 @@ pub(crate) struct PaneFacts {
     pub thread_id: Option<u64>,
     /// Who opened that session.
     pub opened_by: Option<u64>,
+    /// Who opened the session that opened it.
+    pub grand_opener: Option<u64>,
     /// When the pane last took focus; 0 for never.
     pub focused: u64,
 }
 
 /// Which pane a session gives up to show `showing`, when none is free and
 /// none can be added: the pane of another session it opened, the one that has
-/// gone longest without focus. The index into `panes`, or `None`.
+/// gone longest without focus - or of one a session it opened opened. The
+/// index into `panes`, or `None`.
 ///
 /// Its own pane and a pane showing anything it did not open are never
 /// candidates. A person's layout is theirs, and a session that could take
@@ -892,7 +999,7 @@ pub(crate) fn pane_to_give_up(panes: &[PaneFacts], opener: u64, showing: u64) ->
         .iter()
         .enumerate()
         .filter(|(_, pane)| {
-            pane.opened_by == Some(opener)
+            opened_under(pane.opened_by, pane.grand_opener, opener)
                 && pane.thread_id.is_some()
                 && pane.thread_id != Some(showing)
                 && pane.thread_id != Some(opener)
@@ -1068,10 +1175,7 @@ impl SplitlaneApp {
                     thread_id,
                     ws_idx,
                     title: thread.title.clone(),
-                    // A session a program outside a pane opened opens none
-                    // either: the count that bounds such sessions would
-                    // otherwise bound nothing.
-                    opened: thread.opened_by.is_some() || thread.opened_by_script.is_some(),
+                    depth: self.depth_of(thread),
                 })
             });
         found.map_or(Caller::Outside, Caller::Pane)
@@ -1086,12 +1190,11 @@ impl SplitlaneApp {
                 .find(|(_, held)| *held == terminal)
                 .map(|(thread_id, _)| *thread_id)
         });
+        let (opened_by, grand_opener) = thread_id.map_or((None, None), |id| self.openers_of(id));
         WriteTarget {
             thread_id,
-            opened_by: thread_id
-                .and_then(|id| self.thread_by_id(id))
-                .and_then(|thread| thread.opened_by.as_ref())
-                .map(|by| by.id),
+            opened_by,
+            grand_opener,
             waiting: self
                 .rail_snapshot_for(terminal, thread_id, cx)
                 .is_some_and(|rail| rail.status == crate::project::ThreadStatus::WaitingForInput),
@@ -1125,7 +1228,7 @@ impl SplitlaneApp {
         let (Caller::Pane(pane), Some(thread_id)) = (caller, target.thread_id) else {
             return Drive::NotOffered;
         };
-        if pane.opened || target.opened_by.is_some() || thread_id == pane.thread_id {
+        if pane.opened() || target.opened_by.is_some() || thread_id == pane.thread_id {
             return Drive::NotOffered;
         }
         let in_callers_project = self.workspaces.get(pane.ws_idx).is_some_and(|container| {
@@ -1463,7 +1566,9 @@ impl SplitlaneApp {
         // Journal the request only where it counts: from a pane.
         let asked = asked && matches!(caller, Caller::Pane(_));
         let opened_by_caller = match &caller {
-            Caller::Pane(pane) => target.opened_by == Some(pane.thread_id),
+            Caller::Pane(pane) => {
+                opened_under(target.opened_by, target.grand_opener, pane.thread_id)
+            }
             Caller::Outside | Caller::Keyholder { .. } => false,
         };
         let surface_id = terminal.entity_id().as_u64();
@@ -1532,6 +1637,7 @@ impl SplitlaneApp {
             thread_id,
             ws_idx,
             opened_by: target.opened_by,
+            grand_opener: target.grand_opener,
             turn_in_flight,
             unseen_by_person: self
                 .thread_by_id(thread_id)
@@ -1807,12 +1913,12 @@ impl SplitlaneApp {
                             .surface()
                             .and_then(|tab| tab.as_terminal().cloned())
                             .and_then(|view| view.read(cx).agent_thread_id);
+                        let (opened_by, grand_opener) =
+                            shown_thread.map_or((None, None), |id| self.openers_of(id));
                         PaneFacts {
                             thread_id: shown_thread,
-                            opened_by: shown_thread
-                                .and_then(|id| self.thread_by_id(id))
-                                .and_then(|thread| thread.opened_by.as_ref())
-                                .map(|by| by.id),
+                            opened_by,
+                            grand_opener,
                             focused: self
                                 .pane_focus_order
                                 .get(&pane.entity_id())
@@ -1989,26 +2095,59 @@ impl SplitlaneApp {
         }
     }
 
-    /// How many of the sessions `opener` opened still have a process.
+    /// Every session's record id and the id of the session that opened it.
+    fn opener_records(&self) -> HashMap<u64, Option<u64>> {
+        self.workspaces
+            .iter()
+            .flat_map(|container| container.threads.iter())
+            .map(|thread| (thread.id, thread.opened_by.as_ref().map(|by| by.id)))
+            .collect()
+    }
+
+    /// The session that opened `thread_id` and the one that opened that, as
+    /// far as the records say.
+    fn openers_of(&self, thread_id: u64) -> (Option<u64>, Option<u64>) {
+        let opener_of = |id: u64| {
+            self.thread_by_id(id)
+                .and_then(|thread| thread.opened_by.as_ref())
+                .map(|by| by.id)
+        };
+        let opened_by = opener_of(thread_id);
+        (opened_by, opened_by.and_then(opener_of))
+    }
+
+    /// How deep `thread` sits in its tree of openers ([`PaneCaller::depth`]).
+    fn depth_of(&self, thread: &crate::project::Thread) -> usize {
+        // A session a program outside a pane opened opens none: the count
+        // that bounds such sessions would otherwise bound nothing.
+        if thread.opened_by_script.is_some() {
+            return MAX_OPEN_DEPTH;
+        }
+        depth_in_tree(thread.id, &self.opener_records())
+    }
+
+    /// How many sessions of `thread_id`'s tree of openers still have a
+    /// process: the budget a call from `thread_id` to open one spends from.
     ///
     /// A session whose agent has exited, and one restored from a file that
     /// nobody has started yet, hold no place: the limit is on what is running.
-    fn running_sessions_opened_by(&self, opener: u64, cx: &App) -> usize {
-        let running: std::collections::HashSet<u64> = self
+    fn running_sessions_in_tree_of(&self, thread_id: u64, cx: &App) -> usize {
+        let held: std::collections::HashSet<u64> = self
             .held_terminals(cx)
             .into_iter()
             .filter(|(terminal, _)| terminal.read(cx).terminal.exited.is_none())
             .filter_map(|(_, thread_id)| thread_id)
             .collect();
-        self.workspaces
+        let running: std::collections::HashSet<u64> = self
+            .workspaces
             .iter()
             .flat_map(|container| container.threads.iter())
-            .filter(|thread| {
-                thread.opened_by.as_ref().is_some_and(|by| by.id == opener)
-                    && !thread.rail.agent_exited
-                    && running.contains(&thread.id)
-            })
-            .count()
+            .filter(|thread| !thread.rail.agent_exited && held.contains(&thread.id))
+            .map(|thread| thread.id)
+            .collect();
+        sessions_in_tree(thread_id, &self.opener_records(), |id| {
+            running.contains(&id)
+        })
     }
 
     /// How many sessions opened from outside a pane are running.
@@ -2173,7 +2312,7 @@ impl SplitlaneApp {
 
         let caller = self.caller_of(lineage, cx);
         let already_open = match &caller {
-            Caller::Pane(pane) => self.running_sessions_opened_by(pane.thread_id, cx),
+            Caller::Pane(pane) => self.running_sessions_in_tree_of(pane.thread_id, cx),
             Caller::Outside | Caller::Keyholder { .. } => 0,
         };
         let gates = LaunchGates::read();
@@ -2944,13 +3083,18 @@ impl SplitlaneApp {
 mod tests {
     use super::*;
 
+    /// Session 3: one a person opened, or (`opened`) one a session opened.
     fn pane(opened: bool) -> Caller {
+        pane_at(3, usize::from(opened))
+    }
+
+    fn pane_at(thread_id: u64, depth: usize) -> Caller {
         Caller::Pane(PaneCaller {
             surface_id: 7,
-            thread_id: 3,
+            thread_id,
             ws_idx: 0,
             title: "lead".to_string(),
-            opened,
+            depth,
         })
     }
 
@@ -3030,6 +3174,7 @@ mod tests {
         let own = WriteTarget {
             thread_id: Some(9),
             opened_by: None,
+            grand_opener: None,
             waiting: false,
             drive: Drive::NotOffered,
         };
@@ -3063,6 +3208,7 @@ mod tests {
             thread_id,
             ws_idx: 0,
             opened_by: None,
+            grand_opener: None,
             turn_in_flight,
             unseen_by_person,
         };
@@ -3167,21 +3313,201 @@ mod tests {
         );
     }
 
-    /// Depth one. The variables do not lift it: they are for a caller outside
-    /// a pane, and this one is in one.
+    /// Depth two is the floor. The variables do not lift it: they are for a
+    /// caller outside a pane, and this one is in one.
     #[test]
-    fn a_session_that_was_opened_opens_none() {
+    fn a_session_two_levels_down_opens_none() {
         let all = LaunchGates {
             orchestration: true,
             scripting: true,
         };
         assert_eq!(
-            may_open(&pane(true), 0, NO_GATES, false, NO_SCRIPTS),
+            may_open(&pane_at(3, MAX_OPEN_DEPTH), 0, NO_GATES, false, NO_SCRIPTS),
             Err(Refusal::OpenedSessionCannotOpen)
         );
         assert_eq!(
-            may_open(&pane(true), 0, all, false, NO_SCRIPTS),
+            may_open(&pane_at(3, MAX_OPEN_DEPTH), 0, all, false, NO_SCRIPTS),
             Err(Refusal::OpenedSessionCannotOpen)
+        );
+    }
+
+    /// A session a session opened opens sessions of its own, bounded by the
+    /// same count as its opener.
+    #[test]
+    fn a_session_one_level_down_opens_sessions() {
+        assert_eq!(
+            may_open(&pane(true), 0, NO_GATES, false, NO_SCRIPTS),
+            Ok(())
+        );
+        assert_eq!(
+            may_open(
+                &pane(true),
+                MAX_OPENED_SESSIONS,
+                NO_GATES,
+                false,
+                NO_SCRIPTS
+            ),
+            Err(Refusal::WorkerCeiling)
+        );
+    }
+
+    /// 1 is a person's; 2 and 3 it opened; 4 and 5 were opened by 2; 6 by
+    /// 4. 20 is another person's session, and 21 the one it opened.
+    fn tree() -> HashMap<u64, Option<u64>> {
+        HashMap::from([
+            (1, None),
+            (2, Some(1)),
+            (3, Some(1)),
+            (4, Some(2)),
+            (5, Some(2)),
+            (6, Some(4)),
+            (20, None),
+            (21, Some(20)),
+        ])
+    }
+
+    #[test]
+    fn depth_is_read_down_the_chain_of_openers() {
+        let records = tree();
+        assert_eq!(depth_in_tree(1, &records), 0);
+        assert_eq!(depth_in_tree(2, &records), 1);
+        assert_eq!(depth_in_tree(4, &records), 2);
+        // Deeper than the rules allow, as a file could say: as deep as allowed.
+        assert_eq!(depth_in_tree(6, &records), MAX_OPEN_DEPTH);
+        // An opener whose record is gone: the tree is not known.
+        let orphan = HashMap::from([(7, Some(99))]);
+        assert_eq!(depth_in_tree(7, &orphan), MAX_OPEN_DEPTH);
+        // A cycle in a file does not loop.
+        let cycle = HashMap::from([(8, Some(9)), (9, Some(8))]);
+        assert_eq!(depth_in_tree(8, &cycle), MAX_OPEN_DEPTH);
+    }
+
+    /// The tree spends from one budget, whichever level asks: the ninth
+    /// session under a person's session is refused at depth one as at zero.
+    #[test]
+    fn the_tree_shares_one_budget() {
+        let mut records = HashMap::from([(1, None), (2, Some(1)), (20, None), (21, Some(20))]);
+        // 1 opened 2 and three more; 2 opened four of its own.
+        for id in 30..33 {
+            records.insert(id, Some(1));
+        }
+        for id in 40..44 {
+            records.insert(id, Some(2));
+        }
+        let running = |_| true;
+        assert_eq!(sessions_in_tree(1, &records, running), 8);
+        assert_eq!(sessions_in_tree(2, &records, running), 8);
+        // Another person's tree is counted apart.
+        assert_eq!(sessions_in_tree(20, &records, running), 1);
+        // What has stopped holds no place.
+        assert_eq!(sessions_in_tree(2, &records, |id| id != 43), 7);
+
+        let lead = pane_at(1, 0);
+        let child = pane_at(2, 1);
+        for caller in [&lead, &child] {
+            let open = sessions_in_tree(1, &records, running);
+            assert_eq!(
+                may_open(caller, open, NO_GATES, false, NO_SCRIPTS),
+                Err(Refusal::WorkerCeiling)
+            );
+        }
+        records.remove(&43);
+        let open = sessions_in_tree(2, &records, running);
+        assert_eq!(may_open(&child, open, NO_GATES, false, NO_SCRIPTS), Ok(()));
+    }
+
+    /// The opener of a session that opened others reaches all of them: it
+    /// writes into, stops, moves and closes its grandchildren.
+    #[test]
+    fn a_session_reaches_the_sessions_its_sessions_opened() {
+        let records = tree();
+        let (opened_by, grand_opener) = (Some(2), records[&2]);
+        assert_eq!(grand_opener, Some(1));
+        let grandchild = WriteTarget {
+            thread_id: Some(4),
+            opened_by,
+            grand_opener,
+            waiting: false,
+            drive: Drive::NotOffered,
+        };
+        let lead = pane_at(1, 0);
+        assert_eq!(may_write(&lead, grandchild, false), Ok(WriteLeave::Opener));
+        assert_eq!(
+            may_interrupt(&lead, grandchild, false),
+            Ok(WriteLeave::Opener)
+        );
+        assert_eq!(may_arrange(&lead, grandchild, NO_GATES), Ok(()));
+        let close = CloseTarget {
+            thread_id: 4,
+            ws_idx: 0,
+            opened_by,
+            grand_opener,
+            turn_in_flight: false,
+            unseen_by_person: false,
+        };
+        assert_eq!(may_close(&lead, close, NO_GATES, false), Ok(()));
+        // Its direct opener reaches it too.
+        assert_eq!(may_close(&pane_at(2, 1), close, NO_GATES, false), Ok(()));
+        // Not a session of another tree.
+        assert_eq!(
+            may_close(&pane_at(20, 0), close, NO_GATES, false),
+            Err(Refusal::NotYours)
+        );
+
+        // Given a pane to show its own, it may give up a grandchild's.
+        let panes = [
+            facts(10, None, 1),
+            PaneFacts {
+                thread_id: Some(4),
+                opened_by,
+                grand_opener,
+                focused: 2,
+            },
+        ];
+        assert_eq!(pane_to_give_up(&panes, 1, 30), Some(1));
+    }
+
+    /// A session reaches down its own branch and never up or across.
+    #[test]
+    fn a_session_does_not_reach_its_opener_or_the_sessions_beside_it() {
+        let child = pane_at(2, 1);
+        let close = |thread_id, opened_by, grand_opener| CloseTarget {
+            thread_id,
+            ws_idx: 0,
+            opened_by,
+            grand_opener,
+            turn_in_flight: false,
+            unseen_by_person: false,
+        };
+        // Its opener, a person's session.
+        assert_eq!(
+            may_close(&child, close(1, None, None), NO_GATES, false),
+            Err(Refusal::NotYours)
+        );
+        // A sibling, which their common opener opened.
+        assert_eq!(
+            may_close(&child, close(3, Some(1), None), NO_GATES, false),
+            Err(Refusal::NotYours)
+        );
+        let sibling = WriteTarget {
+            thread_id: Some(3),
+            opened_by: Some(1),
+            grand_opener: None,
+            waiting: false,
+            drive: Drive::NotOffered,
+        };
+        assert_eq!(
+            may_write(&child, sibling, false),
+            Err(WriteDenied::Refused(Refusal::NotYours))
+        );
+        assert_eq!(
+            may_arrange(&child, sibling, NO_GATES),
+            Err(Refusal::NotYours)
+        );
+        // A grandchild does not reach up to the top of its tree either.
+        assert_eq!(
+            may_close(&pane_at(4, 2), close(1, None, None), NO_GATES, false),
+            Err(Refusal::NotYours)
         );
     }
 
@@ -3387,12 +3713,14 @@ mod tests {
     const MINE: WriteTarget = WriteTarget {
         thread_id: Some(9),
         opened_by: Some(3),
+        grand_opener: None,
         waiting: false,
         drive: Drive::NotOffered,
     };
     const A_PERSONS: WriteTarget = WriteTarget {
         thread_id: Some(10),
         opened_by: None,
+        grand_opener: None,
         waiting: false,
         drive: Drive::NotOffered,
     };
@@ -3413,6 +3741,7 @@ mod tests {
         // Opened by some other session.
         let anothers = WriteTarget {
             opened_by: Some(77),
+            grand_opener: None,
             ..MINE
         };
         assert_eq!(
@@ -3423,6 +3752,7 @@ mod tests {
         let opener = WriteTarget {
             thread_id: Some(1),
             opened_by: None,
+            grand_opener: None,
             waiting: false,
             drive: Drive::NotOffered,
         };
@@ -3487,6 +3817,7 @@ mod tests {
         let itself = WriteTarget {
             thread_id: Some(3),
             opened_by: None,
+            grand_opener: None,
             waiting: false,
             drive: Drive::NotOffered,
         };
@@ -3654,6 +3985,7 @@ mod tests {
         let itself = WriteTarget {
             thread_id: Some(3),
             opened_by: None,
+            grand_opener: None,
             waiting: false,
             drive: Drive::NotOffered,
         };
@@ -3685,6 +4017,7 @@ mod tests {
         let itself = WriteTarget {
             thread_id: Some(3),
             opened_by: None,
+            grand_opener: None,
             waiting: false,
             drive: Drive::NotOffered,
         };
@@ -3716,6 +4049,7 @@ mod tests {
         let itself = WriteTarget {
             thread_id: Some(3),
             opened_by: None,
+            grand_opener: None,
             waiting: false,
             drive: Drive::NotOffered,
         };
@@ -3759,6 +4093,7 @@ mod tests {
         thread_id: 9,
         ws_idx: 0,
         opened_by: Some(3),
+        grand_opener: None,
         turn_in_flight: false,
         unseen_by_person: false,
     };
@@ -3903,6 +4238,7 @@ mod tests {
         let itself = CloseTarget {
             thread_id: 3,
             opened_by: None,
+            grand_opener: None,
             ..MINE_IDLE
         };
         for stop_turn in [false, true] {
@@ -3931,10 +4267,12 @@ mod tests {
     fn a_session_a_person_opened_is_never_closed_by_a_session() {
         let persons = CloseTarget {
             opened_by: None,
+            grand_opener: None,
             ..MINE_IDLE
         };
         let anothers = CloseTarget {
             opened_by: Some(77),
+            grand_opener: None,
             ..MINE_IDLE
         };
         for target in [persons, anothers] {
@@ -3983,6 +4321,7 @@ mod tests {
         );
         let anothers = CloseTarget {
             opened_by: Some(77),
+            grand_opener: None,
             ..unseen
         };
         assert_eq!(
@@ -3991,6 +4330,7 @@ mod tests {
         );
         let persons = CloseTarget {
             opened_by: None,
+            grand_opener: None,
             ..unseen
         };
         assert_eq!(
@@ -4012,6 +4352,7 @@ mod tests {
     fn a_script_outside_a_pane_closes_by_the_launch_variable() {
         let persons = CloseTarget {
             opened_by: None,
+            grand_opener: None,
             ..MINE_IDLE
         };
         assert_eq!(
@@ -4036,6 +4377,7 @@ mod tests {
         PaneFacts {
             thread_id: Some(thread_id),
             opened_by,
+            grand_opener: None,
             focused,
         }
     }
@@ -4061,6 +4403,7 @@ mod tests {
         let empty = PaneFacts {
             thread_id: None,
             opened_by: None,
+            grand_opener: None,
             focused: 0,
         };
         let panes = [

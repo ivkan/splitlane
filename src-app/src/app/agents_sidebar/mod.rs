@@ -2919,9 +2919,10 @@ fn under_their_openers(order: Vec<usize>, threads: &[crate::project::Thread]) ->
 /// which each other row goes.
 struct Openers {
     /// Rows that keep a place of their own: everything nobody here opened.
-    /// Only those have rows put under them. The rules allow no session that
-    /// was opened to open another, but a file can say anything, and a row
-    /// moved under a row that is itself being moved would be drawn nowhere.
+    /// Only those have rows put under them. A session that was opened may
+    /// open others, and a file can say anything, but a row moved under a row
+    /// that is itself being moved would be drawn nowhere; such a row keeps
+    /// its own place.
     alone: std::collections::HashSet<u64>,
 }
 
